@@ -1,0 +1,489 @@
+2025-07-31 21:06:44,439 - INFO - 数据库初始化完成
+2025-07-31 21:06:44,448 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:06:44,448 - INFO - 定时任务调度器已配置
+2025-07-31 21:06:45,396 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:06:45,396 - INFO - Scheduler started
+2025-07-31 21:06:45,397 - INFO - 量化交易管理软件已启动
+2025-07-31 21:06:57,761 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 21:06:57,771 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 21:06:59,680 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 21:06:59,693 - ERROR - 量化模型运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 160, in <module>
+    print(f"   \u2705 没有重复股票")
+UnicodeEncodeError: 'gbk' codec can't encode character '\u2705' in position 3: illegal multibyte sequence
+
+2025-07-31 21:06:59,696 - INFO - 状态更新: 就绪
+2025-07-31 21:07:12,351 - ERROR - 读取日志失败: 'utf-8' codec can't decode byte 0xca in position 33: invalid continuation byte
+2025-07-31 21:07:23,851 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 21:07:23,861 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 21:07:26,129 - INFO - 状态更新: 回测分析运行失败
+2025-07-31 21:07:26,130 - ERROR - 回测分析运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\comprehensive_category_backtest.py", line 984, in <module>
+    main() 
+    ^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 965, in main
+    print(f"\U0001f4c1 使用数据文件: {latest_file}")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4c1' in position 0: illegal multibyte sequence
+
+2025-07-31 21:07:26,134 - INFO - 状态更新: 就绪
+2025-07-31 21:12:22,947 - INFO - 数据库初始化完成
+2025-07-31 21:12:22,951 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:12:22,951 - INFO - 定时任务调度器已配置
+2025-07-31 21:12:23,448 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:12:23,449 - INFO - Scheduler started
+2025-07-31 21:12:23,450 - INFO - 量化交易管理软件已启动
+2025-07-31 21:12:25,832 - INFO - Scheduler has been shut down
+2025-07-31 21:12:25,833 - INFO - 应用程序正常关闭
+2025-07-31 21:14:25,978 - INFO - 数据库初始化完成
+2025-07-31 21:14:25,983 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:14:25,983 - INFO - 定时任务调度器已配置
+2025-07-31 21:14:26,494 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:14:26,494 - INFO - Scheduler started
+2025-07-31 21:14:26,495 - INFO - 量化交易管理软件已启动
+2025-07-31 21:14:40,379 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 21:14:40,411 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 21:14:42,126 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 21:14:42,137 - ERROR - 量化模型运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 160, in <module>
+    print(f"   \u2705 没有重复股票")
+UnicodeEncodeError: 'gbk' codec can't encode character '\u2705' in position 3: illegal multibyte sequence
+
+2025-07-31 21:14:42,140 - INFO - 状态更新: 就绪
+2025-07-31 21:14:58,415 - INFO - 数据库初始化完成
+2025-07-31 21:14:58,421 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:14:58,421 - INFO - 定时任务调度器已配置
+2025-07-31 21:14:58,950 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:14:58,951 - INFO - Scheduler started
+2025-07-31 21:14:58,953 - INFO - 量化交易管理软件已启动
+2025-07-31 21:15:08,135 - INFO - Scheduler has been shut down
+2025-07-31 21:15:08,135 - INFO - 应用程序正常关闭
+2025-07-31 21:15:09,804 - INFO - Scheduler has been shut down
+2025-07-31 21:15:09,805 - INFO - 应用程序正常关闭
+2025-07-31 21:17:43,898 - INFO - 数据库初始化完成
+2025-07-31 21:17:43,902 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:17:43,902 - INFO - 定时任务调度器已配置
+2025-07-31 21:17:44,512 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:17:44,512 - INFO - Scheduler started
+2025-07-31 21:17:44,513 - INFO - 量化交易管理软件已启动
+2025-07-31 21:17:48,246 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 21:17:48,268 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 21:17:49,844 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 21:17:49,853 - ERROR - 量化模型运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1029, in <module>
+    print("\U0001f4ca 获取市场基准数据...")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 21:17:49,857 - INFO - 状态更新: 就绪
+2025-07-31 21:18:50,417 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 21:18:50,424 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 21:18:51,863 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 21:18:51,864 - ERROR - 量化模型运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1029, in <module>
+    print("\U0001f4ca 获取市场基准数据...")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 21:18:51,867 - INFO - 状态更新: 就绪
+2025-07-31 21:19:46,100 - INFO - Scheduler has been shut down
+2025-07-31 21:19:46,100 - INFO - 应用程序正常关闭
+2025-07-31 21:19:52,921 - INFO - 数据库初始化完成
+2025-07-31 21:19:52,926 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:19:52,926 - INFO - 定时任务调度器已配置
+2025-07-31 21:19:53,368 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:19:53,369 - INFO - Scheduler started
+2025-07-31 21:19:53,370 - INFO - 量化交易管理软件已启动
+2025-07-31 21:19:55,341 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 21:19:55,352 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 21:19:56,854 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 21:19:56,864 - ERROR - 量化模型运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1029, in <module>
+    print("\U0001f4ca 获取市场基准数据...")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 21:19:56,867 - INFO - 状态更新: 就绪
+2025-07-31 21:24:22,134 - INFO - 数据库初始化完成
+2025-07-31 21:24:22,138 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:24:22,138 - INFO - 定时任务调度器已配置
+2025-07-31 21:24:22,628 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:24:22,628 - INFO - Scheduler started
+2025-07-31 21:24:22,629 - INFO - 量化交易管理软件已启动
+2025-07-31 21:24:24,932 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 21:24:24,941 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 21:24:26,428 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 21:24:26,437 - ERROR - 量化模型运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1029, in <module>
+    print("\U0001f4ca 获取市场基准数据...")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 21:24:26,440 - INFO - 状态更新: 就绪
+2025-07-31 21:34:17,434 - INFO - Scheduler has been shut down
+2025-07-31 21:34:17,435 - INFO - 应用程序正常关闭
+2025-07-31 21:35:05,268 - INFO - 数据库初始化完成
+2025-07-31 21:35:05,273 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:35:05,274 - INFO - 定时任务调度器已配置
+2025-07-31 21:35:05,562 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:35:05,562 - INFO - Scheduler started
+2025-07-31 21:35:05,563 - INFO - 量化交易管理软件已启动
+2025-07-31 21:36:05,583 - INFO - 数据库初始化完成
+2025-07-31 21:36:05,588 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:36:05,588 - INFO - 定时任务调度器已配置
+2025-07-31 21:36:05,777 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:36:05,777 - INFO - Scheduler started
+2025-07-31 21:36:05,778 - INFO - 量化交易管理软件已启动
+2025-07-31 21:36:09,124 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 21:36:09,141 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 21:40:06,346 - INFO - 数据库初始化完成
+2025-07-31 21:40:06,351 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:40:06,352 - INFO - 定时任务调度器已配置
+2025-07-31 21:40:06,601 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:40:06,601 - INFO - Scheduler started
+2025-07-31 21:40:06,603 - INFO - 量化交易管理软件已启动
+2025-07-31 21:40:16,580 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 21:40:16,594 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 21:40:19,054 - INFO - 状态更新: 回测分析运行失败
+2025-07-31 21:40:19,064 - ERROR - 回测分析运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\comprehensive_category_backtest.py", line 996, in <module>
+    main() 
+    ^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 980, in main
+    analyzer = ComprehensiveCategoryBacktest(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 83, in __init__
+    print(f"初始资金: \xa5{self.initial_capital:,.0f}")
+UnicodeEncodeError: 'gbk' codec can't encode character '\xa5' in position 6: illegal multibyte sequence
+
+2025-07-31 21:40:19,067 - INFO - 状态更新: 就绪
+2025-07-31 21:41:38,819 - INFO - Scheduler has been shut down
+2025-07-31 21:41:38,827 - INFO - 应用程序正常关闭
+2025-07-31 21:41:42,102 - INFO - Scheduler has been shut down
+2025-07-31 21:41:42,102 - INFO - 应用程序正常关闭
+2025-07-31 21:44:31,524 - INFO - 数据库初始化完成
+2025-07-31 21:44:31,529 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:44:31,530 - INFO - 定时任务调度器已配置
+2025-07-31 21:44:31,700 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:44:31,700 - INFO - Scheduler started
+2025-07-31 21:44:31,701 - INFO - 量化交易管理软件已启动
+2025-07-31 21:44:40,362 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 21:44:40,367 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 21:44:42,058 - INFO - 状态更新: 回测分析运行失败
+2025-07-31 21:44:42,074 - ERROR - 回测分析运行失败
+错误信息: Traceback (most recent call last):
+  File "D:\trade\comprehensive_category_backtest.py", line 996, in <module>
+    main() 
+    ^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 980, in main
+    analyzer = ComprehensiveCategoryBacktest(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 83, in __init__
+    print(f"初始资金: \xa5{self.initial_capital:,.0f}")
+UnicodeEncodeError: 'gbk' codec can't encode character '\xa5' in position 6: illegal multibyte sequence
+
+2025-07-31 21:44:42,078 - INFO - 状态更新: 就绪
+2025-07-31 21:46:33,189 - INFO - 数据库初始化完成
+2025-07-31 21:46:33,194 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:46:33,194 - INFO - 定时任务调度器已配置
+2025-07-31 21:46:33,476 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:46:33,477 - INFO - Scheduler started
+2025-07-31 21:46:33,477 - INFO - 量化交易管理软件已启动
+2025-07-31 21:46:42,129 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 21:46:42,136 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 21:47:28,555 - INFO - 数据库初始化完成
+2025-07-31 21:47:28,560 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:47:28,560 - INFO - 定时任务调度器已配置
+2025-07-31 21:47:28,769 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:47:28,769 - INFO - Scheduler started
+2025-07-31 21:47:28,770 - INFO - 量化交易管理软件已启动
+2025-07-31 21:47:34,051 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 21:47:34,056 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 21:47:41,191 - INFO - 状态更新: 回测分析运行失败
+2025-07-31 21:47:41,199 - ERROR - 回测分析运行失败
+完整错误信息: Traceback (most recent call last):
+  File "C:\Users\erlia\Lib\site-packages\pandas\core\indexes\base.py", line 3805, in get_loc
+    return self._engine.get_loc(casted_key)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "index.pyx", line 167, in pandas._libs.index.IndexEngine.get_loc
+  File "index.pyx", line 196, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas\\_libs\\hashtable_class_helper.pxi", line 7081, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas\\_libs\\hashtable_class_helper.pxi", line 7089, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'Adj Close'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\trade\comprehensive_category_backtest.py", line 996, in <module>
+    main() 
+    ^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 987, in main
+    success = analyzer.run_comprehensive_analysis()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 938, in run_comprehensive_analysis
+    self.create_comprehensive_visualizations()
+  File "D:\trade\comprehensive_category_backtest.py", line 315, in create_comprehensive_visualizations
+    self.plot_cumulative_returns()
+  File "D:\trade\comprehensive_category_backtest.py", line 471, in plot_cumulative_returns
+    prices = self.price_data[ticker]['Adj Close']
+             ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "C:\Users\erlia\Lib\site-packages\pandas\core\frame.py", line 4102, in __getitem__
+    indexer = self.columns.get_loc(key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\erlia\Lib\site-packages\pandas\core\indexes\base.py", line 3812, in get_loc
+    raise KeyError(key) from err
+KeyError: 'Adj Close'
+
+2025-07-31 21:47:41,202 - INFO - 状态更新: 就绪
+2025-07-31 21:48:04,200 - INFO - Scheduler has been shut down
+2025-07-31 21:48:04,201 - INFO - 应用程序正常关闭
+2025-07-31 21:48:06,646 - INFO - Scheduler has been shut down
+2025-07-31 21:48:06,647 - INFO - 应用程序正常关闭
+2025-07-31 21:48:08,738 - INFO - Scheduler has been shut down
+2025-07-31 21:48:08,739 - INFO - 应用程序正常关闭
+2025-07-31 21:52:44,362 - INFO - 数据库初始化完成
+2025-07-31 21:52:44,369 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:52:44,369 - INFO - 定时任务调度器已配置
+2025-07-31 21:52:44,599 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:52:44,599 - INFO - Scheduler started
+2025-07-31 21:52:44,601 - INFO - 量化交易管理软件已启动
+2025-07-31 21:53:00,238 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 21:53:00,244 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 21:53:09,335 - INFO - 状态更新: 回测分析运行失败
+2025-07-31 21:53:09,344 - ERROR - 回测分析运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\comprehensive_category_backtest.py", line 1020, in <module>
+    main() 
+    ^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 1011, in main
+    success = analyzer.run_comprehensive_analysis()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\trade\comprehensive_category_backtest.py", line 962, in run_comprehensive_analysis
+    self.create_comprehensive_visualizations()
+  File "D:\trade\comprehensive_category_backtest.py", line 327, in create_comprehensive_visualizations
+    self.plot_performance_radar()
+  File "D:\trade\comprehensive_category_backtest.py", line 530, in plot_performance_radar
+    ax.set_theta_offset(pi / 2)
+    ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'Axes' object has no attribute 'set_theta_offset'
+
+2025-07-31 21:53:09,348 - INFO - 状态更新: 就绪
+2025-07-31 21:55:06,659 - INFO - 数据库初始化完成
+2025-07-31 21:55:06,663 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 21:55:06,664 - INFO - 定时任务调度器已配置
+2025-07-31 21:55:06,847 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 21:55:06,847 - INFO - Scheduler started
+2025-07-31 21:55:06,848 - INFO - 量化交易管理软件已启动
+2025-07-31 21:55:13,113 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 21:55:13,120 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 21:55:28,837 - INFO - 状态更新: 回测分析完成
+2025-07-31 21:55:28,840 - INFO - 分析结果已保存到数据库: 回测分析
+2025-07-31 21:55:28,856 - INFO - 状态更新: 就绪
+2025-07-31 22:13:34,348 - INFO - Scheduler has been shut down
+2025-07-31 22:13:34,350 - INFO - 应用程序正常关闭
+2025-07-31 22:13:36,139 - INFO - Scheduler has been shut down
+2025-07-31 22:13:36,141 - INFO - 应用程序正常关闭
+2025-07-31 22:22:04,248 - INFO - 数据库初始化完成
+2025-07-31 22:22:04,253 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:22:04,253 - INFO - 定时任务调度器已配置
+2025-07-31 22:22:04,494 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:22:04,494 - INFO - Scheduler started
+2025-07-31 22:22:04,495 - INFO - 量化交易管理软件已启动
+2025-07-31 22:22:06,084 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:22:06,096 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:22:10,585 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:22:10,595 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1220, in <module>
+    strategy_tail = tail_ratio(strategy_returns)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\trade\量化模型.py", line 316, in tail_ratio
+    right_tail = np.percentile(series, percentile * 100)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\erlia\Lib\site-packages\numpy\lib\function_base.py", line 4283, in percentile
+    return _quantile_unchecked(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\erlia\Lib\site-packages\numpy\lib\function_base.py", line 4555, in _quantile_unchecked
+    return _ureduce(a,
+           ^^^^^^^^^^^
+  File "C:\Users\erlia\Lib\site-packages\numpy\lib\function_base.py", line 3823, in _ureduce
+    r = func(a, **kwargs)
+        ^^^^^^^^^^^^^^^^^
+  File "C:\Users\erlia\Lib\site-packages\numpy\lib\function_base.py", line 4722, in _quantile_ureduce_func
+    result = _quantile(arr,
+             ^^^^^^^^^^^^^^
+  File "C:\Users\erlia\Lib\site-packages\numpy\lib\function_base.py", line 4831, in _quantile
+    slices_having_nans = np.isnan(arr[-1, ...])
+                                  ~~~^^^^^^^^^
+IndexError: index -1 is out of bounds for axis 0 with size 0
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1548, in <module>
+    print(f"  \u274c 跳过 {ticker}: {str(e)[:100]}...")
+UnicodeEncodeError: 'gbk' codec can't encode character '\u274c' in position 2: illegal multibyte sequence
+
+2025-07-31 22:22:10,598 - INFO - 状态更新: 就绪
+2025-07-31 22:25:02,734 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:25:02,745 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:25:20,967 - INFO - 数据库初始化完成
+2025-07-31 22:25:20,972 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:25:20,972 - INFO - 定时任务调度器已配置
+2025-07-31 22:25:21,158 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:25:21,158 - INFO - Scheduler started
+2025-07-31 22:25:21,159 - INFO - 量化交易管理软件已启动
+2025-07-31 22:25:22,642 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:25:22,648 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:25:29,324 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:25:29,333 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1508, in <module>
+    print("\U0001f4ca 缺失情况汇总报告")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 22:25:29,336 - INFO - 状态更新: 就绪
+2025-07-31 22:26:02,325 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:26:02,346 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:26:08,246 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:26:08,246 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1508, in <module>
+    print("\U0001f4ca 缺失情况汇总报告")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 22:26:08,250 - INFO - 状态更新: 就绪
+2025-07-31 22:26:11,612 - INFO - Scheduler has been shut down
+2025-07-31 22:26:11,612 - INFO - 应用程序正常关闭
+2025-07-31 22:26:19,124 - INFO - 数据库初始化完成
+2025-07-31 22:26:19,129 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:26:19,129 - INFO - 定时任务调度器已配置
+2025-07-31 22:26:19,297 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:26:19,297 - INFO - Scheduler started
+2025-07-31 22:26:19,298 - INFO - 量化交易管理软件已启动
+2025-07-31 22:26:21,080 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:26:21,091 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:26:28,427 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:26:28,440 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1508, in <module>
+    print("\U0001f4ca 缺失情况汇总报告")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 22:26:28,443 - INFO - 状态更新: 就绪
+2025-07-31 22:28:05,234 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:28:05,246 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:28:08,965 - INFO - Scheduler has been shut down
+2025-07-31 22:28:08,967 - INFO - 应用程序正常关闭
+2025-07-31 22:30:22,252 - INFO - 数据库初始化完成
+2025-07-31 22:30:22,257 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:30:22,257 - INFO - 定时任务调度器已配置
+2025-07-31 22:30:22,324 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:30:22,324 - INFO - Scheduler started
+2025-07-31 22:30:22,325 - INFO - 量化交易管理软件已启动
+2025-07-31 22:30:24,026 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:30:24,038 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:30:30,827 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:30:30,840 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1508, in <module>
+    print("\U0001f4ca 缺失情况汇总报告")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 22:30:30,845 - INFO - 状态更新: 就绪
+2025-07-31 22:30:35,077 - INFO - Scheduler has been shut down
+2025-07-31 22:30:35,077 - INFO - 应用程序正常关闭
+2025-07-31 22:31:10,645 - INFO - 数据库初始化完成
+2025-07-31 22:31:10,649 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:31:10,650 - INFO - 定时任务调度器已配置
+2025-07-31 22:31:10,714 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:31:10,714 - INFO - Scheduler started
+2025-07-31 22:31:10,715 - INFO - 量化交易管理软件已启动
+2025-07-31 22:31:12,022 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:31:12,035 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:31:18,785 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:31:18,794 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1508, in <module>
+    print("\U0001f4ca 缺失情况汇总报告")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 22:31:18,798 - INFO - 状态更新: 就绪
+2025-07-31 22:31:22,620 - INFO - Scheduler has been shut down
+2025-07-31 22:31:22,621 - INFO - 应用程序正常关闭
+2025-07-31 22:31:28,119 - INFO - 数据库初始化完成
+2025-07-31 22:31:28,132 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:31:28,134 - INFO - 定时任务调度器已配置
+2025-07-31 22:31:28,202 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:31:28,202 - INFO - Scheduler started
+2025-07-31 22:31:28,208 - INFO - 量化交易管理软件已启动
+2025-07-31 22:31:29,289 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:31:29,297 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:31:35,623 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:31:35,636 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1508, in <module>
+    print("\U0001f4ca 缺失情况汇总报告")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 22:31:35,639 - INFO - 状态更新: 就绪
+2025-07-31 22:31:40,850 - INFO - Scheduler has been shut down
+2025-07-31 22:31:40,851 - INFO - 应用程序正常关闭
+2025-07-31 22:31:57,124 - INFO - 数据库初始化完成
+2025-07-31 22:31:57,129 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:31:57,129 - INFO - 定时任务调度器已配置
+2025-07-31 22:31:57,203 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:31:57,203 - INFO - Scheduler started
+2025-07-31 22:31:57,204 - INFO - 量化交易管理软件已启动
+2025-07-31 22:31:59,741 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:31:59,752 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:32:06,236 - INFO - 状态更新: 量化模型运行失败
+2025-07-31 22:32:06,245 - ERROR - 量化模型运行失败
+完整错误信息: Traceback (most recent call last):
+  File "D:\trade\量化模型.py", line 1508, in <module>
+    print("\U0001f4ca 缺失情况汇总报告")
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4ca' in position 0: illegal multibyte sequence
+
+2025-07-31 22:32:06,248 - INFO - 状态更新: 就绪
+2025-07-31 22:34:28,579 - INFO - 数据库初始化完成
+2025-07-31 22:34:28,583 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 22:34:28,584 - INFO - 定时任务调度器已配置
+2025-07-31 22:34:28,665 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 22:34:28,666 - INFO - Scheduler started
+2025-07-31 22:34:28,667 - INFO - 量化交易管理软件已启动
+2025-07-31 22:34:30,346 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 22:34:30,358 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 22:34:37,766 - INFO - 状态更新: 量化模型运行完成
+2025-07-31 22:34:37,772 - INFO - 分析结果已保存到数据库: 量化模型
+2025-07-31 22:34:37,805 - INFO - 状态更新: 就绪
+2025-07-31 22:46:15,211 - INFO - Scheduler has been shut down
+2025-07-31 22:46:15,212 - INFO - 应用程序正常关闭
+2025-07-31 22:46:50,784 - INFO - 状态更新: 正在启动ML回测...
+2025-07-31 22:46:50,794 - INFO - 状态更新: ML回测运行中...
+2025-07-31 22:46:53,782 - INFO - 状态更新: ML回测完成
+2025-07-31 22:46:53,786 - INFO - 分析结果已保存到数据库: ML回测
+2025-07-31 22:46:53,813 - INFO - 状态更新: 就绪
+2025-07-31 22:47:44,329 - ERROR - 读取日志失败: 'utf-8' codec can't decode byte 0xca in position 33: invalid continuation byte
+2025-07-31 23:00:10,676 - INFO - 状态更新: 正在启动量化模型...
+2025-07-31 23:00:10,688 - INFO - 状态更新: 量化模型运行中...
+2025-07-31 23:06:52,407 - INFO - 数据库初始化完成
+2025-07-31 23:06:52,413 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 23:06:52,413 - INFO - 定时任务调度器已配置
+2025-07-31 23:06:52,491 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 23:06:52,491 - INFO - Scheduler started
+2025-07-31 23:06:52,492 - INFO - 量化交易管理软件已启动
+2025-07-31 23:15:06,106 - INFO - Scheduler has been shut down
+2025-07-31 23:15:06,107 - INFO - 应用程序正常关闭
+2025-07-31 23:16:27,523 - INFO - 数据库初始化完成
+2025-07-31 23:16:27,528 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-31 23:16:27,528 - INFO - 定时任务调度器已配置
+2025-07-31 23:16:27,760 - INFO - Added job "月度量化分析" to job store "default"
+2025-07-31 23:16:27,760 - INFO - Scheduler started
+2025-07-31 23:16:27,762 - INFO - 量化交易管理软件已启动
+2025-07-31 23:16:47,362 - INFO - 状态更新: 正在启动回测分析...
+2025-07-31 23:16:47,369 - INFO - 状态更新: 回测分析运行中...
+2025-07-31 23:19:18,984 - INFO - Scheduler has been shut down
+2025-07-31 23:19:18,986 - INFO - 应用程序正常关闭
