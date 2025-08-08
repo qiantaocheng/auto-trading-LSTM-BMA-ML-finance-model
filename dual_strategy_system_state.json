@@ -1,0 +1,56 @@
+{
+  "timestamp": "2025-08-06T05:11:31.074690",
+  "total_capital": 50000.0,
+  "allocated_capital": 50000.0,
+  "available_capital": 0.0,
+  "total_pnl": 0.0,
+  "daily_pnl": 0.0,
+  "strategy_states": {
+    "strategy_A_mean_reversion": {
+      "strategy_id": "strategy_A_mean_reversion",
+      "strategy_type": "StrategyType.MEAN_REVERSION",
+      "status": "StrategyStatus.RUNNING",
+      "allocation": 0.5,
+      "capital_allocated": 25000.0,
+      "positions": {},
+      "pending_orders": [],
+      "daily_pnl": 0.0,
+      "total_pnl": 0.0,
+      "trade_count": 0,
+      "last_update": "2025-08-06T05:11:31.074690",
+      "error_message": ""
+    },
+    "strategy_B_trend_following": {
+      "strategy_id": "strategy_B_trend_following",
+      "strategy_type": "StrategyType.TREND_FOLLOWING",
+      "status": "StrategyStatus.RUNNING",
+      "allocation": 0.5,
+      "capital_allocated": 25000.0,
+      "positions": {},
+      "pending_orders": [],
+      "daily_pnl": 0.0,
+      "total_pnl": 0.0,
+      "trade_count": 0,
+      "last_update": "2025-08-06T05:11:31.074690",
+      "error_message": ""
+    }
+  },
+  "regime_info": {},
+  "allocation_config": {
+    "timestamp": "2025-08-06T05:11:31.053262",
+    "regime_type": "默认市况（数据获取失败）",
+    "base_allocation_A": 0.5,
+    "base_allocation_B": 0.5,
+    "performance_weight_A": 0.5,
+    "performance_weight_B": 0.5,
+    "final_allocation_A": 0.5,
+    "final_allocation_B": 0.5,
+    "total_capital": 100000.0,
+    "max_position_size": 0.05,
+    "cooldown_active": false,
+    "cooldown_reason": "",
+    "version": "v20250806_051131"
+  },
+  "cooldown_active": false,
+  "system_status": "running"
+}

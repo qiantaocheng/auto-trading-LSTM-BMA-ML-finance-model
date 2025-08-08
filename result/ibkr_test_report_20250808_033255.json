@@ -1,0 +1,512 @@
+{
+  "test_time": "2025-08-08 03:32:55",
+  "connection_status": true,
+  "test_results": {
+    "connection": true,
+    "account_data": true,
+    "market_data": false,
+    "order_placement": true,
+    "positions": true
+  },
+  "account_info": {
+    "AccountCode": {
+      "value": "DUN374127",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "AccountOrGroup": {
+      "value": "DUN374127",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "AccountReady": {
+      "value": "true",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "AccountType": {
+      "value": "INDIVIDUAL",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "AccruedCash": {
+      "value": "191.90",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "AccruedCash-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "AccruedDividend": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "AccruedDividend-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "AvailableFunds": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "AvailableFunds-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "Billable": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "Billable-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "BuyingPower": {
+      "value": "1000000.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "CashBalance": {
+      "value": "1000000.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "ColumnPrio-P": {
+      "value": "5",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "ColumnPrio-S": {
+      "value": "1",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "CorporateBondValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "Cryptocurrency": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "Currency": {
+      "value": "BASE",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "Cushion": {
+      "value": "1",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "EquityWithLoanValue": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "EquityWithLoanValue-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "ExcessLiquidity": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "ExcessLiquidity-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "ExchangeRate": {
+      "value": "1.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "FullAvailableFunds": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FullAvailableFunds-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FullExcessLiquidity": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FullExcessLiquidity-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FullInitMarginReq": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FullInitMarginReq-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FullMaintMarginReq": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FullMaintMarginReq-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "FundValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "FutureOptionValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "FuturesPNL": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "FxCashBalance": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "GrossPositionValue": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "Guarantee": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "Guarantee-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "IncentiveCoupons": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "IncentiveCoupons-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "IndianStockHaircut": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "IndianStockHaircut-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "InitMarginReq": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "InitMarginReq-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "IssuerOptionValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "Leverage-S": {
+      "value": "0.00",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "LookAheadAvailableFunds": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadAvailableFunds-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadExcessLiquidity": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadExcessLiquidity-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadInitMarginReq": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadInitMarginReq-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadMaintMarginReq": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadMaintMarginReq-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "LookAheadNextChange": {
+      "value": "0",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "MaintMarginReq": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "MaintMarginReq-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "MoneyMarketFundValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "MutualFundValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "NLVAndMarginInReview": {
+      "value": "false",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "NetDividend": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "NetLiquidation": {
+      "value": "1000191.90",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "NetLiquidation-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "NetLiquidationByCurrency": {
+      "value": "1000191.90",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "NetLiquidationUncertainty": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "OptionMarketValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "PASharesValue": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "PASharesValue-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "PhysicalCertificateValue": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "PhysicalCertificateValue-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "PostExpirationExcess": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "PostExpirationExcess-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "PostExpirationMargin": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "PostExpirationMargin-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "RealCurrency": {
+      "value": "BASE",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "RealizedPnL": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "SegmentTitle-P": {
+      "value": "Crypto at Paxos",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "SegmentTitle-S": {
+      "value": "CFD",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "SettledCashByDate": {
+      "value": "20250807:1000000",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "SettledCashByDate-P": {
+      "value": "20250807:0",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "SettledCashByDate-S": {
+      "value": "20250807:1000000",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "StockMarketValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "TBillValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "TBondValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "TotalCashBalance": {
+      "value": "1000000.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "TotalCashValue": {
+      "value": "1000000.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "TotalCashValue-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "TotalDebitCardPendingCharges": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "TotalDebitCardPendingCharges-P": {
+      "value": "0.00",
+      "currency": "AUD",
+      "account": "DUN374127"
+    },
+    "TradingType-S": {
+      "value": "STKCASH",
+      "currency": "",
+      "account": "DUN374127"
+    },
+    "UnrealizedPnL": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    },
+    "WarrantValue": {
+      "value": "0.00",
+      "currency": "BASE",
+      "account": "DUN374127"
+    }
+  },
+  "positions": {},
+  "market_data": {},
+  "log_messages": [
+    "[2025-08-08 03:32:47] 尝试连接到IBKR TWS/Gateway: 127.0.0.1:4002",
+    "[2025-08-08 03:32:47] [OK] IBKR连接已建立",
+    "[2025-08-08 03:32:47] [OK] 连接成功，下一个订单ID: 1",
+    "[2025-08-08 03:32:47] INFO: 市场数据场连接正常:usfarm.nj",
+    "[2025-08-08 03:32:47] INFO: 市场数据场连接正常:usfuture",
+    "[2025-08-08 03:32:47] INFO: 市场数据场连接正常:afarm",
+    "[2025-08-08 03:32:47] INFO: 市场数据场连接正常:cashfarm",
+    "[2025-08-08 03:32:47] INFO: 市场数据场连接正常:usopt",
+    "[2025-08-08 03:32:47] INFO: 市场数据场连接正常:usfarm",
+    "[2025-08-08 03:32:47] INFO: 历史市场数据场连接正常:apachmds",
+    "[2025-08-08 03:32:47] INFO: 历史市场数据场连接正常:cashhmds",
+    "[2025-08-08 03:32:47] INFO: 历史市场数据场连接正常:ushmds",
+    "[2025-08-08 03:32:47] INFO: Sec-def数据场连接正常:secdefnj",
+    "[2025-08-08 03:32:47] [OK] IBKR连接建立成功",
+    "[2025-08-08 03:32:47] 开始IBKR功能测试...",
+    "[2025-08-08 03:32:47] 测试1: 请求账户数据...",
+    "[2025-08-08 03:32:47] 账户信息 - AvailableFunds: 1000191.90 AUD",
+    "[2025-08-08 03:32:47] 账户信息 - BuyingPower: 1000000.00 AUD",
+    "[2025-08-08 03:32:47] 账户信息 - TotalCashValue: 1000000.00 AUD",
+    "[2025-08-08 03:32:47] [OK] 账户数据下载完成: DUN374127",
+    "[2025-08-08 03:32:50] 测试2: 请求市场数据 (AAPL)...",
+    "[2025-08-08 03:32:51] ERROR [10089]: 请求的市场数据对于API来说需要额外订阅。点击“市场数据连接”对话框中的链接获取更多详情。:AAPL NASDAQ.NMS/TOP/ALL",
+    "[2025-08-08 03:32:53] 测试3: 模拟下单测试...",
+    "[2025-08-08 03:32:53] [OK] 订单创建测试成功 (未实际提交)",
+    "[2025-08-08 03:32:53] ERROR [300]: 无法使用tickerId找到EId：:1"
+  ]
+}

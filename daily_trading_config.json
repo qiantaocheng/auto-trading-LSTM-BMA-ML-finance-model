@@ -1,0 +1,52 @@
+{
+  "trading_schedule": {
+    "market_timezone": "US/Eastern",
+    "market_open_time": "09:30",
+    "pre_market_minutes": 30,
+    "trading_days": ["monday", "tuesday", "wednesday", "thursday", "friday"]
+  },
+  
+  "ibkr_connection": {
+    "host": "127.0.0.1",
+    "port": 4002,
+    "client_id": 50310,
+    "account": "c2dvdongg",
+    "timeout": 30
+  },
+  
+  "risk_management": {
+    "max_position_size": 0.08,
+    "max_total_risk": 0.80,
+    "stop_loss_pct": 0.03,
+    "take_profit_pct": 0.10,
+    "min_account_balance": 10000
+  },
+  
+  "bma_analysis": {
+    "num_stocks": 100,
+    "history_days": 252,
+    "top_stocks": 10,
+    "timeout": 1800
+  },
+  
+  "trading_strategy": {
+    "default_mode": "dry_run",
+    "score_threshold": 0.5,
+    "max_orders_per_day": 10,
+    "order_type": "MKT"
+  },
+  
+  "logging": {
+    "log_level": "INFO",
+    "log_file": "daily_trading.log",
+    "max_log_size": "10MB",
+    "backup_count": 5
+  },
+  
+  "notifications": {
+    "email_enabled": false,
+    "email_to": "",
+    "email_from": "",
+    "sms_enabled": false
+  }
+}

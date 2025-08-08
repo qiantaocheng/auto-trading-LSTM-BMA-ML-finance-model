@@ -1,0 +1,16 @@
+{
+  "tickers": [],
+  "timestamp": "2025-08-07T01:11:09.763266",
+  "original_count": 607,
+  "filtered_count": 0,
+  "filters": {
+    "min_market_cap": 500000000,
+    "min_volume": 500000,
+    "max_price": 500.0,
+    "min_price": 5.0,
+    "exclude_sectors": [
+      "Real Estate Investment Trusts"
+    ],
+    "include_sectors": null
+  }
+}

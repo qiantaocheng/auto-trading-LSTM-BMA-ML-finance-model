@@ -1,0 +1,32 @@
+[
+  {
+    "timestamp": "2025-08-06T05:11:56.228662",
+    "trigger_reason": "测试流程",
+    "old_allocation": {
+      "A": 0.5,
+      "B": 0.5
+    },
+    "new_allocation": {
+      "A": 0.5,
+      "B": 0.5
+    },
+    "regime_info": {
+      "timestamp": "2025-08-06T05:11:56.226667",
+      "regime_type": {
+        "is_trend": false,
+        "is_high_vol": false,
+        "description": "默认市况（数据获取失败）"
+      },
+      "indicators": {},
+      "allocation": {
+        "mean_reversion_weight": 0.5,
+        "trend_following_weight": 0.5
+      },
+      "error": "无法获取市场数据"
+    },
+    "performance_data": {},
+    "trades_executed": [],
+    "success": true,
+    "error_message": ""
+  }
+]

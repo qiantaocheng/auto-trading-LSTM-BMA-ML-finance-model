@@ -1,0 +1,16 @@
+{
+  "created_time": "2025-08-07T01:11:09.764268",
+  "description": "爬虫生成的默认股票池，用于BMA和LSTM模型训练",
+  "stock_count": 8,
+  "default_stock_pool": [
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "NFLX"
+  ],
+  "usage": "default pool for quantitative models"
+}

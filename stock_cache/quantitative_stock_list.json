@@ -1,0 +1,17 @@
+{
+  "generated_time": "2025-08-07T01:08:55.569128",
+  "stock_count": 10,
+  "stock_list": [
+    "AAPL",
+    "AMZN",
+    "AVGO",
+    "ABBV",
+    "BAC",
+    "BABA",
+    "AMD",
+    "AZN",
+    "ABT",
+    "AXP"
+  ],
+  "description": "用于量化模型的股票列表"
+}

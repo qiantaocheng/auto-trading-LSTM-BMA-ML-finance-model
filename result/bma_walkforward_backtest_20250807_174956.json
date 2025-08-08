@@ -1,0 +1,20 @@
+{
+  "backtest_results": {
+    "portfolio_values": [],
+    "portfolio_returns": [],
+    "positions_history": [],
+    "trades_history": [],
+    "model_performance": [],
+    "performance_metrics": {}
+  },
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "GOOGL"
+  ],
+  "start_date": "2023-01-01",
+  "end_date": "2025-08-07",
+  "total_return": 0,
+  "duration": 3.1933088302612305,
+  "message": "BMA滚动回测完成"
+}

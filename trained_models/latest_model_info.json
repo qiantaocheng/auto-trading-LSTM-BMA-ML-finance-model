@@ -1,0 +1,40 @@
+{
+  "lstm_feature_columns": [
+    "sma_5",
+    "sma_10",
+    "sma_20",
+    "ema_12",
+    "ema_26",
+    "rsi",
+    "macd",
+    "macd_signal",
+    "macd_histogram",
+    "bollinger_upper",
+    "bollinger_lower",
+    "bollinger_width",
+    "volume_sma_20",
+    "volume_ratio",
+    "volume_price_trend",
+    "money_flow",
+    "price_position",
+    "high_low_ratio",
+    "close_position",
+    "volatility_5",
+    "volatility_10",
+    "volatility_20",
+    "atr_14",
+    "momentum_5",
+    "momentum_10",
+    "trend_strength",
+    "trend_consistency",
+    "returns",
+    "log_returns"
+  ],
+  "lstm_window": 20,
+  "prediction_days": 5,
+  "model_score": {
+    "mean_r2": -2.0339660326499737e-05,
+    "std_r2": 1.1241947779085582e-05
+  },
+  "timestamp": "20250807_054035"
+}
