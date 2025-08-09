@@ -19,17 +19,18 @@ import schedule
 import time
 import threading
 import json
-from typing import List, Optional
+from typing import List, Optional, Dict
 from scipy.stats import spearmanr, entropy
 import statsmodels.api as sm
-from sklearn.model_selection import TimeSeriesSplit, cross_val_score, KFold
+from sklearn.model_selection import TimeSeriesSplit, KFold, GroupKFold
+from sklearn.model_selection import RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge, Lasso, ElasticNet
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.pipeline import Pipeline
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.impute import SimpleImputer
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -96,310 +97,63 @@ print("[BMA CNN] CNN模型已手动禁用，专注于传统机器学习模型")
 # 禁用警告
 warnings.filterwarnings('ignore')
 sns.set_style("whitegrid")
+# =============================
+# 专业回测/避免泄露：带Embargo的时间序列分割
+# =============================
+class PurgedTimeSeriesSplit:
+    """简单的时间序列分割，支持embargo（防止相邻泄露）。
+
+    参数
+    - n_splits: 折数
+    - embargo: 每次切分在验证集两侧留出的样本比例（0~0.2 常用）
+    """
+    def __init__(self, n_splits: int = 5, embargo: float = 0.01):
+        self.n_splits = max(2, int(n_splits))
+        self.embargo = max(0.0, float(embargo))
+
+    def split(self, X):
+        n_samples = len(X)
+        fold_size = n_samples // self.n_splits
+        for i in range(self.n_splits):
+            start_val = i * fold_size
+            end_val = n_samples if i == self.n_splits - 1 else (i + 1) * fold_size
+
+            # 计算embargo范围
+            emb = int(self.embargo * n_samples)
+            train_end = max(0, start_val - emb)
+            train_start = 0
+            # 训练集为 [0, train_end) 与 (end_val+emb, n)
+            val_idx = np.arange(start_val, end_val)
+            left_train = np.arange(train_start, train_end)
+            right_start = min(n_samples, end_val + emb)
+            right_train = np.arange(right_start, n_samples)
+            train_idx = np.concatenate([left_train, right_train])
+            yield train_idx, val_idx
 
 # 默认股票池（从GUI的完整默认股票池继承）
-ticker_list = [
-    'A',
-    'ADM',
-    'ACN',
-    'ADI',
-    'ABBV',
-    'ADBE',
-    'ABNB',
-    'ACGL',
-    'ABT',
-    'AAPL',
-    'ADP',
-    'AEP',
-    'ADSK',
-    'AEE',
-    'AES',
-    'AFL',
-    'AIG',
-    'AJG',
-    'AIZ',
-    'AKAM',
-    'ALB',
-    'AMAT',
-    'ALLE',
-    'ALL',
-    'ALGN',
-    'AMCR',
-    'AMD',
-    'AME',
-    'AMGN',
-    'AMT',
-    'ANET',
-    'AMZN',
-    'AON',
-    'AOS',
-    'APA',
-    'APD',
-    'APH',
-    'APTV',
-    'APO',
-    'ARE',
-    'ATO',
-    'AVB',
-    'AVY',
-    'AWK',
-    'AVGO',
-    'AXP',
-    'BABA',
-    'BF-B',
-    'BAC',
-    'BBY',
-    'BDX',
-    'BAX',
-    'BEN',
-    'BALL',
-    'BA',
-    'BLDR',
-    'BG',
-    'BKR',
-    'BK',
-    'BIDU',
-    'BIIB',
-    'BMY',
-    'BSX',
-    'BRO',
-    'BXP',
-    'C',
-    'BRK-B',
-    'CAG',
-    'BX',
-    'BR',
-    'CAH',
-    'CCL',
-    'CDNS',
-    'CARR',
-    'CBOE',
-    'CCI',
-    'CBRE',
-    'CB',
-    'CAT',
-    'CDW',
-    'CEG',
-    'CHD',
-    'CINF',
-    'CI',
-    'CHRW',
-    'CF',
-    'CL',
-    'CFG',
-    'CHTR',
-    'CMCSA',
-    'CLX',
-    'COP',
-    'CNP',
-    'CMS',
-    'CMG',
-    'COIN',
-    'CMI',
-    'CNC',
-    'COO',
-    'CME',
-    'COF',
-    'COR',
-    'CSCO',
-    'CRL',
-    'CRM',
-    'CPB',
-    'CRWD',
-    'CPRT',
-    'CSGP',
-    'CVS',
-    'CTAS',
-    'CVX',
-    'CTSH',
-    'CSX',
-    'CZR',
-    'CTRA',
-    'CTVA',
-    'D',
-    'DAL',
-    'DASH',
-    'DDOG',
-    'DAY',
-    'DELL',
-    'DG',
-    'DD',
-    'DECK',
-    'DGX',
-    'DHR',
-    'DLTR',
-    'DOC',
-    'DOCU',
-    'DHI',
-    'DIS',
-    'DOV',
-    'DOW',
-    'DRI',
-    'DXCM',
-    'EA',
-    'DPZ',
-    'EBAY',
-    'DTE',
-    'DUK',
-    'DVN',
-    'ECL',
-    'DVA',
-    'ED',
-    'EOG',
-    'EIX',
-    'ENPH',
-    'EL',
-    'EMR',
-    'ELV',
-    'EMN',
-    'EFX',
-    'EPAM',
-    'ES',
-    'EVRG',
-    'ETR',
-    'EQR',
-    'ETN',
-    'EQT',
-    'EW',
-    'EXR',
-    'EXE',
-    'EXPE',
-    'F',
-    'EXPD',
-    'FANG',
-    'EXC',
-    'FAST',
-    'FCX',
-    'FE',
-    'FDX',
-    'FI',
-    'FITB',
-    'FIS',
-    'FOX',
-    'FOXA',
-    'GDDY',
-    'GEHC',
-    'FTNT',
-    'GD',
-    'FTV',
-    'GEN',
-    'GE',
-    'FSLR',
-    'GILD',
-    'GIS',
-    'GL',
-    'GLW',
-    'GM',
-    'GOOG',
-    'GOOGL',
-    'GNRC',
-    'GPC',
-    'GPN',
-    'GRMN',
-    'HAL',
-    'HCA',
-    'HBAN',
-    'HAS',
-    'HD',
-    'HIG',
-    'HON',
-    'HOLX',
-    'HLT',
-    'HPQ',
-    'HST',
-    'HPE',
-    'HRL',
-    'HSIC',
-    'HUBB',
-    'HSY',
-    'ICE',
-    'IBM',
-    'HUM',
-    'IEX',
-    'IFF',
-    'HWM',
-    'INCY',
-    'INTC',
-    'IQV',
-    'IRM',
-    'ITW',
-    'IVZ',
-    'IR',
-    'IPG',
-    'INVH',
-    'ISRG',
-    'IT',
-    'IP',
-    'J',
-    'JBHT',
-    'JBL',
-    'JCI',
-    'JNJ',
-    'JD',
-    'JKHY',
-    'K',
-    'JPM',
-    'KDP',
-    'KEYS',
-    'KIM',
-    'KHC',
-    'KKR',
-    'KEY',
-    'KMB',
-    'KMI',
-    'KMX',
-    'KR',
-    'KO',
-    'KVUE',
-    'LEN',
-    'L',
-    'LDOS',
-    'LH',
-    'LHX',
-    'LIN',
-    'LULU',
-    'LMT',
-    'LNT',
-    'LKQ',
-    'LOW',
-    'LRCX',
-    'LVS',
-    'LUV',
-    'LW',
-    'MCHP',
-    'MAR',
-    'MCD',
-    'MAA',
-    'MAS',
-    'LYV',
-    'LYB',
-    'MET',
-    'MDT',
-    'MMC',
-    'MDLZ',
-    'MGM',
-    'MKC',
-    'MHK',
-    'MPC',
-    'MOS',
-    'MNST',
-    'MMM',
-    'MRNA',
-    'MO',
-    'MOH',
-    'MRK',
-    'MRVL',
-    'MS',
-    'MSI',
-    'MTCH',
-    'MU',
-    'NCLH',
-    'MTB',
-    'NDAQ',
-    'NET',
-    'NEM',
-    'NEE'
+= ["A", "AA", "AACB", "AACI", "AACT", "AAL", "AAMI", "AAOI", "AAON", "AAP", "AAPL", "AARD", "AAUC", "AB", "ABAT", "ABBV", "ABCB", "ABCL", "ABEO", "ABEV", "ABG", "ABL", "ABM", "ABNB", "ABSI", "ABT", "ABTS", "ABUS", "ABVC", "ABVX", "ACA", "ACAD", "ACB", "ACCO", "ACDC", "ACEL", "ACGL", "ACHC", "ACHR", "ACHV", "ACI", "ACIC", "ACIU", "ACIW", "ACLS", "ACLX", "ACM", "ACMR", "ACN", "ACNT", "ACOG", "ACRE", "ACT", "ACTG", "ACTU", "ACVA", "ACXP", "ADAG", "ADBE", "ADC", "ADCT", "ADEA", "ADI", "ADM", "ADMA", "ADNT", "ADP", "ADPT", "ADSE", "ADSK", "ADT", "ADTN", "ADUR", "ADUS", "ADVM", "AEBI", "AEE", "AEG", "AEHL", "AEHR", "AEIS", "AEM", "AEO", "AEP", "AER", "AES", "AESI", "AEVA", "AEYE", "AFCG", "AFG", "AFL", "AFRM", "AFYA", "AG", "AGCO", "AGD", "AGEN", "AGH", "AGI", "AGIO", "AGM", "AGNC", "AGO", "AGRO", "AGX", "AGYS", "AHCO", "AHH", "AHL", "AHR", "AI", "AIFF", "AIFU", "AIG", "AII", "AIM", "AIMD", "AIN", "AIOT", "AIP", "AIR", "AIRI", "AIRJ", "AIRO", "AIRS", "AISP", "AIT", "AIV", "AIZ", "AJG", "AKAM", "AKBA", "AKRO", "AL", "ALAB", "ALAR", "ALB", "ALBT", "ALC", "ALDF", "ALDX", "ALE", "ALEX", "ALF", "ALG", "ALGM", "ALGN", "ALGS", "ALGT", "ALHC", "ALIT", "ALK", "ALKS", "ALKT", "ALL", "ALLE", "ALLT", "ALLY", "ALM", "ALMS", "ALMU", "ALNT", "ALNY", "ALRM", "ALRS", "ALSN", "ALT", "ALTG", "ALTI", "ALTS", "ALUR", "ALV", "ALVO", "ALX", "ALZN", "AM", "AMAL", "AMAT", "AMBA", "AMBC", "AMBP", "AMBQ", "AMBR", "AMC", "AMCR", "AMCX", "AMD", "AME", "AMED", "AMG", "AMGN", "AMH", "AMKR", "AMLX", "AMN", "AMP", "AMPG", "AMPH", "AMPL", "AMPX", "AMPY", "AMR", "AMRC", "AMRK", "AMRN", "AMRX", "AMRZ", "AMSC", "AMSF", "AMST", "AMT", "AMTB", "AMTM", "AMTX", "AMWD", "AMWL", "AMX", "AMZE", "AMZN", "AN", "ANAB", "ANDE", "ANEB", "ANET", "ANF", "ANGH", "ANGI", "ANGO", "ANIK", "ANIP", "ANIX", "ANNX", "ANPA", "ANRO", "ANSC", "ANTA", "ANTE", "ANVS", "AOMR", "AON", "AORT", "AOS", "AOSL", "AOUT", "AP", "APA", "APAM", "APD", "APEI", "APG", "APGE", "APH", "API", "APLD", "APLE", "APLS", "APO", "APOG", "APP", "APPF", "APPN", "APPS", "APTV", "APVO", "AQN", "AQST", "AR", "ARAI", "ARCB", "ARCC", "ARCO", "ARCT", "ARDT", "ARDX", "ARE", "AREN", "ARES", "ARHS", "ARI", "ARIS", "ARKO", "ARLO", "ARLP", "ARM", "ARMK", "ARMN", "ARMP", "AROC", "ARQ", "ARQQ", "ARQT", "ARR", "ARRY", "ARTL", "ARTV", "ARVN", "ARW", "ARWR", "ARX", "AS", "ASA", "ASAN", "ASB", "ASC", "ASGN", "ASH", "ASIC", "ASIX", "ASLE", "ASM", "ASND", "ASO", "ASPI", "ASPN", "ASR", "ASST", "ASTE", "ASTH", "ASTI", "ASTL", "ASTS", "ASUR", "ASX", "ATAI", "ATAT", "ATEC", "ATEN", "ATEX", "ATGE", "ATHE", "ATHM", "ATHR", "ATI", "ATII", "ATKR", "ATLC", "ATLX", "ATMU", "ATNF", "ATO", "ATOM", "ATR", "ATRA", "ATRC", "ATRO", "ATS", "ATUS", "ATXS", "ATYR", "AU", "AUB", "AUDC", "AUGO", "AUID", "AUPH", "AUR", "AURA", "AUTL", "AVA", "AVAH", "AVAL", "AVAV", "AVB", "AVBC", "AVBP", "AVD", "AVDL", "AVDX", "AVGO", "AVIR", "AVNS", "AVNT", "AVNW", "AVO", "AVPT", "AVR", "AVT", "AVTR", "AVTX", "AVXL", "AVY", "AWI", "AWK", "AWR", "AX", "AXGN", "AXIN", "AXL", "AXP", "AXS", "AXSM", "AXTA", "AXTI", "AYI", "AYTU", "AZ", "AZN", "AZTA", "AZZ", "B", "BA", "BABA", "BAC", "BACC", "BACQ", "BAER", "BAH", "BAK", "BALL", "BALY", "BAM", "BANC", "BAND", "BANF", "BANR", "BAP", "BASE", "BATRA", "BATRK", "BAX", "BB", "BBAI", "BBAR", "BBCP", "BBD", "BBDC", "BBIO", "BBNX", "BBSI", "BBUC", "BBVA", "BBW", "BBWI", "BBY", "BC", "BCAL", "BCAX", "BCBP", "BCC", "BCE", "BCH", "BCO", "BCPC", "BCRX", "BCS", "BCSF", "BCYC", "BDC", "BDMD", "BDRX", "BDTX", "BDX", "BE", "BEAG", "BEAM", "BEEM", "BEEP", "BEKE", "BELFB", "BEN", "BEP", "BEPC", "BETR", "BF-A", "BF-B", "BFAM", "BFC", "BFH", "BFIN", "BFS", "BFST", "BG", "BGC", "BGL", "BGLC", "BGM", "BGS", "BGSF", "BHC", "BHE", "BHF", "BHFAP", "BHLB", "BHP", "BHR", "BHRB", "BHVN", "BIDU", "BIIB", "BILI", "BILL", "BIO", "BIOA", "BIOX", "BIP", "BIPC", "BIRD", "BIRK", "BJ", "BJRI", "BK", "BKD", "BKE", "BKH", "BKKT", "BKR", "BKSY", "BKTI", "BKU", "BKV", "BL", "BLBD", "BLBX", "BLCO", "BLD", "BLDE", "BLDR", "BLFS", "BLFY", "BLIV", "BLKB", "BLMN", "BLND", "BLNE", "BLRX", "BLUW", "BLX", "BLZE", "BMA", "BMBL", "BMGL", "BMHL", "BMI", "BMNR", "BMO", "BMR", "BMRA", "BMRC", "BMRN", "BMY", "BN", "BNC", "BNED", "BNGO", "BNL", "BNS", "BNTC", "BNTX", "BNZI", "BOC", "BOF", "BOH", "BOKF", "BOOM", "BOOT", "BORR", "BOSC", "BOW", "BOX", "BP", "BPOP", "BQ", "BR", "BRBR", "BRBS", "BRC", "BRDG", "BRFS", "BRK-B", "BRKL", "BRKR", "BRLS", "BRO", "BROS", "BRR", "BRSL", "BRSP", "BRX", "BRY", "BRZE", "BSAA", "BSAC", "BSBR", "BSET", "BSGM", "BSM", "BSX", "BSY", "BTAI", "BTBD", "BTBT", "BTCM", "BTCS", "BTCT", "BTDR", "BTE", "BTG", "BTI", "BTM", "BTMD", "BTSG", "BTU", "BUD", "BULL", "BUR", "BURL", "BUSE", "BV", "BVFL", "BVN", "BVS", "BWA", "BWB", "BWEN", "BWIN", "BWLP", "BWMN", "BWMX", "BWXT", "BX", "BXC", "BXP", "BY", "BYD", "BYND", "BYON", "BYRN", "BYSI", "BZ", "BZAI", "BZFD", "BZH", "BZUN", "C", "CAAP", "CABO", "CAC", "CACC", "CACI", "CADE", "CADL", "CAE", "CAEP", "CAG", "CAH", "CAI", "CAKE", "CAL", "CALC", "CALM", "CALX", "CAMT", "CANG", "CAPR", "CAR", "CARE", "CARG", "CARL", "CARR", "CARS", "CART", "CASH", "CASS", "CAT", "CATX", "CATY", "CAVA", "CB", "CBAN", "CBIO", "CBL", "CBLL", "CBNK", "CBOE", "CBRE", "CBRL", "CBSH", "CBT", "CBU", "CBZ", "CC", "CCAP", "CCB", "CCCC", "CCCS", "CCCX", "CCEP", "CCI", "CCIR", "CCIX", "CCJ", "CCK", "CCL", "CCLD", "CCNE", "CCOI", "CCRD", "CCRN", "CCS", "CCSI", "CCU", "CDE", "CDIO", "CDLR", "CDNA", "CDNS", "CDP", "CDRE", "CDRO", "CDTX", "CDW", "CDXS", "CDZI", "CE", "CECO", "CEG", "CELC", "CELH", "CELU", "CELZ", "CENT", "CENTA", "CENX", "CEP", "CEPO", "CEPT", "CEPU", "CERO", "CERT", "CEVA", "CF", "CFFN", "CFG", "CFLT", "CFR", "CG", "CGAU", "CGBD", "CGCT", "CGEM", "CGNT", "CGNX", "CGON", "CHA", "CHAC", "CHCO", "CHD", "CHDN", "CHE", "CHEF", "CHH", "CHKP", "CHMI", "CHPT", "CHRD", "CHRW", "CHT", "CHTR", "CHWY", "CHYM", "CI", "CIA", "CIB", "CIEN", "CIFR", "CIGI", "CIM", "CINF", "CING", "CINT", "CIO", "CION", "CIVB", "CIVI", "CL", "CLAR", "CLB", "CLBK", "CLBT", "CLCO", "CLDI", "CLDX", "CLF", "CLFD", "CLGN", "CLH", "CLLS", "CLMB", "CLMT", "CLNE", "CLNN", "CLOV", "CLPR", "CLPT", "CLRB", "CLRO", "CLS", "CLSK", "CLVT", "CLW", "CLX", "CM", "CMA", "CMBT", "CMC", "CMCL", "CMCO", "CMCSA", "CMDB", "CME", "CMG", "CMI", "CMP", "CMPO", "CMPR", "CMPS", "CMPX", "CMRC", "CMRE", "CMS", "CMTL", "CNA", "CNC", "CNCK", "CNDT", "CNEY", "CNH", "CNI", "CNK", "CNL", "CNM", "CNMD", "CNNE", "CNO", "CNOB", "CNP", "CNQ", "CNR", "CNS", "CNTA", "CNTB", "CNTY", "CNVS", "CNX", "CNXC", "CNXN", "COCO", "CODI", "COF", "COFS", "COGT", "COHR", "COHU", "COIN", "COKE", "COLB", "COLL", "COLM", "COMM", "COMP", "CON", "COO", "COOP", "COP", "COPL", "COR", "CORT", "CORZ", "COTY", "COUR", "COYA", "CP", "CPA", "CPAY", "CPB", "CPF", "CPIX", "CPK", "CPNG", "CPRI", "CPRT", "CPRX", "CPS", "CPSH", "CQP", "CR", "CRAI", "CRAQ", "CRBG", "CRBP", "CRC", "CRCL", "CRCT", "CRD-A", "CRDF", "CRDO", "CRE", "CRESY", "CREV", "CREX", "CRGO", "CRGX", "CRGY", "CRH", "CRI", "CRK", "CRL", "CRM", "CRMD", "CRML", "CRMT", "CRNC", "CRNX", "CRON", "CROX", "CRS", "CRSP", "CRSR", "CRTO", "CRUS", "CRVL", "CRVO", "CRVS", "CRWD", "CRWV", "CSAN", "CSCO", "CSGP", "CSGS", "CSIQ", "CSL", "CSR", "CSTL", "CSTM", "CSV", "CSW", "CSWC", "CSX", "CTAS", "CTEV", "CTGO", "CTKB", "CTLP", "CTMX", "CTNM", "CTO", "CTOS", "CTRA", "CTRI", "CTRM", "CTRN", "CTS", "CTSH", "CTVA", "CTW", "CUB", "CUBE", "CUBI", "CUK", "CUPR", "CURB", "CURI", "CURV", "CUZ", "CV", "CVAC", "CVBF", "CVCO", "CVE", "CVEO", "CVGW", "CVI", "CVLG", "CVLT", "CVM", "CVNA", "CVRX", "CVS", "CVX", "CW", "CWAN", "CWBC", "CWCO", "CWEN", "CWEN-A", "CWH", "CWK", "CWST", "CWT", "CX", "CXDO", "CXM", "CXT", "CXW", "CYBN", "CYBR", "CYCC", "CYD", "CYH", "CYN", "CYRX", "CYTK", "CZR", "CZWI", "D", "DAAQ", "DAC", "DAIC", "DAKT", "DAL", "DALN", "DAN", "DAO", "DAR", "DARE", "DASH", "DATS", "DAVA", "DAVE", "DAWN", "DAY", "DB", "DBD", "DBI", "DBRG", "DBX", "DC", "DCBO", "DCI", "DCO", "DCOM", "DCTH", "DD", "DDC", "DDI", "DDL", "DDOG", "DDS", "DEA", "DEC", "DECK", "DEFT", "DEI", "DELL", "DENN", "DEO", "DERM", "DEVS", "DFDV", "DFH", "DFIN", "DFSC", "DG", "DGICA", "DGII", "DGX", "DGXX", "DH", "DHI", "DHR", "DHT", "DHX", "DIBS", "DIN", "DINO", "DIOD", "DIS", "DJCO", "DJT", "DK", "DKL", "DKNG", "DKS", "DLB", "DLHC", "DLO", "DLTR", "DLX", "DLXY", "DMAC", "DMLP", "DMRC", "DMYY", "DNA", "DNB", "DNLI", "DNN", "DNOW", "DNTH", "DNUT", "DOC", "DOCN", "DOCS", "DOCU", "DOGZ", "DOLE", "DOMH", "DOMO", "DOOO", "DORM", "DOUG", "DOV", "DOW", "DOX", "DOYU", "DPRO", "DPZ", "DQ", "DRD", "DRDB", "DRH", "DRI", "DRS", "DRVN", "DSGN", "DSGR", "DSGX", "DSP", "DT", "DTE", "DTI", "DTIL", "DTM", "DTST", "DUK", "DUOL", "DUOT", "DV", "DVA", "DVAX", "DVN", "DVS", "DWTX", "DX", "DXC", "DXCM", "DXPE", "DXYZ", "DY", "DYN", "DYNX", "E", "EA", "EARN", "EAT", "EB", "EBAY", "EBC", "EBF", "EBMT", "EBR", "EBS", "EC", "ECC", "ECG", "ECL", "ECO", "ECOR", "ECPG", "ECVT", "ED", "EDBL", "EDIT", "EDN", "EDU", "EE", "EEFT", "EEX", "EFC", "EFSC", "EFX", "EFXT", "EG", "EGAN", "EGBN", "EGG", "EGO", "EGP", "EGY", "EH", "EHAB", "EHC", "EHTH", "EIC", "EIG", "EIX", "EKSO", "EL", "ELAN", "ELDN", "ELF", "ELMD", "ELME", "ELP", "ELPW", "ELS", "ELV", "ELVA", "ELVN", "ELWS", "EMA", "EMBC", "EMN", "EMP", "EMPD", "EMPG", "EMR", "EMX", "ENB", "ENGN", "ENGS", "ENIC", "ENOV", "ENPH", "ENR", "ENS", "ENSG", "ENTA", "ENTG", "ENVA", "ENVX", "EOG", "EOLS", "EOSE", "EPAC", "EPAM", "EPC", "EPD", "EPM", "EPR", "EPSM", "EPSN", "EQBK", "EQH", "EQNR", "EQR", "EQT", "EQV", "EQX", "ERIC", "ERIE", "ERII", "ERJ", "ERO", "ES", "ESAB", "ESE", "ESGL", "ESI", "ESLT", "ESNT", "ESOA", "ESQ", "ESTA", "ESTC", "ET", "ETD", "ETN", "ETNB", "ETON", "ETOR", "ETR", "ETSY", "EU", "EUDA", "EVAX", "EVC", "EVCM", "EVER", "EVEX", "EVGO", "EVH", "EVLV", "EVO", "EVOK", "EVR", "EVRG", "EVTC", "EVTL", "EW", "EWBC", "EWCZ", "EWTX", "EXAS", "EXC", "EXE", "EXEL", "EXK", "EXLS", "EXOD", "EXP", "EXPD", "EXPE", "EXPI", "EXPO", "EXR", "EXTR", "EYE", "EYPT", "EZPW", "F", "FA",
+ "FACT", "FAF", "FANG", "FAST", "FAT", "FATN", "FBIN", "FBK", "FBLA", 
+ "FBNC", "FBP", "FBRX", "FC", "FCBC", "FCEL", "FCF", "FCFS", "FCN", "FCX", "FDMT",
+  "FDP", "FDS", "FDUS", "FDX", "FE", "FEIM", "FELE", "FENC", "FER", "FERA", "FERG", "FET", "FF", 
+  "FFAI", "FFBC", "FFIC", "FFIN", "FFIV", "FFWM", "FG", "FGI", "FHB", "FHI", "FHN", "FHTX", "FI", "FIBK", "FIEE", "FIG", "FIGS", 
+  "FIHL", "FINV", "FIP", "FIS", "FISI", "FITB", "FIVE", "FIVN", "FIZZ", "FL", "FLD", "FLEX", "FLG", "FLGT", "FLL", "FLNC", "FLNG", "FLO", "FLOC",
+   "FLR", "FLS", "FLUT", "FLWS", "FLX", "FLY", "FLYE", "FLYW", "FLYY", "FMBH", "FMC", "FMFC", "FMNB", "FMS", "FMST", 
+   "FMX", "FN", "FNB", "FND", "FNF", "FNGD", "FNKO", "FNV", "FOA", "FOLD", "FOR", "FORM", "FORR", "FOUR", "FOX", "FOXA", 
+   "FOXF", "FPH", "FPI", "FRGE", "FRHC", "FRME", "FRO", "FROG", "FRPT", "FRSH", "FRST", "FSCO", "FSK", "FSLR", "FSLY",
+    "FSM", "FSS", "FSUN", "FSV", "FTAI", "FTCI", "FTDR", "FTEK", "FTI", "FTK", "FTNT", "FTRE", "FTS", "FTV", "FUBO", "FUFU", "FUL", "FULC", "FULT", "FUN", "FUTU", "FVR", "FVRR", "FWONA", "FWONK", "FWRD", "FWRG", "FYBR", "G",
+     "GABC", "GAIA", "GAIN", "GALT", "GAMB", "GAP", "GASS", "GATX", "GAUZ", "GB", "GBCI", "GBDC", "GBFH", "GBIO", "GBTG", "GBX", "GCI", "GCL", "GCMG", "GCO", "GCT", "GD", "GDC", "GDDY", "GDEN", "GDOT", "GDRX", "GDS", 
+     "GDYN", "GE", "GEF", "GEHC", "GEL", "GEN", "GENI", "GENK", "GEO", "GEOS", "GES", "GFF", "GFI", "GFL", "GFR", "GFS", "GGAL", "GGB", "GGG", "GH", "GHLD", "GHM", "GHRS", "GIB", "GIC", "GIG", "GIII", "GIL", "GILD", "GILT", "GIS", "GITS", 
+     "GKOS", "GL", "GLAD", "GLBE", "GLD", "GLDD", "GLIBA", "GLIBK", "GLNG", "GLOB", "GLP", "GLPG", "GLPI", "GLRE", "GLSI", "GLUE", "GLW", "GLXY", "GM", "GMAB", "GME", "GMED", "GMRE", "GMS", "GNE", "GNK", "GNL", "GNLX", "GNRC", "GNTX", "GNTY", "GNW", "GO", "GOCO", "GOGL", "GOGO", "GOLF", "GOOD", "GOOG", "GOOGL", "GOOS", "GORV", "GOTU", "GPAT", 
+     "GPC", "GPCR", "GPI", "GPK", "GPN", "GPOR", "GPRE", "GPRK", "GRAB", "GRAL", "GRAN", "GRBK", "GRC", "GRCE", "GRDN", "GRFS", "GRMN", "GRND", "GRNT", "GROY", "GRPN", "GRRR", "GSAT", "GSBC", "GSBD", "GSHD", "GSIT", "GSK", "GSL", "GSM", "GSRT", "GT", "GTE", "GTEN", "GTERA", "GTES", "GTLB", "GTLS", "GTM", "GTN", "GTX", "GTY", "GVA", "GWRE", "GWRS", "GXO", "GYRE", "H", "HAE", "HAFC", "HAFN", "HAL", "HALO", "HAS", "HASI", "HAYW", "HBAN", "HBCP", "HBI", "HBM", "HBNC", "HCA", "HCAT", "HCC", "HCHL", "HCI", "HCKT", "HCM", "HCSG", "HCTI", "HCWB", "HD", "HDB", "HDSN", "HE", "HEI", "HEI-A", "HELE", "HEPS", "HESM", "HFFG", "HFWA", "HG", "HGTY", "HGV", "HHH", "HI", "HIFS", "HIG", "HII", "HIMS", "HIMX",
+     "HIPO", "HIT", "HITI", "HIVE", "HIW", "HL", "HLF", "HLI", "HLIO", "HLIT", "HLLY", "HLMN", "HLN", "HLNE", "HLT", "HLVX", "HLX", "HLXB", "HMC", "HMN", "HMST", "HMY", "HNGE", "HNI", "HNRG", "HNST", "HOFT", "HOG", "HOLO", "HOLX", "HOMB", "HON", "HOND", "HONE", "HOOD", "HOPE", "HOUS", "HOV", "HP", "HPE", "HPK", "HPP", "HPQ", "HQH", "HQL", "HQY", "HRB", "HRI", "HRL", "HRMY", "HROW", "HRTG", "HRZN", "HSAI", "HSBC", "HSCS", "HSHP", "HSIC", "HSII", "HST", "HSTM", "HSY", "HTBK", "HTCO", "HTGC", "HTH", "HTHT", "HTLD", "HTO", "HTOO", "HTZ", "HUBB", "HUBC", "HUBG", "HUBS", "HUHU", "HUM", "HUMA", "HUN", "HURA", "HURN", "HUSA", "HUT", "HUYA", "HVII", "HVT", "HWC", "HWKN", "HWM", 
+     "HXL", "HY", "HYAC", "HYMC", "HYPD", "HZO", "IAC", "IAG", "IART", "IAS", "IBCP", "IBEX", "IBKR", "IBM", "IBN", "IBOC", "IBP", "IBRX", "IBTA", "ICE", "ICFI", "ICG", "ICHR", "ICL", "ICLR", "ICUI", "IDA", "IDAI", "IDCC", "IDN", "IDR", "IDT", "IDYA", "IE", "IEP", "IESC", "IEX", "IFF", "IFS", "IGIC", "IHG", "IHS", "III", "IIIN", "IIIV", "IIPR", "ILMN", "IMAB", "IMAX", "IMCC", "IMCR", "IMDX", "IMKTA", "IMMR", "IMMX", "IMNM", "IMNN", "IMO", "IMPP", "IMRX", "IMTX", "IMVT", "IMXI", "INAB", "INAC", "INBK", "INBX", "INCY", "INDB", "INDI", "INDO", "INDP", "INDV", "INFA", "INFU", "INFY", "ING", "INGM", "INGN", "INGR", "INKT", "INMB", "INMD", "INN", "INOD", "INR", "INSE", "INSG", "INSM", "INSP", "INSW", "INTA", "INTC", "INTR", "INUV", "INV", "INVA", "INVE", "INVH", "INVX", "IONQ", "IONS", "IOSP", "IOT", "IOVA", "IP", "IPA", "IPAR", "IPDN", "IPG", "IPGP", "IPI", "IPX", "IQST", "IQV", "IR", "IRBT", "IRDM", "IREN", "IRM", "IRMD", "IROH", "IRON", "IRS", "IRTC", "ISPR", "ISRG", "ISSC", "IT", "ITGR", "ITIC", "ITOS", "ITRI", "ITRN", "ITT", "ITUB", "ITW", "IVR", "IVZ", "IX", "IZEA", "J", "JACK", "JACS", "JAKK", "JAMF", "JANX", "JAZZ", "JBGS", "JBHT", "JBI", "JBIO", "JBL", "JBLU", "JBS", "JBSS", "JBTM", "JCAP", "JCI", "JD", "JEF", "JELD", "JEM", "JENA", "JFIN", "JHG", "JHX", "JILL", "JJSF", "JKHY", "JKS", "JLHL", "JLL", "JMIA", "JNJ", "JOBY", "JOE", "JOUT", "JOYY", "JPM", "JRSH", "JRVR", "JSPR", "JTAI", "JVA", "JXN", "JYNT", "K", "KAI", "KALA", "KALU", 
+     "KALV", "KAR", "KARO", "KB", "KBDC", "KBH", "KBR", "KC", "KCHV", "KD", "KDP", "KE", "KELYA", "KEP", "KEX", "KEY", "KEYS", "KFII", "KFRC", "KFS", "KFY", "KGC", "KGEI", "KGS", "KHC", "KIDS", "KIM", "KINS", "KKR", "KLC", "KLG", "KLIC", "KLRS", "KMB", "KMDA", "KMI", "KMPR", "KMT", "KMTS", "KMX", "KN", "KNF", "KNOP", "KNSA", "KNSL", "KNTK", "KNW", "KNX", "KO", "KOD", "KODK", "KOF", "KOP", "KOSS", "KPRX", "KPTI", "KR", "KRC", "KRMD", "KRMN", "KRNT", "KRNY", "KRO", "KROS", "KRP", "KRRO", "KRT", "KRUS", "KRYS", "KSCP", "KSPI", "KSS", "KT", "KTB", "KTOS", "KULR", "KURA", "KVUE", "KVYO", "KW", "KWM", "KWR", "KYMR", "KYTX", "KZIA", "L", "LAC", "LAD", "LADR", "LAES", "LAKE", "LAMR", "LAND", "LANV", "LAR", "LASE", "LASR", "LAUR", "LAW", "LAWR", "LAZ", "LAZR", "LB", "LBRDA", "LBRDK", "LBRT", "LBTYA", "LBTYK", "LC", "LCCC", "LCFY", "LCID", "LCII", "LCUT", "LDOS", "LE", "LEA", "LECO", "LEG", "LEGH", "LEGN", "LEN", "LENZ", "LEO", "LEU", "LEVI", "LFCR", "LFMD", "LFST", "LFUS", "LFVN", "LGCY", "LGIH", "LGND", "LH", "LHAI", "LHSW", "LHX", "LI", "LIDR", "LIF", "LILA", "LILAK", "LIMN", "LIN", "LINC", "LIND", "LINE", "LION", "LITE", "LITM", "LIVE", "LIVN", "LIXT", "LKFN", "LKQ", "LLYVA", "LLYVK", "LMAT", "LMB", "LMND", "LMNR", "LMT", "LNC", "LNG", "LNN", "LNSR", "LNT", "LNTH", "LNW", "LOAR", "LOB", "LOCO", "LODE", "LOGI", "LOKV", "LOMA", "LOPE", "LOT", "LOVE", "LOW", "LPAA", "LPBB", "LPCN", "LPG", "LPL", "LPLA", "LPRO", "LPTH", "LPX", "LQDA", "LQDT", "LRCX", "LRMR", "LRN", "LSCC", "LSE", "LSPD", "LSTR", "LTBR", "LTC", "LTH", "LTM", "LTRN", "LTRX", "LU", "LUCK", "LULU", "LUMN", "LUNR", "LUV", "LUXE", "LVLU", "LVS", "LVWR", "LW", "LWAY", "LWLG", "LX", "LXEH", "LXEO", "LXFR", "LXU", "LYB", "LYEL", "LYFT", "LYG", "LYRA", "LYTS", "LYV", "LZ", "LZB", "LZM", "LZMH", "M", "MAA", "MAAS", "MAC", "MACI", "MAG", "MAGN", "MAIN", "MAMA", "MAMK", "MAN", "MANH", "MANU", "MAR", "MARA", "MAS", "MASI", "MASS", "MAT", "MATH", "MATV", "MATW", "MATX", "MAX", "MAXN", "MAZE", "MB", "MBAV", "MBC", "MBI", "MBIN", "MBLY",
+      "MBOT", "MBUU", "MBWM", "MBX", "MC", "MCB", "MCD", "MCFT", "MCHP", "MCRB", "MCRI", "MCRP", "MCS", "MCVT", "MCW", "MCY", "MD", "MDAI", "MDB", "MDCX", "MDGL", "MDLZ", "MDT", "MDU", "MDV", "MDWD", "MDXG", "MDXH", "MEC", "MED", "MEDP", "MEG", "MEI", "MEIP", "MENS", "MEOH", "MERC", "MESO", "MET", "METC", "METCB", "MFA", "MFC", "MFG", "MFH", "MFI", "MFIC", "MFIN", "MG", "MGA", "MGEE", "MGIC", "MGM", "MGNI", "MGPI", "MGRC", "MGRM", "MGRT", "MGTX", "MGY", "MH", "MHK", "MHO", "MIDD", "MIMI", "MIND", "MIR", "MIRM", "MITK", "MKC", "MKSI", "MKTX", "MLAB", "MLCO", "MLEC", "MLGO", "MLI", "MLKN", "MLNK", "MLR", "MLTX", "MLYS", "MMC", "MMI", "MMM", "MMS", "MMSI", "MMYT", "MNDY", "MNKD", "MNMD", "MNR", "MNRO", "MNSO", "MNST", "MNTN", "MO", "MOB", "MOD", "MODG", "MODV", "MOFG", "MOG-A", "MOH", "MOMO", "MORN", "MOS", "MOV", "MP", "MPAA", "MPB", "MPC", "MPLX", "MPTI", "MPU", "MQ", "MRAM", "MRBK", "MRC", "MRCC", "MRCY", "MRK", "MRNA", "MRP", "MRSN", "MRT", "MRTN", "MRUS", "MRVI", "MRVL", "MRX", "MS", "MSA", "MSBI", "MSEX", "MSGE", "MSGM", "MSGS", "MSGY", "MSI", "MSM", "MSTR", "MT", "MTA", "MTAL", "MTB", "MTCH", "MTDR", "MTEK", "MTEN", "MTG", "MTH", "MTLS", "MTN", "MTRN", "MTRX", "MTSI", "MTSR", "MTUS", "MTW", "MTX", "MTZ", "MU", "MUFG", "MUR", "MUSA", "MUX", "MVBF", "MVST", "MWA", "MX", "MXL", "MYE", "MYFW", "MYGN", "MYRG", "MZTI", "NA", "NAAS", "NABL", "NAGE", "NAKA", "NAMM", "NAMS", "NAT", "NATH", "NATL", "NATR", "NAVI", "NB", "NBBK", "NBHC", "NBIS", "NBIX", "NBN", "NBR", "NBTB", "NCDL", "NCLH", "NCMI", "NCNO", "NCPL", "NCT", "NCTY", "NDAQ", "NDSN", "NE", "NEE", "NEGG", "NEM", "NEO", "NEOG", "NEON", "NEOV", "NESR", "NET", "NETD", "NEWT", "NEXM", "NEXN", "NEXT", "NFBK", "NFE", "NFG", "NG", "NGD", "NGG", "NGL", "NGNE", "NGS", "NGVC", "NGVT", "NHC", "NHI", "NHIC", "NI", "NIC", "NICE", "NIO", "NIQ", "NISN", "NIU", "NJR", "NKE", "NKTR", "NLOP", "NLSP", "NLY", "NMAX", "NMFC", "NMIH", "NMM", "NMR", "NMRK", "NN", "NNBR", "NNE", "NNI", "NNN", "NNNN", "NNOX", "NOA", "NOAH", "NOG", "NOK", "NOMD", "NOV", "NOVT", "NPAC", "NPB", "NPCE", "NPK", "NPKI", "NPO", "NPWR", "NRC", "NRDS", "NRG", "NRIM", "NRIX", "NRXP", "NRXS", "NSC", "NSIT", "NSP", "NSPR", "NSSC", "NTAP", "NTB", "NTCT", "NTES", "NTGR", "NTHI", "NTLA", "NTNX", "NTR", "NTRA", "NTRB", "NTST", "NU", "NUE", "NUKK", "NUS", "NUTX", "NUVB", "NUVL", "NUWE", "NVAX", "NVCR", "NVCT", "NVDA", "NVEC", "NVGS", "NVMI", "NVNO", "NVO", "NVRI", "NVS", 
+  "NVST", "NVT", "NVTS", "NWBI", "NWE", "NWG", "NWL", "NWN", "NWPX", "NWS", "NWSA", "NX", "NXE", "NXP", "NXPI", "NXST", "NXT", "NXTC", "NYT", "NYXH", "O", "OACC", "OBDC", "OBE", "OBIO", "OBK", "OBLG", "OBT", "OC", "OCC", "OCCI", "OCFC", "OCFT", "OCSL", "OCUL", "ODC", "ODD", "ODFL", "ODP", "ODV", "OEC", "OFG", "OFIX", "OGE", "OGN", "OGS", "OHI", "OI", "OII", "OIS", "OKE", "OKLO", "OKTA", "OKUR", "OKYO", "OLED", "OLLI", "OLMA", "OLN", "OLO", "OLP", "OM", "OMAB", "OMC", "OMCL", "OMDA", "OMER", "OMF", "OMI", "OMSE", "ON", "ONB", "ONC", "ONDS", "ONEG", "ONEW", "ONL", "ONON", "ONTF", "ONTO", "OOMA", "OPAL", "OPBK", "OPCH", "OPFI", "OPRA", "OPRT", "OPRX", "OPXS", "OPY", "OR", "ORA", "ORC", "ORCL", "ORGO", "ORI", "ORIC", "ORKA", "ORLA", "ORLY", "ORMP", "ORN", "ORRF", "OS", "OSBC", "OSCR", "OSIS", "OSK", "OSPN", "OSS", "OSUR", "OSW", "OTEX", "OTF", "OTIS", "OTLY", "OTTR", "OUST", "OUT", "OVV", "OWL", "OWLT", "OXLC", "OXM", "OXSQ", "OXY", "OYSE", "OZK", "PAA", "PAAS", "PAC", "PACK", "PACS", "PAG", "PAGP", "PAGS", "PAHC", "PAL", "PAM", "PANL", "PANW", "PAR", "PARR", "PATH", "PATK", "PAX", "PAY", "PAYC", "PAYO", "PAYS", "PAYX", "PB", "PBA", "PBF", "PBH", "PBI", "PBPB", "PBR", "PBR-A", "PBYI", "PC", "PCAP", "PCAR", "PCG", "PCH", "PCOR", "PCRX", "PCT", "PCTY", "PCVX", "PD", "PDD", "PDEX", "PDFS", "PDS", "PDYN", "PEBO", "PECO", "PEG", "PEGA", "PEN", "PENG", "PENN", "PEP", "PERI", "PESI", "PETS", "PEW", "PFBC", "PFE", "PFG", "PFGC", "PFLT", "PFS", "PFSI", "PG", "PGC", "PGNY", "PGR", "PGRE", "PGY", "PHAT", "PHG", "PHI", "PHIN", "PHIO", "PHLT", "PHM", "PHOE", "PHR", "PHUN", "PHVS", "PI", "PII", "PINC", "PINS", "PIPR", "PJT", "PK", "PKE", "PKG", "PKX", "PL", "PLAB", "PLAY", "PLCE", "PLD", "PLL", "PLMR", "PLNT", "PLOW", "PLPC", "PLSE", "PLTK", "PLTR", "PLUS", "PLXS", "PLYM", "PM", "PMTR", "PMTS", "PN", "PNC", "PNFP", "PNNT", "PNR", "PNRG", "PNTG", "PNW", "PODD", "POET", "PONY", "POOL", "POR", "POST", "POWI", "POWL", "PPBI", "PPBT", "PPC", "PPG", "PPIH", "PPL", "PPSI", "PPTA", "PR", "PRA", "PRAA", "PRAX", "PRCH", "PRCT", "PRDO", "PRE", "PRG", "PRGO", "PRGS", "PRI", "PRIM", "PRK", "PRKS", "PRLB", "PRM", "PRMB", "PRME", "PRO", "PROK", "PROP", "PRQR", "PRSU", "PRTA", "PRTG", "PRTH", "PRU", "PRVA", "PSA", "PSEC", "PSFE", "PSIX", "PSKY", "PSMT", "PSN", "PSNL", "PSO", "PSQH", "PSTG", "PSX", "PTC", "PTCT", "PTEN", "PTGX", "PTHS", "PTLO", "PTON", "PUBM", "PUK", "PUMP", "PVBC", "PVH", "PVLA", "PWP", "PWR", "PX", "PXLW", "PYPD", "PYPL", "PZZA", "QBTS", "QCOM", "QCRH", "QD", "QDEL", "QFIN", "QGEN", "QIPT", "QLYS", "QMCO", "QMMM", "QNST", "QNTM", "QRHC", "QRVO", "QS", "QSEA", "QSG", "QSR", "QTRX", "QTWO", "QUAD", "QUBT", "QUIK", "QURE", "QVCGA", "QXO", "R", "RAAQ", "RAC", "RACE", "RAIL", "RAL", "RAMP", "RAPP", "RAPT", "RARE", "RAY", "RBA", "RBB", "RBBN", "RBC", "RBCAA", "RBLX", "RBRK", "RC", "RCAT", "RCEL", "RCI", "RCKT", "RCKY", "RCL", "RCMT", "RCON", "RCT", 
+    "RCUS", "RDAG", "RDAGU", "RDCM", "RDDT", "RDN", "RDNT", "RDVT", "RDW", "RDWR", "RDY", "REAL", "REAX", "REBN", "REFI", "REG", "RELX", "RELY", "RENT", "REPL", "REPX", "RERE", "RES", "RETO", "REVG", "REX", "REXR", "REYN", "REZI", "RF", "RFIL", "RGA", "RGC", "RGEN", "RGLD", "RGNX", "RGP", "RGR", "RGTI", "RH", "RHI", "RHLD", "RHP", "RICK", "RIG", "RIGL", "RILY", "RIME", "RIO", "RIOT", "RITM", "RITR", "RIVN", "RJF", "RKLB", "RKT", "RL", "RLAY", "RLGT", "RLI", "RLX", "RMAX", "RMBI", "RMBL", "RMBS", "RMD", "RMNI", "RMR", "RMSG", "RNA", "RNAC", "RNAZ", "RNG", "RNGR", "RNR", "RNST", "RNW", "ROAD", "ROCK", "ROG", "ROIV", "ROK", "ROKU", "ROL", "ROLR", "ROMA", "ROOT", "ROST", "RPAY", "RPD", "RPID", "RPM", "RPRX", "RPT", "RRC", "RRGB", "RRR", "RRX", "RS", "RSG", "RSI", "RSKD", "RSLS", "RSVR", "RTAC", "RTO", "RTX", "RUBI", "RUM", "RUN", "RUSHA", "RUSHB", "RVLV", "RVMD", "RVSB", "RVTY", "RWAY", "RXO", "RXRX", "RXST", "RY", "RYAAY", "RYAM", "RYAN", "RYI", "RYN", "RYTM", "RZB", "RZLT", "RZLV", "S", "SA", "SABS", "SAFE", "SAFT", "SAGT", "SAH", "SAIA", "SAIC", "SAIL", "SAM", "SAMG", "SAN", "SANA", "SAND", "SANM", "SAP", "SAR", "SARO", "SATL", "SATS", "SAVA", "SB", "SBAC", "SBC", "SBCF", "SBET", "SBGI", "SBH", "SBLK", "SBRA", "SBS", "SBSI", "SBSW", "SBUX", "SBXD", "SCAG", "SCCO", "SCHL", "SCHW", "SCI", "SCL", "SCLX", "SCM", "SCNX", "SCPH", "SCS", "SCSC", "SCVL", "SD", "SDA", "SDGR", "SDHC", "SDHI", "SDM", "SDRL", "SE", "SEAT", "SEDG", "SEE", "SEG", "SEI", "SEIC", "SEM", "SEMR", "SENEA", "SEPN", "SERA", "SERV", "SEZL", "SF", "SFBS", "SFD", "SFIX", "SFL", "SFM", "SFNC", "SG", "SGHC", "SGHT", "SGI", "SGML", "SGMT", "SGRY", "SHAK", "SHBI", "SHC", "SHCO", "SHEL", "SHEN", "SHG", "SHIP", "SHLS", "SHO", "SHOO", "SHOP", "SHW", "SI", "SIBN", "SIEB", "SIFY", "SIG", "SIGA", "SIGI", "SII", "SIMO", "SINT", "SION", "SIRI", "SITC", "SITE", "SITM", "SJM", "SKE", "SKLZ", "SKM", "SKT", "SKWD", "SKX", "SKY", "SKYE", "SKYH", "SKYT", "SKYW", "SLAB", "SLB", "SLDB", "SLDE", "SLDP", "SLF", "SLG", "SLGN", "SLI", "SLM", "SLN", "SLND", "SLNO", "SLP", "SLRC", "SLSN", "SLVM", "SM", "SMA", "SMBK", "SMC", "SMCI", "SMFG", "SMG", "SMHI", "SMLR", "SMMT", "SMP", "SMPL", "SMR", "SMTC", "SMWB", "SMX", "SN", "SNA", "SNAP", "SNBR", "SNCR", "SNCY", "SNDK", "SNDR", "SNDX", "SNES", "SNEX", "SNFCA", "SNGX", "SNN", "SNOW", "SNRE", "SNT", "SNV", "SNWV", "SNX", "SNY", "SNYR", "SO", "SOBO", "SOC", "SOFI", "SOGP", "SOHU", "SOLV", "SON", "SOND", "SONN", "SONO", "SONY", "SOPH", "SORA", "SOS", "SOUL", "SOUN", "SPAI", "SPB", "SPCB", "SPCE", "SPG", "SPH", "SPHR", "SPIR", "SPKL", "SPNS", "SPNT", "SPOK", "SPR", "SPRO", "SPRY", "SPSC", "SPT", "SPTN", "SPWH", "SPXC", "SQM", "SR", "SRAD", "SRBK", "SRCE", "SRDX", "SRE", "SRFM", "SRG", "SRI", "SRPT", "SRRK", "SRTS", "SSB", "SSD", "SSII", "SSL", "SSNC", "SSP", "SSRM", "SSSS", "SST", "SSTI", "SSTK", "SSYS", "ST", "STAA", "STAG", "STBA", "STC", "STE", "STEL", "STEM", "STEP", "STFS", "STGW", "STHO", "STI", "STIM", "STKL", "STKS", "STLA", "STLD", "STM", "STN", "STNE", "STNG", "STOK", "STR", "STRA", "STRD", "STRL", 
+    "STRM", "STRT", "STRZ", "STSS", "STT", "STVN", "STX", "STXS", "STZ", "SU", "SUI", "SUN", "SUPN", "SUPV", "SUPX", "SURG", "SUZ", "SVCO", "SVM", "SVRA", "SVV", "SW", "SWBI", "SWIM", "SWIN", "SWK", "SWKS", "SWX", "SXC", "SXI", "SXT", "SY", "SYBT", "SYF", "SYK", "SYM", "SYNA", "SYRE", "SYTA", "SYY", "SZZL", "T", "TAC", "TACH", "TACO", "TAK", "TAL", "TALK", "TALO", "TAOX", "TAP", "TARA", "TARS", "TASK", "TATT", "TBB", "TBBB", "TBBK", "TBCH", "TBI", "TBLA", "TBPH", "TBRG", "TCBI", "TCBK", "TCBX", "TCMD", "TCOM", "TCPC", "TD", "TDC", "TDIC", "TDOC", "TDS", "TDUP", "TDW", "TEAM", "TECH", "TECK", "TECX", "TEF", "TEL", "TEM", "TEN", "TENB", "TEO", "TER", "TERN", "TEVA", "TEX", "TFC", "TFII", "TFIN", "TFPM", "TFSL", "TFX", "TG", "TGB", "TGE", "TGEN", "TGLS", "TGNA", "TGS", "TGT", "TGTX", "TH", "THC", "THFF", "THG", "THO", "THR", "THRM", "THRY", "THS", "THTX", "TIC", "TIGO", "TIGR", "TIL", "TILE", "TIMB", "TIPT", "TITN", "TIXT", "TJX", "TK", "TKC", "TKNO", "TKO", "TKR", "TLK", "TLN", "TLS", "TLSA", "TLSI", "TM", "TMC", "TMCI", "TMDX", "TME", "TMHC", "TMO", "TMUS", "TNC", "TNDM", "TNET", "TNGX", "TNK", "TNL", "TNXP", "TOI", "TOL", "TOPS", "TORO", "TOST", "TOWN", "TPB", "TPC", "TPCS", "TPG", "TPH", "TPR", "TPST", "TPVG", "TR", "TRAK", "TRC", "TRDA", "TREE", "TREX", "TRGP", "TRI", "TRIN", "TRIP", "TRMB", "TRMD", "TRML", "TRN", "TRNO", "TRNR", "TRNS", "TRON", "TROW", "TROX", "TRP", "TRS", "TRU", "TRUE", "TRUG", "TRUP", "TRV", "TRVG", "TRVI", "TS", "TSAT", "TSCO", "TSE", "TSEM", "TSHA", "TSLA", "TSLX", "TSM", "TSN", "TSQ", "TSSI", "TT", "TTAM", "TTAN", "TTC", "TTD", "TTE", "TTEC", "TTEK", "TTGT", "TTI", "TTMI", "TTSH", "TTWO", "TU", "TUSK", "TUYA", "TV", "TVA", "TVAI", "TVRD", "TVTX", "TW", "TWFG", "TWI", "TWIN", "TWLO", "TWNP", "TWO", "TWST", "TX", "TXG", "TXN", "TXNM", "TXO", "TXRH", "TXT", "TYG", "TYRA", "TZOO", "TZUP", "U", "UA", "UAA", "UAL", "UAMY", "UAVS", "UBER", "UBFO", "UBS", "UBSI", "UCAR", "UCB", "UCL", "UCTT", "UDMY", "UDR", "UE", "UEC", "UFCS", "UFG", "UFPI", "UFPT", "UGI", "UGP", "UHAL", "UHAL-B", "UHG", "UHS", "UI", "UIS", "UL", "ULBI", "ULCC", "ULS", "ULY", "UMAC", "UMBF", "UMC", "UMH", "UNCY", "UNF", "UNFI", "UNH", "UNIT", "UNM", "UNP", "UNTY", "UPB", "UPBD", "UPS", "UPST", "UPWK", "UPXI", "URBN", "URGN", "UROY", "USAC", "USAR", "USAU", "USB", "USFD", "USLM", "USM", "USNA", "USPH", "UTHR", "UTI", "UTL", "UTZ", "UUUU", "UVE", "UVSP", "UVV", "UWMC", "UXIN", "V", "VAC", "VAL", "VALE", "VBIX", "VBNK", "VBTX", "VC", "VCEL", "VCTR", "VCYT", "VECO", "VEEV", "VEL", "VENU", "VEON", "VERA", "VERB", "VERI", "VERX", "VET", "VFC", "VFS", "VG", "VIAV", "VICI", "VICR", "VIK", "VINP", "VIOT", "VIPS", "VIR", "VIRC", "VIRT", "VIST", "VITL", "VIV", "VKTX", "VLGEA", "VLN", "VLO", "VLRS", "VLTO", "VLY", "VMC", "VMD", "VMEO", "VMI", "VNDA", "VNET", "VNOM", "VNT", "VNTG", "VOD", "VOR", "VOXR", "VOYA", "VOYG", "VPG", "VRDN", "VRE", "VREX", "V"WING", "WIT", "WIX", "WK", "WKC", "WKEY", "WKSP", "WLDN", "WLFC", "WLK", "WLY", "WM", "WMB", "WMG", "WMK", "WMS", "WMT", "WNC", "WNEB", "WNS", "WOOF", "WOR", "WOW", "WPC", "WPM", "WPP", "WRB", "WRBY", "WRD", "WRLD", "WS", "WSBC", "WSC", "WSFS", "WSM", "WSO", "WSR", "WST", "WT", "WTF", "WTG", "WTRG", "WTS", "WTTR", "WTW", "WU", "WULF", "WVE", "WW", "WWD", "WWW", "WXM", "WY", "WYFI", "WYNN", "WYY", "XAIR", "XBIT", "XCUR", "XEL", "XENE", "XERS", "XGN", "XHR", "XIFR", "XMTR", "XNCR", "XNET", "XOM", "XOMA", "XP", "XPEL", "XPER", "XPEV", "XPO", "XPOF", "XPRO", "XRAY", "XRX", "XTKG", "XYF", "XYL", "XYZ", "YALA", "YB", "YELP", "YETI", "YEXT", "YMAB", "YMAT", "YMM", "YORK", "YORW", "YOU", "YPF", "YRD", "YSG", "YSXT", "YUM", "YUMC", "YYAI", "YYGH", "Z", "ZBAI", "ZBH", "ZBIO", "ZBRA", "ZD", "ZDGE", "ZENA", "ZEO", "ZEPP", "ZETA", "ZEUS", "ZG", "ZGN", "ZH", "ZIM", "ZIMV", "ZION", "ZIP", "ZJK", "ZK", "ZLAB", "ZM", "ZONE", "ZS", "ZSPC", "ZTO", "ZTS", "ZUMZ", "ZVIA", "ZVRA", "ZWS", "ZYBT", "ZYME"]
 ]
+
 
 # 去重处理
 ticker_list = list(dict.fromkeys(ticker_list))
@@ -654,14 +408,30 @@ class BayesianModelAveraging:
     替代原有的Stacking方法
     """
     
-    def __init__(self, alpha_prior=1.5, shrinkage_factor=0.15, min_weight_threshold=0.02):
+    def __init__(self, alpha_prior=1.5, shrinkage_factor=0.15, min_weight_threshold=0.02,
+                 model_class_priors: Optional[Dict[str, float]] = None,
+                 enable_meta_learner: bool = True,
+                 meta_learner_type: str = 'ridge'):
         self.alpha_prior = alpha_prior
         self.shrinkage_factor = shrinkage_factor
         self.min_weight_threshold = min_weight_threshold
+        # 先验：突出 LightGBM / XGBoost，弱化传统线性/随机森林/猫
+        self.model_class_priors = model_class_priors or {
+            'LightGBM': 0.35,
+            'XGBoost': 0.35,
+            'Ridge': 0.10,
+            'ElasticNet': 0.10,
+            'CatBoost': 0.05,
+        }
         self.models = {}
         self.posterior_weights = {}
         self.model_likelihoods = {}
         self.training_history = []
+        # 二层融合（Ridge/ElasticNet）
+        self.enable_meta_learner = enable_meta_learner
+        self.meta_learner_type = meta_learner_type
+        self.meta_model = None
+        self.meta_feature_names: List[str] = []
         
     def fit(self, X, y, models_dict):
         """训练BMA ensemble"""
@@ -673,8 +443,8 @@ class BayesianModelAveraging:
         self.models = models_dict
         n_models = len(models_dict)
         
-        # 时序交叉验证计算似然
-        tscv = TimeSeriesSplit(n_splits=5)
+        # 时序交叉验证计算似然（加入embargo，防泄露）
+        tscv = PurgedTimeSeriesSplit(n_splits=5, embargo=0.01)
         model_scores = {}
         
         for name, model in models_dict.items():
@@ -692,11 +462,14 @@ class BayesianModelAveraging:
                     mse = mean_squared_error(y_val_fold, y_pred_fold)
                     r2 = r2_score(y_val_fold, y_pred_fold)
                     
-                    # 对数似然（假设高斯噪声）
+                    # 对数似然（假设高斯噪声）；可加入时间衰减权重
                     if mse > 1e-10:
-                        likelihood = -0.5 * len(y_val_fold) * np.log(2 * np.pi * mse) - 0.5 * len(y_val_fold)
+                        base_ll = -0.5 * len(y_val_fold) * np.log(2 * np.pi * mse) - 0.5 * len(y_val_fold)
                     else:
-                        likelihood = 1000
+                        base_ll = 1000
+                    # 最近数据更高权重（线性递增）
+                    recency = np.linspace(0.5, 1.5, len(y_val_fold)).mean()
+                    likelihood = base_ll * recency
                     
                     fold_likelihoods.append(likelihood)
                     fold_r2_scores.append(r2)
@@ -735,6 +508,14 @@ class BayesianModelAveraging:
             except Exception as e:
                 print(f"[BMA ERROR] {name} 最终训练失败: {e}")
         
+        # 训练二层融合模型（使用OOF预测）
+        if self.enable_meta_learner:
+            try:
+                self._train_meta_learner(X, y)
+                print(f"[BMA META] 二层融合模型训练完成: {self.meta_learner_type}")
+            except Exception as e:
+                print(f"[BMA META ERROR] 二层融合训练失败: {e}")
+
         print(f"[BMA] 训练完成！")
         return self
     
@@ -757,8 +538,8 @@ class BayesianModelAveraging:
             valid_likelihoods = likelihoods[finite_mask]
             valid_r2 = r2_scores[finite_mask]
             
-            # 综合评分：似然 + R²表现
-            combined_scores = 0.7 * valid_likelihoods + 0.3 * valid_r2 * 1000
+            # 综合评分：似然 + R²表现 + 最近期表现强化
+            combined_scores = 0.6 * valid_likelihoods + 0.35 * valid_r2 * 1000
             
             # 数值稳定的softmax
             exp_scores = np.exp(combined_scores - combined_scores.max())
@@ -768,12 +549,19 @@ class BayesianModelAveraging:
             raw_weights = np.zeros(n_models)
             raw_weights[finite_mask] = raw_weights_valid
             
-            # 先验权重（偏向简单模型）
-            simplicity_bias = np.ones(n_models) / n_models  # 均等先验
+            # 先验权重：强调 LightGBM/XGBoost，其它均匀分布
+            simplicity_bias = np.ones(n_models) / n_models
+            prior_vec = np.array([
+                self.model_class_priors.get(name, simplicity_bias[i])
+                for i, name in enumerate(model_names)
+            ], dtype=float)
+            if prior_vec.sum() <= 0:
+                prior_vec = simplicity_bias
+            prior_vec = prior_vec / prior_vec.sum()
             
             # 后验权重 = 收缩版本
-            weights = ((1 - self.shrinkage_factor) * raw_weights + 
-                      self.shrinkage_factor * simplicity_bias)
+            weights = ((1 - self.shrinkage_factor) * raw_weights +
+                       self.shrinkage_factor * prior_vec)
         
         # 最小权重阈值
         weights = np.maximum(weights, self.min_weight_threshold)
@@ -830,13 +618,72 @@ class BayesianModelAveraging:
                 for name in valid_weights:
                     valid_weights[name] = uniform_weight
         
-        # 加权平均
+        # 加权平均（作为基础特征）
         ensemble_pred = np.zeros(len(X))
         for name, pred in predictions.items():
             weight = valid_weights[name]
             ensemble_pred += weight * pred
+
+        # 如果有二层融合，使用元学习器进行最终预测
+        if self.enable_meta_learner and self.meta_model is not None:
+            # 构造特征矩阵：优先使用 XGBoost/LightGBM，再附加 BMA 加权结果
+            feature_cols = []
+            # 选择用于融合的模型
+            preferred = [m for m in ["XGBoost", "LightGBM"] if m in predictions]
+            used_names = preferred if preferred else list(predictions.keys())
+            for name in used_names:
+                feature_cols.append(predictions[name].reshape(-1, 1))
+            feature_cols.append(ensemble_pred.reshape(-1, 1))  # 加入BMA加权
+            meta_X = np.hstack(feature_cols)
+            return self.meta_model.predict(meta_X)
         
         return ensemble_pred
+
+    def _train_meta_learner(self, X, y):
+        """使用时序OOF预测训练二层融合模型（Ridge/ElasticNet）"""
+        model_names = list(self.models.keys())
+        # 仅用核心GBDT模型作为特征，若不可用则退回全部
+        core = [m for m in ["XGBoost", "LightGBM"] if m in self.models]
+        selected = core if core else model_names
+        self.meta_feature_names = selected + ["BMA_weighted"]
+
+        tscv = TimeSeriesSplit(n_splits=5)
+        oof_pred_matrix = np.full((len(y), len(selected)), np.nan, dtype=float)
+        # 为计算 BMA 加权的OOF，需要存储每个模型的OOF
+        for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train = y[train_idx]
+            for j, name in enumerate(selected):
+                base_model = self.models[name]
+                try:
+                    m = clone(base_model)
+                    m.fit(X_train, y_train)
+                    oof_pred_matrix[val_idx, j] = m.predict(X_val)
+                except Exception as e:
+                    print(f"[BMA META OOF] {name} 第{fold_idx+1}折失败: {e}")
+                    # 留下 NaN，后续填补
+
+        # 将 NaN 用列均值填补
+        col_means = np.nanmean(oof_pred_matrix, axis=0)
+        inds = np.where(np.isnan(oof_pred_matrix))
+        oof_pred_matrix[inds] = np.take(col_means, inds[1])
+
+        # 计算OOF层面的BMA加权作为额外特征
+        # 对齐选择的模型权重
+        weights = np.array([self.posterior_weights.get(name, 0.0) for name in selected], dtype=float)
+        if weights.sum() <= 0:
+            weights = np.ones_like(weights) / max(1, len(weights))
+        else:
+            weights = weights / weights.sum()
+        bma_oof = (oof_pred_matrix * weights.reshape(1, -1)).sum(axis=1).reshape(-1, 1)
+        meta_X = np.hstack([oof_pred_matrix, bma_oof])
+
+        # 训练元学习器
+        if self.meta_learner_type == 'elasticnet':
+            self.meta_model = ElasticNet(alpha=0.05, l1_ratio=0.2)
+        else:
+            self.meta_model = Ridge(alpha=1.0)
+        self.meta_model.fit(meta_X, y)
 
 
 class QuantitativeModel:
@@ -849,6 +696,7 @@ class QuantitativeModel:
         self.model_scores = {}
         self.training_feature_columns = []
         self.progress_callback = progress_callback  # 添加进度回调函数
+        self.prediction_horizon_days = None  # 当前预测周期（天）
     
     def download_data(self, tickers, start_date, end_date):
         """下载股票数据（保持原有接口）"""
@@ -902,7 +750,7 @@ class QuantitativeModel:
         return data
     
     def calculate_technical_indicators(self, data):
-        """计算技术指标（保持原有逻辑）"""
+        """计算技术指标（周度预测增强：加入更快的均线/交叉信号，RSI缩短窗口）"""
         indicators = {}
         
         # 移动平均线
@@ -911,17 +759,27 @@ class QuantitativeModel:
         indicators['sma_20'] = data['Close'].rolling(window=20).mean()
         indicators['sma_50'] = data['Close'].rolling(window=50).mean()
         
-        # 指数移动平均
+        # 指数移动平均（新增更快的EMA及交叉差）
+        indicators['ema_5'] = data['Close'].ewm(span=5).mean()
+        indicators['ema_10'] = data['Close'].ewm(span=10).mean()
         indicators['ema_12'] = data['Close'].ewm(span=12).mean()
         indicators['ema_26'] = data['Close'].ewm(span=26).mean()
+        indicators['ema_cross_5_10'] = indicators['ema_5'] - indicators['ema_10']
         
         # MACD
         indicators['macd'] = indicators['ema_12'] - indicators['ema_26']
         indicators['macd_signal'] = indicators['macd'].ewm(span=9).mean()
         indicators['macd_histogram'] = indicators['macd'] - indicators['macd_signal']
         
-        # RSI
-        indicators['rsi'] = self.calculate_rsi(data['Close'])
+        # RSI（缩短窗口提升对未来5日的敏感度）
+        indicators['rsi'] = self.calculate_rsi(data['Close'], period=10)
+
+        # 随机指标 Stochastic (5,3)
+        highest_high_5 = data['High'].rolling(window=5).max()
+        lowest_low_5 = data['Low'].rolling(window=5).min()
+        stoch_k = (data['Close'] - lowest_low_5) / (highest_high_5 - lowest_low_5 + 1e-9) * 100.0
+        indicators['stoch_k_5_3'] = stoch_k.rolling(window=3).mean()
+        indicators['stoch_d_5_3'] = indicators['stoch_k_5_3'].rolling(window=3).mean()
         
         # 布林带
         bb_middle = data['Close'].rolling(window=20).mean()
@@ -933,7 +791,7 @@ class QuantitativeModel:
         
         return indicators
     
-    def calculate_rsi(self, prices, period=14):
+    def calculate_rsi(self, prices, period=10):
         """计算RSI"""
         delta = prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -949,60 +807,78 @@ class QuantitativeModel:
         return (typical_price - sma_tp) / (0.015 * mad_tp)
     
     def calculate_factors(self, data):
-        """计算所有因子（使用30天聚合+15天快照逻辑）"""
+        """计算所有因子（周度预测：加强5-10日窗口）"""
         factors = {}
         
         # 基础技术指标
         tech_indicators = self.calculate_technical_indicators(data)
         factors.update(tech_indicators)
         
-        # 价格因子 - 使用15天聚合
+        # 价格因子 - 强化 5/10 日
         factors['price_momentum_5'] = data['Close'].pct_change(5)
-        factors['price_momentum_15'] = data['Close'].pct_change(15)
+        factors['price_momentum_10'] = data['Close'].pct_change(10)
+        factors['price_mom_diff_5_10'] = factors['price_momentum_5'] - factors['price_momentum_10']
         
-        # 价格加速度和反转
-        factors['price_acceleration'] = data['Close'].pct_change(5) - data['Close'].pct_change(15)
+        # 价格加速度和反转（5 vs 10）
+        factors['price_acceleration'] = data['Close'].pct_change(5) - data['Close'].pct_change(10)
         factors['price_reversal'] = -data['Close'].pct_change(2)
         
-        # 成交量因子 - 使用15天聚合
-        factors['volume_sma_15'] = data['Volume'].rolling(window=15).mean()
-        factors['volume_ratio'] = data['Volume'] / factors['volume_sma_15']
+        # 成交量因子 - 使用10天聚合
+        factors['volume_sma_10'] = data['Volume'].rolling(window=10).mean()
+        factors['volume_ratio'] = data['Volume'] / factors['volume_sma_10']
         factors['volume_momentum'] = data['Volume'].pct_change(10)
         
-        # 价格-成交量因子 - 使用15天聚合
+        # 价格-成交量因子 - 使用10天聚合
         factors['price_volume'] = data['Close'] * data['Volume']
-        factors['money_flow'] = (data['Close'] * data['Volume']).rolling(15).mean() / data['Close'].rolling(15).mean()
+        factors['money_flow'] = (data['Close'] * data['Volume']).rolling(10).mean() / data['Close'].rolling(10).mean()
         
-        # 波动率因子 - 使用15天聚合
-        factors['volatility_15'] = data['Close'].pct_change().rolling(window=15).std()
+        # 波动率因子 - 使用10天聚合
+        factors['volatility_10'] = data['Close'].pct_change().rolling(window=10).std()
+
+        # ATR(5) 真实波动幅度
+        tr1 = data['High'] - data['Low']
+        tr2 = (data['High'] - data['Close'].shift(1)).abs()
+        tr3 = (data['Low'] - data['Close'].shift(1)).abs()
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        factors['atr_5'] = true_range.rolling(window=5).mean()
         
-        # 相对强弱因子 - 使用15天聚合
-        factors['rs_vs_sma'] = data['Close'] / data['Close'].rolling(15).mean() - 1
+        # 相对强弱因子 - 使用10天聚合
+        factors['rs_vs_sma'] = data['Close'] / data['Close'].rolling(10).mean() - 1
         factors['high_low_ratio'] = data['High'] / data['Low'] - 1
         factors['close_position'] = (data['Close'] - data['Low']) / (data['High'] - data['Low'])
+        factors['rolling_max_5'] = data['Close'].rolling(window=5).max()
+        factors['rolling_min_5'] = data['Close'].rolling(window=5).min()
+        factors['breakout_5'] = data['Close'] / factors['rolling_max_5'] - 1
+        factors['pullback_5'] = data['Close'] / factors['rolling_min_5'] - 1
+
+        # 5日收益z分数（短期均值回归/过热程度）
+        daily_ret = data['Close'].pct_change()
+        mean_5 = daily_ret.rolling(window=5).mean()
+        std_5 = daily_ret.rolling(window=5).std()
+        factors['ret_5_zscore'] = (mean_5 / (std_5 + 1e-9))
         
         # 市场情绪因子
         factors['gap_ratio'] = (data['Open'] - data['Close'].shift(1)) / data['Close'].shift(1)
         factors['intraday_return'] = (data['Close'] - data['Open']) / data['Open']
         factors['overnight_return'] = (data['Open'] - data['Close'].shift(1)) / data['Close'].shift(1)
         
-        # 高级因子 - 使用15天聚合
-        factors['rolling_sharpe'] = (data['Close'].pct_change().rolling(15).mean() / 
-                                   data['Close'].pct_change().rolling(15).std())
+        # 高级因子 - 使用10天聚合
+        factors['rolling_sharpe'] = (data['Close'].pct_change().rolling(10).mean() / 
+                                   data['Close'].pct_change().rolling(10).std())
         
         # CCI (Commodity Channel Index) - 商品通道指数
         typical_price = (data['High'] + data['Low'] + data['Close']) / 3
-        sma_tp_15 = typical_price.rolling(window=15).mean()
-        mad_tp_15 = typical_price.rolling(window=15).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=False)
-        factors['cci_15'] = (typical_price - sma_tp_15) / (0.015 * mad_tp_15)
+        sma_tp_10 = typical_price.rolling(window=10).mean()
+        mad_tp_10 = typical_price.rolling(window=10).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=False)
+        factors['cci_10'] = (typical_price - sma_tp_10) / (0.015 * mad_tp_10)
         
         # CCI衍生因子
         factors['cci_20'] = self._calculate_cci(data, period=20)
-        factors['cci_normalized'] = factors['cci_15'] / 100.0  # 标准化CCI
-        factors['cci_momentum'] = factors['cci_15'].diff(5)  # CCI动量
+        factors['cci_normalized'] = factors['cci_10'] / 100.0  # 标准化CCI
+        factors['cci_momentum'] = factors['cci_10'].diff(5)  # CCI动量
         factors['cci_cross_signal'] = np.where(
-            (factors['cci_15'] > 100) & (factors['cci_15'].shift(1) <= 100), 1,
-            np.where((factors['cci_15'] < -100) & (factors['cci_15'].shift(1) >= -100), -1, 0)
+            (factors['cci_10'] > 100) & (factors['cci_10'].shift(1) <= 100), 1,
+            np.where((factors['cci_10'] < -100) & (factors['cci_10'].shift(1) >= -100), -1, 0)
         )  # CCI交叉信号
         
         # 转换为DataFrame并清理
@@ -1037,9 +913,14 @@ class QuantitativeModel:
         except Exception:
             return 0.0
     
-    def prepare_ml_data_with_time_series(self, all_data, target_period=14):
-        """准备时序安全的机器学习数据（保持原有接口）"""
+    def prepare_ml_data_with_time_series(self, all_data, target_period=5):
+        """准备时序安全的机器学习数据（默认预测未来一周/5个交易日的收益）"""
         print(f"[TIME-SERIES PREP] 准备时序安全的机器学习数据...")
+        # 记录当前预测周期（用于后续动态特征筛选等参数）
+        try:
+            self.prediction_horizon_days = int(target_period)
+        except Exception:
+            self.prediction_horizon_days = 5
         
         all_factor_data = []
         
@@ -1051,7 +932,7 @@ class QuantitativeModel:
                 
                 # 计算因子
                 factors = self.calculate_factors(data)
-                # 计算目标变量(未来两周收益率)
+                # 计算目标变量(未来一周/5个交易日收益率)
                 target = data['Close'].pct_change(target_period).shift(-target_period)
                 
                 # 对齐数据
@@ -1108,46 +989,67 @@ class QuantitativeModel:
         self.training_feature_columns = X.columns.tolist()
         print(f"[FEATURE CONSISTENCY] 保存训练特征列: {len(self.training_feature_columns)} 个")
         
-        # 保存Pipeline以便在预测时使用
+        # 训练前清空并延后记录pipelines（在构建base_models后统一保存）
         self.training_pipelines = {}
-        for name, pipeline in base_models.items():
-            self.training_pipelines[name] = pipeline
         
         # 智能数据处理Pipeline步骤
-        base_pipeline_steps = [
+        # 注意：树模型对标准化/线性降维不敏感，拆分线性与树模型的Pipeline
+        # 周期越短，提升IC阈值以过滤噪声
+        ic_thr = 0.02 if (getattr(self, 'prediction_horizon_days', 5) <= 5) else 0.01
+        linear_steps = [
             ('advanced_imputer', self._get_advanced_imputer()),
-            ('ic_selector', ICFactorSelector(ic_threshold=0.01)),
+            ('ic_selector', ICFactorSelector(ic_threshold=ic_thr)),
             ('scaler', StandardScaler()),
             ('pca', PCA(n_components=0.95))
         ]
+        tree_steps = [
+            ('advanced_imputer', self._get_advanced_imputer()),
+            ('ic_selector', ICFactorSelector(ic_threshold=ic_thr))
+        ]
         
-        # 基学习器配置（保持原有配置）
+        # 基学习器配置（以树模型为主，线性作二层/稳健化）
         base_models = {}
         
-        # RandomForest
-        rf_pipeline = Pipeline(base_pipeline_steps + [('model', RandomForestRegressor(random_state=42, n_jobs=-1))])
-        base_models['RandomForest'] = rf_pipeline
-        
         # Ridge
-        ridge_pipeline = Pipeline(base_pipeline_steps + [('model', Ridge(alpha=1.0))])
+        ridge_pipeline = Pipeline(linear_steps + [('model', Ridge(alpha=1.0))])
         base_models['Ridge'] = ridge_pipeline
         
         # ElasticNet  
-        elastic_pipeline = Pipeline(base_pipeline_steps + [('model', ElasticNet(alpha=0.1, l1_ratio=0.5))])
+        elastic_pipeline = Pipeline(linear_steps + [('model', ElasticNet(alpha=0.1, l1_ratio=0.5))])
         base_models['ElasticNet'] = elastic_pipeline
         
-        # 添加高级模型
+        # 添加高级模型（LightGBM / XGBoost 为主力）
         if XGBOOST_AVAILABLE:
-            xgb_pipeline = Pipeline(base_pipeline_steps + [('model', xgb.XGBRegressor(random_state=42))])
+            xgb_pipeline = Pipeline(tree_steps + [('model', xgb.XGBRegressor(
+                random_state=42,
+                n_estimators=600,
+                max_depth=7,
+                learning_rate=0.04,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_lambda=1.0,
+                tree_method='hist',
+                n_jobs=-1
+            ))])
             base_models['XGBoost'] = xgb_pipeline
         
         if LIGHTGBM_AVAILABLE:
-            lgb_pipeline = Pipeline(base_pipeline_steps + [('model', lgb.LGBMRegressor(random_state=42, verbose=-1))])
+            lgb_pipeline = Pipeline(tree_steps + [('model', lgb.LGBMRegressor(
+                random_state=42,
+                n_estimators=1000,
+                max_depth=-1,
+                learning_rate=0.025,
+                num_leaves=96,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_lambda=1.0,
+                min_child_samples=20,
+                verbose=-1,
+                n_jobs=-1
+            ))])
             base_models['LightGBM'] = lgb_pipeline
         
-        if CATBOOST_AVAILABLE:
-            cat_pipeline = Pipeline(base_pipeline_steps + [('model', CatBoostRegressor(random_state=42, verbose=False))])
-            base_models['CatBoost'] = cat_pipeline
+        # 禁用单独决策树、随机森林、CatBoost 作为主力；若仍需可改为较小权重先验
         
         # CNN模型已禁用
         # if TENSORFLOW_AVAILABLE:
@@ -1174,12 +1076,17 @@ class QuantitativeModel:
         print(f"[BMA] 创建了 {len(base_models)} 个基础模型")
         print(f"[BMA] 模型列表: {', '.join(base_models.keys())}")
         
-        # 创建BMA集成器
+        # 创建BMA集成器（偏向树模型）
         self.bma_model = BayesianModelAveraging(
             alpha_prior=1.5,
             shrinkage_factor=0.15,
-            min_weight_threshold=0.02
+            min_weight_threshold=0.02,
+            model_class_priors={'LightGBM': 0.5, 'XGBoost': 0.5},
+            enable_meta_learner=True,
+            meta_learner_type='ridge'
         )
+        # 记录pipelines，确保预测阶段一致性
+        self.training_pipelines = {name: pipe for name, pipe in base_models.items()}
         
         try:
             # 训练BMA
@@ -1572,7 +1479,7 @@ def main():
     parser.add_argument('--start-date', type=str, default='2023-01-01', help='开始日期 (YYYY-MM-DD)')
     parser.add_argument('--end-date', type=str, default='2024-12-31', help='结束日期 (YYYY-MM-DD)')
     parser.add_argument('--top-n', type=int, default=None, help='返回top N个推荐')
-    parser.add_argument('--ticker-file', type=str, default=None, help='股票列表文件')
+    parser.add_argument('--ticker-file', type=str, default=None, help='股票列表文件 (每行一个ticker)')
     
     args = parser.parse_args()
     
@@ -1604,7 +1511,7 @@ def main():
             return
         
         # 准备机器学习数据
-        X, y, stock_names, dates = model.prepare_ml_data_with_time_series(all_data)
+        X, y, stock_names, dates = model.prepare_ml_data_with_time_series(all_data, target_period=5)
         
         # 使用BMA训练（替代Stacking）
         print(f"[TRAINING] 数据量: {len(X)} 个样本，使用BMA替代Stacking训练")
@@ -1655,9 +1562,9 @@ class WeeklyBMAScheduler:
             "enabled": True,
             "run_day": "monday",  # 每周一运行
             "run_time": "09:00",  # 运行时间
-            "stock_count": 200,  # 分析股票数量
-            "min_price_threshold": 5.0,  # 最低价格阈值(美元)
-            "max_price_threshold": 1000.0,  # 最高价格阈值(美元)
+            "stock_count": -1,  # 分析股票数量 (-1为使用所有股票)
+            "min_price_threshold": null,  # 关闭价格下限过滤
+            "max_price_threshold": null,  # 关闭价格上限过滤
             "days_history": 1825,  # 历史数据天数(5年)
             "top_n": 20,  # Top N 推荐
             "output_dir": "weekly_bma_results",  # 输出目录
@@ -1745,7 +1652,11 @@ class WeeklyBMAScheduler:
     def prepare_stock_list(self):
         """准备股票列表"""
         # 基础股票池
-        base_stocks = ticker_list[:self.config.get('stock_count', 200)]
+        stock_count = self.config.get('stock_count', -1)
+        if stock_count is None or stock_count == -1 or stock_count > len(ticker_list):
+            base_stocks = ticker_list
+        else:
+            base_stocks = ticker_list[:int(stock_count)]
         
         # 添加手动选择的股票
         manual_stocks = self.config.get('manual_stocks', [])
@@ -1797,7 +1708,7 @@ class WeeklyBMAScheduler:
                 return None
             
             # 准备ML数据
-            X, y, stock_names, dates = model.prepare_ml_data_with_time_series(all_data)
+            X, y, stock_names, dates = model.prepare_ml_data_with_time_series(all_data, target_period=5)
             
             # 训练BMA模型
             print(f"[WEEKLY BMA] 使用BMA训练模型...")
