@@ -30,6 +30,8 @@ from pathlib import Path
 import warnings
 import re
 from bs4 import BeautifulSoup
+from urllib.request import urlopen
+
 
 warnings.filterwarnings('ignore')
 
@@ -64,8 +66,161 @@ class USStockCrawler:
         self.stock_info_cache = self.cache_dir / "stock_info_cache.json"
         self.nasdaq_wiki_cache = self.cache_dir / "nasdaq_wiki_stocks.json"
         self.nyse_wiki_cache = self.cache_dir / "nyse_wiki_stocks.json"
+        self.quant_list_txt = self.cache_dir / "quantitative_stock_list.txt"
+        self.quant_list_json = self.cache_dir / "quantitative_stock_list.json"
         
         logger.info(f"[US爬虫] 初始化完成，缓存目录: {self.cache_dir}")
+
+    # =============================
+    # 非Wikipedia数据源（更稳定）
+    # =============================
+    def _fetch_nasdaqtrader_ftp(self, name: str) -> List[str]:
+        """通过FTP从 NasdaqTrader 获取符号表 (nasdaqlisted/otherlisted)。"""
+        urls = {
+            'nasdaqlisted': 'ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt',
+            'otherlisted': 'ftp://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt',
+        }
+        url = urls.get(name)
+        if not url:
+            return []
+        try:
+            lines: List[str] = []
+            with urlopen(url) as fh:
+                for raw in fh:
+                    try:
+                        lines.append(raw.decode('utf-8').strip())
+                    except Exception:
+                        continue
+            # 跳过第一行标题和最后一行时间
+            body = lines[1:-1] if len(lines) > 2 else []
+            symbols: List[str] = []
+            for line in body:
+                parts = line.split('|')
+                if not parts or parts[0].upper() in ('SYMBOL', 'ACT SYMBOL'):
+                    continue
+                sym = parts[0].strip().upper()
+                # 针对不同文件做基础过滤：测试/ETF/NextShares
+                try:
+                    if name == 'nasdaqlisted':
+                        # 列: Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares
+                        test_issue = parts[3].strip() if len(parts) > 3 else 'N'
+                        etf_flag = parts[6].strip() if len(parts) > 6 else 'N'
+                        next_flag = parts[7].strip() if len(parts) > 7 else 'N'
+                        if test_issue == 'Y' or etf_flag == 'Y' or next_flag == 'Y':
+                            continue
+                    elif name == 'otherlisted':
+                        # 列: ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol
+                        etf_flag = parts[4].strip() if len(parts) > 4 else 'N'
+                        test_issue = parts[6].strip() if len(parts) > 6 else 'N'
+                        if test_issue == 'Y' or etf_flag == 'Y':
+                            continue
+                except Exception:
+                    pass
+                if '.' in sym:
+                    sym = sym.replace('.', '-')
+                if sym and len(sym) <= 6:
+                    symbols.append(sym)
+            return symbols
+        except Exception as e:
+            logger.warning(f"[US爬虫] FTP获取 {name} 失败: {e}")
+            return []
+    def _fetch_nasdaqtrader_file(self, name: str) -> List[str]:
+        """从 NasdaqTrader 获取符号表 (nasdaqtraded/otherlisted/nasdaqlisted)。"""
+        urls = {
+            'nasdaqtraded': 'https://ftp.nasdaqtrader.com/dynamic/SymDir/nasdaqtraded.txt',
+            'otherlisted': 'https://ftp.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt',
+            'nasdaqlisted': 'https://ftp.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt',
+        }
+        url = urls.get(name)
+        if not url:
+            return []
+        try:
+            r = self.session.get(url, timeout=30)
+            r.raise_for_status()
+            lines = r.text.splitlines()
+            tickers = []
+            for line in lines[1:]:  # 跳过表头
+                if 'File Creation Time' in line:
+                    break
+                parts = line.split('|')
+                if len(parts) < 2:
+                    continue
+                sym = parts[0].strip().upper()
+                if not sym or sym == 'SYMBOL':
+                    continue
+                # 排除测试/无效
+                try:
+                    test_flag = parts[7].strip() if len(parts) > 7 else 'N'
+                except Exception:
+                    test_flag = 'N'
+                if sym in ('TEST', 'N/A') or test_flag == 'Y':
+                    continue
+                if '.' in sym:
+                    sym = sym.replace('.', '-')
+                tickers.append(sym)
+            return tickers
+        except Exception as e:
+            logger.warning(f"[US爬虫] NasdaqTrader {name} 获取失败: {e}")
+            return []
+
+    def _fetch_sec_tickers(self) -> List[str]:
+        """从SEC公开文件获取ticker列表。"""
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; StockCrawler/1.0)"}
+            url = 'https://www.sec.gov/include/ticker.txt'
+            r = self.session.get(url, headers=headers, timeout=30)
+            r.raise_for_status()
+            tickers = []
+            for line in r.text.splitlines():
+                parts = line.split('|')
+                if parts:
+                    sym = parts[0].strip().upper()
+                    if sym:
+                        tickers.append(sym)
+            return tickers
+        except Exception as e:
+            logger.warning(f"[US爬虫] SEC ticker 获取失败: {e}")
+            return []
+
+    def _get_all_us_stocks_via_feeds(self) -> List[str]:
+        """优先通过官方文本源聚合全美股代码。"""
+        try:
+            # 1) 优先FTP方式（更稳定）
+            nasdaqlisted = self._fetch_nasdaqtrader_ftp('nasdaqlisted')
+            otherlisted = self._fetch_nasdaqtrader_ftp('otherlisted')
+            # 2) 回退HTTPS文本（如有必要）
+            if not nasdaqlisted:
+                nasdaqlisted = self._fetch_nasdaqtrader_file('nasdaqlisted')
+            if not otherlisted:
+                otherlisted = self._fetch_nasdaqtrader_file('otherlisted')
+            sec = self._fetch_sec_tickers()
+            # 如果官方站点超时，尝试 DataHub 镜像
+            if not nasdaqlisted:
+                try:
+                    dh1 = self.session.get('https://datahub.io/core/nasdaq-listings/r/nasdaq-listed.csv', timeout=30)
+                    dh1.raise_for_status()
+                    df1 = pd.read_csv(pd.compat.StringIO(dh1.text))
+                    if 'Symbol' in df1.columns:
+                        nasdaqlisted = [self._clean_ticker(t) for t in df1['Symbol'].astype(str).tolist()]
+                except Exception:
+                    pass
+            if not otherlisted:
+                try:
+                    dh2 = self.session.get('https://datahub.io/core/nyse-other-listings/r/other-listed.csv', timeout=30)
+                    dh2.raise_for_status()
+                    df2 = pd.read_csv(pd.compat.StringIO(dh2.text))
+                    col = 'ACT Symbol' if 'ACT Symbol' in df2.columns else (df2.columns[0] if len(df2.columns)>0 else None)
+                    if col:
+                        otherlisted = [self._clean_ticker(t) for t in df2[col].astype(str).tolist()]
+                except Exception:
+                    pass
+
+            merged = set(otherlisted) | set(nasdaqlisted) | set(sec)
+            merged = {self._clean_ticker(t) for t in merged if t}
+            return sorted(list({t for t in merged if t and len(t) <= 6}))
+        except Exception as e:
+            logger.error(f"[US爬虫] 官方源聚合失败: {e}")
+            return []
     
     def crawl_nasdaq_wikipedia(self) -> List[str]:
         """从Wikipedia爬取NASDAQ股票列表"""
@@ -366,7 +521,7 @@ class USStockCrawler:
         ]
     
     def get_all_us_stocks(self, use_cache: bool = True, max_age_hours: int = 24) -> List[str]:
-        """获取所有美股股票列表（增强版，包含Wikipedia数据）"""
+        """获取所有美股股票列表（优先官方文本源，其次回退Wikipedia+静态）。"""
         try:
             # 检查缓存
             if use_cache and self.all_stocks_cache.exists():
@@ -378,31 +533,17 @@ class USStockCrawler:
                         return cached_data.get('tickers', [])
             
             logger.info("[US爬虫] 开始获取所有美股股票列表...")
-            
-            all_tickers = set()
-            
-            # 获取S&P 500股票
-            sp500_stocks = self.get_sp500_stocks()
-            all_tickers.update(sp500_stocks)
-            
-            # 获取NASDAQ股票（包含Wikipedia数据）
-            nasdaq_stocks = self.get_nasdaq_stocks()
-            all_tickers.update(nasdaq_stocks)
-            
-            # 获取NYSE股票（包含Wikipedia数据）
-            nyse_stocks = self.get_nyse_stocks()
-            all_tickers.update(nyse_stocks)
-            
-            # 添加一些其他知名股票
-            other_stocks = [
-                # ETFs
-                'SPY', 'QQQ', 'IWM', 'DIA', 'VTI', 'VOO', 'VEA', 'VWO', 'AGG', 'BND',
-                # REITs
-                'O', 'REIT', 'VNQ', 'PLD', 'AMT', 'CCI', 'EQIX', 'PSA', 'EXR', 'AVB',
-                # 其他行业代表股票
-                'BRK-B', 'BRK-A', 'TSM', 'ASML', 'NVO', 'NTES', 'BABA', 'JD', 'BIDU', 'NIO'
-            ]
-            all_tickers.update(other_stocks)
+
+            # 优先官方文本源
+            official = self._get_all_us_stocks_via_feeds()
+            if official:
+                all_tickers = set(official)
+            else:
+                logger.warning("[US爬虫] 官方源不可用，回退至 S&P500 + Wikipedia 方案")
+                all_tickers = set()
+                all_tickers.update(self.get_sp500_stocks())
+                all_tickers.update(self.get_nasdaq_stocks())
+                all_tickers.update(self.get_nyse_stocks())
             
             # 转换为列表并排序
             final_tickers = sorted(list(all_tickers))
@@ -425,46 +566,36 @@ class USStockCrawler:
             logger.error(f"[US爬虫] 获取所有股票失败: {e}")
             return []
     
-    def get_stock_info_batch(self, tickers: List[str], batch_size: int = 2000) -> Dict[str, Dict]:
+    def get_stock_info_batch(self, tickers: List[str], batch_size: int = 500) -> Dict[str, Dict]:
         """批量获取股票信息"""
         try:
             logger.info(f"[US爬虫] 开始批量获取 {len(tickers)} 只股票信息...")
             
-            stock_info = {}
-            failed_tickers = []
-            
-            # 分批处理
+            stock_info: Dict[str, Dict] = {}
+            failed_tickers: List[str] = []
+
+            # 优先使用 yfinance 批量历史行情以减少单票 404
             for i in range(0, len(tickers), batch_size):
-                batch_tickers = tickers[i:i + batch_size]
-                logger.info(f"[US爬虫] 处理第 {i//batch_size + 1} 批，共 {len(batch_tickers)} 只股票")
-                
-                # 并行获取股票信息
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                    future_to_ticker = {
-                        executor.submit(self._get_single_stock_info, ticker): ticker 
-                        for ticker in batch_tickers
-                    }
-                    
-                    for future in concurrent.futures.as_completed(future_to_ticker):
-                        ticker = future_to_ticker[future]
-                        try:
-                            info = future.result(timeout=30)
-                            if info:
-                                stock_info[ticker] = info
-                            else:
-                                failed_tickers.append(ticker)
-                        except Exception as e:
-                            logger.warning(f"[US爬虫] 获取 {ticker} 信息失败: {e}")
-                            failed_tickers.append(ticker)
-                
-                # 避免请求过于频繁
-                time.sleep(1)
-            
+                batch = tickers[i:i+batch_size]
+                logger.info(f"[US爬虫] 批量行情获取: 第 {i//batch_size + 1} 批，{len(batch)} 只")
+                try:
+                    data = yf.download(batch, period='5d', interval='1d', group_by='ticker', threads=True, progress=False)
+                except Exception as e:
+                    logger.warning(f"[US爬虫] yfinance 批量下载失败: {e}")
+                    data = None
+
+                # 回退逐票 info 获取关键信息
+                for t in batch:
+                    info = self._get_single_stock_info(t)
+                    if info:
+                        stock_info[t] = info
+                    else:
+                        failed_tickers.append(t)
+                time.sleep(0.5)
+
             logger.info(f"[US爬虫] 批量获取完成，成功 {len(stock_info)} 只，失败 {len(failed_tickers)} 只")
-            
             if failed_tickers:
-                logger.warning(f"[US爬虫] 失败的股票: {failed_tickers[:20]}...")
-            
+                logger.warning(f"[US爬虫] 失败示例: {failed_tickers[:20]}...")
             return stock_info
             
         except Exception as e:
@@ -635,6 +766,73 @@ class USStockCrawler:
         except Exception as e:
             logger.error(f"[US爬虫] 生成交易股票池失败: {e}")
             return []
+
+    def get_quantitative_stock_list(self,
+                                    pool_size: Optional[int] = None,
+                                    use_cache: bool = True,
+                                    save_to_file: bool = True) -> List[str]:
+        """返回用于量化训练的股票列表（使用与交易池相同的过滤参数）。
+
+        - pool_size=None 表示返回所有符合筛选条件的股票；若指定整数则限制数量并按市值排序。
+        - 持久化保存到 stock_cache/quantitative_stock_list.{txt,json}
+        """
+        try:
+            logger.info("[US爬虫] 生成量化训练股票列表 (与交易池相同过滤参数)...")
+            all_stocks = self.get_all_us_stocks(use_cache=use_cache)
+            if not all_stocks:
+                return []
+
+            # 使用与 get_trading_pool_stocks 相同的过滤阈值
+            filtered_stocks = self.filter_stocks(
+                all_stocks,                     # 不截断，后续再按 pool_size 控制
+                min_market_cap=5000000,          # 5亿美元市值
+                min_volume=50000,                # 50万股日均成交量
+                max_price=500.0,                 # 最高500美元
+                min_price=2,                     # 最低2美元
+                exclude_sectors=['Real Estate Investment Trusts']
+            )
+
+            final_stocks: List[str]
+            if pool_size is not None and pool_size > 0 and len(filtered_stocks) > pool_size:
+                # 获取部分信息并按市值排序取前N
+                stock_info = {}
+                for ticker in filtered_stocks[:pool_size * 2]:
+                    info = self._get_single_stock_info(ticker)
+                    if info and info.get('marketCap', 0) > 0:
+                        stock_info[ticker] = info
+                sorted_stocks = sorted(stock_info.items(), key=lambda x: x[1].get('marketCap', 0), reverse=True)
+                final_stocks = [t for t, _ in sorted_stocks[:pool_size]]
+            else:
+                final_stocks = filtered_stocks
+
+            if save_to_file:
+                # 保存为一行一个ticker的文本文件（供 BMA --ticker-file 使用）
+                self.cache_dir.mkdir(exist_ok=True)
+                with open(self.quant_list_txt, 'w', encoding='utf-8') as f:
+                    for t in final_stocks:
+                        f.write(f"{t}\n")
+                # 保存JSON
+                payload = {
+                    'tickers': final_stocks,
+                    'timestamp': datetime.now().isoformat(),
+                    'count': len(final_stocks),
+                    'filters': {
+                        'min_market_cap': 5000000,
+                        'min_volume': 50000,
+                        'max_price': 500.0,
+                        'min_price': 2,
+                        'exclude_sectors': ['Real Estate Investment Trusts']
+                    }
+                }
+                with open(self.quant_list_json, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, indent=2, ensure_ascii=False)
+                logger.info(f"[US爬虫] 量化列表已保存: {self.quant_list_txt} ({len(final_stocks)} 只)")
+
+            return final_stocks
+
+        except Exception as e:
+            logger.error(f"[US爬虫] 生成量化股票列表失败: {e}")
+            return []
     
     def update_stock_cache(self, force_update: bool = False):
         """更新股票缓存"""
@@ -657,32 +855,35 @@ class USStockCrawler:
             logger.error(f"[US爬虫] 更新缓存失败: {e}")
 
 
+    def load_saved_stock_list(self) -> List[str]:
+        """加载已保存的量化股票列表（如存在）。"""
+        try:
+            if self.quant_list_json.exists():
+                with open(self.quant_list_json, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and 'tickers' in data:
+                        return data['tickers']
+            if self.quant_list_txt.exists():
+                with open(self.quant_list_txt, 'r', encoding='utf-8') as f:
+                    return [line.strip().upper() for line in f if line.strip()]
+        except Exception:
+            return []
+        return []
+
 def main():
-    """主函数 - 测试用"""
+    """主函数 - Debug模式：
+    1) 生成与交易池相同过滤参数的量化股票列表
+    2) 打印为 Python 列表字符串格式：['NVDA', 'APLD']
+    3) 保存到 stock_cache/quantitative_stock_list.{txt,json}
+    """
     try:
         crawler = USStockCrawler()
-        
-        print("=== 美股爬虫测试 ===")
-        
-        # 获取所有股票
-        all_stocks = crawler.get_all_us_stocks()
-        print(f"获取到股票总数: {len(all_stocks)}")
-      
-        # 生成交易股票池
-        trading_pool = crawler.get_trading_pool_stocks(pool_size=100)
-        print(f"交易股票池数量: {len(trading_pool)}")
-    
-        
-        # 获取部分股票详细信息
-        sample_stocks = trading_pool[:5]
-        stock_info = crawler.get_stock_info_batch(sample_stocks)
-        
-        print("\n=== 股票详细信息示例 ===")
-        for ticker, info in stock_info.items():
-            print(f"{ticker}: {info.get('longName', 'N/A')}")
-        
+        tickers = crawler.get_quantitative_stock_list(pool_size=None, use_cache=False, save_to_file=True)
+        print(f"总数: {len(tickers)}")
+        # 打印为一行 Python 列表格式
+        print("PythonList=", json.dumps(tickers))
     except Exception as e:
-        print(f"测试失败: {e}")
+        print(f"调试失败: {e}")
 
 
 if __name__ == "__main__":

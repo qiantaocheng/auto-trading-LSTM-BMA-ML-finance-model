@@ -1,9 +1,0 @@
-{
-  "date": "2025-08-07",
-  "w_bma": 0.5,
-  "w_lstm": 0.5,
-  "sharpe_bma": 0.0,
-  "sharpe_lstm": 0.0,
-  "lookback_weeks": 12,
-  "tickers_count": 5
-}

@@ -1,166 +1,265 @@
-# Quantitative Trading Management Software
+# IBKR Professional Trading System v1.0
 
-A powerful platform for quantitative trading analysis, integrating advanced machine learning models, factor analysis, and backtesting to support data-driven investment decisions.
+## 📋 系统概述
 
-## Table of Contents
+IBKR Professional Trading System 是一个基于 Interactive Brokers API 的专业级自动交易系统，集成了策略引擎、风险管理、订单执行和实时监控功能。
 
-* [Features](#features)
-* [Requirements](#requirements)
-* [Quick Start](#quick-start)
-* [Installation](#installation)
-* [How to Use](#how-to-use)
-* [Project Layout](#project-layout)
-* [Technical Overview](#technical-overview)
-* [Troubleshooting](#troubleshooting)
-* [License](#license)
+### 🎯 核心特性
 
----
+- **🎛️ 统一GUI界面**: 策略引擎、直接交易、风险管理、系统监控一体化
+- **🧠 智能策略引擎**: 多因子信号系统，支持技术指标、动量、均值回归策略
+- **🛡️ 高级风险管理**: VaR计算、相关性分析、Kelly公式、最大回撤控制
+- **⚡ 增强订单执行**: TWAP/VWAP算法、动态超时、流动性估算
+- **📊 实时数据监控**: 账户状态、持仓管理、订单跟踪
+- **🔧 灵活配置管理**: 数据库存储、热配置更新、风险参数调整
 
-## Features
+## 🚀 快速开始
 
-### Core Capabilities
+### 系统要求
 
-* **Quantitative Analysis**: Machine-learning-based stock scoring and selection
-* **Multi-Factor Models**: Combines technical, fundamental, and sentiment factors
-* **Backtesting**: Historical data validation and strategy evaluation
-* **Real-Time Monitoring**: Live data updates and alerts
-* **Result Management**: Automatic saving of reports and summaries
+- Python 3.8+
+- Interactive Brokers TWS 或 IB Gateway
+- Windows 10/11 (推荐)
 
-### Machine Learning
+### 安装步骤
 
-* **Ensemble Models**: XGBoost, LightGBM, CatBoost fusion
-* **Factor Selection**: Information Coefficient filtering and multicollinearity checks
-* **Outlier Handling**: Winsorization of extreme values
-* **Factor Neutralization**: Removes size and sector biases
-* **Hyperparameter Tuning**: Automated parameter search
+1. **克隆项目**
+   ```bash
+   git clone <repository-url>
+   cd trade
+   ```
 
-### User Interface
+2. **安装依赖**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-* **Modern GUI**: Built with Tkinter
-* **Animations**: Hover effects and load indicators
-* **Custom Background**: Image support
-* **Status Display**: Progress bar and status messages
-* **Notifications**: Desktop alerts on task completion
+3. **启动系统**
+   ```bash
+   # 方式1: 直接运行启动器
+   python autotrader/launcher.py
+   
+   # 方式2: 使用批处理文件
+   启动自动交易_最终版.bat
+   ```
 
-### Data Analysis
+## 📖 使用指南
 
-* **Multi-Stock Support**: Customizable stock pools
-* **Flexible Date Ranges**: User-defined analysis periods
-* **Export Options**: Excel and CSV output
-* **Charts**: Automatic plot generation
-* **History**: SQLite storage of past analyses
+### 1. 文件导入与股票管理
 
----
+#### 导入股票列表
+1. 打开GUI，进入"文件导入"选项卡
+2. 选择文件类型：
+   - **JSON文件**: `["AAPL", "MSFT", "NVDA"]`
+   - **Excel文件**: 包含股票代码的列
+   - **CSV/TXT**: 逗号分隔的股票代码
+3. 点击"导入到数据库"按钮
+4. 选择导入模式：
+   - **替换模式**: 清空现有列表，导入新股票
+   - **追加模式**: 在现有列表基础上添加
 
-## Requirements
+#### 数据库管理
+- **查看股票列表**: 在"数据库股票管理"选项卡中查看所有股票
+- **添加单个股票**: 使用"添加股票"功能
+- **批量操作**: 支持批量导入、删除操作
 
-### Minimum
+### 2. 策略引擎配置
 
-* **OS**: Windows 10/11, Linux, or macOS
-* **Python**: 3.8 or higher
-* **Memory**: 4 GB RAM
-* **Disk**: 2 GB free
-* **Network**: Internet access
+#### 启动策略引擎
+1. 点击"启动引擎(连接/订阅)"建立IB连接
+2. 点击"启动自动交易"开始策略循环
+3. 系统会自动：
+   - 读取数据库中的股票列表作为交易标的
+   - 获取实时报价和历史数据
+   - 计算多因子信号
+   - 执行风险检查和订单提交
 
-### Recommended
+#### 策略参数调整
+- **信号阈值**: 调整 `signals.acceptance_threshold` 控制交易频率
+- **轮询间隔**: 修改 `poll_sec` 参数调整策略执行频率
+- **风险限制**: 设置最大持仓比例、单日订单限制等
 
-* **OS**: Windows 11 or Ubuntu 20.04+
-* **Python**: 3.10 or higher
-* **Memory**: 8 GB RAM or more
-* **Disk**: 5 GB free
-* **Network**: High-speed connection
+### 3. 风险管理
 
----
+#### 风险参数配置
+- **最大投资组合敞口**: 控制总持仓规模
+- **单个标的上限**: 限制单个股票的最大持仓
+- **VaR限制**: 设置风险价值上限
+- **相关性检查**: 避免过度集中投资
 
-## Quick Start
+#### 实时监控
+- 系统实时监控账户状态
+- 自动计算风险指标
+- 超出限制时自动停止交易
 
-### One-Click Launch
+### 4. 直接交易功能
 
-```bash
-# Windows
-run “start_trading_software.bat”
+#### 订单类型
+- **市价单**: 立即执行
+- **限价单**: 指定价格执行
+- **括号单**: 带止损止盈的订单
+- **算法单**: TWAP/VWAP执行
 
-# Linux/Mac
-python3 quantitative_trading_manager.py
+#### 操作步骤
+1. 进入"直接交易"选项卡
+2. 选择订单类型
+3. 输入股票代码、数量和价格
+4. 点击执行按钮
+
+## 🏗️ 系统架构
+
+### 核心模块
+
+```
+autotrader/
+├── app.py                 # GUI主界面
+├── launcher.py           # 统一启动器
+├── ibkr_auto_trader.py   # IBKR交易接口
+├── engine.py             # 策略引擎
+├── risk_manager.py       # 风险管理
+├── enhanced_order_execution.py  # 增强订单执行
+├── order_state_machine.py      # 订单状态机
+├── connection_recovery.py      # 连接恢复
+├── trading_auditor_v2.py       # 交易审计
+├── task_manager.py             # 任务管理
+├── database.py                 # 数据库管理
+└── config.py                   # 配置管理
 ```
 
-### Command-Line
+### 数据流
 
-```bash
-# Activate your virtual environment
-source trading_env/bin/activate   # Linux/Mac
-trading_env\Scripts\activate.bat  # Windows
-
-# Run the program
-python quantitative_trading_manager.py
+```
+文件导入 → 数据库存储 → 策略引擎 → 信号计算 → 风险检查 → 订单执行 → 状态跟踪
 ```
 
+### 技术栈
+
+- **GUI框架**: Tkinter
+- **异步编程**: asyncio
+- **数据库**: SQLite
+- **交易API**: Interactive Brokers API
+- **技术指标**: 自定义多因子信号系统
+
+## ⚙️ 配置说明
+
+### 数据库配置
+- **文件位置**: `trading_system.db`
+- **表结构**: 
+  - `stock_lists`: 股票列表管理
+  - `tickers`: 全局股票池
+  - `trading_configs`: 交易配置
+  - `risk_configs`: 风险配置
+
+### 风险配置
+```json
+{
+  "max_portfolio_exposure": 0.8,
+  "max_single_position_pct": 0.15,
+  "max_new_positions_per_day": 10,
+  "default_stop_loss_pct": 0.05,
+  "default_take_profit_pct": 0.10
+}
+```
+
+### 信号配置
+```json
+{
+  "acceptance_threshold": 0.6,
+  "momentum_period": 20,
+  "mean_reversion_period": 10
+}
+```
+
+## 🔍 监控与日志
+
+### 日志文件
+- **审计日志**: `audit_logs/` 目录
+- **交易记录**: `trading_audit.db`
+- **系统日志**: GUI界面实时显示
+
+### 监控指标
+- 账户净值变化
+- 持仓状态
+- 订单执行情况
+- 风险指标
+- 策略性能
+
+## 🛠️ 故障排除
+
+### 常见问题
+
+1. **连接失败**
+   - 检查TWS/IB Gateway是否运行
+   - 确认端口设置(7497/7496)
+   - 检查防火墙设置
+
+2. **数据订阅失败**
+   - 确认IBKR数据订阅权限
+   - 检查账户类型(Paper/Live)
+   - 验证市场数据权限
+
+3. **策略不执行**
+   - 检查股票列表是否为空
+   - 确认信号阈值设置
+   - 查看风险限制是否触发
+
+4. **订单执行失败**
+   - 检查账户资金
+   - 确认交易权限
+   - 查看市场状态
+
+### 调试模式
+- 启用详细日志输出
+- 使用"系统测试"功能
+- 检查数据库连接状态
+
+## 📈 性能优化
+
+### 系统优化
+- 调整轮询间隔
+- 优化数据库查询
+- 合理设置风险参数
+
+### 策略优化
+- 回测验证策略有效性
+- 调整信号参数
+- 优化资金分配
+
+## 🔒 安全注意事项
+
+### 账户安全
+- 使用Paper Trading账户进行测试
+- 定期备份配置文件
+- 监控异常交易活动
+
+### 数据安全
+- 定期备份数据库
+- 保护API密钥
+- 监控系统访问日志
+
+## 📞 技术支持
+
+### 文档
+- 查看 `USAGE_GUIDE.md` 获取详细使用说明
+- 参考 `SYSTEM_ARCHITECTURE_ANALYSIS.md` 了解系统架构
+
+### 测试
+- 运行 `tests/` 目录下的测试用例
+- 使用 `scripts/dry_run_engine.py` 进行模拟测试
+
+## 📄 许可证
+
+本项目仅供学习和研究使用，请遵守相关法律法规和IBKR使用条款。
+
+## 🔄 更新日志
+
+### v1.0
+- 统一GUI界面
+- 集成策略引擎
+- 增强风险管理
+- 完善订单执行
+- 优化系统架构
+
 ---
 
-## Installation
-
-1. **Create a Virtual Environment (optional)**
-
-   ```bash
-   python -m venv trading_env
-   ```
-
-2. **Install Core Dependencies**
-
-   ```bash
-   pip install -r requirements_portable.txt
-   ```
-
-3. **Verify Installation**
-
-   ```bash
-   python -c "import pandas, numpy, yfinance; print('OK')"
-   ```
-
----
-
-## How to Use
-
-1. **Launch the Software** by running the script or batch file.
-2. **Choose an Analysis**:
-
-   * Quantitative model
-   * Backtest
-   * Machine learning backtest
-3. **Set Parameters**: Pick date range, stock pool, and model settings.
-4. **Run Analysis**: Click the button to start.
-5. **View Results**: Check the “result” folder for Excel, CSV, and charts.
-
-
-
-## Technical Overview
-
-* **Language**: Python 3.8+
-* **GUI**: Tkinter
-* **Database**: SQLite
-* **Data Handling**: pandas, NumPy
-* **ML**: scikit-learn, XGBoost, LightGBM, CatBoost
-* **Visualization**: matplotlib
-* **Data Source**: yfinance
-
-### Layers
-
-1. **User Interface** (Tkinter)
-2. **Business Logic** (Analysis engines, models, backtester)
-3. **Data Access** (SQLite, local files, web API)
-4. **External Data** (yfinance)
-
----
-
-## Troubleshooting
-
-* **Startup Errors**: Check Python version and dependencies.
-* **Dependency Issues**: Upgrade pip, try a different mirror, reinstall.
-* **Database Errors**: Use provided scripts to inspect or reset the SQLite file.
-* **Data Fetch Problems**: Test yfinance connectivity with a simple script.
-
----
-
-## License
-
-This project is released under the MIT License.
+**注意**: 本系统涉及实际交易，请在使用前充分测试，并确保理解所有风险。建议先在Paper Trading环境中验证系统功能。 
