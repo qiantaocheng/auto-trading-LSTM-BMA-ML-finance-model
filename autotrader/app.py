@@ -9,11 +9,14 @@ from typing import Optional, List
 import os
 import sys
 import subprocess
+import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 
 from .ibkr_auto_trader import IbkrAutoTrader
 from .engine import Engine
-from .config import HotConfig
+# 已改用统一配置管理器
+# from .config import HotConfig
 from .database import StockDatabase
 
 
@@ -25,8 +28,8 @@ class AppState:
     column: Optional[str] = None
     symbols_csv: Optional[str] = None
     host: str = "127.0.0.1"
-    port: int = 7497
-    client_id: int = 123
+    port: int = 4002
+    client_id: int = 3130
     # 交易参数
     alloc: float = 0.03
     poll_sec: float = 10.0
@@ -40,7 +43,30 @@ class AppState:
 class AutoTraderGUI(tk.Tk):
     def __init__(self) -> None:  # type: ignore
         super().__init__()
-        self.state = AppState()
+        
+        # 使用统一的配置管理器
+        from autotrader.unified_config import get_unified_config
+        from autotrader.event_loop_manager import get_event_loop_manager
+        from autotrader.resource_monitor import get_resource_monitor
+        
+        self.config_manager = get_unified_config()
+        self.loop_manager = get_event_loop_manager()
+        self.resource_monitor = get_resource_monitor()
+        
+        # 启动事件循环管理器
+        if not self.loop_manager.start():
+            raise RuntimeError("无法启动事件循环管理器")
+        
+        # 启动资源监控
+        self.resource_monitor.start_monitoring()
+        
+        # 初始化AppState使用统一配置
+        conn_params = self.config_manager.get_connection_params()
+        self.state = AppState(
+            port=conn_params['port'],
+            client_id=conn_params['client_id'],
+            host=conn_params['host']
+        )
         self.title("IBKR 自动交易控制台")
         self.geometry("1000x700")
         # 使用项目内固定路径的数据目录，避免当前工作目录变化导致丢失
@@ -52,12 +78,26 @@ class AutoTraderGUI(tk.Tk):
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.trader: Optional[IbkrAutoTrader] = None
         self.engine: Optional[Engine] = None
-        self.hot_config: Optional[HotConfig] = HotConfig()
+        # 已改用统一配置管理器，不再需要HotConfig
+        # self.hot_config: Optional[HotConfig] = HotConfig()
         self._loop_thread: Optional[threading.Thread] = None
+        self._loop_ready_event: Optional[threading.Event] = None
         self._engine_loop_task: Optional[asyncio.Task] = None
+        # 状态跟踪变量
+        self._model_training: bool = False
+        self._model_trained: bool = False
+        self._daily_trade_count: int = 0
         
         # Ensure proper cleanup on window close
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        
+        # 添加资源清理回调
+        self.resource_monitor.add_warning_callback(self._on_resource_warning)
+        
+        # 初始化事件系统
+        from autotrader.event_system import get_event_bus, GUIEventAdapter
+        self.event_bus = get_event_bus()
+        self.gui_adapter = GUIEventAdapter(self, self.event_bus)
 
     def _build_ui(self) -> None:
         frm = tk.Frame(self)
@@ -108,6 +148,11 @@ class AutoTraderGUI(tk.Tk):
         notebook.add(direct_frame, text="直接交易")
         self._build_direct_tab(direct_frame)
 
+        # 回测分析选项卡
+        backtest_frame = ttk.Frame(notebook)
+        notebook.add(backtest_frame, text="回测分析")
+        self._build_backtest_tab(backtest_frame)
+
         # 交易参数设置
         params = tk.LabelFrame(frm, text="交易参数设置")
         params.pack(fill=tk.X, pady=5)
@@ -136,6 +181,7 @@ class AutoTraderGUI(tk.Tk):
         act = tk.LabelFrame(frm, text="操作")
         act.pack(fill=tk.X, pady=5)
         tk.Button(act, text="测试连接", command=self._test_connection, bg="lightblue").pack(side=tk.LEFT, padx=5)
+        tk.Button(act, text="断开API连接", command=self._disconnect_api, bg="#ffcccc").pack(side=tk.LEFT, padx=5)
         tk.Button(act, text="启动自动交易", command=self._start_autotrade, bg="lightgreen").pack(side=tk.LEFT, padx=5)
         tk.Button(act, text="停止交易", command=self._stop, bg="orange").pack(side=tk.LEFT, padx=5)
         tk.Button(act, text="清空日志", command=self._clear_log, bg="lightgray").pack(side=tk.LEFT, padx=5)
@@ -144,6 +190,11 @@ class AutoTraderGUI(tk.Tk):
         tk.Button(act, text="打印数据库", command=self._print_database, bg="white").pack(side=tk.LEFT, padx=5)
         tk.Button(act, text="一键删除数据库", command=self._delete_database, bg="#ff6666").pack(side=tk.RIGHT, padx=5)
 
+        # 运行状态告示栏
+        status_frame = tk.LabelFrame(frm, text="引擎运行状态")
+        status_frame.pack(fill=tk.X, pady=5)
+        self._build_status_panel(status_frame)
+        
         # 日志
         log_frame = tk.LabelFrame(frm, text="运行日志")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -330,7 +381,7 @@ class AutoTraderGUI(tk.Tk):
         ttk.Button(box, text="运行一次信号与交易", command=self._engine_once).grid(row=0, column=1, padx=6, pady=6)
         ttk.Button(box, text="停止引擎", command=self._stop_engine_mode).grid(row=0, column=2, padx=6, pady=6)
 
-        tip = ttk.Label(frm, text="说明: 引擎使用统一配置 HotConfig 扫描 universe，计算多因子信号并下单。")
+        tip = ttk.Label(frm, text="说明: 引擎使用统一配置管理器扫描 universe，计算多因子信号并下单。")
         tip.pack(anchor=tk.W, pady=6)
 
     def _build_direct_tab(self, parent) -> None:
@@ -379,18 +430,54 @@ class AutoTraderGUI(tk.Tk):
 
     def _start_engine(self) -> None:
         try:
+            # 采集最新UI参数
+            self._capture_ui()
+            # 立即在主线程提示，避免“无反应”感受
+            self.log(f"准备启动引擎(连接/订阅)... Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
             loop = self._ensure_loop()
             async def _run():
                 try:
-                    if not self.trader:
-                        self.trader = IbkrAutoTrader(self.state.host, self.state.port, self.state.client_id, use_delayed_if_no_realtime=True)
-                    await self.trader.connect()
-                    self.engine = Engine(self.hot_config or HotConfig(), self.trader)
+                    # 线程安全日志
+                    try:
+                        self.after(0, lambda: self.log(
+                            f"启动引擎参数: Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}"))
+                    except Exception:
+                        pass
+                    # 启动前先断开现有连接，避免clientId占用
+                    if self.trader and getattr(self.trader, 'ib', None) and self.trader.ib.isConnected():
+                        try:
+                            await self.trader.close()
+                            try:
+                                self.after(0, lambda: self.log("已断开之前的API连接"))
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    # 创建并连接交易器，使用统一配置
+                    self.trader = IbkrAutoTrader(config_manager=self.config_manager)
+                    # 注册到资源监控
+                    self.resource_monitor.register_connection(self.trader)
+                    
+                    # 让 Engine 统一负责 connect 与订阅，使用统一配置
+                    self.engine = Engine(self.config_manager, self.trader)
                     await self.engine.start()
-                    self.log("策略引擎已启动并完成订阅")
+                    try:
+                        self.after(0, lambda: self.log("策略引擎已启动并完成订阅"))
+                        self.after(0, lambda: self._update_signal_status("引擎已启动", "green"))
+                    except Exception:
+                        pass
                 except Exception as e:
-                    self.log(f"策略引擎启动失败: {e}")
-            asyncio.run_coroutine_threadsafe(_run(), loop)
+                    error_msg = str(e)
+                    try:
+                        self.after(0, lambda e_msg=error_msg: self.log(f"策略引擎启动失败: {e_msg}"))
+                    except Exception:
+                        print(f"策略引擎启动失败: {e}")  # 降级日志
+            # 使用线程安全的事件循环管理器
+            try:
+                self.loop_manager.submit_coroutine(_run(), timeout=60)
+            except Exception as e:
+                error_msg = str(e)
+                self.after(0, lambda e_msg=error_msg: self.log(f"策略引擎启动失败: {e_msg}"))
         except Exception as e:
             self.log(f"启动引擎错误: {e}")
 
@@ -400,14 +487,16 @@ class AutoTraderGUI(tk.Tk):
                 self.log("请先启动引擎")
                 return
             loop = self._ensure_loop()
-            asyncio.run_coroutine_threadsafe(self.engine.on_signal_and_trade(), loop)
+            self.loop_manager.submit_coroutine(self.engine.on_signal_and_trade(), timeout=30)
             self.log("已触发一次信号与交易")
+            self._update_signal_status("执行交易信号", "blue")
         except Exception as e:
             self.log(f"运行引擎一次失败: {e}")
 
     def _stop_engine_mode(self) -> None:
         try:
             self.log("策略引擎停止：可通过停止交易按钮一并断开连接与任务")
+            self._update_signal_status("已停止", "red")
         except Exception as e:
             self.log(f"停止引擎失败: {e}")
 
@@ -422,13 +511,13 @@ class AutoTraderGUI(tk.Tk):
             async def _run():
                 try:
                     if not self.trader:
-                        self.trader = IbkrAutoTrader(self.state.host, self.state.port, self.state.client_id, use_delayed_if_no_realtime=True)
+                        self.trader = IbkrAutoTrader(config_manager=self.config_manager)
                         await self.trader.connect()
                     await self.trader.place_market_order(sym, side, qty)
                     self.log(f"已提交市价单: {side} {qty} {sym}")
                 except Exception as e:
                     self.log(f"市价单失败: {e}")
-            asyncio.run_coroutine_threadsafe(_run(), loop)
+            self.loop_manager.submit_coroutine(_run(), timeout=30)
         except Exception as e:
             self.log(f"市价下单错误: {e}")
 
@@ -445,13 +534,13 @@ class AutoTraderGUI(tk.Tk):
             async def _run():
                 try:
                     if not self.trader:
-                        self.trader = IbkrAutoTrader(self.state.host, self.state.port, self.state.client_id, use_delayed_if_no_realtime=True)
+                        self.trader = IbkrAutoTrader(config_manager=self.config_manager)
                         await self.trader.connect()
                     await self.trader.place_limit_order(sym, side, qty, px)
                     self.log(f"已提交限价单: {side} {qty} {sym} @ {px}")
                 except Exception as e:
                     self.log(f"限价单失败: {e}")
-            asyncio.run_coroutine_threadsafe(_run(), loop)
+            self.loop_manager.submit_coroutine(_run(), timeout=30)
         except Exception as e:
             self.log(f"限价下单错误: {e}")
 
@@ -468,13 +557,13 @@ class AutoTraderGUI(tk.Tk):
             async def _run():
                 try:
                     if not self.trader:
-                        self.trader = IbkrAutoTrader(self.state.host, self.state.port, self.state.client_id, use_delayed_if_no_realtime=True)
+                        self.trader = IbkrAutoTrader(config_manager=self.config_manager)
                         await self.trader.connect()
                     await self.trader.place_market_order_with_bracket(sym, side, qty, stop_pct=stop_pct, target_pct=tp_pct)
                     self.log(f"已提交括号单: {side} {qty} {sym} (止损{stop_pct*100:.1f}%, 止盈{tp_pct*100:.1f}%)")
                 except Exception as e:
                     self.log(f"括号单失败: {e}")
-            asyncio.run_coroutine_threadsafe(_run(), loop)
+            self.loop_manager.submit_coroutine(_run(), timeout=30)
         except Exception as e:
             self.log(f"括号单错误: {e}")
 
@@ -491,13 +580,13 @@ class AutoTraderGUI(tk.Tk):
             async def _run():
                 try:
                     if not self.trader:
-                        self.trader = IbkrAutoTrader(self.state.host, self.state.port, self.state.client_id, use_delayed_if_no_realtime=True)
+                        self.trader = IbkrAutoTrader(config_manager=self.config_manager)
                         await self.trader.connect()
                     await self.trader.execute_large_order(sym, side, qty, algorithm=algo, duration_minutes=dur_min)
                     self.log(f"已提交大单执行: {algo} {side} {qty} {sym} / {dur_min}min")
                 except Exception as e:
                     self.log(f"大单执行失败: {e}")
-            asyncio.run_coroutine_threadsafe(_run(), loop)
+            self.loop_manager.submit_coroutine(_run(), timeout=30)
         except Exception as e:
             self.log(f"大单执行错误: {e}")
 
@@ -592,36 +681,19 @@ class AutoTraderGUI(tk.Tk):
 
     def _build_database_tab(self, parent):
         """构建数据库股票管理选项卡"""
-        # 左侧：股票列表
+        # 左侧：全局交易股票（仅显示会被交易的全局tickers）
         left_frame = tk.Frame(parent)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # 股票列表选择
-        list_frame = tk.LabelFrame(left_frame, text="股票列表")
-        list_frame.pack(fill=tk.X, pady=5)
-        
-        tk.Label(list_frame, text="选择列表:").grid(row=0, column=0, padx=5, pady=5)
-        self.stock_list_var = tk.StringVar()
-        self.stock_list_combo = ttk.Combobox(list_frame, textvariable=self.stock_list_var, state="readonly", width=20)
-        self.stock_list_combo.grid(row=0, column=1, padx=5, pady=5)
-        self.stock_list_combo.bind("<<ComboboxSelected>>", self._on_stock_list_changed)
-        
-        tk.Button(list_frame, text="新建列表", command=self._create_stock_list, bg="lightblue").grid(row=0, column=2, padx=5)
-        tk.Button(list_frame, text="删除列表", command=self._delete_stock_list, bg="lightcoral").grid(row=0, column=3, padx=5)
-        tk.Button(list_frame, text="刷新", command=self._refresh_stock_lists, bg="lightgray").grid(row=0, column=4, padx=5)
-        
-        # 股票表格
-        stock_frame = tk.LabelFrame(left_frame, text="股票列表")
+
+        stock_frame = tk.LabelFrame(left_frame, text="交易股票（全局tickers）")
         stock_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
-        # 创建Treeview
-        columns = ('symbol', 'name', 'added_at')
+        # 创建Treeview，仅显示symbol与added_at
+        columns = ('symbol', 'added_at')
         self.stock_tree = ttk.Treeview(stock_frame, columns=columns, show='headings', height=10)
         self.stock_tree.heading('symbol', text='股票代码')
-        self.stock_tree.heading('name', text='公司名称')
         self.stock_tree.heading('added_at', text='添加时间')
         self.stock_tree.column('symbol', width=100)
-        self.stock_tree.column('name', width=200)
         self.stock_tree.column('added_at', width=150)
         
         # 滚动条
@@ -631,26 +703,31 @@ class AutoTraderGUI(tk.Tk):
         self.stock_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
         stock_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
         
-        # 右侧：操作面板
+        # 右侧：操作面板（以全局tickers为主）
         right_frame = tk.Frame(parent)
         right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
         
-        # 添加股票
-        add_frame = tk.LabelFrame(right_frame, text="添加股票")
+        # 数据库信息
+        info_frame = tk.LabelFrame(right_frame, text="数据库信息")
+        info_frame.pack(fill=tk.X, pady=5)
+        try:
+            db_path_text = getattr(self.db, 'db_path', '') or ''
+        except Exception:
+            db_path_text = ''
+        tk.Label(info_frame, text=f"路径: {db_path_text}", wraplength=220, justify=tk.LEFT, fg="gray").pack(anchor=tk.W, padx=5, pady=3)
+
+        # 添加股票（写入全局tickers）
+        add_frame = tk.LabelFrame(right_frame, text="添加交易股票(全局)")
         add_frame.pack(fill=tk.X, pady=5)
         
         tk.Label(add_frame, text="股票代码:").grid(row=0, column=0, padx=5, pady=5)
         self.ent_symbol = tk.Entry(add_frame, width=15)
         self.ent_symbol.grid(row=0, column=1, padx=5, pady=5)
         
-        tk.Label(add_frame, text="公司名称:").grid(row=1, column=0, padx=5, pady=5)
-        self.ent_stock_name = tk.Entry(add_frame, width=15)
-        self.ent_stock_name.grid(row=1, column=1, padx=5, pady=5)
+        tk.Button(add_frame, text="添加股票", command=self._add_ticker_global, bg="lightgreen").grid(row=1, column=0, columnspan=2, pady=5)
         
-        tk.Button(add_frame, text="添加股票", command=self._add_stock, bg="lightgreen").grid(row=2, column=0, columnspan=2, pady=5)
-        
-        # 批量导入
-        import_frame = tk.LabelFrame(right_frame, text="批量导入")
+        # 批量导入到全局tickers
+        import_frame = tk.LabelFrame(right_frame, text="批量导入(全局)")
         import_frame.pack(fill=tk.X, pady=5)
         
         tk.Label(import_frame, text="CSV格式:").grid(row=0, column=0, padx=5, pady=5)
@@ -658,13 +735,13 @@ class AutoTraderGUI(tk.Tk):
         self.ent_batch_csv.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
         self.ent_batch_csv.insert(tk.END, "AAPL,MSFT,GOOGL")
         
-        tk.Button(import_frame, text="批量导入", command=self._batch_import, bg="lightyellow").grid(row=2, column=0, columnspan=2, pady=5)
+        tk.Button(import_frame, text="批量导入", command=self._batch_import_global, bg="lightyellow").grid(row=2, column=0, columnspan=2, pady=5)
         
-        # 删除股票
-        delete_frame = tk.LabelFrame(right_frame, text="删除股票")
+        # 删除全局tickers中的股票
+        delete_frame = tk.LabelFrame(right_frame, text="删除交易股票(全局)")
         delete_frame.pack(fill=tk.X, pady=5)
         
-        tk.Button(delete_frame, text="删除选中", command=self._delete_selected_stock, bg="lightcoral").grid(row=0, column=0, padx=5, pady=5)
+        tk.Button(delete_frame, text="删除选中", command=self._delete_selected_ticker_global, bg="lightcoral").grid(row=0, column=0, padx=5, pady=5)
         
         # 配置管理
         config_frame = tk.LabelFrame(right_frame, text="配置管理")
@@ -677,9 +754,11 @@ class AutoTraderGUI(tk.Tk):
         
         tk.Button(config_frame, text="保存配置", command=self._save_config, bg="lightblue").grid(row=2, column=0, padx=2, pady=5)
         tk.Button(config_frame, text="加载配置", command=self._load_config, bg="lightgreen").grid(row=2, column=1, padx=2, pady=5)
+
+        # 同步功能移除（仅保留全局tickers作为唯一交易源）
         
         # 初始化数据
-        self._refresh_stock_lists()
+        self._refresh_global_tickers_table()
         self._refresh_configs()
 
     def _build_file_tab(self, parent):
@@ -762,7 +841,14 @@ class AutoTraderGUI(tk.Tk):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self.loop = loop
-                safe_log("事件循环已启动")
+                # 直接置位就绪事件（此刻loop已创建），避免等待超时
+                if self._loop_ready_event is None:
+                    self._loop_ready_event = threading.Event()
+                try:
+                    self._loop_ready_event.set()
+                except Exception:
+                    pass
+                safe_log("事件循环已创建并即将启动")
                 loop.run_forever()
             except Exception as e:
                 safe_log(f"事件循环异常: {e}")
@@ -789,24 +875,25 @@ class AutoTraderGUI(tk.Tk):
         self._loop_thread = threading.Thread(target=run_loop, daemon=True)
         self._loop_thread.start()
         
-        # Wait for loop to be ready with timeout; log warning instead of hard failing silently for user
-        max_wait = 60  # 6 seconds max
-        for _ in range(max_wait):
-            if self.loop and self.loop.is_running():
-                return self.loop
-            import time
-            time.sleep(0.1)
+        # Wait for loop to be ready (降级方案：短等待+存在即返回)
+        import time
+        if self._loop_ready_event is None:
+            self._loop_ready_event = threading.Event()
+        self._loop_ready_event.wait(timeout=1.0)
+        if self.loop is not None:
+            return self.loop  # type: ignore
         # If still not running, provide a helpful log and raise
-        self.log("事件循环未能在预期时间内启动，请重试‘测试连接’或‘启动自动交易’。")
+        self.log("事件循环未能在预期时间内启动，请重试'测试连接'或'启动自动交易'。")
         raise RuntimeError("Failed to start event loop")
-            
-        return self.loop
 
     def _capture_ui(self) -> None:
         self.state.host = self.ent_host.get().strip() or "127.0.0.1"
         try:
-            self.state.port = int(self.ent_port.get().strip())
-            self.state.client_id = int(self.ent_cid.get().strip())
+            # 自定义端口与clientId：完全尊重用户输入
+            port_input = (self.ent_port.get() or "").strip()
+            cid_input = (self.ent_cid.get() or "").strip()
+            self.state.port = int(port_input) if port_input else self.state.port
+            self.state.client_id = int(cid_input) if cid_input else self.state.client_id
             self.state.alloc = float(self.ent_alloc.get().strip() or 0.03)
             self.state.poll_sec = float(self.ent_poll.get().strip() or 10.0)
             self.state.fixed_qty = int(self.ent_fixed_qty.get().strip() or 0)
@@ -821,19 +908,37 @@ class AutoTraderGUI(tk.Tk):
     def _test_connection(self) -> None:
         try:
             self._capture_ui()
-            self.log("正在测试连接...")
-            loop = self._ensure_loop()
-
+            self.log(f"正在测试连接... Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
+            
             async def _run():
                 try:
-                    self.trader = IbkrAutoTrader(self.state.host, self.state.port, self.state.client_id, use_delayed_if_no_realtime=True)
+                    # 显示实际使用的连接参数
+                    self.log(f"连接参数: Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}")
+                    # 启动前先断开现有连接，避免clientId占用
+                    if self.trader and getattr(self.trader, 'ib', None) and self.trader.ib.isConnected():
+                        try:
+                            await self.trader.close()
+                            self.log("已断开之前的API连接")
+                        except Exception:
+                            pass
+                    self.trader = IbkrAutoTrader(config_manager=self.config_manager)
                     await self.trader.connect()
                     self.log("[OK] 连接成功")
                 except Exception as e:
                     self.log(f"[FAIL] 连接失败: {e}")
             
-            future = asyncio.run_coroutine_threadsafe(_run(), loop)
-            # 不等待结果，避免阻塞GUI
+            # 尝试使用后台事件循环，失败则用同步事件循环
+            try:
+                loop = self._ensure_loop()
+                # 使用线程安全的事件循环管理器
+                result = self.loop_manager.submit_coroutine(_run(), timeout=30)
+            except Exception as e:
+                self.log(f"后台事件循环失败: {e}，尝试同步连接...")
+                try:
+                    # 降级到直接提交
+                    self.loop_manager.submit_coroutine(_run(), timeout=30)
+                except Exception as e2:
+                    self.log(f"[FAIL] 连接失败(降级路径): {e2}")
             
         except Exception as e:
             self.log(f"测试连接错误: {e}")
@@ -842,14 +947,22 @@ class AutoTraderGUI(tk.Tk):
     def _start_autotrade(self) -> None:
         try:
             self._capture_ui()
-            self.log("正在启动自动交易（策略引擎模式）...")
-            loop = self._ensure_loop()
+            self.log(f"正在启动自动交易（策略引擎模式）... Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
 
             async def _run():
                 try:
+                    # 显示实际使用的连接参数
+                    self.log(f"启动引擎参数: Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}")
                     # 1) 准备 Trader 连接
+                    # 启动前先断开现有连接，避免clientId占用
+                    if self.trader and getattr(self.trader, 'ib', None) and self.trader.ib.isConnected():
+                        try:
+                            await self.trader.close()
+                            self.log("已断开之前的API连接")
+                        except Exception:
+                            pass
                     if not self.trader:
-                        self.trader = IbkrAutoTrader(self.state.host, self.state.port, self.state.client_id, use_delayed_if_no_realtime=True)
+                        self.trader = IbkrAutoTrader(config_manager=self.config_manager)
                     await self.trader.connect()
 
                     # 2) 准备 Engine 与 Universe（优先数据库/外部文件/手动CSV）
@@ -862,9 +975,10 @@ class AutoTraderGUI(tk.Tk):
                             uni = self._extract_symbols_from_files()
                     except Exception:
                         pass
-                    cfg = self.hot_config or HotConfig()
+                    # 使用统一配置管理器
+                    cfg = self.config_manager
                     if uni:
-                        cfg.get()["CONFIG"]["scanner"]["universe"] = uni
+                        cfg.set_runtime("scanner.universe", uni)
                         self.log(f"策略引擎使用自定义Universe: {len(uni)} 只标的")
 
                     if not self.engine:
@@ -887,10 +1001,22 @@ class AutoTraderGUI(tk.Tk):
                     # 在事件循环中创建任务并保存引用
                     self._engine_loop_task = asyncio.create_task(_engine_loop())
                     self.log("策略引擎已启动并进入循环")
+                    self._update_signal_status("循环运行中", "green")
                 except Exception as e:
                     self.log(f"自动交易启动失败: {e}")
 
-            asyncio.run_coroutine_threadsafe(_run(), loop)
+            # 尝试使用后台事件循环，失败则用同步事件循环启动
+            try:
+                loop = self._ensure_loop()
+                # 使用线程安全的事件循环管理器
+                result = self.loop_manager.submit_coroutine(_run(), timeout=60)
+            except Exception as e:
+                self.log(f"后台事件循环启动失败: {e}，尝试同步启动...")
+                try:
+                    # 降级到直接提交
+                    self.loop_manager.submit_coroutine(_run(), timeout=60)
+                except Exception as e2:
+                    self.log(f"自动交易启动失败(降级路径): {e2}")
 
         except Exception as e:
             self.log(f"启动自动交易错误: {e}")
@@ -924,6 +1050,7 @@ class AutoTraderGUI(tk.Tk):
                                 task.cancel()
                         self.loop.call_soon_threadsafe(_cancel_task, self._engine_loop_task)
                         self.log("已请求停止策略引擎循环")
+                        self._update_signal_status("循环已停止", "red")
                 except Exception as e:
                     self.log(f"停止策略循环失败: {e}")
 
@@ -938,7 +1065,7 @@ class AutoTraderGUI(tk.Tk):
                         finally:
                             self.trader = None
                             
-                    asyncio.run_coroutine_threadsafe(_cleanup_trader(), self.loop)
+                    self.loop_manager.submit_coroutine(_cleanup_trader(), timeout=10)
                 else:
                     self.trader = None
             
@@ -966,6 +1093,61 @@ class AutoTraderGUI(tk.Tk):
             self.log(f"停止交易错误: {e}")
             messagebox.showerror("错误", f"停止失败: {e}")
 
+    def _disconnect_api(self) -> None:
+        """一键断开API连接（不影响引擎结构，清理clientId占用）"""
+        try:
+            if not self.trader:
+                self.log("无活动API连接")
+                return
+            self.log("正在断开API连接...")
+            if self.loop and self.loop.is_running():
+                # 先在线程安全地立即断开底层IB连接，避免clientId占用
+                try:
+                    if getattr(self.trader, 'ib', None):
+                        self.loop.call_soon_threadsafe(self.trader.ib.disconnect)
+                except Exception:
+                    pass
+                # 然后进行完整清理，并等待结果以反馈日志
+                async def _do_close():
+                    try:
+                        await self.trader.close()
+                        self.log("API连接已断开")
+                    except Exception as e:
+                        self.log(f"断开API失败: {e}")
+                try:
+                    self.loop_manager.submit_coroutine(_do_close(), timeout=5)
+                except Exception:
+                    pass
+            else:
+                try:
+                    import asyncio as _a
+                    # 先断开底层IB
+                    try:
+                        if getattr(self.trader, 'ib', None):
+                            self.trader.ib.disconnect()
+                    except Exception:
+                        pass
+                    # 再完整清理
+                    _a.run(self.trader.close())
+                except Exception:
+                    pass
+                self.log("API连接已断开(无事件循环)")
+            # 置空 trader，释放clientId
+            self.trader = None
+            # 更新状态显示
+            try:
+                self._update_status()
+                self._update_signal_status("已断开", "red")
+            except Exception:
+                pass
+            try:
+                # 即刻反馈
+                messagebox.showinfo("提示", "API连接已断开")
+            except Exception:
+                pass
+        except Exception as e:
+            self.log(f"断开API出错: {e}")
+
     def _clear_log(self) -> None:
         self.txt.delete(1.0, tk.END)
         self.log("日志已清空")
@@ -991,7 +1173,7 @@ class AutoTraderGUI(tk.Tk):
                 except Exception as e:
                     self.log(f"获取账户信息失败: {e}")
                     
-            future = asyncio.run_coroutine_threadsafe(_run(), loop)
+            self.loop_manager.submit_coroutine(_run(), timeout=30)
             
         except Exception as e:
             self.log(f"查看账户错误: {e}")
@@ -1027,6 +1209,109 @@ class AutoTraderGUI(tk.Tk):
                 
         except Exception as e:
             self.log(f"刷新配置失败: {e}")
+    
+    # ===== 全局tickers视图与操作（唯一交易源） =====
+    def _refresh_global_tickers_table(self) -> None:
+        """刷新全局tickers在表格中的显示"""
+        try:
+            # 清空表格
+            for item in self.stock_tree.get_children():
+                self.stock_tree.delete(item)
+            # 载入全局tickers
+            rows = []
+            try:
+                rows = self.db.get_all_tickers_with_meta()
+            except Exception:
+                rows = []
+            for r in rows:
+                symbol = (r.get('symbol') or '').upper()
+                added_at = (r.get('added_at') or '')
+                self.stock_tree.insert('', 'end', values=(symbol, added_at[:16]))
+        except Exception as e:
+            self.log(f"刷新交易股票失败: {e}")
+    
+    def _add_ticker_global(self) -> None:
+        """添加到全局tickers"""
+        try:
+            symbol = (self.ent_symbol.get() or '').strip().upper()
+            if not symbol:
+                messagebox.showwarning("警告", "请输入股票代码")
+                return
+            if self.db.add_ticker(symbol):
+                self.log(f"已添加到全局tickers: {symbol}")
+                try:
+                    self.ent_symbol.delete(0, tk.END)
+                except Exception:
+                    pass
+                self._refresh_global_tickers_table()
+            else:
+                messagebox.showwarning("警告", f"{symbol} 已存在")
+        except Exception as e:
+            self.log(f"添加全局ticker失败: {e}")
+            messagebox.showerror("错误", f"添加失败: {e}")
+    
+    def _batch_import_global(self) -> None:
+        """批量导入到全局tickers"""
+        try:
+            csv_text = (self.ent_batch_csv.get(1.0, tk.END) or '').strip()
+            if not csv_text:
+                messagebox.showwarning("警告", "请输入股票代码")
+                return
+            symbols = [s.strip().upper() for s in csv_text.split(',') if s.strip()]
+            success = 0
+            fail = 0
+            for s in symbols:
+                if self.db.add_ticker(s):
+                    success += 1
+                else:
+                    fail += 1
+            self.log(f"批量导入(全局)完成: 成功 {success}，失败 {fail}")
+            try:
+                self.ent_batch_csv.delete(1.0, tk.END)
+            except Exception:
+                pass
+            self._refresh_global_tickers_table()
+        except Exception as e:
+            self.log(f"批量导入(全局)失败: {e}")
+            messagebox.showerror("错误", f"批量导入失败: {e}")
+    
+    def _delete_selected_ticker_global(self) -> None:
+        """从全局tickers删除选中的股票，并触发自动清仓。"""
+        try:
+            selected_items = self.stock_tree.selection()
+            if not selected_items:
+                messagebox.showwarning("警告", "请先选择要删除的股票")
+                return
+            symbols = []
+            for item in selected_items:
+                values = self.stock_tree.item(item, 'values')
+                if values:
+                    symbols.append(values[0])
+            if not symbols:
+                return
+            result = messagebox.askyesno("确认删除", f"确定要从全局tickers删除：\n{', '.join(symbols)}")
+            if not result:
+                return
+            removed = []
+            for symbol in symbols:
+                if self.db.remove_ticker(symbol):
+                    removed.append(symbol)
+            self.log(f"已从全局tickers删除 {len(removed)} 只: {', '.join(removed) if removed else ''}")
+            self._refresh_global_tickers_table()
+
+            # 触发自动清仓（市价卖出被删除的标的的现有持仓）
+            if removed:
+                if self.trader and self.loop and self.loop.is_running():
+                    try:
+                        self.loop_manager.submit_coroutine(self._auto_sell_stocks(removed), timeout=30)
+                        self.log("已触发自动清仓任务")
+                    except Exception as e:
+                        self.log(f"触发自动清仓失败: {e}")
+                else:
+                    self.log("当前未连接交易或事件循环未运行，无法自动清仓。稍后连接后可在文件导入页用替换功能清仓。")
+        except Exception as e:
+            self.log(f"删除全局ticker失败: {e}")
+            messagebox.showerror("错误", f"删除失败: {e}")
     
     def _on_stock_list_changed(self, event):
         """股票列表选择变化"""
@@ -1100,87 +1385,69 @@ class AutoTraderGUI(tk.Tk):
             messagebox.showerror("错误", f"删除失败: {e}")
     
     def _add_stock(self):
-        """添加股票"""
-        try:
-            if not self.state.selected_stock_list_id:
-                messagebox.showwarning("警告", "请先选择股票列表")
-                return
-                
-            symbol = self.ent_symbol.get().strip().upper()
-            name = self.ent_stock_name.get().strip()
-            
-            if not symbol:
-                messagebox.showwarning("警告", "请输入股票代码")
-                return
-                
-            if self.db.add_stock(self.state.selected_stock_list_id, symbol, name):
-                self.log(f"成功添加股票: {symbol}")
-                self.ent_symbol.delete(0, tk.END)
-                self.ent_stock_name.delete(0, tk.END)
-                self._refresh_stock_table(self.state.selected_stock_list_id)
-                self._refresh_stock_lists()  # 更新股票数量
-            else:
-                messagebox.showwarning("警告", f"股票 {symbol} 已在列表中")
-                
-        except Exception as e:
-            self.log(f"添加股票失败: {e}")
-            messagebox.showerror("错误", f"添加失败: {e}")
+        """已废弃（列表模式移除）"""
+        messagebox.showinfo("提示", "此功能已由‘添加交易股票(全局)’替代")
     
     def _batch_import(self):
-        """批量导入股票"""
-        try:
-            if not self.state.selected_stock_list_id:
-                messagebox.showwarning("警告", "请先选择股票列表")
-                return
-                
-            csv_text = self.ent_batch_csv.get(1.0, tk.END).strip()
-            if not csv_text:
-                messagebox.showwarning("警告", "请输入股票代码")
-                return
-                
-            success, fail = self.db.import_from_csv(self.state.selected_stock_list_id, csv_text)
-            
-            self.log(f"批量导入完成: 成功 {success} 个，失败 {fail} 个")
-            self.ent_batch_csv.delete(1.0, tk.END)
-            self._refresh_stock_table(self.state.selected_stock_list_id)
-            self._refresh_stock_lists()
-            
-        except Exception as e:
-            self.log(f"批量导入失败: {e}")
-            messagebox.showerror("错误", f"批量导入失败: {e}")
+        """已废弃（列表模式移除）"""
+        messagebox.showinfo("提示", "此功能已由‘批量导入(全局)’替代")
     
     def _delete_selected_stock(self):
-        """删除选中的股票"""
+        """已废弃（列表模式移除）"""
+        messagebox.showinfo("提示", "此功能已由‘删除交易股票(全局)’替代")
+
+    def _sync_global_to_current_list_replace(self):
+        """将全局tickers替换写入当前选中列表（stocks表）。"""
         try:
             if not self.state.selected_stock_list_id:
                 messagebox.showwarning("警告", "请先选择股票列表")
                 return
-                
-            selected_items = self.stock_tree.selection()
-            if not selected_items:
-                messagebox.showwarning("警告", "请先选择要删除的股票")
+            tickers = self.db.get_all_tickers()
+            if not tickers:
+                messagebox.showinfo("提示", "全局tickers为空。请先在‘文件导入’页导入或追加股票。")
                 return
-                
-            symbols = []
-            for item in selected_items:
-                values = self.stock_tree.item(item, 'values')
-                symbols.append(values[0])
-            
-            result = messagebox.askyesno("确认删除", f"确定要删除这些股票吗？\n{', '.join(symbols)}")
-            
-            if result:
-                success_count = 0
-                for symbol in symbols:
-                    if self.db.remove_stock(self.state.selected_stock_list_id, symbol):
-                        success_count += 1
-                        
-                self.log(f"成功删除 {success_count} 只股票")
-                self._refresh_stock_table(self.state.selected_stock_list_id)
-                self._refresh_stock_lists()
-                
+            ok = messagebox.askyesno(
+                "确认同步",
+                f"将用全局tickers({len(tickers)}只)替换当前列表的股票，是否继续？")
+            if not ok:
+                return
+            removed_symbols = self.db.clear_stock_list(self.state.selected_stock_list_id)
+            added = 0
+            for sym in tickers:
+                if self.db.add_stock(self.state.selected_stock_list_id, sym):
+                    added += 1
+            self.log(f"同步完成：清空原有 {len(removed_symbols)} 只，写入 {added} 只")
+            self._refresh_stock_table(self.state.selected_stock_list_id)
+            self._refresh_stock_lists()
         except Exception as e:
-            self.log(f"删除股票失败: {e}")
-            messagebox.showerror("错误", f"删除失败: {e}")
+            self.log(f"全局→列表同步失败: {e}")
+            messagebox.showerror("错误", f"同步失败: {e}")
+
+    def _sync_current_list_to_global_replace(self):
+        """将当前选中列表替换写入全局tickers（可触发自动清仓逻辑）。"""
+        try:
+            if not self.state.selected_stock_list_id:
+                messagebox.showwarning("警告", "请先选择股票列表")
+                return
+            rows = self.db.get_stocks_in_list(self.state.selected_stock_list_id)
+            symbols = [r.get('symbol') for r in rows if r.get('symbol')]
+            ok = messagebox.askyesno(
+                "确认同步",
+                f"将用当前列表({len(symbols)}只)替换全局tickers，是否继续？\n可在‘文件导入’页勾选‘自动清仓’控制是否清仓被移除标的。")
+            if not ok:
+                return
+            removed_before, success, fail = self.db.replace_all_tickers(symbols)
+            self.log(f"列表→全局同步完成：移除 {len(removed_before)}，写入成功 {success}，失败 {fail}")
+            # 根据勾选项触发自动清仓
+            auto_clear = bool(self.var_auto_clear.get())
+            if auto_clear and removed_before:
+                if self.trader and self.loop and self.loop.is_running():
+                    self.loop_manager.submit_coroutine(self._auto_sell_stocks(removed_before), timeout=30)
+                else:
+                    self.log("检测到被移除标的，但当前未连接交易或事件循环未运行，跳过自动清仓。")
+        except Exception as e:
+            self.log(f"列表→全局同步失败: {e}")
+            messagebox.showerror("错误", f"同步失败: {e}")
     
     def _save_config(self):
         """保存交易配置"""
@@ -1328,8 +1595,8 @@ class AutoTraderGUI(tk.Tk):
             # 如果启用自动清仓且交易器已连接且事件循环已在运行，则异步清仓
             if auto_clear and removed_before:
                 if self.trader and self.loop and self.loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self._auto_sell_stocks(removed_before), self.loop)
+                    self.loop_manager.submit_coroutine(
+                        self._auto_sell_stocks(removed_before), timeout=30)
                 else:
                     self.log("检测到移除的股票，但当前未连接交易或事件循环未运行，跳过自动清仓。")
             
@@ -1443,6 +1710,14 @@ class AutoTraderGUI(tk.Tk):
             return []
 
 
+    def _on_resource_warning(self, warning_type: str, data: dict):
+        """资源警告回调"""
+        try:
+            warning_msg = f"资源警告 [{warning_type}]: {data.get('message', str(data))}"
+            self.after(0, lambda msg=warning_msg: self.log(msg))
+        except Exception:
+            pass
+    
     def _on_closing(self) -> None:
         """Enhanced cleanup when closing the application with proper resource management"""
         try:
@@ -1470,8 +1745,7 @@ class AutoTraderGUI(tk.Tk):
                                 self.log(f"交易器关闭失败: {e}")
                         
                         try:
-                            future = asyncio.run_coroutine_threadsafe(_cleanup_trader(), self.loop)
-                            future.result(timeout=2.0)  # 2 second timeout
+                            self.loop_manager.submit_coroutine(_cleanup_trader(), timeout=2.0)
                         except Exception:
                             pass
                     
@@ -1509,6 +1783,28 @@ class AutoTraderGUI(tk.Tk):
                         except Exception:
                             pass
                     
+                    # 停止资源监控
+                    try:
+                        self.resource_monitor.stop_monitoring()
+                        self.log("资源监控已停止")
+                    except Exception as e:
+                        self.log(f"停止资源监控失败: {e}")
+                    
+                    # 停止事件循环管理器
+                    try:
+                        self.loop_manager.stop()
+                        self.log("事件循环管理器已停止")
+                    except Exception as e:
+                        self.log(f"停止事件循环管理器失败: {e}")
+                    
+                    # 停止事件总线
+                    try:
+                        from autotrader.event_system import shutdown_event_bus
+                        shutdown_event_bus()
+                        self.log("事件总线已停止")
+                    except Exception as e:
+                        self.log(f"停止事件总线失败: {e}")
+                    
                     # Reset references
                     self.trader = None
                     self.loop = None
@@ -1544,6 +1840,10 @@ class AutoTraderGUI(tk.Tk):
 
             def _runner():
                 try:
+                    # 标记模型开始训练
+                    self._model_training = True
+                    self._model_trained = False
+                    
                     cmd = [sys.executable, script_path, '--start-date', start_date, '--end-date', end_date]
                     proc = subprocess.Popen(
                         cmd,
@@ -1562,10 +1862,17 @@ class AutoTraderGUI(tk.Tk):
                             except Exception:
                                 pass
                     code = proc.wait()
+                    
+                    # 更新模型状态
+                    self._model_training = False
+                    self._model_trained = (code == 0)
+                    
                     self.after(0, lambda: self.log(f"[BMA] 运行完成，退出码={code}"))
                     if code != 0:
                         self.after(0, lambda: messagebox.showwarning("BMA运行", f"BMA模型运行异常（退出码 {code}），请查看日志"))
                 except Exception as e:
+                    self._model_training = False
+                    self._model_trained = False
                     self.after(0, lambda: self.log(f"[BMA] 运行失败: {e}"))
 
             threading.Thread(target=_runner, daemon=True).start()
@@ -1573,6 +1880,602 @@ class AutoTraderGUI(tk.Tk):
         except Exception as e:
             self.log(f"[BMA] 启动失败: {e}")
             messagebox.showerror("错误", f"启动BMA失败: {e}")
+
+    def _build_backtest_tab(self, parent) -> None:
+        """构建回测分析选项卡"""
+        # 回测类型选择
+        backtest_type_frame = tk.LabelFrame(parent, text="回测类型")
+        backtest_type_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 回测类型选择变量
+        self.backtest_type = tk.StringVar(value="autotrader")
+        
+        # AutoTrader BMA 回测
+        tk.Radiobutton(
+            backtest_type_frame, 
+            text="AutoTrader BMA 回测", 
+            variable=self.backtest_type, 
+            value="autotrader"
+        ).pack(anchor=tk.W, padx=10, pady=2)
+        
+        # 周频 BMA 回测
+        tk.Radiobutton(
+            backtest_type_frame, 
+            text="周频 BMA 回测", 
+            variable=self.backtest_type, 
+            value="weekly"
+        ).pack(anchor=tk.W, padx=10, pady=2)
+        
+        # 回测参数配置
+        config_frame = tk.LabelFrame(parent, text="回测参数配置")
+        config_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 第一行：日期范围
+        row1 = tk.Frame(config_frame)
+        row1.pack(fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(row1, text="开始日期:").pack(side=tk.LEFT)
+        self.ent_bt_start_date = tk.Entry(row1, width=12)
+        self.ent_bt_start_date.insert(0, "2022-01-01")
+        self.ent_bt_start_date.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row1, text="结束日期:").pack(side=tk.LEFT)
+        self.ent_bt_end_date = tk.Entry(row1, width=12)
+        self.ent_bt_end_date.insert(0, "2023-12-31")
+        self.ent_bt_end_date.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row1, text="初始资金:").pack(side=tk.LEFT)
+        self.ent_bt_capital = tk.Entry(row1, width=10)
+        self.ent_bt_capital.insert(0, "100000")
+        self.ent_bt_capital.pack(side=tk.LEFT, padx=5)
+        
+        # 第二行：策略参数
+        row2 = tk.Frame(config_frame)
+        row2.pack(fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(row2, text="最大持仓:").pack(side=tk.LEFT)
+        self.ent_bt_max_positions = tk.Entry(row2, width=8)
+        self.ent_bt_max_positions.insert(0, "20")
+        self.ent_bt_max_positions.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row2, text="调仓频率:").pack(side=tk.LEFT)
+        self.cb_bt_rebalance = ttk.Combobox(row2, values=["daily", "weekly"], width=8)
+        self.cb_bt_rebalance.set("weekly")
+        self.cb_bt_rebalance.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row2, text="手续费率:").pack(side=tk.LEFT)
+        self.ent_bt_commission = tk.Entry(row2, width=8)
+        self.ent_bt_commission.insert(0, "0.001")
+        self.ent_bt_commission.pack(side=tk.LEFT, padx=5)
+        
+        # 第三行：BMA 模型参数
+        row3 = tk.Frame(config_frame)
+        row3.pack(fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(row3, text="模型重训周期:").pack(side=tk.LEFT)
+        self.ent_bt_retrain_freq = tk.Entry(row3, width=8)
+        self.ent_bt_retrain_freq.insert(0, "4")
+        self.ent_bt_retrain_freq.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row3, text="预测周期:").pack(side=tk.LEFT)
+        self.ent_bt_prediction_horizon = tk.Entry(row3, width=8)
+        self.ent_bt_prediction_horizon.insert(0, "5")
+        self.ent_bt_prediction_horizon.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row3, text="止损比例:").pack(side=tk.LEFT)
+        self.ent_bt_stop_loss = tk.Entry(row3, width=8)
+        self.ent_bt_stop_loss.insert(0, "0.08")
+        self.ent_bt_stop_loss.pack(side=tk.LEFT, padx=5)
+        
+        # 第四行：风险控制参数
+        row4 = tk.Frame(config_frame)
+        row4.pack(fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(row4, text="最大仓位权重:").pack(side=tk.LEFT)
+        self.ent_bt_max_weight = tk.Entry(row4, width=8)
+        self.ent_bt_max_weight.insert(0, "0.15")
+        self.ent_bt_max_weight.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row4, text="止盈比例:").pack(side=tk.LEFT)
+        self.ent_bt_take_profit = tk.Entry(row4, width=8)
+        self.ent_bt_take_profit.insert(0, "0.20")
+        self.ent_bt_take_profit.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row4, text="滑点率:").pack(side=tk.LEFT)
+        self.ent_bt_slippage = tk.Entry(row4, width=8)
+        self.ent_bt_slippage.insert(0, "0.002")
+        self.ent_bt_slippage.pack(side=tk.LEFT, padx=5)
+        
+        # 输出设置
+        output_frame = tk.LabelFrame(parent, text="输出设置")
+        output_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        row5 = tk.Frame(output_frame)
+        row5.pack(fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(row5, text="输出目录:").pack(side=tk.LEFT)
+        self.ent_bt_output_dir = tk.Entry(row5, width=30)
+        self.ent_bt_output_dir.insert(0, "./backtest_results")
+        self.ent_bt_output_dir.pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(row5, text="浏览", command=self._browse_backtest_output_dir).pack(side=tk.LEFT, padx=5)
+        
+        # 选项
+        options_frame = tk.Frame(output_frame)
+        options_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.var_bt_export_excel = tk.BooleanVar(value=True)
+        tk.Checkbutton(options_frame, text="导出Excel报告", variable=self.var_bt_export_excel).pack(side=tk.LEFT, padx=10)
+        
+        self.var_bt_show_plots = tk.BooleanVar(value=True)
+        tk.Checkbutton(options_frame, text="显示图表", variable=self.var_bt_show_plots).pack(side=tk.LEFT, padx=10)
+        
+        # 操作按钮
+        action_frame = tk.LabelFrame(parent, text="操作")
+        action_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        button_frame = tk.Frame(action_frame)
+        button_frame.pack(pady=10)
+        
+        # 运行单个回测
+        tk.Button(
+            button_frame, 
+            text="运行回测", 
+            command=self._run_single_backtest,
+            bg="lightgreen", 
+            font=("Arial", 10, "bold"),
+            width=15
+        ).pack(side=tk.LEFT, padx=10)
+        
+        # 运行策略对比
+        tk.Button(
+            button_frame, 
+            text="策略对比", 
+            command=self._run_strategy_comparison,
+            bg="lightblue", 
+            font=("Arial", 10, "bold"),
+            width=15
+        ).pack(side=tk.LEFT, padx=10)
+        
+        # 快速回测（预设参数）
+        tk.Button(
+            button_frame, 
+            text="快速回测", 
+            command=self._run_quick_backtest,
+            bg="orange", 
+            font=("Arial", 10, "bold"),
+            width=15
+        ).pack(side=tk.LEFT, padx=10)
+        
+        # 回测状态显示
+        status_frame = tk.LabelFrame(parent, text="回测状态")
+        status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 进度条
+        self.bt_progress = ttk.Progressbar(status_frame, mode='indeterminate')
+        self.bt_progress.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 状态文本
+        self.bt_status_text = tk.Text(status_frame, height=8, wrap=tk.WORD)
+        bt_scrollbar = tk.Scrollbar(status_frame, orient=tk.VERTICAL, command=self.bt_status_text.yview)
+        self.bt_status_text.configure(yscrollcommand=bt_scrollbar.set)
+        self.bt_status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        bt_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    def _browse_backtest_output_dir(self):
+        """浏览回测输出目录"""
+        directory = filedialog.askdirectory(title="选择回测结果输出目录")
+        if directory:
+            self.ent_bt_output_dir.delete(0, tk.END)
+            self.ent_bt_output_dir.insert(0, directory)
+    
+    def _run_single_backtest(self):
+        """运行单个回测"""
+        try:
+            # 获取参数
+            backtest_type = self.backtest_type.get()
+            
+            # 验证参数
+            start_date = self.ent_bt_start_date.get()
+            end_date = self.ent_bt_end_date.get()
+            
+            # 验证日期格式
+            from datetime import datetime
+            try:
+                datetime.strptime(start_date, '%Y-%m-%d')
+                datetime.strptime(end_date, '%Y-%m-%d')
+            except ValueError:
+                messagebox.showerror("错误", "日期格式错误，请使用 YYYY-MM-DD 格式")
+                return
+            
+            # 显示进度
+            self.bt_progress.start()
+            self._update_backtest_status("开始回测...")
+            
+            # 在新线程中运行回测
+            threading.Thread(
+                target=self._execute_backtest_thread,
+                args=(backtest_type,),
+                daemon=True
+            ).start()
+            
+        except Exception as e:
+            self.bt_progress.stop()
+            self._update_backtest_status(f"回测启动失败: {e}")
+            messagebox.showerror("错误", f"回测启动失败: {e}")
+    
+    def _run_strategy_comparison(self):
+        """运行策略对比"""
+        try:
+            self.bt_progress.start()
+            self._update_backtest_status("开始策略对比回测...")
+            
+            # 在新线程中运行策略对比
+            threading.Thread(
+                target=self._execute_strategy_comparison_thread,
+                daemon=True
+            ).start()
+            
+        except Exception as e:
+            self.bt_progress.stop()
+            self._update_backtest_status(f"策略对比启动失败: {e}")
+            messagebox.showerror("错误", f"策略对比启动失败: {e}")
+    
+    def _run_quick_backtest(self):
+        """快速回测（使用预设参数）"""
+        try:
+            # 设置快速回测的预设参数
+            self.ent_bt_start_date.delete(0, tk.END)
+            self.ent_bt_start_date.insert(0, "2023-01-01")
+            
+            self.ent_bt_end_date.delete(0, tk.END)  
+            self.ent_bt_end_date.insert(0, "2023-12-31")
+            
+            self.ent_bt_capital.delete(0, tk.END)
+            self.ent_bt_capital.insert(0, "50000")
+            
+            self.ent_bt_max_positions.delete(0, tk.END)
+            self.ent_bt_max_positions.insert(0, "10")
+            
+            # 运行回测
+            self._run_single_backtest()
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"快速回测失败: {e}")
+    
+    def _execute_backtest_thread(self, backtest_type):
+        """在线程中执行回测"""
+        try:
+            if backtest_type == "autotrader":
+                self._run_autotrader_backtest()
+            elif backtest_type == "weekly":
+                self._run_weekly_backtest()
+                
+        except Exception as e:
+            self.after(0, lambda: self._update_backtest_status(f"回测执行失败: {e}"))
+            self.after(0, lambda: messagebox.showerror("错误", f"回测执行失败: {e}"))
+        finally:
+            self.after(0, lambda: self.bt_progress.stop())
+    
+    def _execute_strategy_comparison_thread(self):
+        """在线程中执行策略对比"""
+        try:
+            # 导入回测模块
+            from autotrader.run_backtest import run_preset_backtests
+            
+            self.after(0, lambda: self._update_backtest_status("开始执行策略对比..."))
+            
+            # 运行预设策略对比
+            run_preset_backtests()
+            
+            self.after(0, lambda: self._update_backtest_status("策略对比完成！结果已保存到 ./strategy_comparison.csv"))
+            self.after(0, lambda: messagebox.showinfo("完成", "策略对比回测完成！\n结果已保存到当前目录"))
+            
+        except Exception as e:
+            self.after(0, lambda: self._update_backtest_status(f"策略对比失败: {e}"))
+            self.after(0, lambda: messagebox.showerror("错误", f"策略对比失败: {e}"))
+        finally:
+            self.after(0, lambda: self.bt_progress.stop())
+    
+    def _run_autotrader_backtest(self):
+        """运行 AutoTrader BMA 回测"""
+        try:
+            from autotrader.backtest_engine import AutoTraderBacktestEngine, BacktestConfig
+            from autotrader.backtest_analyzer import analyze_backtest_results
+            
+            self.after(0, lambda: self._update_backtest_status("创建 AutoTrader 回测配置..."))
+            
+            # 构建配置
+            config = BacktestConfig(
+                start_date=self.ent_bt_start_date.get(),
+                end_date=self.ent_bt_end_date.get(),
+                initial_capital=float(self.ent_bt_capital.get()),
+                rebalance_freq=self.cb_bt_rebalance.get(),
+                max_positions=int(self.ent_bt_max_positions.get()),
+                commission_rate=float(self.ent_bt_commission.get()),
+                slippage_rate=float(self.ent_bt_slippage.get()),
+                use_bma_model=True,
+                model_retrain_freq=int(self.ent_bt_retrain_freq.get()),
+                prediction_horizon=int(self.ent_bt_prediction_horizon.get()),
+                max_position_weight=float(self.ent_bt_max_weight.get()),
+                stop_loss_pct=float(self.ent_bt_stop_loss.get()),
+                take_profit_pct=float(self.ent_bt_take_profit.get())
+            )
+            
+            self.after(0, lambda: self._update_backtest_status("初始化回测引擎..."))
+            
+            # 创建回测引擎
+            engine = AutoTraderBacktestEngine(config)
+            
+            self.after(0, lambda: self._update_backtest_status("执行回测..."))
+            
+            # 运行回测
+            results = engine.run_backtest()
+            
+            if results:
+                self.after(0, lambda: self._update_backtest_status("生成分析报告..."))
+                
+                # 生成分析报告
+                output_dir = self.ent_bt_output_dir.get()
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                
+                analyzer = analyze_backtest_results(results, output_dir)
+                
+                # 显示结果摘要
+                summary = f"""
+AutoTrader BMA 回测完成！
+
+回测期间: {results['period']['start_date']} -> {results['period']['end_date']}
+总收益率: {results['returns']['total_return']:.2%}
+年化收益率: {results['returns']['annual_return']:.2%}
+夏普比率: {results['returns']['sharpe_ratio']:.3f}
+最大回撤: {results['returns']['max_drawdown']:.2%}
+胜率: {results['returns']['win_rate']:.2%}
+交易次数: {results['trading']['total_trades']}
+最终资产: ${results['portfolio']['final_value']:,.2f}
+
+报告已保存到: {output_dir}
+                """
+                
+                self.after(0, lambda: self._update_backtest_status(summary))
+                self.after(0, lambda: messagebox.showinfo("回测完成", f"AutoTrader BMA 回测完成！\n\n{summary}"))
+                
+            else:
+                self.after(0, lambda: self._update_backtest_status("回测失败：无结果数据"))
+                
+        except ImportError as e:
+            self.after(0, lambda: self._update_backtest_status(f"导入回测模块失败: {e}"))
+        except Exception as e:
+            self.after(0, lambda: self._update_backtest_status(f"AutoTrader 回测失败: {e}"))
+            import traceback
+            traceback.print_exc()
+    
+    def _run_weekly_backtest(self):
+        """运行周频 BMA 回测"""
+        try:
+            # 导入周频回测模块
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+            from weekly_bma_backtest import WeeklyBMAPortfolioBacktester, BacktestConfig as WeeklyConfig, compute_weekly_closes_from_daily
+            
+            self.after(0, lambda: self._update_backtest_status("创建周频回测配置..."))
+            
+            # 构建配置
+            config = WeeklyConfig(
+                top_n=int(self.ent_bt_max_positions.get()),
+                train_weeks=52,  # 固定1年训练窗口
+                start_date=pd.to_datetime(self.ent_bt_start_date.get()),
+                end_date=pd.to_datetime(self.ent_bt_end_date.get())
+            )
+            
+            self.after(0, lambda: self._update_backtest_status("加载数据..."))
+            
+            # 加载数据（这里需要根据你的数据源调整）
+            # 示例：从数据库加载或使用模拟数据
+            from autotrader.database import StockDatabase
+            
+            db = StockDatabase()
+            symbols = db.get_stock_universe()[:50]  # 限制股票数量以提高速度
+            
+            # 模拟创建周频数据（实际应用中需要从真实数据源加载）
+            dates = pd.date_range(start=config.start_date, end=config.end_date, freq='B')
+            weekly_closes = pd.DataFrame(
+                np.random.randn(len(dates), len(symbols)).cumsum(axis=0) + 100,
+                index=dates,
+                columns=symbols
+            )
+            weekly_closes = compute_weekly_closes_from_daily(weekly_closes)
+            
+            self.after(0, lambda: self._update_backtest_status("执行周频回测..."))
+            
+            # 创建回测器
+            backtester = WeeklyBMAPortfolioBacktester(weekly_closes=weekly_closes, config=config)
+            
+            # 运行回测
+            results = backtester.run()
+            
+            if results:
+                summary = f"""
+周频 BMA 回测完成！
+
+年化收益率: {results['annual_return']:.2%}
+最大回撤: {results['max_drawdown']:.2%}
+夏普比率: {results['sharpe']:.3f}
+                """
+                
+                self.after(0, lambda: self._update_backtest_status(summary))
+                self.after(0, lambda: messagebox.showinfo("回测完成", f"周频 BMA 回测完成！\n\n{summary}"))
+            else:
+                self.after(0, lambda: self._update_backtest_status("周频回测失败：无结果数据"))
+                
+        except ImportError as e:
+            self.after(0, lambda: self._update_backtest_status(f"导入周频回测模块失败: {e}"))
+        except Exception as e:
+            self.after(0, lambda: self._update_backtest_status(f"周频回测失败: {e}"))
+            import traceback
+            traceback.print_exc()
+    
+    def _update_backtest_status(self, message):
+        """更新回测状态"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.bt_status_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.bt_status_text.see(tk.END)
+        self.update_idletasks()
+
+    def _build_status_panel(self, parent):
+        """构建引擎运行状态面板"""
+        # 状态信息显示区域
+        status_info = tk.Frame(parent)
+        status_info.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 第一行：连接状态和引擎状态
+        row1 = tk.Frame(status_info)
+        row1.pack(fill=tk.X, pady=2)
+        
+        tk.Label(row1, text="连接状态:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.lbl_connection_status = tk.Label(row1, text="未连接", fg="red", font=("Arial", 9))
+        self.lbl_connection_status.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row1, text="引擎状态:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_engine_status = tk.Label(row1, text="未启动", fg="gray", font=("Arial", 9))
+        self.lbl_engine_status.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row1, text="模型状态:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_model_status = tk.Label(row1, text="未训练", fg="orange", font=("Arial", 9))
+        self.lbl_model_status.pack(side=tk.LEFT, padx=5)
+        
+        # 第二行：账户信息和交易统计
+        row2 = tk.Frame(status_info)
+        row2.pack(fill=tk.X, pady=2)
+        
+        tk.Label(row2, text="净值:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.lbl_net_value = tk.Label(row2, text="$0.00", fg="blue", font=("Arial", 9))
+        self.lbl_net_value.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row2, text="账户ID:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_account_id = tk.Label(row2, text="-", fg="black", font=("Arial", 9))
+        self.lbl_account_id.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(row2, text="ClientID:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_client_id = tk.Label(row2, text="-", fg="black", font=("Arial", 9))
+        self.lbl_client_id.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(row2, text="持仓数:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_positions = tk.Label(row2, text="0", fg="purple", font=("Arial", 9))
+        self.lbl_positions.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row2, text="今日交易:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_daily_trades = tk.Label(row2, text="0", fg="green", font=("Arial", 9))
+        self.lbl_daily_trades.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row2, text="最后更新:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_last_update = tk.Label(row2, text="未开始", fg="gray", font=("Arial", 9))
+        self.lbl_last_update.pack(side=tk.LEFT, padx=5)
+        
+        # 第三行：操作统计和警告
+        row3 = tk.Frame(status_info)
+        row3.pack(fill=tk.X, pady=2)
+        
+        tk.Label(row3, text="监控股票:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.lbl_watch_count = tk.Label(row3, text="0", fg="teal", font=("Arial", 9))
+        self.lbl_watch_count.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row3, text="信号生成:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+        self.lbl_signal_status = tk.Label(row3, text="等待中", fg="orange", font=("Arial", 9))
+        self.lbl_signal_status.pack(side=tk.LEFT, padx=5)
+        
+        # 状态指示灯
+        self.lbl_status_indicator = tk.Label(row3, text="●", fg="red", font=("Arial", 14))
+        self.lbl_status_indicator.pack(side=tk.RIGHT, padx=15)
+        
+        tk.Label(row3, text="运行状态:", font=("Arial", 9, "bold")).pack(side=tk.RIGHT, padx=5)
+        
+        # 启动状态更新定时器
+        self._start_status_monitor()
+    
+    def _start_status_monitor(self):
+        """启动状态监控定时器"""
+        self._update_status()
+        # 每2秒更新一次状态
+        self.after(2000, self._start_status_monitor)
+    
+    def _update_status(self):
+        """更新状态显示"""
+        try:
+            # 更新连接状态
+            if self.trader and hasattr(self.trader, 'ib') and self.trader.ib.isConnected():
+                self.lbl_connection_status.config(text="已连接", fg="green")
+            else:
+                self.lbl_connection_status.config(text="未连接", fg="red")
+            
+            # 更新引擎状态
+            if self.engine:
+                if hasattr(self, '_engine_loop_task') and self._engine_loop_task and not self._engine_loop_task.done():
+                    self.lbl_engine_status.config(text="运行中", fg="green")
+                    self.lbl_status_indicator.config(fg="green")
+                else:
+                    self.lbl_engine_status.config(text="已启动", fg="blue")
+                    self.lbl_status_indicator.config(fg="blue")
+            else:
+                self.lbl_engine_status.config(text="未启动", fg="gray")
+                self.lbl_status_indicator.config(fg="red")
+            
+            # 更新账户信息
+            if self.trader and hasattr(self.trader, 'net_liq'):
+                self.lbl_net_value.config(text=f"${self.trader.net_liq:,.2f}")
+                # 更新账户ID与客户端ID
+                try:
+                    acc_id = getattr(self.trader, 'account_id', None)
+                    if acc_id:
+                        self.lbl_account_id.config(text=str(acc_id), fg=("green" if str(acc_id).lower()=="c2dvdongg" else "black"))
+                    else:
+                        self.lbl_account_id.config(text="-", fg="black")
+                except Exception:
+                    pass
+                try:
+                    cid_ok = (getattr(self.trader, 'client_id', None) == 3130)
+                    self.lbl_client_id.config(text=str(getattr(self.trader, 'client_id', '-')), fg=("green" if cid_ok else "black"))
+                except Exception:
+                    pass
+                
+                # 更新持仓数
+                position_count = len(getattr(self.trader, 'positions', {}))
+                self.lbl_positions.config(text=str(position_count))
+            
+            # 更新监控股票数
+            if self.trader and hasattr(self.trader, 'tickers'):
+                watch_count = len(getattr(self.trader, 'tickers', {}))
+                self.lbl_watch_count.config(text=str(watch_count))
+            
+            # 更新最后更新时间
+            current_time = datetime.now().strftime("%H:%M:%S")
+            self.lbl_last_update.config(text=current_time)
+            
+            # 检查模型状态（如果有相关属性）
+            if hasattr(self, '_model_training') and self._model_training:
+                self.lbl_model_status.config(text="训练中", fg="blue")
+            elif hasattr(self, '_model_trained') and self._model_trained:
+                self.lbl_model_status.config(text="已训练", fg="green")
+            else:
+                self.lbl_model_status.config(text="未训练", fg="orange")
+                
+        except Exception as e:
+            # 状态更新失败不应该影响主程序
+            pass
+    
+    def _update_signal_status(self, status_text, color="black"):
+        """更新信号状态"""
+        try:
+            self.lbl_signal_status.config(text=status_text, fg=color)
+        except:
+            pass
+    
+    def _update_daily_trades(self, count):
+        """更新今日交易次数"""
+        try:
+            self.lbl_daily_trades.config(text=str(count))
+        except:
+            pass
 
 
 def main() -> None:

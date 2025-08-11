@@ -27,7 +27,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Deque
+from typing import Dict, List, Optional, Tuple, Deque, Any
 from collections import deque
 from enum import Enum
 import os
@@ -183,29 +183,55 @@ class RealtimeSignalEngine:
 class IbkrAutoTrader:
     def __init__(
         self,
-        host: str,
-        port: int,
-        client_id: int,
-        use_delayed_if_no_realtime: bool = False,  # 默认不自动切换延迟，强制实时
-        default_currency: str = "USD",
+        config_manager=None,
         ib_client: Optional[IB] = None,
     ) -> None:
-        self.host = host
-        self.port = port
-        self.client_id = client_id
-        self.use_delayed_if_no_realtime = use_delayed_if_no_realtime
-        self.default_currency = default_currency
+        # 使用统一的配置管理器
+        if config_manager is None:
+            from .unified_config import get_unified_config
+            config_manager = get_unified_config()
+        
+        self.config_manager = config_manager
+        
+        # 从统一配置获取连接参数
+        conn_params = config_manager.get_connection_params()
+        self.host = conn_params['host']
+        self.port = conn_params['port']
+        self.client_id = conn_params['client_id']
+        self.account_id = conn_params['account_id']
+        self.use_delayed_if_no_realtime = conn_params['use_delayed_if_no_realtime']
+        self.default_currency = "USD"
 
         # 允许外部传入共享连接
         self.ib = ib_client if ib_client is not None else IB()
         self.logger = logging.getLogger(self.__class__.__name__)
 
+        # 兼容处理：预初始化 wrapper/_results 与 decoder handlers，避免老版本 ib_insync 报错
+        try:
+            # 确保 completedOrders/openOrders 等键存在，避免 KeyError
+            if hasattr(self.ib, 'wrapper') and hasattr(self.ib.wrapper, '_results'):
+                res = self.ib.wrapper._results  # type: ignore[attr-defined]
+                if isinstance(res, dict):
+                    res.setdefault('completedOrders', [])
+                    res.setdefault('openOrders', [])
+                    res.setdefault('fills', [])
+            # 忽略未知消息ID（如 176）以适配不同 API 版本差异
+            if hasattr(self.ib, 'decoder') and hasattr(self.ib.decoder, 'handlers'):
+                handlers = self.ib.decoder.handlers  # type: ignore[attr-defined]
+                if isinstance(handlers, dict):
+                    for msg_id in (176,):
+                        handlers.setdefault(msg_id, lambda fields: None)
+        except Exception:
+            pass
+
         # 状态缓存
         self.tickers: Dict[str, Ticker] = {}
         self.last_price: Dict[str, Tuple[float, float]] = {}  # symbol -> (price, ts)
         self.account_values: Dict[str, str] = {}
+        self.account_id: Optional[str] = None
         self.cash_balance: float = 0.0
         self.net_liq: float = 0.0
+        self.buying_power: float = 0.0  # 添加买力属性
         self.positions: Dict[str, int] = {}  # symbol -> qty
         self.open_orders: Dict[int, OrderRef] = {}
         self._stop_event: Optional[asyncio.Event] = None
@@ -216,12 +242,8 @@ class IbkrAutoTrader:
         self._account_lock = asyncio.Lock()
         self.account_update_interval: float = 60.0  # 最小更新间隔60秒
         
-        # 任务管理器（需要最先初始化）
-        from .task_manager import TaskManager
-        self.task_manager = TaskManager(
-            default_max_restarts=5,
-            default_restart_delay=2.0
-        )
+        # 使用event_loop_manager管理任务，不再需要独立的TaskManager
+        self._active_tasks = {}
         
         # 交易审计器 (需要先初始化，供OrderManager使用)
         from .trading_auditor_v2 import TradingAuditor
@@ -235,19 +257,47 @@ class IbkrAutoTrader:
         from .enhanced_order_execution import EnhancedOrderExecutor
         self.order_manager = OrderManager(auditor=self.auditor)  # 传入审计器
         self.enhanced_executor = EnhancedOrderExecutor(self.ib, self.order_manager)
+
+    # ------------------------- 辅助：账户取值 -------------------------
+    def _get_account_numeric(self, tag: str) -> float:
+        """从 account_values 提取某个账户字段的数值。
+        优先顺序：BASE -> 默认货币 -> 任意第一条可解析数据。
+        """
+        candidates: List[Tuple[str, float]] = []
+        try:
+            for key, value in self.account_values.items():
+                if key.startswith(f"{tag}:"):
+                    currency = key.split(":", 1)[1]
+                    try:
+                        candidates.append((currency or "", float(value)))
+                    except Exception:
+                        continue
+            # 打印调试信息，帮助定位币种键
+            if not candidates and self.account_values:
+                self.logger.debug(f"账户字段{tag}未找到，当前键示例: {list(self.account_values.keys())[:5]}")
+            # 优先 BASE
+            for cur, num in candidates:
+                if cur.upper() == "BASE":
+                    return num
+            # 次选 默认货币
+            for cur, num in candidates:
+                if cur.upper() == (self.default_currency or "").upper():
+                    return num
+            # 回退：任意一个
+            if candidates:
+                return candidates[0][1]
+        except Exception:
+            pass
+        return 0.0
         
-        # 连接恢复管理
-        from .connection_recovery import ConnectionRecoveryManager, RecoveryConfig
-        recovery_config = RecoveryConfig(
-            max_reconnect_attempts=10,
-            reconnect_interval=5.0,
-            max_reconnect_interval=60.0
-        )
-        self.recovery_manager = ConnectionRecoveryManager(self, self.task_manager, recovery_config)
+        # 简化连接恢复管理，在ibkr_auto_trader内部处理重连逻辑
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 10
+        self._reconnect_interval = 5.0
         
-        # 风险管理器
-        from .risk_manager import AdvancedRiskManager
-        self.risk_manager = AdvancedRiskManager(self.ib, lookback_days=252)
+        # 风险管理功能已集成到Engine的RiskEngine中，这里只需要简单的风险检查
+        self._daily_order_count = 0
+        self._max_daily_orders = 50
         
 
 
@@ -314,9 +364,9 @@ class IbkrAutoTrader:
 
         # 统一从全局配置同步风险限制（与 RiskManager 和本地验证保持一致）
         try:
-            from .config import HotConfig
-            self._hot_config = HotConfig()
-            self._sync_risk_limits_from_config(self._hot_config.get())
+            # 使用统一配置管理器替代HotConfig
+            config_dict = self.config_manager._get_merged_config()
+            self._sync_risk_limits_from_config({"CONFIG": config_dict})
         except Exception:
             # 配置不可用时保留默认值
             pass
@@ -413,78 +463,150 @@ class IbkrAutoTrader:
             self.logger.warning(f"⚠️ 事件绑定部分失败: {e}")
             # 继续运行，不因事件绑定失败而中断
 
-    async def connect(self, retries: int = 5, retry_delay: float = 3.0) -> None:
-        """增强的连接逻辑，支持指数退避和更好的错误处理"""
-        for attempt in range(1, retries + 1):
-            try:
-                self.logger.info(f"连接 TWS/IBG {self.host}:{self.port} clientId={self.client_id} (尝试 {attempt}/{retries})")
-                
-                # 增加超时保护
-                try:
-                    await asyncio.wait_for(
-                        self.ib.connectAsync(self.host, self.port, clientId=self.client_id, readonly=False, timeout=15),
-                        timeout=20  # 额外的asyncio超时保护
-                    )
-                except asyncio.TimeoutError:
-                    raise ConnectionError(f"连接超时 (> 20秒)")
-                
-                if self.ib.isConnected():
-                    self.logger.info("[OK] IBKR 已连接")
-                    break
-                else:
-                    raise ConnectionError("连接状态异常")
-                    
-            except Exception as e:
-                self.logger.warning(f"[WARN] 连接失败 (尝试 {attempt}/{retries}): {e}")
-                if attempt < retries:
-                    # 指数退避延迟：3s, 4.5s, 6.75s, 10.1s, 15.2s
-                    delay = min(retry_delay * (1.5 ** (attempt - 1)), 30)  # 最大30秒
-                    self.logger.info(f"等待 {delay:.1f} 秒后重试...")
-                    await asyncio.sleep(delay)
-
-        if not self.ib.isConnected():
-            raise RuntimeError(f"连接 IBKR 失败：已重试 {retries} 次")
-
-        # 请求服务器时间（EClient.reqCurrentTime）
+    async def connect(self, retries: int = None, retry_delay: float = None) -> None:
+        """统一的连接逻辑，使用配置管理器"""
+        if retries is None:
+            retries = self.config_manager.get('connection.max_reconnect_attempts', 10)
+        if retry_delay is None:
+            retry_delay = self.config_manager.get('connection.reconnect_interval', 5.0)
+            
+        # 使用统一配置管理器，不再需要独立的ConnectionConfig
+        # from .connection_config import ConnectionManager, ConnectionConfig
+        
+        # 使用统一配置管理器直接连接，简化逻辑
+        
+        self.logger.info(f"开始连接 {self.host}:{self.port}，目标ClientID={self.client_id}，账户={self.account_id}")
+        
+        # 简化连接逻辑，直接使用配置的ClientID
         try:
-            host_time = await self.ib.reqCurrentTimeAsync()
-            self.logger.info(f"服务器时间: {host_time}")
-        except Exception:
-            pass
-
-        # 行情类型：强制使用实时数据(1)，已订阅Professional US Securities Bundle
-        try:
-            self.ib.reqMarketDataType(1)
-            self.logger.info("行情类型: 实时 (1) - 已订阅Professional US Securities Bundle")
+            await self.ib.connectAsync(self.host, self.port, clientId=self.client_id)
+            self.logger.info(f"[OK] 已连接，使用ClientID={self.client_id}")
+            
         except Exception as e:
-            self.logger.error(f"设置实时行情失败: {e}")
-            if self.use_delayed_if_no_realtime:
-                self.ib.reqMarketDataType(3)
-                self.logger.warning("切换到延时行情 (3)")
-            else:
-                self.logger.error("实时行情设置失败，且禁用了延时切换。请检查数据订阅状态。")
-                raise RuntimeError("实时行情设置失败")
+            self.logger.error(f"连接失败: {e}")
+            raise
+        
+        # 设置市场数据类型
+        try:
+            data_type = await connection_manager.setup_market_data_type(self.ib)
+            self.logger.info(f"市场数据类型设置为: {data_type}")
+        except Exception as e:
+            self.logger.warning(f"设置市场数据类型失败: {e}")
+        
+        # 等待账户数据就绪
+        await self._wait_for_account_data()
+        
+        # 启动连接监控和其他服务
+        await self._post_connection_setup()
 
-        # 账户/持仓初始拉取
-        await self._prime_account_and_positions()
+    async def _wait_for_account_data(self, timeout: float = 10.0) -> bool:
+        """等待账户数据就绪"""
+        import time
+        start_time = time.time()
         
-        # 启动任务管理器
-        await self.task_manager.start_monitoring()
+        self.logger.info("等待账户数据加载...")
         
-        # 启动连接恢复管理器
-        await self.recovery_manager.start_monitoring()
+        # 首次强制刷新账户数据
+        try:
+            await self.refresh_account_balances_and_positions()
+            if self.net_liq > 0:
+                self.account_ready = True
+                self.logger.info(f"✅ 账户数据就绪: 净值=${self.net_liq:,.2f}, 现金=${self.cash_balance:,.2f}, 账户={self.account_id}")
+                return True
+        except Exception as e:
+            self.logger.debug(f"首次账户数据刷新失败: {e}")
         
-        # 启动实时账户监控任务
-        self.task_manager.ensure_task_running(
-            "account_monitor", self._account_monitor_task,
-            max_restarts=999, restart_delay=10.0
-        )
+        # 如果首次失败，再等待一下
+        while time.time() - start_time < timeout:
+            try:
+                await asyncio.sleep(2)  # 等待数据到达
+                
+                # 获取账户值
+                account_values = self.ib.accountValues()
+                if account_values:
+                    self.account_values = {f"{av.tag}:{av.currency}": av.value for av in account_values}
+                    
+                    # 解析关键账户数据
+                    self.net_liq = self._get_account_numeric('NetLiquidation')
+                    self.cash_balance = self._get_account_numeric('TotalCashValue')
+                    self.buying_power = self._get_account_numeric('BuyingPower')
+                    
+                    # 获取账户ID
+                    for av in account_values:
+                        if av.tag == 'AccountId':
+                            self.account_id = av.value
+                            break
+                    
+                    if self.net_liq > 0:
+                        self.account_ready = True
+                        self.logger.info(f"✅ 账户数据就绪: 净值=${self.net_liq:,.2f}, 现金=${self.cash_balance:,.2f}, 账户={self.account_id}")
+                        return True
+                        
+            except Exception as e:
+                self.logger.debug(f"等待账户数据: {e}")
+            
+            await asyncio.sleep(1.0)
         
-        # 启动风险监控任务
-        self.task_manager.ensure_task_running(
-            "risk_monitor", self._risk_monitor_task,
-            max_restarts=999, restart_delay=15.0
-        )
+        # 即使超时也尝试使用现有数据
+        if hasattr(self, 'account_id') and self.account_id:
+            self.logger.info(f"⚠️ 账户数据获取超时，使用现有数据: 账户={self.account_id}")
+            return True
+        
+        self.logger.warning("⚠️ 账户数据获取超时，继续运行但可能影响交易")
+        return False
+
+    async def _post_connection_setup(self):
+        """连接后的设置工作"""
+        try:
+            # 初始化包装器结果字典
+            self._init_wrapper_results()
+            
+            # 获取持仓信息
+            await self._update_positions()
+            
+            # 连接恢复功能已简化到内部处理
+            
+            # 启动实时账户监控任务（简化版）
+            try:
+                task = asyncio.create_task(self._account_monitor_task())
+                self._active_tasks["account_monitor"] = task
+            except Exception as e:
+                self.logger.error(f"启动账户监控任务失败: {e}")
+            
+            self.logger.info("✅ 连接后设置完成")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ 连接后设置部分失败: {e}")
+
+    async def _update_positions(self):
+        """更新持仓信息"""
+        try:
+            positions = await asyncio.wait_for(self.ib.reqPositionsAsync(), timeout=10.0)
+            self.positions = {}
+            
+            for pos in positions:
+                if pos.position != 0:
+                    symbol = pos.contract.symbol
+                    self.positions[symbol] = pos.position
+                    
+            self.logger.info(f"持仓更新完成: {len(self.positions)} 个非零持仓")
+            
+        except Exception as e:
+            self.logger.warning(f"更新持仓信息失败: {e}")
+            self.positions = {}
+
+    def _init_wrapper_results(self):
+        """初始化包装器结果字典，防止KeyError"""
+        try:
+            if hasattr(self.ib, 'wrapper') and hasattr(self.ib.wrapper, '_results'):
+                res = self.ib.wrapper._results
+                if isinstance(res, dict) and 'completedOrders' not in res:
+                    res['completedOrders'] = []
+                    self.logger.debug("已初始化completedOrders容器")
+        except Exception as e:
+            self.logger.debug(f"初始化包装器结果失败: {e}")
+
+
 
     async def _account_monitor_task(self) -> None:
         """实时账户监控任务 - 确保账户数据实时性"""
@@ -637,10 +759,16 @@ class IbkrAutoTrader:
     async def _prime_account_and_positions(self) -> None:
         # 账户摘要（EClient.reqAccountSummary）
         try:
-            rows = await self.ib.accountSummaryAsync()
+            rows = await asyncio.wait_for(self.ib.accountSummaryAsync(), timeout=10.0)
             for r in rows:
                 key = f"{r.tag}:{r.currency or ''}"
                 self.account_values[key] = r.value
+                # 捕获账户ID
+                try:
+                    if getattr(r, 'account', None):
+                        self.account_id = str(r.account)
+                except Exception:
+                    pass
                 if r.tag == "TotalCashValue" and ((r.currency or "") in ("", self.default_currency)):
                     try:
                         self.cash_balance = float(r.value)
@@ -658,7 +786,7 @@ class IbkrAutoTrader:
 
         # 持仓（EClient.reqPositions）
         try:
-            poss = await self.ib.positionsAsync()
+            poss = await asyncio.wait_for(self.ib.reqPositionsAsync(), timeout=10.0)
             self.positions.clear()
             for p in poss:
                 sym = p.contract.symbol
@@ -689,59 +817,65 @@ class IbkrAutoTrader:
             for r in rows:
                 key = f"{r.tag}:{r.currency or ''}"
                 self.account_values[key] = r.value
+                # 捕获账户ID
+                try:
+                    if getattr(r, 'account', None):
+                        self.account_id = str(r.account)
+                except Exception:
+                    pass
             
             # 解析关键财务数据
             try:
-                cash_str = self.account_values.get(f"TotalCashValue:{self.default_currency}") or self.account_values.get("TotalCashValue:", "0")
-                netliq_str = self.account_values.get(f"NetLiquidation:{self.default_currency}") or self.account_values.get("NetLiquidation:", "0")
-                buying_power_str = self.account_values.get(f"BuyingPower:{self.default_currency}") or self.account_values.get("BuyingPower:", "0")
-                
-                new_cash = float(cash_str or 0)
-                new_netliq = float(netliq_str or 0)
-                new_buying_power = float(buying_power_str or 0)
-                
-                # 数据合理性验证
+                # 更稳健地解析账户数值，兼容 BASE/多币种
+                new_cash = self._get_account_numeric("TotalCashValue")
+                new_netliq = self._get_account_numeric("NetLiquidation")
+                new_buying_power = self._get_account_numeric("BuyingPower")
+
+                # 数据合理性验证（放宽：净值<=0 不再抛异常，仅标记未就绪并记录警告）
                 if new_netliq <= 0:
-                    raise ValueError(f"净值异常: {new_netliq}")
-                
-                if new_cash < -new_netliq:  # 现金负数不能超过净值
+                    self.logger.warning(f"净值异常(<=0): {new_netliq}，标记账户未就绪但不终止连接")
+                    self.account_ready = False
+                else:
+                    self.account_ready = True
+
+                if new_cash < -abs(new_netliq):  # 现金负数不能超过净值绝对值
                     self.logger.warning(f"现金余额异常: ${new_cash:.2f}, 净值: ${new_netliq:.2f}")
-                
+
                 # 检查数据变化是否合理
-                if prev_netliq > 0:
+                if prev_netliq > 0 and new_netliq > 0:
                     netliq_change_pct = abs(new_netliq - prev_netliq) / prev_netliq
                     if netliq_change_pct > 0.5:  # 净值变化超过50%
                         self.logger.warning(f"净值变化异常大: {prev_netliq:.2f} -> {new_netliq:.2f} ({netliq_change_pct:.1%})")
-                
-                # 更新数据
+
+                # 更新数据（即便未就绪也同步最新快照供UI显示）
                 self.cash_balance = new_cash
                 self.net_liq = new_netliq
                 self.buying_power = new_buying_power
-                
-                # 更新账户状态
-                self.account_ready = (self.net_liq > 0)
                 self._last_account_update = time.time()
-                
-                self.logger.debug(f"账户摘要刷新完成: 现金${self.cash_balance:.2f}, 净值${self.net_liq:.2f}, 购买力${self.buying_power:.2f}")
-                
+
+                self.logger.debug(
+                    f"账户摘要刷新完成: 现金${self.cash_balance:.2f}, 净值${self.net_liq:.2f}, 购买力${self.buying_power:.2f}, 就绪={self.account_ready}"
+                )
+
             except Exception as parse_error:
                 self.logger.error(f"解析账户数据失败: {parse_error}")
+                # 放宽：解析失败不再向上抛出，避免打断引擎；仅标记未就绪
                 self.account_ready = False
-                raise
+                return
                 
         except asyncio.TimeoutError:
             self.logger.error("账户摘要刷新超时")
             self.account_ready = False
-            raise
+            return
         except Exception as e:
             self.logger.error(f"刷新账户摘要失败: {e}")
             self.account_ready = False
-            raise
+            return
 
         # 刷新持仓数据
         try:
             self.logger.debug("开始刷新持仓...")
-            poss = await asyncio.wait_for(self.ib.positionsAsync(), timeout=10.0)
+            poss = await asyncio.wait_for(self.ib.reqPositionsAsync(), timeout=10.0)
             
             new_positions = {}
             for p in poss:
@@ -771,10 +905,10 @@ class IbkrAutoTrader:
             
         except asyncio.TimeoutError:
             self.logger.error("持仓刷新超时")
-            raise
+            return
         except Exception as e:
             self.logger.error(f"刷新持仓失败: {e}")
-            raise
+            return
 
     async def wait_for_price(self, symbol: str, timeout: float = 2.0, interval: float = 0.1) -> Optional[float]:
         """等待直到拿到该 symbol 的价格或超时。"""
@@ -1318,12 +1452,14 @@ class IbkrAutoTrader:
             st["stop_trade"] = trade_sl
             st["current_stop"] = stop_price
             self._stop_state[symbol] = st
-            # 使用任务管理器确保止损任务可靠运行
+            # 简化止损任务管理
             task_id = f"stop_manager_{symbol}"
-            self.task_manager.ensure_task_running(
-                task_id, self._dynamic_stop_manager, symbol,
-                max_restarts=10, restart_delay=5.0
-            )
+            if task_id not in self._active_tasks:
+                try:
+                    task = asyncio.create_task(self._dynamic_stop_manager(symbol))
+                    self._active_tasks[task_id] = task
+                except Exception as e:
+                    self.logger.error(f"启动止损任务失败 {symbol}: {e}")
         except Exception:
             pass
 
@@ -1530,10 +1666,12 @@ class IbkrAutoTrader:
                 self._stop_state[symbol] = st
                 # 使用任务管理器启动止损任务
                 task_id = f"stop_manager_{symbol}"
-                self.task_manager.ensure_task_running(
-                    task_id, self._dynamic_stop_manager, symbol,
-                    max_restarts=10, restart_delay=5.0
-                )
+                if task_id not in self._active_tasks:
+                    try:
+                        task = asyncio.create_task(self._dynamic_stop_manager(symbol))
+                        self._active_tasks[task_id] = task
+                    except Exception as e:
+                        self.logger.error(f"启动止损任务失败 {symbol}: {e}")
         except Exception:
             pass
         
@@ -1737,25 +1875,31 @@ class IbkrAutoTrader:
                 from .order_state_machine import OrderState
                 status = getattr(s, 'status', '')
                 if status == 'Filled':
-                    self.task_manager.ensure_task_running(
-                        f"ord_upd_{o.orderId}",
-                        self.order_manager.update_order_state,
-                        o.orderId, OrderState.FILLED,
-                        {"filled_quantity": int(getattr(s, 'filled', 0) or 0),
-                         "avg_fill_price": float(getattr(s, 'avgFillPrice', 0.0) or 0.0)}
-                    )
+                    # 简化订单状态更新
+                    try:
+                        task = asyncio.create_task(self.order_manager.update_order_state(
+                            o.orderId, OrderState.FILLED,
+                            {"filled_quantity": int(getattr(s, 'filled', 0) or 0),
+                             "avg_fill_price": float(getattr(s, 'avgFillPrice', 0.0) or 0.0)}
+                        ))
+                    except Exception as e:
+                        self.logger.error(f"更新订单状态失败: {e}")
                 elif status in {'Cancelled', 'ApiCancelled'}:
-                    self.task_manager.ensure_task_running(
-                        f"ord_upd_{o.orderId}",
-                        self.order_manager.update_order_state,
-                        o.orderId, OrderState.CANCELLED
-                    )
+                    # 简化订单状态更新
+                    try:
+                        task = asyncio.create_task(self.order_manager.update_order_state(
+                            o.orderId, OrderState.CANCELLED
+                        ))
+                    except Exception as e:
+                        self.logger.error(f"更新订单状态失败: {e}")
                 elif status in {'Inactive', 'Rejected'}:
-                    self.task_manager.ensure_task_running(
-                        f"ord_upd_{o.orderId}",
-                        self.order_manager.update_order_state,
-                        o.orderId, OrderState.REJECTED
-                    )
+                    # 简化订单状态更新
+                    try:
+                        task = asyncio.create_task(self.order_manager.update_order_state(
+                            o.orderId, OrderState.REJECTED
+                        ))
+                    except Exception as e:
+                        self.logger.error(f"更新订单状态失败: {e}")
             except Exception:
                 pass
         except Exception:
@@ -1787,10 +1931,12 @@ class IbkrAutoTrader:
 
                 # 启动/确保动态止损任务
                 task_id = f"stop_manager_{symbol}"
-                self.task_manager.ensure_task_running(
-                    task_id, self._dynamic_stop_manager, symbol,
-                    max_restarts=10, restart_delay=5.0
-                )
+                if task_id not in self._active_tasks:
+                    try:
+                        task = asyncio.create_task(self._dynamic_stop_manager(symbol))
+                        self._active_tasks[task_id] = task
+                    except Exception as e:
+                        self.logger.error(f"启动止损任务失败 {symbol}: {e}")
 
             elif side == "SELL" and qty > 0:
                 # 如果仓位清零，取消已有止损并停止任务
@@ -1874,7 +2020,11 @@ class IbkrAutoTrader:
     async def close(self) -> None:
         try:
             # 停止任务管理器
-            await self.task_manager.shutdown()
+            # 清理活跃任务
+            for task_id, task in self._active_tasks.items():
+                if not task.done():
+                    task.cancel()
+            self._active_tasks.clear()
         except Exception:
             pass
         try:

@@ -6,7 +6,7 @@
 import time
 import json
 import logging
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Callable
 from enum import Enum
 from dataclasses import dataclass, asdict
 from threading import Lock

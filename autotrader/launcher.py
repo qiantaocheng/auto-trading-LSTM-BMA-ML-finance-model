@@ -66,15 +66,15 @@ class TradingSystemLauncher:
         try:
             print("🧠 启动策略引擎模式...")
             
-            from autotrader.config import HotConfig
+            from autotrader.unified_config import get_unified_config
             from autotrader.engine import Engine
             from autotrader.ibkr_auto_trader import IbkrAutoTrader
             
-            # 加载配置
-            cfg = HotConfig(config_path) if config_path else HotConfig()
+            # 使用统一配置管理器
+            cfg = get_unified_config()
             
             # 创建底层交易器
-            trader = IbkrAutoTrader("127.0.0.1", 7497, 1)
+            trader = IbkrAutoTrader(config_manager=cfg)
             
             # 创建策略引擎
             engine = Engine(cfg, trader)
@@ -122,7 +122,7 @@ class TradingSystemLauncher:
                 from autotrader.ibkr_auto_trader import IbkrAutoTrader
                 from autotrader.app import AutoTraderGUI
                 from autotrader.engine import Engine
-                from autotrader.config import HotConfig
+                from autotrader.unified_config import get_unified_config
                 test_results['imports'] = True
                 print("  ✅ 核心模块导入成功")
             except Exception as e:

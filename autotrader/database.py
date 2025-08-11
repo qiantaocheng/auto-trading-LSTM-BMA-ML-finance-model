@@ -341,6 +341,18 @@ class StockDatabase:
             self.logger.error(f"获取全局tickers失败: {e}")
             return []
 
+    def get_all_tickers_with_meta(self) -> List[Dict]:
+        """获取全局 tickers 及其元数据（symbol, added_at）。"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT symbol, added_at FROM tickers ORDER BY symbol")
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            self.logger.error(f"获取全局tickers(含元数据)失败: {e}")
+            return []
+
     def clear_all_tickers(self) -> List[str]:
         """清空全局 tickers 表，返回之前存在的股票代码。"""
         try:

@@ -7,12 +7,14 @@ __version__ = "1.0.0"
 __author__ = "Trading System Team"
 
 # 导入核心模块
-from .config import HotConfig
+# 已改用统一配置管理器
+# from .config import HotConfig
+from .unified_config import UnifiedConfigManager
 from .engine import Engine, RiskEngine, SignalHub, OrderRouter
 from .ibkr_auto_trader import IbkrAutoTrader
 
 __all__ = [
-    "HotConfig", 
+    "UnifiedConfigManager", 
     "Engine", 
     "RiskEngine", 
     "SignalHub", 

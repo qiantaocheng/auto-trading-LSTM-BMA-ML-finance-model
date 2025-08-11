@@ -5,7 +5,8 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from .config import HotConfig
+# 已改用统一配置管理器
+# from .config import HotConfig
 from .factors import Bar, sma, rsi, bollinger, zscore, atr
 from .ibkr_auto_trader import IbkrAutoTrader
 
@@ -19,7 +20,7 @@ class Quote:
 
 
 class DataFeed:
-    def __init__(self, broker: IbkrAutoTrader, logger: logging.Logger) -> None:
+    def __init__(self, broker: IbkrAutoTrader, logger) -> None:
         self.broker = broker
         self.logger = logger
 
@@ -59,13 +60,13 @@ class DataFeed:
 
 
 class RiskEngine:
-    def __init__(self, cfg: dict, logger: logging.Logger) -> None:
+    def __init__(self, cfg: dict, logger) -> None:
         self.cfg = cfg
         self.logger = logger
 
     def position_size(self, equity: float, entry_price: float, stop_price: float) -> int:
         """Enhanced position sizing logic with proper risk management"""
-        sizing = self.cfg["CONFIG"]["sizing"]
+        sizing = self.cfg["sizing"]
         
         # Validate inputs
         effective_equity = max(float(equity or 0), 0.0)
@@ -132,7 +133,7 @@ class RiskEngine:
 
 
 class SignalHub:
-    def __init__(self, logger: logging.Logger) -> None:
+    def __init__(self, logger) -> None:
         self.logger = logger
 
     def mr_signal(self, closes: List[float]) -> float:
@@ -314,13 +315,13 @@ class SignalHub:
 
 
 class OrderRouter:
-    def __init__(self, cfg: dict, logger: logging.Logger) -> None:
+    def __init__(self, cfg: dict, logger) -> None:
         self.cfg = cfg
         self.logger = logger
 
     def build_prices(self, sym: str, side: str, q: Quote) -> dict:
         """增强的价格构建逻辑，包括滑点处理和自适应价格偏移"""
-        cfg = self.cfg["CONFIG"]["orders"]
+        cfg = self.cfg["orders"]
         mode = cfg["smart_price_mode"]
         
         # 确保报价有效性
@@ -372,21 +373,25 @@ class OrderRouter:
 
 
 class Engine:
-    def __init__(self, cfg: HotConfig, broker: IbkrAutoTrader) -> None:
-        self.cfg = cfg
+    def __init__(self, config_manager, broker: IbkrAutoTrader) -> None:
+        self.config_manager = config_manager
         self.broker = broker
-        self.logger = logging.getLogger("Engine")
+        # 使用事件系统的日志适配器
+        from .engine_logger import create_engine_logger
+        self.logger = create_engine_logger("Engine", "engine")
         self.data = DataFeed(broker, self.logger)
-        self.risk = RiskEngine(cfg.get(), self.logger)
-        self.router = OrderRouter(cfg.get(), self.logger)
+        
+        # 使用统一配置而不是HotConfig
+        config_dict = config_manager._get_merged_config()
+        self.risk = RiskEngine(config_dict, self.logger)
+        self.router = OrderRouter(config_dict, self.logger)
         self.signal = SignalHub(self.logger)
 
     async def start(self) -> None:
         # 连接 IB
-        c = self.cfg.get()["CONFIG"]["connection"]
         await self.broker.connect()
         # 订阅观察列表
-        uni = self.cfg.get()["CONFIG"]["scanner"]["universe"]
+        uni = self.config_manager.get_universe()
         await self.data.subscribe_quotes(uni)
         
     def _validate_account_ready(self, cfg: dict) -> bool:
@@ -443,7 +448,7 @@ class Engine:
     async def on_signal_and_trade(self) -> None:
         """增强的信号计算与交易执行：包含账户状态验证和净值检查"""
         try:
-            cfg = self.cfg.get()["CONFIG"]
+            cfg = self.config_manager._get_merged_config()
             uni = cfg["scanner"]["universe"]
             
             self.logger.info(f"运行信号计算和交易 - 标的数量: {len(uni)}")
@@ -462,6 +467,7 @@ class Engine:
                 
             # 资金管理检查
             if not self._validate_capital_requirements(cfg):
+                self.logger.info("资金管理检查未通过，跳过本轮交易")
                 return
             
             orders_sent = 0
@@ -474,34 +480,41 @@ class Engine:
                     
                 q = self.data.best_quote(sym)
                 if not q:
+                    self.logger.debug(f"{sym} 无有效报价（无bid/ask/last/close），跳过")
                     continue
                     
                 # 使用真实历史数据（日线）计算信号与ATR
                 bars = await self.data.fetch_daily_bars(sym, lookback_days=60)
-                if len(bars) < 20:
-                    # 历史数据不足，跳过此标的
+                if len(bars) < 60:
+                    # 历史数据不足（信号需要至少50根K），跳过此标的
+                    self.logger.debug(f"{sym} 历史K线不足 {len(bars)} < 60，跳过")
                     continue
                     
-                closes: List[float] = [float(getattr(b, "close", 0.0) or 0.0) for b in bars][-20:]
+                # 注意：信号需要50根收盘价
+                closes_all: List[float] = [float(getattr(b, "close", 0.0) or 0.0) for b in bars]
+                closes_50 = closes_all[-60:]
 
                 # 迁移的多因子打分（旧策略移植）
-                highs = [float(getattr(b, "high", 0.0) or 0.0) for b in bars][-50:]
-                lows = [float(getattr(b, "low", 0.0) or 0.0) for b in bars][-50:]
-                vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in bars][-50:]
-                score = self.signal.multi_factor_signal(closes[-50:], highs, lows, vols)
-                if abs(score) < cfg["signals"]["acceptance_threshold"]:
+                highs = [float(getattr(b, "high", 0.0) or 0.0) for b in bars][-60:]
+                lows = [float(getattr(b, "low", 0.0) or 0.0) for b in bars][-60:]
+                vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in bars][-60:]
+                score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
+                thr = cfg["signals"]["acceptance_threshold"]
+                if abs(score) < thr:
+                    self.logger.debug(f"{sym} 信号强度不足 | score={score:.3f}, thr={thr:.3f}，跳过")
                     continue
 
                 side = "BUY" if score > 0 else "SELL"
                 entry = q.ask if side == "BUY" else q.bid
                 if not entry or entry <= 0:
+                    self.logger.debug(f"{sym} 无法获取有效入场价（side={side}），跳过")
                     continue
                     
                 # 检查最大单个持仓限制
                 max_single_position = self.broker.net_liq * cfg["capital"].get("max_single_position_pct", 0.15)
                 current_position_value = abs(self.broker.positions.get(sym, 0)) * entry
                 if current_position_value >= max_single_position:
-                    self.logger.info(f"{sym} 持仓已达单个标的上限")
+                    self.logger.info(f"{sym} 持仓已达单个标的上限 | 当前持仓市值=${current_position_value:,.2f}")
                     continue
                     
                 stop_pct = cfg["orders"]["default_stop_loss_pct"]
@@ -539,6 +552,7 @@ class Engine:
                     qty = max(qty, min_qty_by_value)
 
                 price_plan = self.router.build_prices(sym, side, q)
+                self.logger.debug(f"{sym} 下单计划 | side={side} qty={qty} plan={price_plan}")
                 
                 try:
                     if price_plan.get("type") == "MKT":
