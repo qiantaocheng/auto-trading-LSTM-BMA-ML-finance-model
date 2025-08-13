@@ -1,14 +1,19 @@
-from __future__ import annotations
+# 清理：移除未使用的导入
+# from __future__ import annotations
+# import asyncio
+# import logging
+# from typing import Dict
 
-import asyncio
-import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 
 # 已改用统一配置管理器
 # from .config import HotConfig
-from .factors import Bar, sma, rsi, bollinger, zscore, atr
-from .ibkr_auto_trader import IbkrAutoTrader
+# 清理：只保留实际使用的因子函数
+from .factors import zscore, atr
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .ibkr_auto_trader import IbkrAutoTrader
 
 
 @dataclass
@@ -20,13 +25,25 @@ class Quote:
 
 
 class DataFeed:
-    def __init__(self, broker: IbkrAutoTrader, logger) -> None:
+    def __init__(self, broker: "IbkrAutoTrader", logger) -> None:
         self.broker = broker
         self.logger = logger
 
     async def subscribe_quotes(self, symbols: List[str]) -> None:
         for s in symbols:
             await self.broker.subscribe(s)
+            
+    async def unsubscribe_all(self) -> None:
+        """取消所有数据订阅"""
+        try:
+            # 获取所有已订阅的ticker并取消订阅
+            if hasattr(self.broker, 'tickers'):
+                symbols_to_unsubscribe = list(self.broker.tickers.keys())
+                for symbol in symbols_to_unsubscribe:
+                    self.broker.unsubscribe(symbol)
+                self.logger.info(f"已取消 {len(symbols_to_unsubscribe)} 个标的的数据订阅")
+        except Exception as e:
+            self.logger.error(f"取消数据订阅失败: {e}")
 
     def best_quote(self, sym: str) -> Optional[Quote]:
         t = self.broker.tickers.get(sym)
@@ -60,15 +77,25 @@ class DataFeed:
 
 
 class RiskEngine:
-    def __init__(self, cfg: dict, logger) -> None:
-        self.cfg = cfg
+    """风险引擎 - 使用统一风险管理器"""
+    def __init__(self, config_manager, logger) -> None:
+        self.config_manager = config_manager
         self.logger = logger
+        
+        # 使用统一风险管理器
+        from .unified_risk_manager import get_risk_manager
+        self.risk_manager = get_risk_manager(config_manager)
+        
+        # 保持配置兼容性
+        self.cfg = config_manager._get_merged_config()
+        
+        self.logger.info("风险引擎已初始化，使用统一风险管理器")
 
     def position_size(self, equity: float, entry_price: float, stop_price: float) -> int:
-        """Enhanced position sizing logic with proper risk management"""
-        sizing = self.cfg["sizing"]
+        """增强的持仓计算逻辑（保持兼容性）"""
+        sizing = self.cfg.get("sizing", {})
         
-        # Validate inputs
+        # 验证输入
         effective_equity = max(float(equity or 0), 0.0)
         if effective_equity <= 0:
             self.logger.warning("Zero or negative equity, cannot calculate position size")
@@ -78,30 +105,32 @@ class RiskEngine:
             self.logger.warning(f"Invalid prices: entry={entry_price}, stop={stop_price}")
             return 0
         
-        # Calculate risk per trade based on actual equity
-        risk_per_trade = effective_equity * sizing["per_trade_risk_pct"]
+        # 基于风险的持仓计算
+        per_trade_risk_pct = sizing.get("per_trade_risk_pct", 0.02)
+        risk_per_trade = effective_equity * per_trade_risk_pct
         stop_distance = abs(entry_price - stop_price)
         
         if stop_distance <= 0:
             self.logger.warning("Invalid stop distance, using minimum position")
             return 1
         
-        # Calculate position size based on risk
+        # 基于风险的股数
         shares_by_risk = int(risk_per_trade // stop_distance)
         
-        # Calculate maximum position based on equity percentage
-        max_position_value = effective_equity * sizing["max_position_pct_of_equity"]
+        # 基于权益比例的最大持仓
+        max_position_pct = sizing.get("max_position_pct_of_equity", 0.15)
+        max_position_value = effective_equity * max_position_pct
         shares_by_equity = int(max_position_value // entry_price)
         
-        # Take the minimum of both constraints
+        # 取两者最小值
         qty = min(shares_by_risk, shares_by_equity)
-        qty = max(qty, 0)  # Ensure non-negative
+        qty = max(qty, 0)
         
-        # Apply lot size rounding if configured
+        # 批量整理
         if sizing.get("notional_round_lots", True):
             qty = int(qty)
         
-        # Log the calculation for transparency
+        # 记录计算过程
         self.logger.info(f"Position sizing: equity=${effective_equity:.2f}, "
                         f"risk_per_trade=${risk_per_trade:.2f}, "
                         f"stop_distance=${stop_distance:.2f}, "
@@ -110,6 +139,36 @@ class RiskEngine:
                         f"final_qty={qty}")
         
         return qty
+    
+    async def validate_order(self, symbol: str, side: str, quantity: int, 
+                           price: float, account_value: float) -> bool:
+        """验证订单（新增方法）"""
+        try:
+            result = await self.risk_manager.validate_order(
+                symbol, side, quantity, price, account_value
+            )
+            
+            if not result.is_valid:
+                self.logger.warning(f"订单风险验证失败 {symbol}: {result.violations}")
+                return False
+            
+            if result.warnings:
+                self.logger.info(f"订单风险警告 {symbol}: {result.warnings}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"风险验证异常 {symbol}: {e}")
+            return False
+    
+    def update_position(self, symbol: str, quantity: int, current_price: float, 
+                       entry_price: float = None):
+        """更新持仓信息（新增方法）"""
+        self.risk_manager.update_position(symbol, quantity, current_price, entry_price)
+    
+    def get_risk_summary(self) -> Dict[str, Any]:
+        """获取风险摘要（新增方法）"""
+        return self.risk_manager.get_risk_summary()
 
     def validate_portfolio_exposure(self, equity: float, total_exposure: float) -> bool:
         """Validate that portfolio doesn't exceed maximum exposure limits"""
@@ -373,7 +432,7 @@ class OrderRouter:
 
 
 class Engine:
-    def __init__(self, config_manager, broker: IbkrAutoTrader) -> None:
+    def __init__(self, config_manager, broker: "IbkrAutoTrader") -> None:
         self.config_manager = config_manager
         self.broker = broker
         # 使用事件系统的日志适配器
@@ -383,9 +442,17 @@ class Engine:
         
         # 使用统一配置而不是HotConfig
         config_dict = config_manager._get_merged_config()
-        self.risk = RiskEngine(config_dict, self.logger)
+        self.risk = RiskEngine(config_manager, self.logger)  # 传递config_manager
         self.router = OrderRouter(config_dict, self.logger)
         self.signal = SignalHub(self.logger)
+        
+        # 获取统一持仓管理器的引用
+        from .unified_position_manager import get_position_manager
+        self.position_manager = get_position_manager()
+        
+        # 获取统一风险管理器（替代旧的risk_manager引用）
+        from .unified_risk_manager import get_risk_manager
+        self.risk_manager = get_risk_manager(config_manager)
 
     async def start(self) -> None:
         # 连接 IB
@@ -393,6 +460,28 @@ class Engine:
         # 订阅观察列表
         uni = self.config_manager.get_universe()
         await self.data.subscribe_quotes(uni)
+        
+    async def stop(self) -> None:
+        """停止引擎，释放资源"""
+        try:
+            self.logger.info("正在停止引擎...")
+            
+            # 停止数据订阅
+            if hasattr(self.data, 'unsubscribe_all'):
+                await self.data.unsubscribe_all()
+            
+            # 清理持仓管理器引用
+            if hasattr(self, 'position_manager'):
+                self.position_manager = None
+                
+            # 清理风险管理器引用  
+            if hasattr(self, 'risk_manager'):
+                self.risk_manager = None
+                
+            self.logger.info("引擎已停止")
+            
+        except Exception as e:
+            self.logger.error(f"停止引擎时出错: {e}")
         
     def _validate_account_ready(self, cfg: dict) -> bool:
         """验证账户状态是否就绪"""
@@ -425,7 +514,8 @@ class Engine:
                 
             # 检查最大投资组合敞口
             total_positions_value = 0.0
-            for sym, pos in self.broker.positions.items():
+            for sym, pos_obj in self.position_manager.get_all_positions().items():
+                pos = pos_obj.quantity
                 if pos == 0:
                     continue
                 q = self.data.best_quote(sym)
@@ -512,7 +602,8 @@ class Engine:
                     
                 # 检查最大单个持仓限制
                 max_single_position = self.broker.net_liq * cfg["capital"].get("max_single_position_pct", 0.15)
-                current_position_value = abs(self.broker.positions.get(sym, 0)) * entry
+                current_position_qty = self.position_manager.get_quantity(sym)
+                current_position_value = abs(current_position_qty) * entry
                 if current_position_value >= max_single_position:
                     self.logger.info(f"{sym} 持仓已达单个标的上限 | 当前持仓市值=${current_position_value:,.2f}")
                     continue

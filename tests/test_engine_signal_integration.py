@@ -2,7 +2,7 @@
 import unittest
 import asyncio
 from autotrader.engine import Engine, SignalHub
-from autotrader.config import HotConfig
+from autotrader.unified_config import get_unified_config
 from types import SimpleNamespace
 
 
@@ -27,7 +27,8 @@ class DummyBroker:
 class TestEngineSignalIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_multi_factor_signal(self):
         broker = DummyBroker()
-        engine = Engine(HotConfig(), broker)
+        config_manager = get_unified_config()
+        engine = Engine(config_manager, broker)
         sh = engine.signal
 
         # fabricate series

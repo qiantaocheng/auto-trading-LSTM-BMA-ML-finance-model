@@ -2,7 +2,7 @@
 import asyncio
 from types import SimpleNamespace
 from autotrader.engine import Engine
-from autotrader.config import HotConfig
+from autotrader.unified_config import get_unified_config
 
 
 class DummyTicker:
@@ -38,14 +38,14 @@ class DummyBroker:
 
 
 async def main():
-    cfg = HotConfig()
+    config_manager = get_unified_config()
     # 精简 universe 以便干跑
-    cfg.get()["CONFIG"]["scanner"]["universe"] = ["AAPL", "MSFT", "NVDA"]
     broker = DummyBroker()
-    engine = Engine(cfg, broker)
+    engine = Engine(config_manager, broker)
 
     # 预置tickers
-    for s in cfg.get()["CONFIG"]["scanner"]["universe"]:
+    universe = config_manager.get_universe()
+    for s in universe[:3]:  # 只取前3个用于测试
         broker.tickers[s] = DummyTicker()
 
     # 运行一次信号与交易流程（不会真正下单）

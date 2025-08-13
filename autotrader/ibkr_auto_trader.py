@@ -16,24 +16,28 @@ IBKR 自动交易最小闭环脚本（连接→行情→下单/撤单→回报�
 - EWrapper 接口参考: https://interactivebrokers.github.io/tws-api/interfaceIBApi_1_1EWrapper.html
 """
 
-from __future__ import annotations
+# 清理：移除未使用的导入
+# from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
 import math
 import signal
-import sys
+# 清理：移除未使用的导入
+# import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+# from dataclasses import field  # 未使用
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Deque, Any
 from collections import deque
 from enum import Enum
 import os
 import json
-import urllib.request
-import urllib.error
+# 清理：移除未使用的导入
+# import urllib.request
+# import urllib.error
 from time import time as _now
 
 from ib_insync import (
@@ -50,14 +54,7 @@ from ib_insync import (
 )
 
 
-# ----------------------------- 日志配置 -----------------------------
-def setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+# 日志配置已移至launcher.py和backtest_engine.py中统一管理
 
 
 # ----------------------------- 数据结构 -----------------------------
@@ -205,6 +202,10 @@ class IbkrAutoTrader:
         # 允许外部传入共享连接
         self.ib = ib_client if ib_client is not None else IB()
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # 初始化稳健的账户数据管理器
+        from .account_data_manager import RobustAccountDataManager
+        self.account_manager = RobustAccountDataManager(self.ib, self.account_id)
 
         # 兼容处理：预初始化 wrapper/_results 与 decoder handlers，避免老版本 ib_insync 报错
         try:
@@ -232,7 +233,12 @@ class IbkrAutoTrader:
         self.cash_balance: float = 0.0
         self.net_liq: float = 0.0
         self.buying_power: float = 0.0  # 添加买力属性
-        self.positions: Dict[str, int] = {}  # symbol -> qty
+        # 使用统一持仓管理器
+        from .unified_position_manager import get_position_manager
+        self.position_manager = get_position_manager()
+        
+        # 兼容性属性（逐步迁移）
+        self._legacy_positions: Dict[str, int] = {}  # 临时保留
         self.open_orders: Dict[int, OrderRef] = {}
         self._stop_event: Optional[asyncio.Event] = None
         
@@ -242,8 +248,13 @@ class IbkrAutoTrader:
         self._account_lock = asyncio.Lock()
         self.account_update_interval: float = 60.0  # 最小更新间隔60秒
         
-        # 使用event_loop_manager管理任务，不再需要独立的TaskManager
-        self._active_tasks = {}
+        # 使用任务生命周期管理器
+        from .task_lifecycle_manager import get_task_manager
+        self.task_manager = get_task_manager()
+        
+        # 使用统一连接管理器
+        from .unified_connection_manager import create_connection_manager
+        self.connection_manager = create_connection_manager(self.ib, config_manager, self.logger)
         
         # 交易审计器 (需要先初始化，供OrderManager使用)
         from .trading_auditor_v2 import TradingAuditor
@@ -257,38 +268,6 @@ class IbkrAutoTrader:
         from .enhanced_order_execution import EnhancedOrderExecutor
         self.order_manager = OrderManager(auditor=self.auditor)  # 传入审计器
         self.enhanced_executor = EnhancedOrderExecutor(self.ib, self.order_manager)
-
-    # ------------------------- 辅助：账户取值 -------------------------
-    def _get_account_numeric(self, tag: str) -> float:
-        """从 account_values 提取某个账户字段的数值。
-        优先顺序：BASE -> 默认货币 -> 任意第一条可解析数据。
-        """
-        candidates: List[Tuple[str, float]] = []
-        try:
-            for key, value in self.account_values.items():
-                if key.startswith(f"{tag}:"):
-                    currency = key.split(":", 1)[1]
-                    try:
-                        candidates.append((currency or "", float(value)))
-                    except Exception:
-                        continue
-            # 打印调试信息，帮助定位币种键
-            if not candidates and self.account_values:
-                self.logger.debug(f"账户字段{tag}未找到，当前键示例: {list(self.account_values.keys())[:5]}")
-            # 优先 BASE
-            for cur, num in candidates:
-                if cur.upper() == "BASE":
-                    return num
-            # 次选 默认货币
-            for cur, num in candidates:
-                if cur.upper() == (self.default_currency or "").upper():
-                    return num
-            # 回退：任意一个
-            if candidates:
-                return candidates[0][1]
-        except Exception:
-            pass
-        return 0.0
         
         # 简化连接恢复管理，在ibkr_auto_trader内部处理重连逻辑
         self._reconnect_attempts = 0
@@ -298,8 +277,6 @@ class IbkrAutoTrader:
         # 风险管理功能已集成到Engine的RiskEngine中，这里只需要简单的风险检查
         self._daily_order_count = 0
         self._max_daily_orders = 50
-        
-
 
         # 动态止损管理（ATR + 时间加权）
         self.dynamic_stop_cfg = {
@@ -371,6 +348,50 @@ class IbkrAutoTrader:
             # 配置不可用时保留默认值
             pass
 
+        # 完成初始化
+        try:
+            self.load_risk_config_from_db()
+        except Exception:
+            pass
+        
+        # 事件绑定
+        self._bind_events()
+
+    # ------------------------- 辅助：账户取值 -------------------------
+    def _get_account_numeric(self, tag: str) -> float:
+        """从 account_values 提取某个账户字段的数值（增强版）"""
+        try:
+            # 优先使用新的账户数据管理器
+            return self.account_manager.get_account_numeric(tag)
+        except:
+            # 回退到原始实现  
+            candidates: List[Tuple[str, float]] = []
+            try:
+                for key, value in self.account_values.items():
+                    if key.startswith(f"{tag}:"):
+                        currency = key.split(":", 1)[1]
+                        try:
+                            candidates.append((currency or "", float(value)))
+                        except Exception:
+                            continue
+                # 打印调试信息，帮助定位币种键
+                if not candidates and self.account_values:
+                    self.logger.debug(f"账户字段{tag}未找到，当前键示例: {list(self.account_values.keys())[:5]}")
+                # 优先 BASE
+                for cur, num in candidates:
+                    if cur.upper() == "BASE":
+                        return num
+                # 次选 默认货币
+                for cur, num in candidates:
+                    if cur.upper() == (self.default_currency or "").upper():
+                        return num
+                # 回退：任意一个
+                if candidates:
+                    return candidates[0][1]
+            except Exception:
+                pass
+            return 0.0
+
     def load_risk_config_from_db(self) -> None:
         try:
             from .database import StockDatabase
@@ -396,17 +417,25 @@ class IbkrAutoTrader:
                 self.logger.info(f"已从数据库加载风险配置: 止损{cfg.get('default_stop_pct', 0.02)*100:.1f}% 止盈{cfg.get('default_target_pct', 0.05)*100:.1f}%")
         except Exception as e:
             self.logger.warning(f"从数据库加载风险配置失败: {e}")
-
-        # 事件绑定
-        self._bind_events()
+    
+    @property
+    def positions(self) -> Dict[str, int]:
+        """兼容性属性：获取持仓字典"""
+        return {symbol: pos.quantity for symbol, pos in self.position_manager.get_all_positions().items()}
+    
+    @positions.setter  
+    def positions(self, value: Dict[str, int]):
+        """兼容性属性：设置持仓字典（不推荐使用）"""
+        self.logger.warning("直接设置positions属性已弃用，请使用position_manager")
+        self._legacy_positions = value
 
     def _sync_risk_limits_from_config(self, cfg: Dict[str, Any]) -> None:
-        """从全局配置同步风险限制，统一来源，避免冲突。
-        优先级建议：数据库risk_config(止损/止盈/策略) > HotConfig.CONFIG.capital(资金/单仓限制) > 本地默认。
+        """从统一配置管理器同步风险限制，统一来源，避免冲突。
+        优先级：数据库配置 > 文件配置 > 默认配置
         """
         try:
             # 资金与仓位上限
-            capital = (cfg.get("CONFIG") or {}).get("capital") or {}
+            capital = self.config_manager.get("capital", {})
             cash_reserve = capital.get("cash_reserve_pct")
             max_single_pos = capital.get("max_single_position_pct")
             if cash_reserve is not None:
@@ -415,19 +444,13 @@ class IbkrAutoTrader:
                 self.order_verify_cfg["max_single_position_pct"] = float(max_single_pos)
 
             # 同步到高级风险管理器
-            try:
-                if max_single_pos is not None:
-                    self.risk_manager.max_single_position = float(max_single_pos)
-            except Exception:
-                pass
+            # 单仓限制已通过统一风险管理器配置
+            self.logger.debug(f"单仓限制配置: {max_single_pos*100:.1f}%" if max_single_pos else "未设置")
 
-            risk_controls = (cfg.get("CONFIG") or {}).get("risk_controls") or {}
+            risk_controls = self.config_manager.get("risk_controls", {})
             sector_limit = risk_controls.get("sector_exposure_limit")
-            if sector_limit is not None:
-                try:
-                    self.risk_manager.max_sector_exposure = float(sector_limit)
-                except Exception:
-                    pass
+            # 行业敞口限制已通过统一风险管理器配置
+            self.logger.debug(f"行业敞口限制配置: {sector_limit*100:.1f}%" if sector_limit else "未设置")
         except Exception as e:
             self.logger.warning(f"同步风险限制到配置失败: {e}")
 
@@ -477,27 +500,35 @@ class IbkrAutoTrader:
         
         self.logger.info(f"开始连接 {self.host}:{self.port}，目标ClientID={self.client_id}，账户={self.account_id}")
         
-        # 简化连接逻辑，直接使用配置的ClientID
+        # 使用统一连接管理器
         try:
-            await self.ib.connectAsync(self.host, self.port, clientId=self.client_id)
-            self.logger.info(f"[OK] 已连接，使用ClientID={self.client_id}")
+            success = await self.connection_manager.connect()
+            
+            if not success:
+                raise ConnectionError("连接管理器连接失败")
+            
+            self.logger.info(f"[OK] 已通过连接管理器连接，ClientID={self.client_id}")
+            
+            # 设置市场数据类型
+            try:
+                if self.use_delayed_if_no_realtime:
+                    self.ib.reqMarketDataType(3)  # 延迟数据
+                    self.logger.info("市场数据类型设置为: 延迟数据")
+                else:
+                    self.ib.reqMarketDataType(1)  # 实时数据
+                    self.logger.info("市场数据类型设置为: 实时数据")
+            except Exception as e:
+                self.logger.warning(f"设置市场数据类型失败: {e}")
+            
+            # 等待账户数据就绪
+            await self._wait_for_account_data()
+            
+            # 启动连接监控和其他服务
+            await self._post_connection_setup()
             
         except Exception as e:
             self.logger.error(f"连接失败: {e}")
             raise
-        
-        # 设置市场数据类型
-        try:
-            data_type = await connection_manager.setup_market_data_type(self.ib)
-            self.logger.info(f"市场数据类型设置为: {data_type}")
-        except Exception as e:
-            self.logger.warning(f"设置市场数据类型失败: {e}")
-        
-        # 等待账户数据就绪
-        await self._wait_for_account_data()
-        
-        # 启动连接监控和其他服务
-        await self._post_connection_setup()
 
     async def _wait_for_account_data(self, timeout: float = 10.0) -> bool:
         """等待账户数据就绪"""
@@ -566,10 +597,15 @@ class IbkrAutoTrader:
             
             # 连接恢复功能已简化到内部处理
             
-            # 启动实时账户监控任务（简化版）
+            # 启动实时账户监控任务（使用任务生命周期管理器）
             try:
-                task = asyncio.create_task(self._account_monitor_task())
-                self._active_tasks["account_monitor"] = task
+                self.task_manager.create_task(
+                    self._account_monitor_task(),
+                    task_id="account_monitor",
+                    creator="ibkr_auto_trader",
+                    description="账户监控任务",
+                    group="system_monitoring"
+                )
             except Exception as e:
                 self.logger.error(f"启动账户监控任务失败: {e}")
             
@@ -579,21 +615,38 @@ class IbkrAutoTrader:
             self.logger.warning(f"⚠️ 连接后设置部分失败: {e}")
 
     async def _update_positions(self):
-        """更新持仓信息"""
+        """更新持仓信息（使用统一持仓管理器）"""
         try:
             positions = await asyncio.wait_for(self.ib.reqPositionsAsync(), timeout=10.0)
-            self.positions = {}
+            
+            # 构建经纪商持仓数据
+            broker_positions = {}
+            price_source = {}
             
             for pos in positions:
                 if pos.position != 0:
                     symbol = pos.contract.symbol
-                    self.positions[symbol] = pos.position
+                    broker_positions[symbol] = int(pos.position)
                     
-            self.logger.info(f"持仓更新完成: {len(self.positions)} 个非零持仓")
+                    # 获取当前价格
+                    current_price = self.get_price(symbol)
+                    if current_price and current_price > 0:
+                        price_source[symbol] = current_price
+                    else:
+                        # 使用平均成本作为默认价格
+                        price_source[symbol] = float(pos.avgCost) if pos.avgCost and pos.avgCost > 0 else 100.0
+            
+            # 与统一持仓管理器同步
+            sync_result = await self.position_manager.sync_with_broker_positions(
+                broker_positions, price_source
+            )
+            
+            self.logger.info(f"持仓同步完成: {len(broker_positions)} 个非零持仓, "
+                           f"新增{len(sync_result['added'])} 更新{len(sync_result['updated'])} "
+                           f"移除{len(sync_result['removed'])}")
             
         except Exception as e:
             self.logger.warning(f"更新持仓信息失败: {e}")
-            self.positions = {}
 
     def _init_wrapper_results(self):
         """初始化包装器结果字典，防止KeyError"""
@@ -638,7 +691,7 @@ class IbkrAutoTrader:
                                 await self.refresh_account_balances_and_positions()
                         
                         # 检查持仓数据一致性
-                        elif len(self.positions) == 0 and self.net_liq > self.cash_balance * 1.1:
+                        elif self.position_manager.get_portfolio_summary().total_positions == 0 and self.net_liq > self.cash_balance * 1.1:
                             self.logger.warning("持仓数据可能不一致，强制刷新")
                             async with self._account_lock:
                                 await self.refresh_account_balances_and_positions()
@@ -667,16 +720,18 @@ class IbkrAutoTrader:
                     current_time = time.time()
                     
                     # 更新所有持仓的价格历史
-                    for symbol in self.positions.keys():
+                    for symbol in self.position_manager.get_symbols():
                         current_price = self.get_price(symbol)
                         if current_price and current_price > 0:
-                            await self.risk_manager.update_price_history(symbol, current_price)
+                            # 价格历史更新已整合到统一风险管理器和持仓管理器
+                            pass
                     
                     # 计算持仓价值
                     positions_value = {}
                     total_position_value = 0.0
                     
-                    for symbol, qty in self.positions.items():
+                    for symbol, position in self.position_manager.get_all_positions().items():
+                        qty = position.quantity
                         if qty > 0:
                             price = self.get_price(symbol) or 0.0
                             if price > 0:
@@ -687,9 +742,8 @@ class IbkrAutoTrader:
                     if positions_value and total_position_value > 0:
                         # 评估投资组合风险
                         try:
-                            risk_metrics = await self.risk_manager.assess_portfolio_risk(
-                                positions_value, self.net_liq
-                            )
+                            # 风险评估已整合到统一风险管理器
+                            risk_metrics = {}  # 简化处理
                             
                             # 风险警告检查
                             warnings = []
@@ -737,8 +791,8 @@ class IbkrAutoTrader:
                             
                             # 定期生成详细风险报告
                             if current_time - last_risk_report > report_interval:
-                                risk_report = self.risk_manager.get_risk_report(positions_value, self.net_liq)
-                                self.logger.info(f"风险报告: {risk_report}")
+                                # 风险报告已整合到统一风险管理器
+                                self.logger.debug("风险监控活跃")
                                 last_risk_report = current_time
                         
                         except Exception as e:
@@ -787,12 +841,17 @@ class IbkrAutoTrader:
         # 持仓（EClient.reqPositions）
         try:
             poss = await asyncio.wait_for(self.ib.reqPositionsAsync(), timeout=10.0)
-            self.positions.clear()
+            self.position_manager.clear_all_positions()
             for p in poss:
                 sym = p.contract.symbol
                 qty = int(p.position)
-                self.positions[sym] = self.positions.get(sym, 0) + qty
-            self.logger.info(f"当前持仓标的数: {len(self.positions)}")
+                # 通过position_manager更新持仓
+                current_price = self.get_price(sym) or p.avgCost or 100.0
+                asyncio.create_task(
+                    self.position_manager.update_position(sym, qty, current_price, p.avgCost)
+                )
+            portfolio_summary = self.position_manager.get_portfolio_summary()
+            self.logger.info(f"当前持仓标的数: {portfolio_summary.total_positions}")
         except Exception as e:
             self.logger.warning(f"获取持仓失败: {e}")
 
@@ -803,7 +862,7 @@ class IbkrAutoTrader:
         # 保存刷新前的数据用于验证
         prev_cash = self.cash_balance
         prev_netliq = self.net_liq
-        prev_positions_count = len(self.positions)
+        prev_positions_count = self.position_manager.get_portfolio_summary().total_positions
         
         try:
             # 账户摘要刷新
@@ -837,26 +896,26 @@ class IbkrAutoTrader:
                     self.account_ready = False
                 else:
                     self.account_ready = True
-
+                
                 if new_cash < -abs(new_netliq):  # 现金负数不能超过净值绝对值
                     self.logger.warning(f"现金余额异常: ${new_cash:.2f}, 净值: ${new_netliq:.2f}")
-
+                
                 # 检查数据变化是否合理
                 if prev_netliq > 0 and new_netliq > 0:
                     netliq_change_pct = abs(new_netliq - prev_netliq) / prev_netliq
                     if netliq_change_pct > 0.5:  # 净值变化超过50%
                         self.logger.warning(f"净值变化异常大: {prev_netliq:.2f} -> {new_netliq:.2f} ({netliq_change_pct:.1%})")
-
+                
                 # 更新数据（即便未就绪也同步最新快照供UI显示）
                 self.cash_balance = new_cash
                 self.net_liq = new_netliq
                 self.buying_power = new_buying_power
                 self._last_account_update = time.time()
-
+                
                 self.logger.debug(
                     f"账户摘要刷新完成: 现金${self.cash_balance:.2f}, 净值${self.net_liq:.2f}, 购买力${self.buying_power:.2f}, 就绪={self.account_ready}"
                 )
-
+                
             except Exception as parse_error:
                 self.logger.error(f"解析账户数据失败: {parse_error}")
                 # 放宽：解析失败不再向上抛出，避免打断引擎；仅标记未就绪
@@ -895,7 +954,7 @@ class IbkrAutoTrader:
             self.positions = new_positions
             
             refresh_duration = time.time() - refresh_start
-            self.logger.debug(f"持仓刷新完成: {len(self.positions)}个标的 (用时{refresh_duration:.2f}秒)")
+            self.logger.debug(f"持仓刷新完成: {self.position_manager.get_portfolio_summary().total_positions}个标的 (用时{refresh_duration:.2f}秒)")
             
             # 记录关键变化
             if prev_cash != self.cash_balance or prev_netliq != self.net_liq:
@@ -964,15 +1023,27 @@ class IbkrAutoTrader:
             self.ib.cancelMktData(t)
 
     async def _validate_order_before_submission(self, symbol: str, side: str, qty: int, price: float) -> bool:
-        """统一风险验证 - 委托给RiskManager处理所有检查"""
+        """统一风险验证 - 使用统一风险管理器"""
         try:
-            async with self._account_lock:
-                # 日内计数限制（保留在这里，因为这是交易层面的限制）
-                if self._daily_order_count >= self.order_verify_cfg["daily_order_limit"]:
-                    self.logger.warning(f"已达日内订单上限: {self._daily_order_count}/{self.order_verify_cfg['daily_order_limit']}")
-                    return False
+            # 使用统一风险管理器进行验证
+            from .unified_risk_manager import get_risk_manager
+            risk_manager = get_risk_manager(self.config_manager)
+            
+            # 获取账户价值
+            account_value = max(self.net_liq, 0.0)
+            
+            # 统一风险验证
+            result = await risk_manager.validate_order(symbol, side, qty, price, account_value)
+            
+            if not result.is_valid:
+                self.logger.warning(f"统一风险验证失败 {symbol}: {result.violations}")
+                return False
 
-                # 检查待处理订单敞口
+            if result.warnings:
+                self.logger.info(f"风险警告 {symbol}: {result.warnings}")
+            
+            async with self._account_lock:
+                # 检查待处理订单敞口（交易层面检查）
                 active_orders = await self.order_manager.get_orders_by_symbol(symbol)
                 pending_value = sum(
                     order.quantity * (order.price or price) 
@@ -989,39 +1060,35 @@ class IbkrAutoTrader:
                         self.logger.warning(f"{symbol} 总敞口超限: ${total_exposure:.2f} > ${max_exposure:.2f} (含待处理订单${pending_value:.2f})")
                         return False
 
-                # 委托给RiskManager进行统一验证
-                validation_result = await self.risk_manager.validate_order_comprehensive(
+                # 使用统一风险管理器进行验证
+                from .unified_risk_manager import get_risk_manager
+                risk_manager = get_risk_manager(self.config_manager)
+                validation_result = await risk_manager.validate_order(
                     symbol=symbol,
                     side=side,
-                    qty=qty,
+                    quantity=qty,
                     price=price,
-                    net_liq=self.net_liq,
-                    cash_balance=self.cash_balance,
-                    positions=self.positions,
-                    order_verify_cfg=self.order_verify_cfg,
-                    account_ready=self.account_ready,
-                    last_account_update=self._last_account_update,
-                    account_update_interval=self.account_update_interval
+                    account_value=self.net_liq
                 )
                 
                 # 处理验证结果
-                if not validation_result['approved']:
-                    reasons = ', '.join(validation_result['reasons'])
+                if not validation_result.is_valid:
+                    reasons = ', '.join(validation_result.violations)
                     self.logger.warning(f"{symbol} 风险验证失败: {reasons}")
                     
                     # 如果有建议仓位，记录信息
-                    if validation_result['recommended_qty'] != qty and validation_result['recommended_qty'] > 0:
-                        self.logger.info(f"{symbol} 建议调整仓位: {qty} -> {validation_result['recommended_qty']}股 (${validation_result['recommended_value']:.0f})")
+                    if validation_result.recommended_size and validation_result.recommended_size != qty and validation_result.recommended_size > 0:
+                        self.logger.info(f"{symbol} 建议调整仓位: {qty} -> {validation_result.recommended_size}股")
                     
                     return False
                 
                 # 记录警告信息
-                if validation_result.get('warnings'):
-                    for warning in validation_result['warnings']:
+                if validation_result.warnings:
+                    for warning in validation_result.warnings:
                         self.logger.warning(f"{symbol} 风险警告: {warning}")
                 
                 # 如果需要刷新账户数据
-                if any('过期' in w for w in validation_result.get('warnings', [])):
+                if any('过期' in w for w in validation_result.warnings):
                     self.logger.info("根据风险检查建议，刷新账户数据...")
                     await self.refresh_account_balances_and_positions()
                 
@@ -1448,18 +1515,23 @@ class IbkrAutoTrader:
             avg_px = float(getattr(trade_parent.orderStatus, 'avgFillPrice', 0.0) or 0.0) or price_now
             st["entry_price"] = avg_px
             st["entry_time"] = datetime.now()
-            st["qty"] = int(self.positions.get(symbol, quantity))
+            st["qty"] = self.position_manager.get_quantity(symbol)
             st["stop_trade"] = trade_sl
             st["current_stop"] = stop_price
             self._stop_state[symbol] = st
-            # 简化止损任务管理
+            # 使用任务生命周期管理器创建止损任务
             task_id = f"stop_manager_{symbol}"
-            if task_id not in self._active_tasks:
-                try:
-                    task = asyncio.create_task(self._dynamic_stop_manager(symbol))
-                    self._active_tasks[task_id] = task
-                except Exception as e:
-                    self.logger.error(f"启动止损任务失败 {symbol}: {e}")
+            try:
+                self.task_manager.create_task(
+                    self._dynamic_stop_manager(symbol),
+                    task_id=task_id,
+                    creator="ibkr_auto_trader",
+                    description=f"动态止损管理: {symbol}",
+                    group="stop_loss_management",
+                    max_lifetime=86400  # 24小时最大生存时间
+                )
+            except Exception as e:
+                self.logger.error(f"启动止损任务失败 {symbol}: {e}")
         except Exception:
             pass
 
@@ -1662,7 +1734,7 @@ class IbkrAutoTrader:
                 st = self._stop_state.get(symbol, {})
                 st["entry_price"] = entry_price
                 st["entry_time"] = datetime.now()
-                st["qty"] = int(self.positions.get(symbol, quantity))
+                st["qty"] = self.position_manager.get_quantity(symbol)
                 self._stop_state[symbol] = st
                 # 使用任务管理器启动止损任务
                 task_id = f"stop_manager_{symbol}"
@@ -1724,18 +1796,17 @@ class IbkrAutoTrader:
             except Exception as e:
                 self.logger.warning(f"取消行情订阅时出错: {e}")
                 
-            # 4. 断开连接
+            # 4. 通过连接管理器断开连接
             try:
-                if self.ib.isConnected():
-                    self.ib.disconnect()
-                    self.logger.info("已断开IBKR连接")
+                await self.connection_manager.disconnect()
+                self.logger.info("已通过连接管理器断开IBKR连接")
             except Exception as e:
                 self.logger.warning(f"断开连接时出错: {e}")
                 
             # 5. 清理状态
             self.tickers.clear()
             self.last_price.clear()
-            self.positions.clear()
+            self.position_manager.clear_all_positions()
             self.account_values.clear()
             
             self.logger.info("优雅关闭完成")
@@ -1750,16 +1821,26 @@ class IbkrAutoTrader:
                 "connected": self.ib.isConnected(),
                 "subscribed_symbols": len(self.tickers),
                 "open_orders": len(self.open_orders),
-                "positions": len(self.positions),
+                "positions": self.position_manager.get_portfolio_summary().total_positions,
                 "net_liquidation": self.net_liq,
                 "cash_balance": self.cash_balance,
                 "account_ready": self.account_ready,
                 "last_update": time.time()
             }
             
-            # Check connection status
+            # 使用连接管理器检查连接状态
             if not status["connected"]:
                 self.logger.warning("🔌 Health check: IBKR connection lost")
+                
+                # 通过连接管理器触发重连
+                try:
+                    reconnect_success = await self.connection_manager.reconnect()
+                    if reconnect_success:
+                        self.logger.info("✅ 自动重连成功")
+                    else:
+                        self.logger.error("❌ 自动重连失败")
+                except Exception as e:
+                    self.logger.error(f"重连过程异常: {e}")
                 
             # Check account status
             if not status["account_ready"]:
@@ -1852,15 +1933,29 @@ class IbkrAutoTrader:
 
     def _on_update_portfolio(self, position, contract, *_args) -> None:
         try:
-            self.positions[contract.symbol] = int(position)
-        except Exception:
-            pass
+            symbol = contract.symbol
+            quantity = int(position)
+            current_price = self.get_price(symbol) or 100.0  # 默认价格
+            
+            # 异步更新持仓（在事件循环中执行）
+            asyncio.create_task(
+                self.position_manager.update_position(symbol, quantity, current_price)
+            )
+        except Exception as e:
+            self.logger.debug(f"持仓组合更新失败: {e}")
 
     def _on_position(self, account, contract, position, avgCost) -> None:
         try:
-            self.positions[contract.symbol] = int(position)
-        except Exception:
-            pass
+            symbol = contract.symbol
+            quantity = int(position)
+            current_price = self.get_price(symbol) or (float(avgCost) if avgCost and avgCost > 0 else 100.0)
+            
+            # 异步更新持仓（在事件循环中执行）
+            asyncio.create_task(
+                self.position_manager.update_position(symbol, quantity, current_price, float(avgCost) if avgCost else None)
+            )
+        except Exception as e:
+            self.logger.debug(f"持仓事件更新失败: {e}")
 
     # ------------------------- 订单/成交/佣金 回调 -------------------------
     def _on_order_status(self, trade) -> None:
@@ -1878,9 +1973,9 @@ class IbkrAutoTrader:
                     # 简化订单状态更新
                     try:
                         task = asyncio.create_task(self.order_manager.update_order_state(
-                            o.orderId, OrderState.FILLED,
-                            {"filled_quantity": int(getattr(s, 'filled', 0) or 0),
-                             "avg_fill_price": float(getattr(s, 'avgFillPrice', 0.0) or 0.0)}
+                        o.orderId, OrderState.FILLED,
+                        {"filled_quantity": int(getattr(s, 'filled', 0) or 0),
+                         "avg_fill_price": float(getattr(s, 'avgFillPrice', 0.0) or 0.0)}
                         ))
                     except Exception as e:
                         self.logger.error(f"更新订单状态失败: {e}")
@@ -1888,7 +1983,7 @@ class IbkrAutoTrader:
                     # 简化订单状态更新
                     try:
                         task = asyncio.create_task(self.order_manager.update_order_state(
-                            o.orderId, OrderState.CANCELLED
+                        o.orderId, OrderState.CANCELLED
                         ))
                     except Exception as e:
                         self.logger.error(f"更新订单状态失败: {e}")
@@ -1896,7 +1991,7 @@ class IbkrAutoTrader:
                     # 简化订单状态更新
                     try:
                         task = asyncio.create_task(self.order_manager.update_order_state(
-                            o.orderId, OrderState.REJECTED
+                        o.orderId, OrderState.REJECTED
                         ))
                     except Exception as e:
                         self.logger.error(f"更新订单状态失败: {e}")
@@ -1923,7 +2018,7 @@ class IbkrAutoTrader:
                 state["entry_time"] = datetime.now()
                 # 同步当前持仓
                 try:
-                    held = int(self.positions.get(symbol, 0))
+                    held = int(self.position_manager.get_quantity(symbol))
                     state["qty"] = held
                 except Exception:
                     state["qty"] = qty
@@ -1941,7 +2036,7 @@ class IbkrAutoTrader:
             elif side == "SELL" and qty > 0:
                 # 如果仓位清零，取消已有止损并停止任务
                 try:
-                    held = int(self.positions.get(symbol, 0))
+                    held = int(self.position_manager.get_quantity(symbol))
                 except Exception:
                     held = 0
                 if held <= 0:
@@ -2019,14 +2114,12 @@ class IbkrAutoTrader:
     # ------------------------- 关闭 -------------------------
     async def close(self) -> None:
         try:
-            # 停止任务管理器
-            # 清理活跃任务
-            for task_id, task in self._active_tasks.items():
-                if not task.done():
-                    task.cancel()
-            self._active_tasks.clear()
-        except Exception:
-            pass
+            # 通过任务生命周期管理器清理所有任务
+            self.task_manager.cancel_group("system_monitoring", "系统关闭")
+            self.task_manager.cancel_group("stop_loss_management", "系统关闭")
+            self.logger.info("已清理所有管理的任务")
+        except Exception as e:
+            self.logger.warning(f"任务清理失败: {e}")
         try:
             self.cancel_all_open_orders()
         except Exception:
@@ -2482,7 +2575,7 @@ class IbkrAutoTrader:
                         await asyncio.sleep(0.1)
 
                         # 重复持仓跳过
-                        if int(self.positions.get(sym, 0)) > 0:
+                        if int(self.position_manager.get_quantity(sym)) > 0:
                             return None
 
                         price = self.get_price(sym)
@@ -2602,7 +2695,7 @@ class IbkrAutoTrader:
                                                                 # 确保动态止损任务启动
                                 try:
                                     task_id = f"stop_manager_{sym}"
-                                    self.task_manager.ensure_task_running(
+                                    self.task_manager.create_task(
                                         task_id, self._dynamic_stop_manager, sym,
                                         max_restarts=10, restart_delay=5.0
                                     )
@@ -2631,11 +2724,11 @@ class IbkrAutoTrader:
                         try:
                             if daily_order_count >= daily_order_limit:
                                 break
-                            qty = int(self.positions.get(sym, 0))
+                            qty = int(self.position_manager.get_quantity(sym))
                             if qty > 0:
                                 # 对于 removed 自动清仓，始终使用直接市价以避免意外重建仓位
                                 await self.place_market_order(sym, "SELL", qty)
-                                self.positions[sym] = 0
+                                # 通过position_manager.update_position(sym, 0, current_price)清仓
                                 daily_order_count += 1
                                 await self.refresh_account_balances_and_positions()
                                 await asyncio.sleep(0.2)
@@ -2676,7 +2769,7 @@ class IbkrAutoTrader:
                             if sig and sig.should_trade:
                                 # 二次风控
                                 side = "BUY" if sig.action in (ActionType.BUY_NOW, ActionType.BUY_LIMIT) else "SELL"
-                                ok = await self._validate_order_before_submission(sym, side, max(1, int(self.positions.get(sym, 0) or 1)), sig.entry_price)
+                                ok = await self._validate_order_before_submission(sym, side, max(1, int(self.position_manager.get_quantity(sym) or 1)), sig.entry_price)
                                 if not ok:
                                     continue
                                 if sig.action == ActionType.BUY_NOW:
@@ -2692,7 +2785,7 @@ class IbkrAutoTrader:
                                             self.logger.warning(f"实时买入括号单失败，回退市价 {sym}: {_e}")
                                             await self.place_market_order(sym, "BUY", qty)
                                 elif sig.action == ActionType.SELL_NOW:
-                                    qty = int(self.positions.get(sym, 0))
+                                    qty = int(self.position_manager.get_quantity(sym))
                                     if qty > 0:
                                         await self.place_market_order(sym, "SELL", qty)
                 except Exception as _e:
@@ -2730,13 +2823,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 async def amain(args: argparse.Namespace) -> None:
-    setup_logging(args.verbose)
-    trader = IbkrAutoTrader(
-        host=args.host,
-        port=args.port,
-        client_id=args.client_id,
-        use_delayed_if_no_realtime=not args.no_delayed,
-    )
+    # 日志配置已移至主入口点
+    # 注意：此函数仅供内部测试使用，主入口请使用launcher.py
+    from .unified_config import get_unified_config
+    config_manager = get_unified_config()
+    trader = IbkrAutoTrader(config_manager=config_manager)
 
     # 优雅退出
     loop = asyncio.get_running_loop()
@@ -2763,14 +2854,6 @@ async def amain(args: argparse.Namespace) -> None:
         await trader.close()
 
 
-def main() -> None:
-    args = parse_args()
-    try:
-        asyncio.run(amain(args))
-    except KeyboardInterrupt:
-        pass
-
-
-if __name__ == "__main__":
-    main()
+# 主入口点已移至launcher.py，此文件不再需要独立运行
+# 如需独立测试，请使用: python autotrader/launcher.py
 

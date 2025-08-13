@@ -1,4 +1,5 @@
-from __future__ import annotations
+# 清理：移除未使用的导入
+# from __future__ import annotations
 
 import asyncio
 import threading
@@ -8,7 +9,6 @@ from dataclasses import dataclass
 from typing import Optional, List
 import os
 import sys
-import subprocess
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -364,9 +364,31 @@ class AutoTraderGUI(tk.Tk):
             db = StockDatabase()
             ok = db.save_risk_config(cfg)
             if ok:
-                self.log("风险配置已保存")
+                self.log("风险配置已保存到数据库")
             else:
                 self.log("风险配置保存失败")
+            db.close()
+            
+            # 同时更新统一配置管理器并持久化
+            self.config_manager.update_runtime_config({
+                'capital.cash_reserve_pct': rm['cash_reserve_pct'],
+                'capital.max_single_position_pct': rm['max_single_position_pct'],
+                'capital.max_portfolio_exposure': rm['realtime_alloc_pct'],
+                'orders.default_stop_loss_pct': rm['default_stop_pct'],
+                'orders.default_take_profit_pct': rm['default_target_pct'],
+                'orders.min_order_value_usd': rm['min_order_value_usd'],
+                'orders.daily_order_limit': rm['daily_order_limit'],
+                'risk.use_atr_stops': rm['use_atr_stops'],
+                'risk.atr_multiplier_stop': rm['atr_multiplier_stop'],
+                'risk.atr_multiplier_target': rm['atr_multiplier_target'],
+                'risk.allow_short': rm['allow_short']
+            })
+            
+            # 持久化到文件
+            if self.config_manager.persist_runtime_changes():
+                self.log("✅ 风险配置已持久化到配置文件")
+            else:
+                self.log("⚠️ 风险配置持久化失败，但已保存到数据库")
         except Exception as e:
             self.log(f"保存风险配置失败: {e}")
 
@@ -486,8 +508,12 @@ class AutoTraderGUI(tk.Tk):
             if not self.engine:
                 self.log("请先启动引擎")
                 return
-            loop = self._ensure_loop()
-            self.loop_manager.submit_coroutine(self.engine.on_signal_and_trade(), timeout=30)
+            # 使用非阻塞提交避免GUI卡死
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                task_id = self.loop_manager.submit_coroutine_nowait(self.engine.on_signal_and_trade())
+                self.log(f"信号交易已提交，任务ID: {task_id}")
+            else:
+                self.log("事件循环未运行，无法执行信号交易")
             self.log("已触发一次信号与交易")
             self._update_signal_status("执行交易信号", "blue")
         except Exception as e:
@@ -517,7 +543,12 @@ class AutoTraderGUI(tk.Tk):
                     self.log(f"已提交市价单: {side} {qty} {sym}")
                 except Exception as e:
                     self.log(f"市价单失败: {e}")
-            self.loop_manager.submit_coroutine(_run(), timeout=30)
+            # 使用非阻塞提交避免GUI卡死
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                self.log(f"下单任务已提交，任务ID: {task_id}")
+            else:
+                self.log("事件循环未运行，无法执行下单操作")
         except Exception as e:
             self.log(f"市价下单错误: {e}")
 
@@ -540,7 +571,12 @@ class AutoTraderGUI(tk.Tk):
                     self.log(f"已提交限价单: {side} {qty} {sym} @ {px}")
                 except Exception as e:
                     self.log(f"限价单失败: {e}")
-            self.loop_manager.submit_coroutine(_run(), timeout=30)
+            # 使用非阻塞提交避免GUI卡死
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                self.log(f"下单任务已提交，任务ID: {task_id}")
+            else:
+                self.log("事件循环未运行，无法执行下单操作")
         except Exception as e:
             self.log(f"限价下单错误: {e}")
 
@@ -563,7 +599,12 @@ class AutoTraderGUI(tk.Tk):
                     self.log(f"已提交括号单: {side} {qty} {sym} (止损{stop_pct*100:.1f}%, 止盈{tp_pct*100:.1f}%)")
                 except Exception as e:
                     self.log(f"括号单失败: {e}")
-            self.loop_manager.submit_coroutine(_run(), timeout=30)
+            # 使用非阻塞提交避免GUI卡死
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                self.log(f"下单任务已提交，任务ID: {task_id}")
+            else:
+                self.log("事件循环未运行，无法执行下单操作")
         except Exception as e:
             self.log(f"括号单错误: {e}")
 
@@ -586,7 +627,12 @@ class AutoTraderGUI(tk.Tk):
                     self.log(f"已提交大单执行: {algo} {side} {qty} {sym} / {dur_min}min")
                 except Exception as e:
                     self.log(f"大单执行失败: {e}")
-            self.loop_manager.submit_coroutine(_run(), timeout=30)
+            # 使用非阻塞提交避免GUI卡死
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                self.log(f"下单任务已提交，任务ID: {task_id}")
+            else:
+                self.log("事件循环未运行，无法执行下单操作")
         except Exception as e:
             self.log(f"大单执行错误: {e}")
 
@@ -897,13 +943,54 @@ class AutoTraderGUI(tk.Tk):
             self.state.alloc = float(self.ent_alloc.get().strip() or 0.03)
             self.state.poll_sec = float(self.ent_poll.get().strip() or 10.0)
             self.state.fixed_qty = int(self.ent_fixed_qty.get().strip() or 0)
-        except Exception:
+        except ValueError as e:
+            error_msg = f"参数格式错误: {e}"
+            self.log(error_msg)
             messagebox.showerror("参数错误", "端口/ClientId必须是整数，资金占比/轮询间隔必须是数字")
+            raise ValueError(error_msg) from e
+        except Exception as e:
+            error_msg = f"参数捕获失败: {e}"
+            self.log(error_msg)
+            messagebox.showerror("参数错误", error_msg)
             raise
         self.state.sheet = self.ent_sheet.get().strip() or None
         self.state.column = self.ent_col.get().strip() or None
         self.state.symbols_csv = self.ent_csv.get().strip() or None
         self.state.auto_sell_removed = self.var_auto_sell.get()
+        
+        # 同时更新统一配置管理器
+        self.config_manager.update_runtime_config({
+            'connection.host': self.state.host,
+            'connection.port': self.state.port,
+            'connection.client_id': self.state.client_id,
+            'trading.alloc_pct': self.state.alloc,
+            'trading.poll_interval': self.state.poll_sec,
+            'trading.fixed_quantity': self.state.fixed_qty,
+            'trading.auto_sell_removed': self.state.auto_sell_removed
+        })
+    
+    def _run_async_safe(self, coro, operation_name: str = "操作", timeout: int = 30):
+        """安全地运行异步操作，避免阻塞GUI"""
+        try:
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                # 使用无等待提交避免阻塞主线程
+                task_id = self.loop_manager.submit_coroutine_nowait(coro)
+                self.log(f"{operation_name}已提交，任务ID: {task_id}")
+                return task_id
+            else:
+                # 回退到独立线程
+                import asyncio
+                thread_name = f"{operation_name}Thread"
+                threading.Thread(
+                    target=lambda: asyncio.run(coro), 
+                    daemon=True,
+                    name=thread_name
+                ).start()
+                self.log(f"{operation_name}已在后台线程启动")
+                return None
+        except Exception as e:
+            self.log(f"{operation_name}启动失败: {e}")
+            return None
 
     def _test_connection(self) -> None:
         try:
@@ -927,18 +1014,26 @@ class AutoTraderGUI(tk.Tk):
                 except Exception as e:
                     self.log(f"[FAIL] 连接失败: {e}")
             
-            # 尝试使用后台事件循环，失败则用同步事件循环
-            try:
-                loop = self._ensure_loop()
-                # 使用线程安全的事件循环管理器
-                result = self.loop_manager.submit_coroutine(_run(), timeout=30)
-            except Exception as e:
-                self.log(f"后台事件循环失败: {e}，尝试同步连接...")
+            # 使用非阻塞异步执行，避免GUI卡死
+            def _async_test():
                 try:
-                    # 降级到直接提交
-                    self.loop_manager.submit_coroutine(_run(), timeout=30)
-                except Exception as e2:
-                    self.log(f"[FAIL] 连接失败(降级路径): {e2}")
+                    if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                        # 使用无等待提交避免阻塞主线程
+                        task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                        self.log(f"连接测试已提交，任务ID: {task_id}")
+                    else:
+                        # 回退到独立线程
+                        import asyncio
+                        threading.Thread(
+                            target=lambda: asyncio.run(_run()), 
+                            daemon=True,
+                            name="ConnectionTest"
+                        ).start()
+                        self.log("连接测试已在后台线程启动")
+                except Exception as e:
+                    self.log(f"连接测试启动失败: {e}")
+            
+            _async_test()
             
         except Exception as e:
             self.log(f"测试连接错误: {e}")
@@ -1005,18 +1100,26 @@ class AutoTraderGUI(tk.Tk):
                 except Exception as e:
                     self.log(f"自动交易启动失败: {e}")
 
-            # 尝试使用后台事件循环，失败则用同步事件循环启动
-            try:
-                loop = self._ensure_loop()
-                # 使用线程安全的事件循环管理器
-                result = self.loop_manager.submit_coroutine(_run(), timeout=60)
-            except Exception as e:
-                self.log(f"后台事件循环启动失败: {e}，尝试同步启动...")
+            # 使用非阻塞异步执行，避免GUI卡死
+            def _async_start():
                 try:
-                    # 降级到直接提交
-                    self.loop_manager.submit_coroutine(_run(), timeout=60)
-                except Exception as e2:
-                    self.log(f"自动交易启动失败(降级路径): {e2}")
+                    if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                        # 使用无等待提交避免阻塞主线程
+                        task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                        self.log(f"自动交易启动已提交，任务ID: {task_id}")
+                    else:
+                        # 回退到独立线程
+                        import asyncio
+                        threading.Thread(
+                            target=lambda: asyncio.run(_run()), 
+                            daemon=True,
+                            name="AutoTradeStart"
+                        ).start()
+                        self.log("自动交易启动已在后台线程启动")
+                except Exception as e:
+                    self.log(f"自动交易启动失败: {e}")
+            
+            _async_start()
 
         except Exception as e:
             self.log(f"启动自动交易错误: {e}")
@@ -1054,18 +1157,25 @@ class AutoTraderGUI(tk.Tk):
                 except Exception as e:
                     self.log(f"停止策略循环失败: {e}")
 
-                # Close trader connection
+                # Stop engine and close trader connection
                 if self.loop and self.loop.is_running():
-                    async def _cleanup_trader():
+                    async def _cleanup_all():
                         try:
-                            await self.trader.close()
-                            self.log("交易连接已关闭")
-                        except Exception as e:
-                            self.log(f"关闭交易连接失败: {e}")
-                        finally:
-                            self.trader = None
+                            # Stop engine first
+                            if self.engine:
+                                await self.engine.stop()
+                                self.log("引擎已停止")
+                                self.engine = None
                             
-                    self.loop_manager.submit_coroutine(_cleanup_trader(), timeout=10)
+                            # Then close trader connection
+                            if self.trader:
+                                await self.trader.close()
+                                self.log("交易连接已关闭")
+                                self.trader = None
+                        except Exception as e:
+                            self.log(f"停止引擎/交易器失败: {e}")
+                            
+                    self.loop_manager.submit_coroutine(_cleanup_all(), timeout=10)
                 else:
                     self.trader = None
             
@@ -1173,7 +1283,12 @@ class AutoTraderGUI(tk.Tk):
                 except Exception as e:
                     self.log(f"获取账户信息失败: {e}")
                     
-            self.loop_manager.submit_coroutine(_run(), timeout=30)
+            # 使用非阻塞提交避免GUI卡死
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                self.log(f"下单任务已提交，任务ID: {task_id}")
+            else:
+                self.log("事件循环未运行，无法执行下单操作")
             
         except Exception as e:
             self.log(f"查看账户错误: {e}")
@@ -1469,9 +1584,23 @@ class AutoTraderGUI(tk.Tk):
                 return
             
             if self.db.save_trading_config(name, alloc, poll_sec, auto_sell, fixed_qty):
-                self.log(f"成功保存配置: {name}")
+                self.log(f"成功保存配置到数据库: {name}")
                 self._refresh_configs()
                 self.config_name_var.set(name)
+                
+                # 同时更新统一配置管理器
+                self.config_manager.update_runtime_config({
+                    'trading.alloc_pct': alloc,
+                    'trading.poll_interval': poll_sec,
+                    'trading.auto_sell_removed': auto_sell,
+                    'trading.fixed_quantity': fixed_qty
+                })
+                
+                # 持久化到文件
+                if self.config_manager.persist_runtime_changes():
+                    self.log("✅ 交易配置已持久化到配置文件")
+                else:
+                    self.log("⚠️ 交易配置持久化失败，但已保存到数据库")
             else:
                 messagebox.showerror("错误", "保存配置失败")
                 
@@ -1723,7 +1852,15 @@ class AutoTraderGUI(tk.Tk):
         try:
             self.log("正在关闭应用...")
             
-            # First, gracefully stop trader
+            # First, cancel engine loop task if running
+            if hasattr(self, '_engine_loop_task') and self._engine_loop_task and not self._engine_loop_task.done():
+                try:
+                    self._engine_loop_task.cancel()
+                    self.log("已取消策略引擎循环任务")
+                except Exception as e:
+                    self.log(f"取消策略引擎循环失败: {e}")
+            
+            # Then, gracefully stop trader
             if self.trader:
                 try:
                     if hasattr(self.trader, '_stop_event') and self.trader._stop_event:
@@ -1735,17 +1872,24 @@ class AutoTraderGUI(tk.Tk):
             # Force cleanup after brief delay to allow graceful shutdown
             def force_cleanup():
                 try:
-                    # Close trader connection if exists
-                    if self.trader and self.loop and self.loop.is_running():
-                        async def _cleanup_trader():
+                    # Stop engine and close trader connection if exists
+                    if (self.engine or self.trader) and self.loop and self.loop.is_running():
+                        async def _cleanup_all():
                             try:
-                                await self.trader.close()
-                                self.log("交易器连接已关闭")
+                                # Stop engine first
+                                if self.engine:
+                                    await self.engine.stop()
+                                    self.log("引擎已停止")
+                                
+                                # Then close trader connection
+                                if self.trader:
+                                    await self.trader.close()
+                                    self.log("交易器连接已关闭")
                             except Exception as e:
-                                self.log(f"交易器关闭失败: {e}")
+                                self.log(f"停止引擎/交易器失败: {e}")
                         
                         try:
-                            self.loop_manager.submit_coroutine(_cleanup_trader(), timeout=2.0)
+                            self.loop_manager.submit_coroutine(_cleanup_all(), timeout=3.0)
                         except Exception:
                             pass
                     
@@ -1805,6 +1949,14 @@ class AutoTraderGUI(tk.Tk):
                     except Exception as e:
                         self.log(f"停止事件总线失败: {e}")
                     
+                    # 保存配置变更到文件（持久化）
+                    try:
+                        if hasattr(self, 'config_manager'):
+                            self.config_manager.persist_runtime_changes()
+                            self.log("配置已自动保存")
+                    except Exception as e:
+                        self.log(f"自动保存配置失败: {e}")
+                    
                     # Reset references
                     self.trader = None
                     self.loop = None
@@ -1831,51 +1983,88 @@ class AutoTraderGUI(tk.Tk):
             end_date = datetime.now().strftime('%Y-%m-%d')
             start_date = (datetime.now() - timedelta(days=5 * 365)).strftime('%Y-%m-%d')
 
-            script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, '量化模型_bma_enhanced.py'))
+            # 默认运行 Ultra Enhanced，引入原版股票池与两阶段训练能力
+            ultra_script = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, '量化模型_bma_ultra_enhanced.py'))
+            script_path = ultra_script if os.path.exists(ultra_script) else os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, '量化模型_bma_enhanced.py'))
             if not os.path.exists(script_path):
                 messagebox.showerror("错误", f"未找到量化模型脚本: {script_path}")
                 return
 
             self.log(f"[BMA] 启动BMA增强模型: {start_date} -> {end_date} (默认全股票池)")
 
-            def _runner():
+            # 使用性能优化器替代subprocess
+            async def _runner_optimized():
                 try:
                     # 标记模型开始训练
                     self._model_training = True
                     self._model_trained = False
+                    self.after(0, lambda: self.log("[BMA] 开始优化执行..."))
                     
-                    cmd = [sys.executable, script_path, '--start-date', start_date, '--end-date', end_date]
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        bufsize=1,
-                        universal_newlines=True,
-                        cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)),
-                    )
-                    assert proc.stdout is not None
-                    for line in proc.stdout:
-                        line = line.rstrip('\n')
-                        if line:
-                            try:
+                    # 使用性能优化器
+                    from .performance_optimizer import get_performance_optimizer
+                    optimizer = get_performance_optimizer()
+                    
+                    # 定义进度回调
+                    def progress_callback(result):
+                        for line in result.output:
+                            if line.strip():
                                 self.after(0, lambda m=line: self.log(m))
-                            except Exception:
-                                pass
-                    code = proc.wait()
+                    
+                    # 优化执行BMA模型
+                    # Ultra Enhanced 支持参数：--tickers-file stocks.txt --tickers-limit 50
+                    extra_args = []
+                    if script_path.endswith('量化模型_bma_ultra_enhanced.py'):
+                        # 小样本先测50只，随后脚本内部自动全量
+                        extra_args = ['--tickers-file', 'stocks.txt', '--tickers-limit', '50']
+
+                    result = await optimizer.optimize_bma_execution(
+                        script_path, start_date, end_date, progress_callback, extra_args=extra_args
+                    )
                     
                     # 更新模型状态
                     self._model_training = False
-                    self._model_trained = (code == 0)
+                    self._model_trained = result.success
                     
-                    self.after(0, lambda: self.log(f"[BMA] 运行完成，退出码={code}"))
-                    if code != 0:
-                        self.after(0, lambda: messagebox.showwarning("BMA运行", f"BMA模型运行异常（退出码 {code}），请查看日志"))
+                    if result.success:
+                        self.after(0, lambda: self.log(f"[BMA] ✅ 运行完成 (耗时: {result.execution_time:.2f}s)"))
+                        if result.cache_key:
+                            self.after(0, lambda: self.log("[BMA] 📋 使用缓存优化"))
+                        
+                        # 显示性能统计
+                        stats = optimizer.get_performance_stats()
+                        speedup = stats['optimization_stats'].get('average_speedup', 1.0)
+                        if speedup > 1.0:
+                            self.after(0, lambda: self.log(f"[BMA] 🚀 性能提升: {speedup:.1f}x"))
+                    else:
+                        error_msg = result.error if result.error else "未知错误"
+                        self.after(0, lambda: self.log(f"[BMA] ❌ 运行失败: {error_msg}"))
+                        self.after(0, lambda: messagebox.showwarning("BMA运行", f"BMA模型运行失败: {error_msg}"))
+                        
                 except Exception as e:
                     self._model_training = False
                     self._model_trained = False
-                    self.after(0, lambda: self.log(f"[BMA] 运行失败: {e}"))
+                    self.after(0, lambda: self.log(f"[BMA] 优化执行异常: {e}"))
 
-            threading.Thread(target=_runner, daemon=True).start()
+            # 在事件循环中运行优化的执行器
+            def _start_optimized():
+                try:
+                    # 在事件循环中创建任务
+                    if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
+                        self.loop_manager.submit_coroutine(_runner_optimized())
+                    else:
+                        # 回退到线程执行
+                        import asyncio
+                        threading.Thread(
+                            target=lambda: asyncio.run(_runner_optimized()), 
+                            daemon=True
+                        ).start()
+                except Exception as e:
+                    self.log(f"[BMA] 启动优化执行失败: {e}")
+                    # 回退到原始方法（已移除subprocess部分）
+                    self._model_training = False
+                    self._model_trained = False
+
+            _start_optimized()
 
         except Exception as e:
             self.log(f"[BMA] 启动失败: {e}")
@@ -2160,8 +2349,8 @@ class AutoTraderGUI(tk.Tk):
     def _execute_strategy_comparison_thread(self):
         """在线程中执行策略对比"""
         try:
-            # 导入回测模块
-            from autotrader.run_backtest import run_preset_backtests
+            # 修复：使用backtest_engine中的回测功能（run_backtest已合并到backtest_engine）
+            from autotrader.backtest_engine import run_preset_backtests
             
             self.after(0, lambda: self._update_backtest_status("开始执行策略对比..."))
             
@@ -2210,7 +2399,9 @@ class AutoTraderGUI(tk.Tk):
             self.after(0, lambda: self._update_backtest_status("执行回测..."))
             
             # 运行回测
-            results = engine.run_backtest()
+                                # 回测功能已整合到backtest_engine.py
+            from .backtest_engine import run_backtest_with_config
+            results = run_backtest_with_config(config)
             
             if results:
                 self.after(0, lambda: self._update_backtest_status("生成分析报告..."))
@@ -2252,64 +2443,64 @@ AutoTrader BMA 回测完成！
             traceback.print_exc()
     
     def _run_weekly_backtest(self):
-        """运行周频 BMA 回测"""
+        """运行周频 BMA 回测（内置引擎，无外部脚本依赖）"""
         try:
-            # 导入周频回测模块
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
-            from weekly_bma_backtest import WeeklyBMAPortfolioBacktester, BacktestConfig as WeeklyConfig, compute_weekly_closes_from_daily
-            
+            from autotrader.backtest_engine import BacktestConfig, run_backtest_with_config
+            from autotrader.backtest_analyzer import analyze_backtest_results
+
             self.after(0, lambda: self._update_backtest_status("创建周频回测配置..."))
-            
-            # 构建配置
-            config = WeeklyConfig(
-                top_n=int(self.ent_bt_max_positions.get()),
-                train_weeks=52,  # 固定1年训练窗口
-                start_date=pd.to_datetime(self.ent_bt_start_date.get()),
-                end_date=pd.to_datetime(self.ent_bt_end_date.get())
+
+            # 使用与AutoTrader相同的引擎，设置周频调仓
+            config = BacktestConfig(
+                start_date=self.ent_bt_start_date.get(),
+                end_date=self.ent_bt_end_date.get(),
+                initial_capital=float(self.ent_bt_capital.get()),
+                rebalance_freq="weekly",
+                max_positions=int(self.ent_bt_max_positions.get()),
+                commission_rate=float(self.ent_bt_commission.get()),
+                slippage_rate=float(self.ent_bt_slippage.get()),
+                use_bma_model=True,
+                model_retrain_freq=int(self.ent_bt_retrain_freq.get()),
+                prediction_horizon=int(self.ent_bt_prediction_horizon.get()),
+                max_position_weight=float(self.ent_bt_max_weight.get()),
+                stop_loss_pct=float(self.ent_bt_stop_loss.get()),
+                take_profit_pct=float(self.ent_bt_take_profit.get())
             )
-            
-            self.after(0, lambda: self._update_backtest_status("加载数据..."))
-            
-            # 加载数据（这里需要根据你的数据源调整）
-            # 示例：从数据库加载或使用模拟数据
-            from autotrader.database import StockDatabase
-            
-            db = StockDatabase()
-            symbols = db.get_stock_universe()[:50]  # 限制股票数量以提高速度
-            
-            # 模拟创建周频数据（实际应用中需要从真实数据源加载）
-            dates = pd.date_range(start=config.start_date, end=config.end_date, freq='B')
-            weekly_closes = pd.DataFrame(
-                np.random.randn(len(dates), len(symbols)).cumsum(axis=0) + 100,
-                index=dates,
-                columns=symbols
-            )
-            weekly_closes = compute_weekly_closes_from_daily(weekly_closes)
-            
+
             self.after(0, lambda: self._update_backtest_status("执行周频回测..."))
-            
-            # 创建回测器
-            backtester = WeeklyBMAPortfolioBacktester(weekly_closes=weekly_closes, config=config)
-            
-            # 运行回测
-            results = backtester.run()
-            
+
+            results = run_backtest_with_config(config)
+
             if results:
+                # 生成分析报告
+                output_dir = self.ent_bt_output_dir.get()
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+
+                analyze_backtest_results(results, output_dir)
+
                 summary = f"""
 周频 BMA 回测完成！
 
-年化收益率: {results['annual_return']:.2%}
-最大回撤: {results['max_drawdown']:.2%}
-夏普比率: {results['sharpe']:.3f}
+回测期间: {results['period']['start_date']} -> {results['period']['end_date']}
+总收益率: {results['returns']['total_return']:.2%}
+年化收益率: {results['returns']['annual_return']:.2%}
+夏普比率: {results['returns']['sharpe_ratio']:.3f}
+最大回撤: {results['returns']['max_drawdown']:.2%}
+胜率: {results['returns']['win_rate']:.2%}
+交易次数: {results['trading']['total_trades']}
+最终资产: ${results['portfolio']['final_value']:,.2f}
+
+报告已保存到: {output_dir}
                 """
-                
+
                 self.after(0, lambda: self._update_backtest_status(summary))
                 self.after(0, lambda: messagebox.showinfo("回测完成", f"周频 BMA 回测完成！\n\n{summary}"))
             else:
                 self.after(0, lambda: self._update_backtest_status("周频回测失败：无结果数据"))
-                
+
         except ImportError as e:
-            self.after(0, lambda: self._update_backtest_status(f"导入周频回测模块失败: {e}"))
+            self.after(0, lambda: self._update_backtest_status(f"导入回测模块失败: {e}"))
         except Exception as e:
             self.after(0, lambda: self._update_backtest_status(f"周频回测失败: {e}"))
             import traceback
@@ -2479,7 +2670,8 @@ AutoTrader BMA 回测完成！
 
 
 def main() -> None:
-    import tkinter.simpledialog  # 导入对话框模块
+    # 清理：移除未使用的导入
+    # import tkinter.simpledialog  # 导入对话框模块
     app = AutoTraderGUI()  # type: ignore
     app.mainloop()
 

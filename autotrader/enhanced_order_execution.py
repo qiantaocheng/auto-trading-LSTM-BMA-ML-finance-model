@@ -133,8 +133,9 @@ class EnhancedOrderExecutor:
             'avg_execution_time': 0.0
         }
         
-        # 活跃执行任务
-        self._active_executions: Dict[int, asyncio.Task] = {}
+        # 使用任务生命周期管理器
+        from .task_lifecycle_manager import get_task_manager
+        self.task_manager = get_task_manager()
     
     def calculate_dynamic_timeout(self, config: ExecutionConfig, liquidity: float) -> float:
         """计算动态超时时间"""
@@ -184,11 +185,15 @@ class EnhancedOrderExecutor:
             "订单已提交"
         )
         
-        # 启动执行任务
-        execution_task = asyncio.create_task(
-            self._monitor_order_execution(order_sm, trade, timeout, config)
+        # 使用任务生命周期管理器创建任务
+        execution_task = self.task_manager.create_task(
+            self._monitor_order_execution(order_sm, trade, timeout, config),
+            task_id=f"market_order_monitor_{order_id}",
+            creator="enhanced_order_execution",
+            description=f"监控市价单执行: {symbol} {action} {quantity}",
+            group="order_execution",
+            max_lifetime=timeout + 30  # 超时时间 + 缓冲
         )
-        self._active_executions[order_id] = execution_task
         
         return order_sm
     
@@ -292,8 +297,8 @@ class EnhancedOrderExecutor:
                 {'error': str(e)}, f"监控异常: {e}"
             )
         finally:
-            # 清理执行任务
-            self._active_executions.pop(order_sm.order_id, None)
+            # 任务生命周期管理器会自动清理
+            pass
     
     async def execute_adaptive_limit_order(self, symbol: str, action: str, quantity: int,
                                          reference_price: float, config: ExecutionConfig) -> OrderStateMachine:
@@ -331,12 +336,16 @@ class EnhancedOrderExecutor:
         
         self.logger.info(f"提交自适应限价单: {symbol} {action} {quantity} @ ${limit_price:.2f}")
         
-        # 启动监控
+        # 启动监控（使用任务生命周期管理器）
         timeout = self.calculate_dynamic_timeout(config, liquidity)
-        execution_task = asyncio.create_task(
-            self._monitor_adaptive_limit_execution(order_sm, trade, timeout, config, reference_price)
+        execution_task = self.task_manager.create_task(
+            self._monitor_adaptive_limit_execution(order_sm, trade, timeout, config, reference_price),
+            task_id=f"adaptive_limit_monitor_{order_id}",
+            creator="enhanced_order_execution",
+            description=f"监控自适应限价单: {symbol} {action} {quantity}",
+            group="order_execution",
+            max_lifetime=timeout + 30
         )
-        self._active_executions[order_id] = execution_task
         
         return order_sm
     
@@ -411,7 +420,8 @@ class EnhancedOrderExecutor:
                 {'error': str(e)}, f"监控异常: {e}"
             )
         finally:
-            self._active_executions.pop(order_sm.order_id, None)
+            # 任务生命周期管理器会自动清理
+            pass
     
     def _update_execution_stats(self, order_sm: OrderStateMachine, execution_time: float):
         """更新执行统计"""
@@ -448,10 +458,9 @@ class EnhancedOrderExecutor:
             # 更新状态
             await self.order_manager.update_order_state(order_id, OrderState.CANCELLED, reason=reason)
             
-            # 停止执行任务
-            if order_id in self._active_executions:
-                self._active_executions[order_id].cancel()
-                del self._active_executions[order_id]
+            # 通过任务管理器取消任务
+            self.task_manager.cancel_task(f"market_order_monitor_{order_id}", "手动取消")
+            self.task_manager.cancel_task(f"adaptive_limit_monitor_{order_id}", "手动取消")
             
             return True
             
@@ -469,24 +478,17 @@ class EnhancedOrderExecutor:
         else:
             stats['success_rate'] = 0.0
         
-        # 活跃订单数
-        stats['active_executions'] = len(self._active_executions)
+        # 活跃订单数（从任务管理器获取）
+        order_tasks = self.task_manager.list_tasks(group="order_execution")
+        stats['active_executions'] = len(order_tasks)
         
         return stats
     
     async def cleanup(self):
         """清理资源"""
-        # 取消所有活跃执行任务
-        for task in self._active_executions.values():
-            if not task.done():
-                task.cancel()
-        
-        # 等待任务完成
-        if self._active_executions:
-            await asyncio.gather(*self._active_executions.values(), return_exceptions=True)
-        
-        self._active_executions.clear()
-        self.logger.info("订单执行器已清理")
+        # 通过任务管理器取消所有订单执行任务
+        cancelled_count = self.task_manager.cancel_group("order_execution", "系统清理")
+        self.logger.info(f"订单执行器已清理，取消了 {cancelled_count} 个任务")
 
     # ==================== 高级执行算法 ====================
     

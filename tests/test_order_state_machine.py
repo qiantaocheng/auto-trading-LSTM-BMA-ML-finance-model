@@ -17,6 +17,11 @@ class TestOrderStateMachine(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual(order.state, OrderState.SUBMITTED)
 
+        # Valid transition path: SUBMITTED -> ACKNOWLEDGED -> FILLED
+        ok = await self.om.update_order_state(1001, OrderState.ACKNOWLEDGED, {})
+        self.assertTrue(ok)
+        self.assertEqual(order.state, OrderState.ACKNOWLEDGED)
+
         ok = await self.om.update_order_state(1001, OrderState.FILLED, {"filled_quantity": 50, "avg_fill_price": 190.5})
         self.assertTrue(ok)
         self.assertEqual(order.state, OrderState.FILLED)

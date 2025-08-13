@@ -5,10 +5,12 @@
 """
 
 import json
-import os
 import sqlite3
 import logging
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List
+# 清理：移除未使用的导入
+# import os
+# from typing import Union
 from pathlib import Path
 from threading import RLock
 from copy import deepcopy
@@ -49,7 +51,7 @@ class UnifiedConfigManager:
         self.paths = {
             'hotconfig': self.base_dir / 'config.json',
             'risk': self.base_dir / 'data' / 'risk_config.json',
-            'connection': self.base_dir / 'data' / 'connection_config.json',
+            'connection': self.base_dir / 'data' / 'connection.json',
             'database': self.base_dir / 'data' / 'autotrader_stocks.db'
         }
         
@@ -163,8 +165,8 @@ class UnifiedConfigManager:
             if self.paths['connection'].exists():
                 try:
                     with open(self.paths['connection'], 'r', encoding='utf-8') as f:
-                        connection_config = json.load(f)
-                        self._configs['file']['connection'] = connection_config
+                        connection_data = json.load(f)
+                        self._configs['file']['connection'] = connection_data
                         self.logger.info(f"已加载连接配置: {self.paths['connection']}")
                         
                         self._file_mtimes['connection'] = self.paths['connection'].stat().st_mtime
@@ -206,51 +208,65 @@ class UnifiedConfigManager:
             """)
             
             if cursor.fetchone():
+                # 修复：使用实际的表结构 (config_json列而不是key,value列)
                 cursor.execute("""
-                    SELECT key, value FROM risk_configs 
+                    SELECT config_json FROM risk_configs 
                     WHERE name = '默认风险配置'
                 """)
                 
-                db_risk_config = {}
-                for key, value in cursor.fetchall():
+                result = cursor.fetchone()
+                if result:
                     try:
-                        # 尝试解析JSON
-                        db_risk_config[key] = json.loads(value)
-                    except:
-                        db_risk_config[key] = value
-                
-                if db_risk_config:
-                    self._configs['database']['risk_management'] = db_risk_config
-                    self.logger.info(f"已加载数据库风险配置: {len(db_risk_config)}项")
+                        # 解析JSON配置
+                        db_risk_config = json.loads(result[0])
+                        if db_risk_config:
+                            self._configs['database']['risk_management'] = db_risk_config
+                            self.logger.info(f"已加载数据库风险配置: {len(db_risk_config)}项")
+                    except Exception as e:
+                        self.logger.warning(f"解析数据库风险配置失败: {e}")
             
-            # 加载全局tickers作为universe
-            cursor.execute("SELECT symbol FROM tickers WHERE is_active = 1")
-            tickers = [row[0] for row in cursor.fetchall()]
+            # 加载全局tickers作为universe（兼容不同的表结构）
+            try:
+                cursor.execute("SELECT symbol FROM tickers WHERE is_active = 1")
+                tickers = [row[0] for row in cursor.fetchall()]
+            except Exception:
+                # 如果没有is_active列，直接查询所有symbol
+                try:
+                    cursor.execute("SELECT symbol FROM tickers")
+                    tickers = [row[0] for row in cursor.fetchall()]
+                except Exception as e:
+                    self.logger.debug(f"tickers表查询失败: {e}")
+                    tickers = []
             
             if tickers:
                 self._configs['database']['scanner'] = {'universe': tickers}
                 self.logger.info(f"已加载数据库tickers: {len(tickers)}条")
             
-            # 加载引擎配置
-            cursor.execute("""
-                SELECT name FROM sqlite_master WHERE type='table' AND name='engine_configs'
-            """)
-            
-            if cursor.fetchone():
-                cursor.execute("SELECT section, key, value FROM engine_configs")
-                engine_config = {}
+            # 加载引擎配置（可选表，可能不存在）
+            try:
+                cursor.execute("""
+                    SELECT name FROM sqlite_master WHERE type='table' AND name='engine_configs'
+                """)
                 
-                for section, key, value in cursor.fetchall():
-                    if section not in engine_config:
-                        engine_config[section] = {}
-                    try:
-                        engine_config[section][key] = json.loads(value)
-                    except:
-                        engine_config[section][key] = value
-                
-                if engine_config:
-                    self._configs['database'].update(engine_config)
-                    self.logger.info(f"已加载数据库引擎配置: {len(engine_config)}节")
+                if cursor.fetchone():
+                    cursor.execute("SELECT section, key, value FROM engine_configs")
+                    engine_config = {}
+                    
+                    for section, key, value in cursor.fetchall():
+                        if section not in engine_config:
+                            engine_config[section] = {}
+                        try:
+                            engine_config[section][key] = json.loads(value)
+                        except:
+                            engine_config[section][key] = value
+                    
+                    if engine_config:
+                        self._configs['database'].update(engine_config)
+                        self.logger.info(f"已加载数据库引擎配置: {len(engine_config)}节")
+                else:
+                    self.logger.debug("engine_configs表不存在，跳过引擎配置加载")
+            except Exception as e:
+                self.logger.debug(f"引擎配置加载失败: {e}")
                 
         finally:
             conn.close()
@@ -300,6 +316,78 @@ class UnifiedConfigManager:
         with self.lock:
             for key_path, value in updates.items():
                 self.set_runtime(key_path, value)
+                
+    def save_to_file(self, config_type: str = 'hotconfig') -> bool:
+        """保存配置到文件（持久化）"""
+        try:
+            with self.lock:
+                if config_type == 'hotconfig':
+                    # 保存合并后的配置到hotconfig文件
+                    merged = self._get_merged_config()
+                    
+                    # 确保目录存在
+                    self.paths['hotconfig'].parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(self.paths['hotconfig'], 'w', encoding='utf-8') as f:
+                        json.dump(merged, f, indent=2, ensure_ascii=False)
+                    
+                    # 更新文件层配置
+                    self._configs['file'] = merged.copy()
+                    self.logger.info(f"配置已保存到 {self.paths['hotconfig']}")
+                    return True
+                    
+                elif config_type == 'connection':
+                    # 保存连接配置
+                    conn_config = self.get_connection_params()
+                    
+                    self.paths['connection'].parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(self.paths['connection'], 'w', encoding='utf-8') as f:
+                        json.dump(conn_config, f, indent=2, ensure_ascii=False)
+                    
+                    self.logger.info(f"连接配置已保存到 {self.paths['connection']}")
+                    return True
+                    
+        except Exception as e:
+            self.logger.error(f"保存配置失败: {e}")
+            return False
+            
+    def persist_runtime_changes(self):
+        """将运行时配置持久化到文件"""
+        try:
+            with self.lock:
+                if self._configs['runtime']:
+                    # 将runtime配置合并到file配置中
+                    runtime_config = deepcopy(self._configs['runtime'])
+                    file_config = deepcopy(self._configs['file'])
+                    
+                    # 深度合并
+                    def deep_merge(base, updates):
+                        for key, value in updates.items():
+                            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                                deep_merge(base[key], value)
+                            else:
+                                base[key] = value
+                    
+                    deep_merge(file_config, runtime_config)
+                    
+                    # 保存到hotconfig文件
+                    self.paths['hotconfig'].parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(self.paths['hotconfig'], 'w', encoding='utf-8') as f:
+                        json.dump(file_config, f, indent=2, ensure_ascii=False)
+                    
+                    # 更新file配置并清空runtime
+                    self._configs['file'] = file_config
+                    self._configs['runtime'] = {}
+                    self._cache_valid = False
+                    
+                    self.logger.info("运行时配置已持久化")
+                    return True
+                    
+        except Exception as e:
+            self.logger.error(f"持久化运行时配置失败: {e}")
+            return False
     
     def _get_merged_config(self) -> Dict[str, Any]:
         """获取合并后的配置"""
@@ -313,6 +401,7 @@ class UnifiedConfigManager:
                 self._deep_merge(merged, self._configs[source])
                 self.logger.debug(f"合并配置源: {source}")
         
+        # 原子性设置缓存
         self._merged_config = merged
         self._cache_valid = True
         
@@ -351,12 +440,28 @@ class UnifiedConfigManager:
         # 确保唯一性并排序
         return sorted(list(set(universe)))
     
-    def get_connection_params(self) -> Dict[str, Any]:
+    def get_connection_params(self, auto_allocate_client_id: bool = True) -> Dict[str, Any]:
         """获取连接参数"""
+        host = self.get('connection.host')
+        port = self.get('connection.port')
+        
+        if auto_allocate_client_id:
+            # 使用动态ClientID分配
+            try:
+                from .client_id_manager import allocate_dynamic_client_id
+                preferred_id = self.get('connection.client_id')
+                client_id = allocate_dynamic_client_id(host, port, preferred_id)
+                self.logger.info(f"分配动态ClientID: {client_id}")
+            except Exception as e:
+                self.logger.warning(f"动态ClientID分配失败，使用配置值: {e}")
+                client_id = self.get('connection.client_id')
+        else:
+            client_id = self.get('connection.client_id')
+        
         return {
-            'host': self.get('connection.host'),
-            'port': self.get('connection.port'),
-            'client_id': self.get('connection.client_id'),
+            'host': host,
+            'port': port,
+            'client_id': client_id,
             'account_id': self.get('connection.account_id'),
             'use_delayed_if_no_realtime': self.get('connection.use_delayed_if_no_realtime'),
             'timeout': self.get('connection.timeout')

@@ -66,15 +66,29 @@ class StockDatabase:
             except Exception as e:
                 self.logger.warning(f"Error closing database connection: {e}")
     
-    def _execute_with_retry(self, query: str, params: tuple = (), max_retries: int = 3):
-        """Execute query with retry mechanism for handling database locks"""
+    def _execute_with_retry(self, query: str, params: tuple = (), max_retries: int = 3, fetch_result: bool = True):
+        """Execute query with retry mechanism for handling database locks
+        
+        Args:
+            query: SQL query to execute
+            params: Query parameters
+            max_retries: Maximum retry attempts
+            fetch_result: Whether to fetch and return results (SELECT) or just execute (INSERT/UPDATE/DELETE)
+        """
         import time
         for attempt in range(max_retries):
             try:
                 with self._get_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(query, params)
-                    return cursor.fetchall()
+                    
+                    # Auto-commit for modification operations
+                    if not fetch_result or query.strip().upper().startswith(('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER')):
+                        conn.commit()
+                        return cursor  # Return cursor for rowcount, lastrowid etc.
+                    else:
+                        return cursor.fetchall()  # Return results for SELECT
+                        
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e).lower() and attempt < max_retries - 1:
                     self.logger.warning(f"Database locked, retrying in {0.1 * (attempt + 1)}s... (attempt {attempt + 1}/{max_retries})")
@@ -340,6 +354,52 @@ class StockDatabase:
         except Exception as e:
             self.logger.error(f"获取全局tickers失败: {e}")
             return []
+    
+    def get_stock_universe(self) -> List[str]:
+        """获取股票池（兼容方法，等同于get_all_tickers）"""
+        return self.get_all_tickers()
+    
+    def clear_tickers(self) -> bool:
+        """清空tickers表"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM tickers")
+                conn.commit()
+                self.logger.info("已清空tickers表")
+                return True
+        except Exception as e:
+            self.logger.error(f"清空tickers表失败: {e}")
+            return False
+    
+    def batch_add_tickers(self, symbols: List[str]) -> bool:
+        """批量添加股票代码到tickers表"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 批量插入
+                for symbol in symbols:
+                    symbol = symbol.upper().strip()
+                    if symbol:
+                        try:
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO tickers (symbol, added_at) 
+                                VALUES (?, ?)
+                            """, (symbol, datetime.now().isoformat()))
+                        except sqlite3.OperationalError:
+                            # 如果没有added_at列，只插入symbol
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO tickers (symbol) 
+                                VALUES (?)
+                            """, (symbol,))
+                
+                conn.commit()
+                self.logger.info(f"批量添加 {len(symbols)} 只股票到tickers表")
+                return True
+        except Exception as e:
+            self.logger.error(f"批量添加tickers失败: {e}")
+            return False
 
     def get_all_tickers_with_meta(self) -> List[Dict]:
         """获取全局 tickers 及其元数据（symbol, added_at）。"""

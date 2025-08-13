@@ -6,8 +6,10 @@ IBKR自动交易系统 - 统一启动器
 
 import asyncio
 import logging
-from typing import Optional, Dict, Any
-from pathlib import Path
+from typing import Optional, Any
+# 清理：移除未使用的导入
+# from typing import Dict
+# from pathlib import Path
 
 
 class TradingSystemLauncher:
@@ -95,9 +97,11 @@ class TradingSystemLauncher:
         try:
             print("⚡ 启动直接交易模式...")
             from autotrader.ibkr_auto_trader import IbkrAutoTrader
+            from autotrader.unified_config import get_unified_config
             
-            # 创建直接交易器
-            trader = IbkrAutoTrader(host, port, client_id)
+            # 修复：使用统一配置管理器创建交易器
+            config_manager = get_unified_config()
+            trader = IbkrAutoTrader(config_manager=config_manager)
             
             print("✅ 直接交易器已启动")
             print("💡 提示: 使用 await trader.connect() 连接到IBKR")
@@ -143,7 +147,10 @@ class TradingSystemLauncher:
                 
             print("🎯 组件创建测试...")
             try:
-                trader = IbkrAutoTrader("127.0.0.1", 7497, 1)
+                # 修复：使用正确的初始化参数（config_manager）
+                from autotrader.unified_config import get_unified_config
+                config_manager = get_unified_config()
+                trader = IbkrAutoTrader(config_manager=config_manager)
                 test_results['trader'] = True
                 print("  ✅ 交易器创建成功")
             except Exception as e:

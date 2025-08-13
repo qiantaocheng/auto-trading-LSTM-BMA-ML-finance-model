@@ -6,18 +6,9 @@ IBKR 自动交易系统
 __version__ = "1.0.0"
 __author__ = "Trading System Team"
 
-# 导入核心模块
-# 已改用统一配置管理器
-# from .config import HotConfig
-from .unified_config import UnifiedConfigManager
-from .engine import Engine, RiskEngine, SignalHub, OrderRouter
-from .ibkr_auto_trader import IbkrAutoTrader
+# 仅暴露轻量入口，避免在包导入时触发重模块加载，降低冷启动时延与循环导入风险。
+from .unified_config import UnifiedConfigManager  # 轻量，安全导出
 
 __all__ = [
-    "UnifiedConfigManager", 
-    "Engine", 
-    "RiskEngine", 
-    "SignalHub", 
-    "OrderRouter",
-    "IbkrAutoTrader"
+    "UnifiedConfigManager",
 ]

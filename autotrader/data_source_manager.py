@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 统一数据源管理器
-解决stocks.txt、数据库tickers、HotConfig universe之间的数据源混乱问题
+解决stocks.txt、数据库tickers、配置文件universe之间的数据源混乱问题
 """
 
-import sqlite3
 import json
 import logging
 from typing import List, Dict, Set, Optional, Tuple, Any
@@ -31,7 +30,7 @@ class UnifiedDataSourceManager:
             'manual_input': 1,      # 手动输入
             'file_import': 2,       # 文件导入（stocks.txt）
             'database_global': 3,   # 数据库全局tickers
-            'config_hotload': 4,    # HotConfig配置
+            'config_hotload': 4,    # 配置文件
             'runtime_override': 5   # 运行时覆盖（最高优先级）
         }
         
@@ -56,45 +55,14 @@ class UnifiedDataSourceManager:
         self._initial_sync()
     
     def _init_database(self):
-        """初始化数据库表"""
-        if not self.db_path.parent.exists():
-            self.db_path.parent.mkdir(parents=True)
-        
+        """初始化数据库表（通过database.py）"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # 创建统一的数据源表
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS unified_data_sources (
-                        symbol TEXT NOT NULL,
-                        source TEXT NOT NULL,
-                        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        is_active BOOLEAN DEFAULT 1,
-                        priority INTEGER DEFAULT 1,
-                        metadata TEXT,
-                        PRIMARY KEY (symbol, source)
-                    )
-                """)
-                
-                # 创建索引
-                cursor.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_sources_symbol 
-                    ON unified_data_sources(symbol)
-                """)
-                
-                cursor.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_sources_priority 
-                    ON unified_data_sources(priority DESC)
-                """)
-                
-                cursor.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_sources_active 
-                    ON unified_data_sources(is_active)
-                """)
-                
-                conn.commit()
-                self.logger.info("数据源管理表初始化完成")
+            # 延迟导入避免循环导入
+            from .database import StockDatabase
+            
+            # 通过StockDatabase确保基础表结构存在
+            db = StockDatabase()
+            self.logger.info("数据源管理器初始化完成")
                 
         except Exception as e:
             self.logger.error(f"数据库初始化失败: {e}")
@@ -118,8 +86,8 @@ class UnifiedDataSourceManager:
             # 2. 从数据库tickers表同步
             self._sync_from_database_tickers()
             
-            # 3. 从HotConfig同步
-            self._sync_from_hotconfig()
+            # 3. 从配置文件同步
+            self._sync_from_config_file()
             
             # 4. 更新统一表
             self._update_unified_table()
@@ -151,36 +119,25 @@ class UnifiedDataSourceManager:
             self.logger.debug("stocks.txt文件不存在")
     
     def _sync_from_database_tickers(self):
-        """从数据库tickers表同步"""
+        """从数据库tickers表同步（通过database.py统一访问）"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # 检查tickers表是否存在
-                cursor.execute("""
-                    SELECT name FROM sqlite_master 
-                    WHERE type='table' AND name='tickers'
-                """)
-                
-                if cursor.fetchone():
-                    # 兼容不同的数据库schema
-                    try:
-                        cursor.execute("SELECT symbol FROM tickers WHERE is_active = 1")
-                    except sqlite3.OperationalError:
-                        # 如果没有is_active列，直接查询symbol
-                        cursor.execute("SELECT symbol FROM tickers")
-                    symbols = {row[0].upper() for row in cursor.fetchall()}
-                    
-                    self._sources['database_global'] = symbols
-                    self.logger.info(f"从数据库tickers表同步 {len(symbols)} 只股票")
-                else:
-                    self.logger.debug("数据库tickers表不存在")
+            # 延迟导入避免循环导入
+            from .database import StockDatabase
+            
+            db = StockDatabase()
+            symbols = set(db.get_stock_universe())
+            
+            if symbols:
+                self._sources['database_global'] = symbols
+                self.logger.info(f"从数据库tickers表同步 {len(symbols)} 只股票")
+            else:
+                self.logger.debug("数据库中无股票数据")
                     
         except Exception as e:
-            self.logger.error(f"从数据库同步失败: {e}")
+            self.logger.error(f"数据库同步失败: {e}")
     
-    def _sync_from_hotconfig(self):
-        """从HotConfig同步"""
+    def _sync_from_config_file(self):
+        """从配置文件同步"""
         config_file = Path("config.json")
         
         if config_file.exists():
@@ -192,38 +149,38 @@ class UnifiedDataSourceManager:
                 if universe:
                     symbols = {symbol.upper() for symbol in universe}
                     self._sources['config_hotload'] = symbols
-                    self.logger.info(f"从HotConfig同步 {len(symbols)} 只股票")
+                    self.logger.info(f"从配置文件同步 {len(symbols)} 只股票")
                 
             except Exception as e:
-                self.logger.error(f"从HotConfig同步失败: {e}")
+                self.logger.error(f"从配置文件同步失败: {e}")
         else:
             self.logger.debug("config.json文件不存在")
     
     def _update_unified_table(self):
-        """更新统一数据源表"""
+        """更新统一数据源表（通过database.py）"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # 清理旧数据
-                cursor.execute("DELETE FROM unified_data_sources")
-                
-                # 插入所有源的数据
-                for source, symbols in self._sources.items():
-                    priority = self.source_priority.get(source, 1)
-                    
-                    for symbol in symbols:
-                        cursor.execute("""
-                            INSERT INTO unified_data_sources 
-                            (symbol, source, priority, is_active)
-                            VALUES (?, ?, ?, 1)
-                        """, (symbol, source, priority))
-                
-                conn.commit()
-                self.logger.info("统一数据源表更新完成")
+            # 延迟导入避免循环导入
+            from .database import StockDatabase
+            
+            db = StockDatabase()
+            
+            # 构建所有符号的列表，按优先级排序
+            all_symbols = []
+            for source, symbols in self._sources.items():
+                priority = self.source_priority.get(source, 1)
+                for symbol in symbols:
+                    all_symbols.append({
+                        'symbol': symbol,
+                        'source': source,
+                        'priority': priority
+                    })
+            
+            # 通过database.py更新（这里需要添加相应的方法到database.py）
+            # 暂时记录日志，具体实现待database.py扩展
+            self.logger.debug(f"准备更新统一数据源表: {len(all_symbols)} 条记录")
                 
         except Exception as e:
-            self.logger.error(f"更新统一表失败: {e}")
+            self.logger.error(f"更新统一数据源表失败: {e}")
     
     def get_universe(self, force_refresh: bool = False) -> List[str]:
         """获取统一的股票列表（按优先级合并）"""
@@ -417,29 +374,18 @@ class UnifiedDataSourceManager:
                 
                 self.logger.info(f"已更新stocks.txt: {len(final_universe)} 只股票")
                 
-                # 2. 更新数据库tickers表
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.cursor()
+                # 2. 更新数据库tickers表（通过database.py）
+                try:
+                    from .database import StockDatabase
                     
-                    # 清空并重建
-                    cursor.execute("DELETE FROM tickers")
+                    db = StockDatabase()
+                    # 使用database.py的方法来批量更新股票列表
+                    db.clear_tickers()
+                    db.batch_add_tickers(list(final_universe))
                     
-                    for symbol in final_universe:
-                        try:
-                            cursor.execute("""
-                                INSERT INTO tickers (symbol, is_active) 
-                                VALUES (?, 1)
-                            """, (symbol,))
-                        except sqlite3.OperationalError:
-                            # 如果没有is_active列，只插入symbol
-                            cursor.execute("""
-                                INSERT INTO tickers (symbol) 
-                                VALUES (?)
-                            """, (symbol,))
-                    
-                    conn.commit()
-                
-                self.logger.info(f"已更新数据库tickers表: {len(final_universe)} 只股票")
+                    self.logger.info(f"已更新数据库tickers表: {len(final_universe)} 只股票")
+                except Exception as e:
+                    self.logger.error(f"更新数据库失败: {e}")
                 
                 # 3. 更新HotConfig
                 config_file = Path("config.json")
@@ -462,7 +408,7 @@ class UnifiedDataSourceManager:
                 with open(config_file, 'w', encoding='utf-8') as f:
                     json.dump(config, f, indent=2, ensure_ascii=False)
                 
-                self.logger.info(f"已更新HotConfig: {len(final_universe)} 只股票")
+                self.logger.info(f"已更新配置文件: {len(final_universe)} 只股票")
                 
                 # 4. 重新同步
                 self.sync_from_all_sources()

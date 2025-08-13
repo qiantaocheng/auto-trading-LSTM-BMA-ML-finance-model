@@ -1,0 +1,1 @@
+'NFLX', 'ORCL', 'AMD', 'NVDA', 'GOOGL'

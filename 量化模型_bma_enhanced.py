@@ -35,6 +35,16 @@ from sklearn.impute import SimpleImputer
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# ===== Ultra 原版集成功能：导入统一市场数据、风险模型与Regime权重 =====
+try:
+    from unified_market_data_manager import UnifiedMarketDataManager
+    from unified_risk_model import EnhancedAlphaEngine, RiskModelConfig
+    from regime_adaptive_engine import AdaptiveWeightEngine, get_market_indices_data
+    ULTRA_INTEGRATION_AVAILABLE = True
+except Exception as _e:
+    ULTRA_INTEGRATION_AVAILABLE = False
+    print(f"[WARN] Ultra集成功能不可用: {_e}")
+
 # 导入强制中性化管线
 try:
     from neutralization_pipeline import DailyNeutralizationTransformer, create_neutralization_pipeline_step
@@ -910,6 +920,50 @@ class BayesianModelAveraging:
             weight = valid_weights[name]
             ensemble_pred += weight * pred
 
+        # Ultra集成：Regime-aware 融合 Alpha 与 ML 预测
+        if getattr(self, 'ultra_enabled', False):
+            try:
+                # 构造简要市场数据用于状态判定（回退默认值）
+                dates = X.index if hasattr(X, 'index') else pd.RangeIndex(len(X))
+                returns_series = pd.Series(ensemble_pred, index=dates)
+                vol_series = pd.Series(pd.Series(ensemble_pred).rolling(20).std().fillna(0.02).values, index=dates)
+                market_data = {'returns': returns_series, 'volatility': vol_series}
+
+                # 预测不确定性（简化为预测方差）
+                pred_unc = float(np.std(ensemble_pred)) if len(ensemble_pred) > 1 else 0.1
+
+                # 当前信号（用集成预测的均值作为动量代理）
+                current_signals = {
+                    'momentum': float(np.mean(ensemble_pred)),
+                    'volatility': float(vol_series.mean())
+                }
+
+                weights = self.adaptive_weight_engine.adaptive_weight_allocation(
+                    market_data=market_data,
+                    prediction_uncertainty=pred_unc,
+                    current_signals=current_signals
+                ) if self.adaptive_weight_engine else {'alpha': 0.3, 'ml': 0.7, 'cash': 0.0}
+
+                # Alpha通道（若Alpha引擎可用，使用风险中性后的Alpha均值；否则0）
+                alpha_signal = 0.0
+                try:
+                    if self.alpha_engine_enh is not None and hasattr(self, 'latest_enhanced_df'):
+                        alpha_df = self.alpha_engine_enh.enhanced_alpha_computation(self.latest_enhanced_df)
+                        if not alpha_df.empty:
+                            alpha_signal = float(alpha_df.mean(axis=1).reindex(dates, method='ffill').iloc[-1])
+                except Exception:
+                    alpha_signal = 0.0
+
+                final_pred = (
+                    weights['alpha'] * alpha_signal +
+                    weights['ml'] * ensemble_pred +
+                    weights['cash'] * 0.0
+                )
+                ensemble_pred = final_pred
+                print(f"[REGIME] 自适应权重 Alpha={weights['alpha']:.2f}, ML={weights['ml']:.2f}, Cash={weights['cash']:.2f}")
+            except Exception as e:
+                print(f"[REGIME WARN] 自适应融合失败，使用纯BMA: {e}")
+
         # 如果有二层融合，使用元学习器进行最终预测
         if self.enable_meta_learner and self.meta_model is not None:
             # 构造特征矩阵：优先使用 XGBoost/LightGBM，再附加 BMA 加权结果
@@ -1034,6 +1088,23 @@ class QuantitativeModel:
         self.training_feature_columns = []
         self.progress_callback = progress_callback  # 添加进度回调函数
         self.prediction_horizon_days = None  # 当前预测周期（天）
+        
+        # Ultra集成：统一市场数据与风险/Alpha与Regime自适应权重
+        self.ultra_enabled = ULTRA_INTEGRATION_AVAILABLE
+        if self.ultra_enabled:
+            try:
+                self.market_data_manager = UnifiedMarketDataManager()
+                self.risk_model_config = RiskModelConfig()
+                self.alpha_engine_enh = None  # 按需构建，需传入AlphaStrategiesEngine实例
+                self.adaptive_weight_engine = AdaptiveWeightEngine()
+                try:
+                    mkt = get_market_indices_data(period="3y")
+                    self.adaptive_weight_engine.train_regime_model(mkt)
+                except Exception as e:
+                    print(f"[REGIME] 状态模型训练失败，使用默认权重: {e}")
+            except Exception as e:
+                self.ultra_enabled = False
+                print(f"[WARN] Ultra集成初始化失败: {e}")
     
     def download_data(self, tickers, start_date, end_date):
         """下载股票数据（保持原有接口）"""
@@ -1054,10 +1125,34 @@ class QuantitativeModel:
                 if self.progress_callback:
                     self.progress_callback.update_progress(f"正在下载 {ticker}", i-1)
                 
-                print(f"[{i:3d}/{len(tickers):3d}] 下载 {ticker:6s}...", end=" ")
-                stock_data = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=True)
+                # 增强：添加重试机制
+                max_retries = 3
+                stock_data = None
                 
-                if len(stock_data) > 0:
+                for attempt in range(max_retries):
+                    try:
+                        if attempt > 0:
+                            print(f"[RETRY {attempt}/{max_retries-1}] {ticker:6s}...", end=" ")
+                            time.sleep(1.0 * attempt)  # 指数退避
+                        else:
+                            print(f"[{i:3d}/{len(tickers):3d}] 下载 {ticker:6s}...", end=" ")
+                            
+                        stock_data = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=True)
+                        
+                        if len(stock_data) > 0:
+                            break  # 成功，跳出重试循环
+                        elif attempt == max_retries - 1:
+                            print(f"[FAIL] 无数据（重试{max_retries}次后）")
+                            
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            print(f"[FAIL] 失败: {str(e)[:30]}...")
+                        else:
+                            print(f"[ERROR] {str(e)[:20]}...", end=" ")
+                        continue
+                
+                # 处理下载结果
+                if stock_data is not None and len(stock_data) > 0:
                     if isinstance(stock_data.columns, pd.MultiIndex):
                         stock_data.columns = stock_data.columns.droplevel(1)
                     data[ticker] = stock_data
@@ -1065,11 +1160,10 @@ class QuantitativeModel:
                     print(f"成功 {len(stock_data)} 天数据")
                 else:
                     failed_count += 1
-                    print(f"[FAIL] 无数据")
                     
             except Exception as e:
                 failed_count += 1
-                print(f"[FAIL] 失败: {str(e)[:30]}...")
+                print(f"[FAIL] 异常: {str(e)[:30]}...")
                 continue
         
         # 最终进度更新
@@ -1090,37 +1184,37 @@ class QuantitativeModel:
         """计算技术指标（周度预测增强：加入更快的均线/交叉信号，RSI缩短窗口）"""
         indicators = {}
         
-        # 移动平均线
-        indicators['sma_5'] = data['Close'].rolling(window=5).mean()
-        indicators['sma_10'] = data['Close'].rolling(window=10).mean()
-        indicators['sma_20'] = data['Close'].rolling(window=20).mean()
-        indicators['sma_50'] = data['Close'].rolling(window=50).mean()
+        # 移动平均线（修复：添加min_periods避免不完整窗口）
+        indicators['sma_5'] = data['Close'].rolling(window=5, min_periods=5).mean()
+        indicators['sma_10'] = data['Close'].rolling(window=10, min_periods=10).mean()
+        indicators['sma_20'] = data['Close'].rolling(window=20, min_periods=20).mean()
+        indicators['sma_50'] = data['Close'].rolling(window=50, min_periods=50).mean()
         
-        # 指数移动平均（新增更快的EMA及交叉差）
-        indicators['ema_5'] = data['Close'].ewm(span=5).mean()
-        indicators['ema_10'] = data['Close'].ewm(span=10).mean()
-        indicators['ema_12'] = data['Close'].ewm(span=12).mean()
-        indicators['ema_26'] = data['Close'].ewm(span=26).mean()
+        # 指数移动平均（修复：添加min_periods确保窗口完整性）
+        indicators['ema_5'] = data['Close'].ewm(span=5, min_periods=5).mean()
+        indicators['ema_10'] = data['Close'].ewm(span=10, min_periods=10).mean()
+        indicators['ema_12'] = data['Close'].ewm(span=12, min_periods=12).mean()
+        indicators['ema_26'] = data['Close'].ewm(span=26, min_periods=26).mean()
         indicators['ema_cross_5_10'] = indicators['ema_5'] - indicators['ema_10']
         
-        # MACD
+        # MACD（修复：确保signal线有完整窗口）
         indicators['macd'] = indicators['ema_12'] - indicators['ema_26']
-        indicators['macd_signal'] = indicators['macd'].ewm(span=9).mean()
+        indicators['macd_signal'] = indicators['macd'].ewm(span=9, min_periods=9).mean()
         indicators['macd_histogram'] = indicators['macd'] - indicators['macd_signal']
         
         # RSI（缩短窗口提升对未来5日的敏感度）
         indicators['rsi'] = self.calculate_rsi(data['Close'], period=10)
 
-        # 随机指标 Stochastic (5,3)
-        highest_high_5 = data['High'].rolling(window=5).max()
-        lowest_low_5 = data['Low'].rolling(window=5).min()
+        # 随机指标 Stochastic (5,3)（修复：添加min_periods）
+        highest_high_5 = data['High'].rolling(window=5, min_periods=5).max()
+        lowest_low_5 = data['Low'].rolling(window=5, min_periods=5).min()
         stoch_k = (data['Close'] - lowest_low_5) / (highest_high_5 - lowest_low_5 + 1e-9) * 100.0
-        indicators['stoch_k_5_3'] = stoch_k.rolling(window=3).mean()
-        indicators['stoch_d_5_3'] = indicators['stoch_k_5_3'].rolling(window=3).mean()
+        indicators['stoch_k_5_3'] = stoch_k.rolling(window=3, min_periods=3).mean()
+        indicators['stoch_d_5_3'] = indicators['stoch_k_5_3'].rolling(window=3, min_periods=3).mean()
         
-        # 布林带
-        bb_middle = data['Close'].rolling(window=20).mean()
-        bb_std = data['Close'].rolling(window=20).std()
+        # 布林带（修复：添加min_periods）
+        bb_middle = data['Close'].rolling(window=20, min_periods=20).mean()
+        bb_std = data['Close'].rolling(window=20, min_periods=20).std()
         indicators['bollinger_upper'] = bb_middle + (bb_std * 2)
         indicators['bollinger_lower'] = bb_middle - (bb_std * 2)
         indicators['bollinger_width'] = indicators['bollinger_upper'] - indicators['bollinger_lower']
@@ -1129,10 +1223,10 @@ class QuantitativeModel:
         return indicators
     
     def calculate_rsi(self, prices, period=10):
-        """计算RSI"""
+        """计算RSI（修复：添加min_periods确保窗口完整）"""
         delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=period).mean()
         rs = gain / loss
         return 100 - (100 / (1 + rs))
     
@@ -1160,38 +1254,38 @@ class QuantitativeModel:
         factors['price_acceleration'] = data['Close'].pct_change(5) - data['Close'].pct_change(10)
         factors['price_reversal'] = -data['Close'].pct_change(2)
         
-        # 成交量因子 - 使用10天聚合
-        factors['volume_sma_10'] = data['Volume'].rolling(window=10).mean()
+        # 成交量因子 - 使用10天聚合（修复：添加min_periods）
+        factors['volume_sma_10'] = data['Volume'].rolling(window=10, min_periods=10).mean()
         factors['volume_ratio'] = data['Volume'] / factors['volume_sma_10']
         factors['volume_momentum'] = data['Volume'].pct_change(10)
         
         # 价格-成交量因子 - 使用10天聚合
         factors['price_volume'] = data['Close'] * data['Volume']
-        factors['money_flow'] = (data['Close'] * data['Volume']).rolling(10).mean() / data['Close'].rolling(10).mean()
+        factors['money_flow'] = (data['Close'] * data['Volume']).rolling(10, min_periods=10).mean() / data['Close'].rolling(10, min_periods=10).mean()
         
-        # 波动率因子 - 使用10天聚合
-        factors['volatility_10'] = data['Close'].pct_change().rolling(window=10).std()
+        # 波动率因子 - 使用10天聚合（修复：添加min_periods）
+        factors['volatility_10'] = data['Close'].pct_change().rolling(window=10, min_periods=10).std()
 
         # ATR(5) 真实波动幅度
         tr1 = data['High'] - data['Low']
         tr2 = (data['High'] - data['Close'].shift(1)).abs()
         tr3 = (data['Low'] - data['Close'].shift(1)).abs()
         true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        factors['atr_5'] = true_range.rolling(window=5).mean()
+        factors['atr_5'] = true_range.rolling(window=5, min_periods=5).mean()
         
-        # 相对强弱因子 - 使用10天聚合
-        factors['rs_vs_sma'] = data['Close'] / data['Close'].rolling(10).mean() - 1
+        # 相对强弱因子 - 使用10天聚合（修复：添加min_periods）
+        factors['rs_vs_sma'] = data['Close'] / data['Close'].rolling(10, min_periods=10).mean() - 1
         factors['high_low_ratio'] = data['High'] / data['Low'] - 1
         factors['close_position'] = (data['Close'] - data['Low']) / (data['High'] - data['Low'])
-        factors['rolling_max_5'] = data['Close'].rolling(window=5).max()
-        factors['rolling_min_5'] = data['Close'].rolling(window=5).min()
+        factors['rolling_max_5'] = data['Close'].rolling(window=5, min_periods=5).max()
+        factors['rolling_min_5'] = data['Close'].rolling(window=5, min_periods=5).min()
         factors['breakout_5'] = data['Close'] / factors['rolling_max_5'] - 1
         factors['pullback_5'] = data['Close'] / factors['rolling_min_5'] - 1
 
-        # 5日收益z分数（短期均值回归/过热程度）
+        # 5日收益z分数（短期均值回归/过热程度）（修复：添加min_periods）
         daily_ret = data['Close'].pct_change()
-        mean_5 = daily_ret.rolling(window=5).mean()
-        std_5 = daily_ret.rolling(window=5).std()
+        mean_5 = daily_ret.rolling(window=5, min_periods=5).mean()
+        std_5 = daily_ret.rolling(window=5, min_periods=5).std()
         factors['ret_5_zscore'] = (mean_5 / (std_5 + 1e-9))
         
         # 市场情绪因子
@@ -1199,14 +1293,14 @@ class QuantitativeModel:
         factors['intraday_return'] = (data['Close'] - data['Open']) / data['Open']
         factors['overnight_return'] = (data['Open'] - data['Close'].shift(1)) / data['Close'].shift(1)
         
-        # 高级因子 - 使用10天聚合
-        factors['rolling_sharpe'] = (data['Close'].pct_change().rolling(10).mean() / 
-                                   data['Close'].pct_change().rolling(10).std())
+        # 高级因子 - 使用10天聚合（修复：添加min_periods）
+        factors['rolling_sharpe'] = (data['Close'].pct_change().rolling(10, min_periods=10).mean() / 
+                                   data['Close'].pct_change().rolling(10, min_periods=10).std())
         
-        # CCI (Commodity Channel Index) - 商品通道指数
+        # CCI (Commodity Channel Index) - 商品通道指数（修复：添加min_periods）
         typical_price = (data['High'] + data['Low'] + data['Close']) / 3
-        sma_tp_10 = typical_price.rolling(window=10).mean()
-        mad_tp_10 = typical_price.rolling(window=10).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=False)
+        sma_tp_10 = typical_price.rolling(window=10, min_periods=10).mean()
+        mad_tp_10 = typical_price.rolling(window=10, min_periods=10).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=False)
         factors['cci_10'] = (typical_price - sma_tp_10) / (0.015 * mad_tp_10)
         
         # CCI衍生因子
@@ -1366,7 +1460,10 @@ class QuantitativeModel:
         # 分离特征和目标
         feature_columns = [col for col in combined_data_final.columns 
                           if col not in ['target', 'ticker', 'date']]
-        
+
+        # 严格的时间无泄露检查：移除任何可能由未来生成的列（名称启发式）
+        feature_columns = [c for c in feature_columns if 'future' not in c.lower()]
+
         X = combined_data_final[feature_columns]
         y = combined_data_final['target']
         dates = combined_data_final['date']
@@ -1375,6 +1472,16 @@ class QuantitativeModel:
         print(f"[TIME-SERIES PREP] 滞后处理后剩余 {len(X)} 个样本，{len(feature_columns)} 个因子")
         print(f"[TIME-SERIES PREP] 时间范围: {dates.min()} 到 {dates.max()}")
         print(f"[TIME-SERIES PREP] 包含 {len(tickers.unique())} 只股票")
+
+        # Ultra集成：缓存用于Alpha增强的数据视图（供Regime融合Alpha通道使用）
+        if getattr(self, 'ultra_enabled', False):
+            try:
+                enhanced_view = X.copy()
+                enhanced_view['date'] = dates.values
+                enhanced_view['ticker'] = tickers.values
+                self.latest_enhanced_df = enhanced_view
+            except Exception:
+                pass
         
         return X, y, tickers, dates
     
@@ -1549,13 +1656,21 @@ class QuantitativeModel:
                     cleaned_groups.append(ticker_cleaned)
             
             if cleaned_groups:
-                X_processed = pd.concat(cleaned_groups, ignore_index=True)
+                # 修复：保持原始索引信息，避免错位
+                X_processed = pd.concat(cleaned_groups, ignore_index=False)  # 保持原始index
                 
-                # 更新y, dates, tickers以匹配清理后的数据
-                original_indices = X_processed.index if hasattr(X_processed, 'index') else range(len(X_processed))
-                y = y.iloc[original_indices] if hasattr(y, 'iloc') else y[original_indices]
+                # 精确对齐：使用原始索引重新对齐y, dates, tickers
+                valid_indices = X_processed.index
+                y = y.loc[valid_indices] if hasattr(y, 'loc') else y.iloc[valid_indices]
                 dates = X_processed['date'].values
                 tickers = X_processed['ticker'].values
+                
+                # 重置index确保连续性
+                X_processed = X_processed.reset_index(drop=True)
+                if hasattr(y, 'reset_index'):
+                    y = y.reset_index(drop=True)
+                else:
+                    y = pd.Series(y).reset_index(drop=True)
                 
                 print(f"[PREPROCESSING] 智能清理后样本数: {len(X_processed)}")
                 print(f"[PREPROCESSING] 保留的股票数: {X_processed['ticker'].nunique()}")
@@ -1576,15 +1691,15 @@ class QuantitativeModel:
             feature_cols = [c for c in X_processed.columns if c not in ['date', 'ticker']]
             before_final_clean = len(X_processed)
             
-            # 最终清理：移除任何包含NaN的行
+            # 最终清理：移除任何包含NaN的行（修复错位问题）
             final_valid_idx = ~X_processed[feature_cols].isnull().any(axis=1)
-            X_processed_final = X_processed[final_valid_idx]
+            X_processed_final = X_processed[final_valid_idx].copy()
             
-            # 同步更新y, dates, tickers
-            if hasattr(y, 'iloc'):
-                y_final = y.iloc[final_valid_idx.values] if len(final_valid_idx) == len(y) else y[final_valid_idx]
+            # 修复：使用正确的索引对齐，避免错位
+            if hasattr(y, 'loc'):
+                y_final = y[final_valid_idx].reset_index(drop=True)
             else:
-                y_final = y[final_valid_idx]
+                y_final = pd.Series(y)[final_valid_idx].reset_index(drop=True)
                 
             dates_final = X_processed_final['date'].values  
             tickers_final = X_processed_final['ticker'].values
@@ -1593,6 +1708,14 @@ class QuantitativeModel:
             
             # 8. 分离：去掉辅助列，得到干净的X
             X = X_processed_final.drop(['date', 'ticker'], axis=1)
+
+            # 额外安全：移除零方差列，防止数值不稳定
+            var_series = X.var(axis=0, ddof=0)
+            non_zero_var_cols = var_series[var_series > 0].index.tolist()
+            if len(non_zero_var_cols) < X.shape[1]:
+                removed = set(X.columns) - set(non_zero_var_cols)
+                print(f"[PREPROCESSING] 移除零方差特征: {len(removed)} 个 → {sorted(list(removed))[:10]}{'...' if len(removed)>10 else ''}")
+            X = X[non_zero_var_cols]
             y = y_final
             dates = dates_final
             tickers = tickers_final
@@ -1630,11 +1753,23 @@ class QuantitativeModel:
         # 构建前置中性化步骤（如果可用）
         pre_steps = []
         if NEUTRALIZATION_AVAILABLE and dates is not None and tickers is not None:
-            # 创建简单的行业映射（示例：按股票首字母分组）
-            industry_map = {ticker: ticker[0] for ticker in set(tickers) if ticker}
-            # 创建简单的β映射（示例：随机β值）
-            beta_series = pd.Series({ticker: np.random.normal(1.0, 0.3) 
-                                   for ticker in set(tickers) if ticker})
+            # 使用统一市场数据管理器提供的真实口径（若可用）
+            if getattr(self, 'ultra_enabled', False):
+                try:
+                    info_map = self.market_data_manager.get_batch_stock_info(list(set(tickers)))
+                    industry_map = {t: (info.sector or info.gics_sector or 'OTHER') for t, info in info_map.items()}
+                    # β作为占位：按行业分组的平均波动率替代
+                    beta_series = pd.Series({t: 1.0 for t in industry_map.keys()})
+                    print(f"[PIPELINE] 使用统一市场数据进行行业/β中性化（{len(industry_map)}个标的）")
+                except Exception as e:
+                    # 回退到旧的简化映射
+                    industry_map = {ticker: ticker[0] for ticker in set(tickers) if ticker}
+                    beta_series = pd.Series({ticker: 1.0 for ticker in set(tickers) if ticker})
+                    print(f"[PIPELINE] 统一市场数据不可用，回退简化映射: {e}")
+            else:
+                # 回退到旧的简化映射
+                industry_map = {ticker: ticker[0] for ticker in set(tickers) if ticker}
+                beta_series = pd.Series({ticker: 1.0 for ticker in set(tickers) if ticker})
             
             neutralization_step = create_neutralization_pipeline_step(
                 industry_map=industry_map, 

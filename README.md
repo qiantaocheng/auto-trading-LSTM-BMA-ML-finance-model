@@ -1,265 +1,470 @@
-# IBKR Professional Trading System v1.0
+# AutoTrader - Professional IBKR Automated Trading System
 
-## 📋 系统概述
+A comprehensive automated trading system built for Interactive Brokers (IBKR) that provides real-time trading, backtesting, risk management, and portfolio optimization capabilities.
 
-IBKR Professional Trading System 是一个基于 Interactive Brokers API 的专业级自动交易系统，集成了策略引擎、风险管理、订单执行和实时监控功能。
+## Project Overview
 
-### 🎯 核心特性
+AutoTrader is a professional-grade quantitative trading platform that integrates multiple components to create a complete trading ecosystem. The system is designed with modular architecture, ensuring scalability, maintainability, and robust error handling.
 
-- **🎛️ 统一GUI界面**: 策略引擎、直接交易、风险管理、系统监控一体化
-- **🧠 智能策略引擎**: 多因子信号系统，支持技术指标、动量、均值回归策略
-- **🛡️ 高级风险管理**: VaR计算、相关性分析、Kelly公式、最大回撤控制
-- **⚡ 增强订单执行**: TWAP/VWAP算法、动态超时、流动性估算
-- **📊 实时数据监控**: 账户状态、持仓管理、订单跟踪
-- **🔧 灵活配置管理**: 数据库存储、热配置更新、风险参数调整
+## System Architecture
 
-## 🚀 快速开始
+The project follows a layered architecture pattern with clear separation of concerns:
 
-### 系统要求
+### Core Infrastructure Layer
+- **Event Loop Management**: Thread-safe asyncio event loop handling
+- **Configuration Management**: Unified configuration system across all components
+- **Resource Monitoring**: System resource tracking and leak prevention
+- **Event System**: Decoupled communication between GUI and trading engine
 
+### Trading Engine Layer
+- **Signal Processing**: Real-time market data analysis and signal generation
+- **Risk Management**: Portfolio-level and position-level risk controls
+- **Order Management**: Professional order state machine and execution
+- **Market Data**: Real-time and historical data handling
+
+### Data Management Layer
+- **Database Operations**: SQLite-based data persistence
+- **Data Source Management**: Unified stock universe management
+- **Technical Indicators**: Cached indicator calculations for performance
+- **Backtesting Engine**: Historical strategy validation
+
+### User Interface Layer
+- **GUI Application**: Tkinter-based trading interface
+- **System Launcher**: Application startup and mode selection
+- **Logging System**: Comprehensive audit and debugging capabilities
+
+## Core Components
+
+### 1. Unified Configuration Manager (`unified_config.py`)
+**Purpose**: Centralized configuration management system that resolves conflicts between multiple configuration sources.
+
+**Key Features**:
+- Loads configurations from multiple sources (files, database, runtime)
+- Implements priority-based configuration merging
+- Provides thread-safe configuration access
+- Supports runtime configuration updates
+- Validates configuration consistency
+
+**Configuration Sources** (in priority order):
+1. Runtime configurations (highest priority)
+2. HotConfig files
+3. Database configurations
+4. File-based configurations
+5. Default configurations (lowest priority)
+
+### 2. Event Loop Manager (`event_loop_manager.py`)
+**Purpose**: Thread-safe asyncio event loop management for GUI applications.
+
+**Key Features**:
+- Manages dedicated event loop in separate thread
+- Provides thread-safe coroutine submission
+- Handles task lifecycle management
+- Implements proper cleanup and shutdown procedures
+- Prevents event loop conflicts in multi-threaded environments
+
+**Technical Implementation**:
+- Uses queue-based command system for thread communication
+- Implements timeout mechanisms for coroutine execution
+- Provides comprehensive error handling and recovery
+- Supports task cancellation and resource cleanup
+
+### 3. Event System (`event_system.py`)
+**Purpose**: Decoupled communication system between GUI and trading engine components.
+
+**Key Features**:
+- Implements publish-subscribe pattern
+- Supports both synchronous and asynchronous event handling
+- Provides priority-based event processing
+- Implements weak reference management for subscribers
+- Supports event filtering and routing
+
+**Event Types**:
+- Engine status updates
+- Trading signals and orders
+- Risk alerts and notifications
+- System health monitoring
+- User interface updates
+
+### 4. Resource Monitor (`resource_monitor.py`)
+**Purpose**: System-wide resource monitoring and leak prevention.
+
+**Key Features**:
+- Tracks memory usage and growth patterns
+- Monitors active tasks and connections
+- Detects file handle leaks
+- Implements automatic cleanup triggers
+- Provides resource usage statistics
+
+**Monitoring Capabilities**:
+- Memory consumption tracking with trend analysis
+- Thread count monitoring
+- File descriptor tracking
+- Task lifecycle monitoring
+- Automatic garbage collection triggers
+
+### 5. Trading Engine (`engine.py`)
+**Purpose**: Core trading logic and decision-making engine.
+
+**Key Components**:
+- **RiskEngine**: Portfolio and position-level risk management
+- **SignalHub**: Market signal processing and aggregation
+- **OrderRouter**: Order routing and execution management
+- **DataFeed**: Real-time market data handling
+
+**Risk Management Features**:
+- Position sizing based on volatility
+- Portfolio exposure limits
+- Correlation-based risk controls
+- Dynamic stop-loss management
+- Sector concentration limits
+
+### 6. IBKR Auto Trader (`ibkr_auto_trader.py`)
+**Purpose**: Interactive Brokers API integration and trading interface.
+
+**Key Features**:
+- Real-time market data subscription
+- Order placement and management
+- Account and position monitoring
+- Portfolio performance tracking
+- Connection management and recovery
+
+**Trading Capabilities**:
+- Market, limit, and bracket orders
+- Real-time portfolio updates
+- Dynamic stop-loss management
+- Multi-symbol trading support
+- Commission and slippage handling
+
+### 7. Order State Machine (`order_state_machine.py`)
+**Purpose**: Professional order lifecycle management.
+
+**Key Features**:
+- Complete order state tracking
+- Transition validation and enforcement
+- Fill management and partial execution handling
+- Order modification and cancellation
+- Audit trail maintenance
+
+**Order States**:
+- Pending submission
+- Submitted
+- Partially filled
+- Filled
+- Cancelled
+- Rejected
+- Error states
+
+### 8. Enhanced Order Execution (`enhanced_order_execution.py`)
+**Purpose**: Advanced order execution algorithms and optimization.
+
+**Key Features**:
+- Smart order routing
+- Liquidity estimation
+- Market impact minimization
+- Execution timing optimization
+- Cost analysis and reporting
+
+**Execution Algorithms**:
+- TWAP (Time-Weighted Average Price)
+- VWAP (Volume-Weighted Average Price)
+- Iceberg orders
+- Dynamic order splitting
+- Market timing optimization
+
+### 9. Data Source Manager (`data_source_manager.py`)
+**Purpose**: Unified management of stock universes and data sources.
+
+**Key Features**:
+- Multiple data source integration
+- Priority-based source selection
+- Data consistency validation
+- Automatic source synchronization
+- Cache management for performance
+
+**Data Sources**:
+- Database tickers
+- File-based stock lists
+- Runtime configurations
+- Manual input sources
+- External data feeds
+
+### 10. Database Operations (`database.py`)
+**Purpose**: SQLite-based data persistence and management.
+
+**Key Features**:
+- Stock list management
+- Trade history recording
+- Risk configuration storage
+- Performance data persistence
+- Data integrity maintenance
+
+**Database Schema**:
+- Tickers table for stock universe
+- Trade history for audit trails
+- Risk configurations for strategy settings
+- Performance metrics for analysis
+- User preferences and settings
+
+### 11. Technical Indicator Cache (`indicator_cache.py`)
+**Purpose**: Performance optimization for technical indicator calculations.
+
+**Key Features**:
+- Cached indicator results
+- Time-based cache invalidation
+- Memory-efficient storage
+- Computation time tracking
+- Cache hit/miss statistics
+
+**Supported Indicators**:
+- Moving averages (SMA, EMA)
+- RSI (Relative Strength Index)
+- Bollinger Bands
+- ATR (Average True Range)
+- MACD and other momentum indicators
+
+### 12. Factor Calculations (`factors.py`)
+**Purpose**: Technical analysis and factor computation.
+
+**Key Features**:
+- Pure computational functions
+- No side effects or state management
+- Optimized mathematical operations
+- Support for vectorized calculations
+- Extensible factor framework
+
+**Available Factors**:
+- Price-based indicators
+- Volume-based indicators
+- Volatility measures
+- Momentum indicators
+- Mean reversion signals
+
+### 13. GUI Application (`app.py`)
+**Purpose**: Main user interface for trading operations.
+
+**Key Features**:
+- Real-time market data display
+- Order entry and management interface
+- Portfolio monitoring dashboard
+- Risk management controls
+- System status and health monitoring
+
+**Interface Components**:
+- Market data panels
+- Order entry forms
+- Portfolio overview
+- Risk metrics display
+- System configuration panels
+- Log and audit viewers
+
+### 14. System Launcher (`launcher.py`)
+**Purpose**: Application startup and mode selection.
+
+**Key Features**:
+- Multiple launch modes (GUI, strategy, direct trading)
+- System health checks
+- Dependency validation
+- Configuration verification
+- Error handling and recovery
+
+**Launch Modes**:
+- GUI Mode: Full trading interface
+- Strategy Mode: Automated trading with engine
+- Direct Mode: Manual trading interface
+- Backtest Mode: Historical strategy testing
+
+### 15. Backtest Engine (`backtest_engine.py`)
+**Purpose**: Historical strategy validation and performance analysis.
+
+**Key Features**:
+- BMA (Bayesian Model Averaging) integration
+- Realistic transaction cost modeling
+- Risk-adjusted performance metrics
+- Multiple rebalancing frequencies
+- Comprehensive reporting capabilities
+
+**Backtesting Capabilities**:
+- Historical data simulation
+- Transaction cost analysis
+- Risk metric calculation
+- Performance attribution
+- Strategy comparison tools
+
+### 16. Backtest Analyzer (`backtest_analyzer.py`)
+**Purpose**: Professional backtest result analysis and visualization.
+
+**Key Features**:
+- Performance metric calculation
+- Risk-adjusted return analysis
+- Drawdown analysis
+- Sharpe ratio and other risk metrics
+- Visualization and reporting
+
+**Analysis Metrics**:
+- Total and annualized returns
+- Volatility and Sharpe ratios
+- Maximum drawdown analysis
+- Win rate and profit factor
+- Risk-adjusted performance measures
+
+### 17. Engine Logger (`engine_logger.py`)
+**Purpose**: Specialized logging system for trading engine components.
+
+**Key Features**:
+- Event-driven logging
+- Thread-safe log handling
+- Integration with GUI display
+- Log level management
+- Performance monitoring
+
+**Logging Capabilities**:
+- Real-time log streaming
+- Log level filtering
+- Performance metrics logging
+- Error tracking and reporting
+- Audit trail maintenance
+
+### 18. Trading Auditor (`trading_auditor_v2.py`)
+**Purpose**: Compliance and audit trail management.
+
+**Key Features**:
+- Trade compliance checking
+- Regulatory reporting
+- Audit trail maintenance
+- Risk event logging
+- Performance monitoring
+
+**Audit Capabilities**:
+- Trade execution verification
+- Compliance rule checking
+- Regulatory reporting
+- Risk limit monitoring
+- Performance attribution
+
+## Installation and Setup
+
+### Prerequisites
+- Python 3.8 or higher
+- Interactive Brokers TWS or IB Gateway
+- Required Python packages (see requirements.txt)
+
+### Installation Steps
+1. Clone the repository
+2. Install dependencies: `pip install -r autotrader/requirements.txt`
+3. Configure IBKR connection settings
+4. Set up database and configuration files
+5. Launch the application: `python autotrader/launcher.py`
+
+### Configuration
+The system uses a unified configuration approach:
+- Main configuration: `config.json`
+- Risk settings: `data/risk_config.json`
+- Database: `data/autotrader_stocks.db`
+
+## Usage
+
+### Starting the System
+```bash
+python autotrader/launcher.py
+```
+
+### Running Backtests
+```bash
+python autotrader/backtest_engine.py --start-date 2023-01-01 --end-date 2023-12-31
+```
+
+### Direct Trading Mode
+Launch the GUI and use the direct trading interface for manual trading operations.
+
+## System Requirements
+
+### Hardware
+- Minimum 4GB RAM
+- 2GB free disk space
+- Stable internet connection for market data
+
+### Software
+- Windows 10/11, macOS, or Linux
 - Python 3.8+
-- Interactive Brokers TWS 或 IB Gateway
-- Windows 10/11 (推荐)
+- Interactive Brokers TWS or IB Gateway
+- Required Python packages (numpy, pandas, ib_insync, etc.)
 
-### 安装步骤
+## Performance Characteristics
 
-1. **克隆项目**
-   ```bash
-   git clone <repository-url>
-   cd trade
-   ```
+### Optimization Features
+- Cached technical indicator calculations
+- Efficient database operations
+- Memory leak prevention
+- Resource usage monitoring
+- Asynchronous processing
 
-2. **安装依赖**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Scalability
+- Modular architecture supports component scaling
+- Configurable resource limits
+- Multi-threaded processing capabilities
+- Event-driven communication system
 
-3. **启动系统**
-   ```bash
-   # 方式1: 直接运行启动器
-   python autotrader/launcher.py
-   
-   # 方式2: 使用批处理文件
-   启动自动交易_最终版.bat
-   ```
+## Security and Compliance
 
-## 📖 使用指南
+### Data Security
+- Local data storage with encryption options
+- Secure API communication
+- Audit trail maintenance
+- Access control mechanisms
 
-### 1. 文件导入与股票管理
+### Trading Compliance
+- Risk limit enforcement
+- Position monitoring
+- Regulatory reporting capabilities
+- Compliance rule checking
 
-#### 导入股票列表
-1. 打开GUI，进入"文件导入"选项卡
-2. 选择文件类型：
-   - **JSON文件**: `["AAPL", "MSFT", "NVDA"]`
-   - **Excel文件**: 包含股票代码的列
-   - **CSV/TXT**: 逗号分隔的股票代码
-3. 点击"导入到数据库"按钮
-4. 选择导入模式：
-   - **替换模式**: 清空现有列表，导入新股票
-   - **追加模式**: 在现有列表基础上添加
+## Development and Maintenance
 
-#### 数据库管理
-- **查看股票列表**: 在"数据库股票管理"选项卡中查看所有股票
-- **添加单个股票**: 使用"添加股票"功能
-- **批量操作**: 支持批量导入、删除操作
+### Code Organization
+- Modular architecture with clear separation of concerns
+- Comprehensive error handling
+- Extensive logging and debugging capabilities
+- Unit test framework support
 
-### 2. 策略引擎配置
+### Maintenance Features
+- Resource monitoring and cleanup
+- Automatic error recovery
+- Performance optimization
+- Configuration management
 
-#### 启动策略引擎
-1. 点击"启动引擎(连接/订阅)"建立IB连接
-2. 点击"启动自动交易"开始策略循环
-3. 系统会自动：
-   - 读取数据库中的股票列表作为交易标的
-   - 获取实时报价和历史数据
-   - 计算多因子信号
-   - 执行风险检查和订单提交
+## Support and Documentation
 
-#### 策略参数调整
-- **信号阈值**: 调整 `signals.acceptance_threshold` 控制交易频率
-- **轮询间隔**: 修改 `poll_sec` 参数调整策略执行频率
-- **风险限制**: 设置最大持仓比例、单日订单限制等
+### Documentation
+- Comprehensive code documentation
+- Configuration guides
+- API reference documentation
+- Troubleshooting guides
 
-### 3. 风险管理
+### Error Handling
+- Comprehensive exception handling
+- Detailed error logging
+- Recovery mechanisms
+- User-friendly error messages
 
-#### 风险参数配置
-- **最大投资组合敞口**: 控制总持仓规模
-- **单个标的上限**: 限制单个股票的最大持仓
-- **VaR限制**: 设置风险价值上限
-- **相关性检查**: 避免过度集中投资
+## License and Legal
 
-#### 实时监控
-- 系统实时监控账户状态
-- 自动计算风险指标
-- 超出限制时自动停止交易
+This software is provided for educational and research purposes. Users are responsible for ensuring compliance with applicable laws and regulations in their jurisdiction.
 
-### 4. 直接交易功能
+## Contributing
 
-#### 订单类型
-- **市价单**: 立即执行
-- **限价单**: 指定价格执行
-- **括号单**: 带止损止盈的订单
-- **算法单**: TWAP/VWAP执行
+The project follows standard software development practices:
+- Code review process
+- Documentation requirements
+- Testing standards
+- Performance benchmarks
 
-#### 操作步骤
-1. 进入"直接交易"选项卡
-2. 选择订单类型
-3. 输入股票代码、数量和价格
-4. 点击执行按钮
+## Future Enhancements
 
-## 🏗️ 系统架构
+Planned improvements include:
+- Additional broker integrations
+- Advanced machine learning models
+- Enhanced visualization capabilities
+- Mobile application support
+- Cloud deployment options
 
-### 核心模块
-
-```
-autotrader/
-├── app.py                 # GUI主界面
-├── launcher.py           # 统一启动器
-├── ibkr_auto_trader.py   # IBKR交易接口
-├── engine.py             # 策略引擎
-├── risk_manager.py       # 风险管理
-├── enhanced_order_execution.py  # 增强订单执行
-├── order_state_machine.py      # 订单状态机
-├── connection_recovery.py      # 连接恢复
-├── trading_auditor_v2.py       # 交易审计
-├── task_manager.py             # 任务管理
-├── database.py                 # 数据库管理
-└── config.py                   # 配置管理
-```
-
-### 数据流
-
-```
-文件导入 → 数据库存储 → 策略引擎 → 信号计算 → 风险检查 → 订单执行 → 状态跟踪
-```
-
-### 技术栈
-
-- **GUI框架**: Tkinter
-- **异步编程**: asyncio
-- **数据库**: SQLite
-- **交易API**: Interactive Brokers API
-- **技术指标**: 自定义多因子信号系统
-
-## ⚙️ 配置说明
-
-### 数据库配置
-- **文件位置**: `trading_system.db`
-- **表结构**: 
-  - `stock_lists`: 股票列表管理
-  - `tickers`: 全局股票池
-  - `trading_configs`: 交易配置
-  - `risk_configs`: 风险配置
-
-### 风险配置
-```json
-{
-  "max_portfolio_exposure": 0.8,
-  "max_single_position_pct": 0.15,
-  "max_new_positions_per_day": 10,
-  "default_stop_loss_pct": 0.05,
-  "default_take_profit_pct": 0.10
-}
-```
-
-### 信号配置
-```json
-{
-  "acceptance_threshold": 0.6,
-  "momentum_period": 20,
-  "mean_reversion_period": 10
-}
-```
-
-## 🔍 监控与日志
-
-### 日志文件
-- **审计日志**: `audit_logs/` 目录
-- **交易记录**: `trading_audit.db`
-- **系统日志**: GUI界面实时显示
-
-### 监控指标
-- 账户净值变化
-- 持仓状态
-- 订单执行情况
-- 风险指标
-- 策略性能
-
-## 🛠️ 故障排除
-
-### 常见问题
-
-1. **连接失败**
-   - 检查TWS/IB Gateway是否运行
-   - 确认端口设置(7497/7496)
-   - 检查防火墙设置
-
-2. **数据订阅失败**
-   - 确认IBKR数据订阅权限
-   - 检查账户类型(Paper/Live)
-   - 验证市场数据权限
-
-3. **策略不执行**
-   - 检查股票列表是否为空
-   - 确认信号阈值设置
-   - 查看风险限制是否触发
-
-4. **订单执行失败**
-   - 检查账户资金
-   - 确认交易权限
-   - 查看市场状态
-
-### 调试模式
-- 启用详细日志输出
-- 使用"系统测试"功能
-- 检查数据库连接状态
-
-## 📈 性能优化
-
-### 系统优化
-- 调整轮询间隔
-- 优化数据库查询
-- 合理设置风险参数
-
-### 策略优化
-- 回测验证策略有效性
-- 调整信号参数
-- 优化资金分配
-
-## 🔒 安全注意事项
-
-### 账户安全
-- 使用Paper Trading账户进行测试
-- 定期备份配置文件
-- 监控异常交易活动
-
-### 数据安全
-- 定期备份数据库
-- 保护API密钥
-- 监控系统访问日志
-
-## 📞 技术支持
-
-### 文档
-- 查看 `USAGE_GUIDE.md` 获取详细使用说明
-- 参考 `SYSTEM_ARCHITECTURE_ANALYSIS.md` 了解系统架构
-
-### 测试
-- 运行 `tests/` 目录下的测试用例
-- 使用 `scripts/dry_run_engine.py` 进行模拟测试
-
-## 📄 许可证
-
-本项目仅供学习和研究使用，请遵守相关法律法规和IBKR使用条款。
-
-## 🔄 更新日志
-
-### v1.0
-- 统一GUI界面
-- 集成策略引擎
-- 增强风险管理
-- 完善订单执行
-- 优化系统架构
-
----
-
-**注意**: 本系统涉及实际交易，请在使用前充分测试，并确保理解所有风险。建议先在Paper Trading环境中验证系统功能。 
+This AutoTrader system represents a comprehensive solution for automated trading, combining professional-grade components with user-friendly interfaces to create a powerful trading platform suitable for both research and live trading applications.

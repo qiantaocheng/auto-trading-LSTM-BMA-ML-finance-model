@@ -60,7 +60,10 @@ class StubIB:
 class TestOrderFlowWithStubs(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.stub_ib = StubIB()
-        self.trader = IbkrAutoTrader('127.0.0.1', 7497, 1, ib_client=self.stub_ib)
+        # 修复：使用正确的初始化参数
+        from autotrader.unified_config import get_unified_config
+        config_manager = get_unified_config()
+        self.trader = IbkrAutoTrader(config_manager=config_manager, ib_client=self.stub_ib)
         self.trader.account_ready = True
         self.trader.net_liq = 100000.0
         self.trader.cash_balance = 50000.0

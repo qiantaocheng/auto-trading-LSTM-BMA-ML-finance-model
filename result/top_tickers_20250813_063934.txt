@@ -1,0 +1,1 @@
+'PEP', 'TSLA', 'BAC', 'NFLX', 'DIS', 'JPM', 'QCOM'

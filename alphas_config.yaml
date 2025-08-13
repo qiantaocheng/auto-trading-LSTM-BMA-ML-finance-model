@@ -1,0 +1,347 @@
+# Alpha策略配置文件
+universe: TOPDIV3000
+region: GLB
+neutralization: [COUNTRY]        # 可切换为 [COUNTRY, SECTOR] / [COUNTRY, SECTOR, SUBINDUSTRY]
+rebalance: WEEKLY                # 周频重平衡
+hump_levels: [0.003, 0.008]     # 门控阈值
+winsorize_std: 2.5              # Winsorize标准差倍数
+truncation: 0.10                # 截断分位数
+max_position: 0.03              # 单个持仓上限
+turnover_limit: 0.10            # 换手率限制
+temperature: 1.2                # BMA温度系数
+feature_global_lag: 2          # 全局特征最小滞后，防止数据泄露（T-2）
+
+# Alpha因子定义
+alphas:
+  # 价格动量系列
+  - name: momentum_d22_d66
+    kind: momentum
+    windows: [22, 66]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.15
+    
+  # 已剔除失败因子 momentum_d66_d120
+    
+  # 反转因子
+  - name: reversal_d5_d22
+    kind: reversal
+    windows: [5, 22]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+  # 波动率因子
+  - name: volatility_d22_d66
+    kind: volatility
+    windows: [22, 66]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  # 成交量因子
+  - name: volume_turnover_d22
+    kind: volume_turnover
+    windows: [22]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+  # Hump门控因子
+  - name: momentum_hump_0003
+    kind: hump
+    hump: 0.003
+    base: "momentum_d22_d66"
+    delay: 1
+    decay: 6
+    weight_hint: 0.08
+    
+  - name: momentum_hump_0008
+    kind: hump
+    hump: 0.008
+    base: "momentum_d22_d66"
+    delay: 1
+    decay: 6
+    weight_hint: 0.06
+    
+  # 流动性因子
+  - name: amihud_illiquidity
+    kind: amihud
+    windows: [22, 66]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.12
+    
+  # 微观结构因子
+  - name: bid_ask_spread
+    kind: bid_ask_spread
+    windows: [22]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.09
+    
+  # 残差动量
+  # 已剔除失败因子 residual_momentum
+    
+  # 新增：短期反转（1-5日）
+  - name: reversal_5d_enhanced
+    kind: reversal_5
+    windows: [5]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  # 新增：Amihud非流动性因子（改进版）
+  - name: amihud_illiq_enhanced
+    kind: amihud_illiq
+    windows: [22]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+
+
+  # ===== 新增扩展因子 =====
+  
+  # 动量类扩展因子
+  - name: momentum_6_1_enhanced
+    kind: momentum_6_1
+    windows: [126]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+
+    
+  - name: low_beta_anomaly_factor
+    kind: low_beta
+    windows: [60]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.09
+    
+  - name: idiosyncratic_volatility_factor
+    kind: idiosyncratic_vol
+    windows: [60]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.07
+    
+  # 基本面因子
+  - name: earnings_surprise_sue
+    kind: earnings_surprise
+    windows: [63]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.11
+    
+  - name: analyst_revision_factor
+    kind: analyst_revision
+    windows: [63]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  - name: ebit_ev_yield
+    kind: ebit_ev
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.09
+    
+  - name: fcf_ev_yield
+    kind: fcf_ev
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+  - name: earnings_yield_ep
+    kind: earnings_yield
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.09
+    
+  - name: sales_yield_sp
+    kind: sales_yield
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  # 盈利能力因子
+  - name: gross_margin_factor
+    kind: gross_margin
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  - name: operating_profitability_factor
+    kind: operating_profitability
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+  - name: roe_neutralized_factor
+    kind: roe_neutralized
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.09
+    
+  - name: roic_neutralized_factor
+    kind: roic_neutralized
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.09
+    
+  - name: net_margin_factor
+    kind: net_margin
+    windows: [63]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.07
+    
+  - name: cash_yield_factor
+    kind: cash_yield
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  - name: shareholder_yield_factor
+    kind: shareholder_yield
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.06
+    
+  # 应计项目因子（负面因子）
+  - name: total_accruals_negative
+    kind: total_accruals
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.07
+    
+  - name: working_capital_accruals_negative
+    kind: working_capital_accruals
+    windows: [126]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.06
+    
+  - name: net_operating_assets_negative
+    kind: net_operating_assets
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.07
+    
+  - name: asset_growth_negative
+    kind: asset_growth
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  - name: net_equity_issuance_factor
+    kind: net_equity_issuance
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.06
+    
+  # 已剔除：investment_factor_capex (索引不兼容问题)
+    
+  # 质量评分因子
+  - name: piotroski_f_score
+    kind: piotroski_score
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+  - name: ohlson_o_score
+    kind: ohlson_score
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+    
+  - name: altman_z_score
+    kind: altman_score
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.10
+    
+  - name: qmj_quality_score
+    kind: qmj_score
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.11
+    
+  - name: earnings_stability_factor
+    kind: earnings_stability
+    windows: [252]
+    delay: 1
+    decay: 6
+    xform: rank
+    weight_hint: 0.08
+
+# 模型配置
+model_config:
+  learning_to_rank: true
+  ranking_objective: "rank:pairwise"  # XGBoost排序目标
+  quantile_regression: true
+  quantile_tau: [0.7, 0.9]           # 分位数回归参数
+  uncertainty_aware: true
+  mixture_of_experts: true
+  regime_detection: true
+
+# 风险管理配置  
+risk_config:
+  max_sector_exposure: 0.15
+  max_country_exposure: 0.20
+  max_turnover: 0.10
+  min_liquidity_rank: 0.3
+  stress_test: true
