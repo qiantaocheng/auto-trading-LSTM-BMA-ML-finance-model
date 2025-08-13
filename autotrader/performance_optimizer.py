@@ -127,18 +127,23 @@ class DirectModuleExecutor:
         self.process_pool = ProcessPoolExecutor(max_workers=1)
     
     async def execute_bma_model(self, script_path: str, start_date: str, end_date: str,
-                               use_cache: bool = True, use_async: bool = True) -> ModelResult:
+                               use_cache: bool = True, use_async: bool = True, extra_args: Optional[List[str]] = None, 
+                               progress_callback: Optional[Callable] = None) -> ModelResult:
         """执行BMA模型（优化版）"""
         params = {
             'start_date': start_date,
             'end_date': end_date,
-            'script_path': script_path
+            'script_path': script_path,
+            'extra_args': extra_args or [],
+            'progress_callback': progress_callback
         }
         
         # 检查缓存
         cache_key = None
         if use_cache:
-            cache_key = self.cache_manager._generate_cache_key(script_path, params)
+            # 为缓存生成键时排除progress_callback（函数不能序列化）
+            cache_params = {k: v for k, v in params.items() if k != 'progress_callback'}
+            cache_key = self.cache_manager._generate_cache_key(script_path, cache_params)
             cached_result = self.cache_manager.get(cache_key)
             if cached_result:
                 self.logger.info(f"使用缓存结果: {cache_key}")
@@ -278,25 +283,115 @@ class DirectModuleExecutor:
             old_env = dict(os.environ)
             
             try:
-                os.environ['BMA_START_DATE'] = params['start_date']
-                os.environ['BMA_END_DATE'] = params['end_date']
+                extra_args = params.get('extra_args', [])
                 
-                # 捕获输出
-                import io
-                import contextlib
-                import sys
-                
-                output_buffer = io.StringIO()
-                error_buffer = io.StringIO()
-                
-                with contextlib.redirect_stdout(output_buffer):
-                    with contextlib.redirect_stderr(error_buffer):
-                        # 使用runpy执行脚本
-                        runpy.run_path(script_path, run_name='__main__')
-                
-                # 获取输出
-                output_content = output_buffer.getvalue()
-                error_content = error_buffer.getvalue()
+                # 如果有额外参数，使用subprocess执行；否则使用runpy（更快）
+                if extra_args:
+                    # 使用subprocess执行脚本以支持命令行参数和实时输出
+                    import subprocess
+                    
+                    # 构建命令（显式传递日期范围与额外参数）
+                    cmd = [
+                        sys.executable,
+                        script_path,
+                        '--start-date', params['start_date'],
+                        '--end-date', params['end_date']
+                    ] + extra_args
+                    
+                    # 设置环境变量
+                    env = os.environ.copy()
+                    env.update({
+                        'BMA_START_DATE': params['start_date'],
+                        'BMA_END_DATE': params['end_date']
+                    })
+                    
+                    # 获取进度回调
+                    progress_callback = params.get('progress_callback')
+                    
+                    # 启动进程，实时读取输出
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=env,
+                        bufsize=1,  # 行缓冲
+                        universal_newlines=True
+                    )
+                    
+                    output_lines = []
+                    error_lines = []
+                    
+                    # 实时读取输出
+                    import select
+                    import threading
+                    
+                    def read_output(pipe, lines_list, is_error=False):
+                        try:
+                            for line in iter(pipe.readline, ''):
+                                if line:
+                                    line = line.rstrip()
+                                    lines_list.append(line)
+                                    
+                                    # 调用进度回调
+                                    if progress_callback and line.strip():
+                                        from dataclasses import dataclass
+                                        from typing import List
+                                        
+                                        @dataclass
+                                        class ProgressResult:
+                                            output: List[str]
+                                        
+                                        progress_result = ProgressResult(output=[line])
+                                        try:
+                                            progress_callback(progress_result)
+                                        except Exception as e:
+                                            print(f"进度回调错误: {e}")
+                        except Exception as e:
+                            print(f"读取输出错误: {e}")
+                        finally:
+                            pipe.close()
+                    
+                    # 启动输出读取线程
+                    stdout_thread = threading.Thread(target=read_output, args=(process.stdout, output_lines, False))
+                    stderr_thread = threading.Thread(target=read_output, args=(process.stderr, error_lines, True))
+                    
+                    stdout_thread.start()
+                    stderr_thread.start()
+                    
+                    # 等待进程完成
+                    return_code = process.wait()
+                    
+                    # 等待输出读取线程完成
+                    stdout_thread.join(timeout=5)
+                    stderr_thread.join(timeout=5)
+                    
+                    output_content = '\n'.join(output_lines)
+                    error_content = '\n'.join(error_lines)
+                    
+                    if return_code != 0:
+                        raise RuntimeError(f"脚本执行失败 (返回码: {return_code}): {error_content}")
+                        
+                else:
+                    # 没有额外参数，使用runpy（更快）
+                    os.environ['BMA_START_DATE'] = params['start_date']
+                    os.environ['BMA_END_DATE'] = params['end_date']
+                    
+                    # 捕获输出
+                    import io
+                    import contextlib
+                    
+                    output_buffer = io.StringIO()
+                    error_buffer = io.StringIO()
+                    
+                    with contextlib.redirect_stdout(output_buffer):
+                        with contextlib.redirect_stderr(error_buffer):
+                            # 使用runpy执行脚本
+                            runpy.run_path(script_path, run_name='__main__')
+                    
+                    # 获取输出
+                    output_content = output_buffer.getvalue()
+                    error_content = error_buffer.getvalue()
                 
                 output_lines = []
                 if output_content:
@@ -343,7 +438,7 @@ class PerformanceOptimizer:
         }
     
     async def optimize_bma_execution(self, script_path: str, start_date: str, end_date: str,
-                                   progress_callback: Optional[Callable] = None) -> ModelResult:
+                                   progress_callback: Optional[Callable] = None, extra_args: Optional[List[str]] = None) -> ModelResult:
         """优化BMA模型执行"""
         self.logger.info(f"优化执行BMA模型: {start_date} -> {end_date}")
         
@@ -353,7 +448,8 @@ class PerformanceOptimizer:
         # 执行优化的模型
         result = await self.executor.execute_bma_model(
             script_path, start_date, end_date, 
-            use_cache=True, use_async=True
+            use_cache=True, use_async=True, extra_args=extra_args,
+            progress_callback=progress_callback
         )
         
         # 更新统计

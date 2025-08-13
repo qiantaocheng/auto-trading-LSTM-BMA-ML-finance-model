@@ -8,7 +8,7 @@ BMA增强版量化分析模型 V3
 
 import pandas as pd
 import numpy as np
-import yfinance as yf
+from polygon_client import polygon_client, download, Ticker
 from datetime import datetime, timedelta
 import warnings
 import argparse
@@ -69,11 +69,8 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-try:
-    from catboost import CatBoostRegressor
-    CATBOOST_AVAILABLE = True
-except ImportError:
-    CATBOOST_AVAILABLE = False
+# CatBoost removed due to compatibility issues
+CATBOOST_AVAILABLE = False
 
 # TensorFlow和CNN模型已完全禁用
 
@@ -638,7 +635,7 @@ class BayesianModelAveraging:
         self.model_class_priors = model_class_priors or {
             'LightGBM': 0.4,
             'XGBoost': 0.4,
-            'CatBoost': 0.2
+# CatBoost removed
         }
         self.models = {}
         self.posterior_weights = {}
@@ -1137,7 +1134,7 @@ class QuantitativeModel:
                         else:
                             print(f"[{i:3d}/{len(tickers):3d}] 下载 {ticker:6s}...", end=" ")
                             
-                        stock_data = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=True)
+                        stock_data = download(ticker, start=start_date, end=end_date)
                         
                         if len(stock_data) > 0:
                             break  # 成功，跳出重试循环
@@ -1788,7 +1785,7 @@ class QuantitativeModel:
             ('ic_selector', ICFactorSelector(ic_threshold=ic_thr))
         ]
         
-        # 基学习器配置（第一层只有树模型：XGBoost, LightGBM, CatBoost）
+        # 基学习器配置（第一层只有树模型：XGBoost, LightGBM）
         base_models = {}
         
         # 添加高级模型（LightGBM / XGBoost 为主力）
@@ -1822,20 +1819,7 @@ class QuantitativeModel:
             ))])
             base_models['LightGBM'] = lgb_pipeline
         
-        # 添加CatBoost作为第三个树模型
-        if CATBOOST_AVAILABLE:
-            cb_pipeline = Pipeline(tree_steps + [('model', CatBoostRegressor(
-                random_state=42,
-                iterations=1000,
-                depth=7,
-                learning_rate=0.03,
-                l2_leaf_reg=3.0,
-                subsample=0.8,
-                verbose=False,
-                allow_writing_files=False,
-                thread_count=-1
-            ))])
-            base_models['CatBoost'] = cb_pipeline
+        # CatBoost removed due to compatibility issues
         
         # CNN模型已禁用，仅使用传统机器学习模型
         
@@ -2216,7 +2200,7 @@ class QuantitativeModel:
         if hasattr(self, 'bma_model'):
             for name, model in self.bma_model.models.items():
                 # 对于树模型，检查预测路径
-                if 'XGBoost' in name or 'LightGBM' in name or 'CatBoost' in name:
+                if 'XGBoost' in name or 'LightGBM' in name:
                     try:
                         # 单样本预测测试
                         single_pred = model.predict(X_df.iloc[[0]].values)
@@ -2650,7 +2634,7 @@ def main():
     """主函数（保持原有接口）"""
     print("=== BMA增强版量化分析模型启动 V3 ===")
     print(f"使用贝叶斯模型平均(BMA)替代Stacking，提供更稳定的预测性能")
-    print(f"使用高级模型: XGBoost={XGBOOST_AVAILABLE}, LightGBM={LIGHTGBM_AVAILABLE}, CatBoost={CATBOOST_AVAILABLE}")
+    print(f"使用高级模型: XGBoost={XGBOOST_AVAILABLE}, LightGBM={LIGHTGBM_AVAILABLE}")
     print(f"[BMA] 仅使用CPU计算模式")
     
     # 命令行参数解析（保持兼容性）

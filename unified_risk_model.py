@@ -585,11 +585,13 @@ class EnhancedAlphaEngine:
     
     def __init__(self, 
                  alpha_engine,  # 原有的AlphaStrategiesEngine
-                 risk_model_config: RiskModelConfig = None):
+                 risk_model_config: RiskModelConfig = None,
+                 config: Dict[str, Any] = None):
         
         self.alpha_engine = alpha_engine
         self.risk_model = RiskModelEngine(risk_model_config)
         self.market_data_manager = self.risk_model.market_data_manager
+        self.config = config or {}
         
     def enhanced_alpha_computation(self, 
                                  data: pd.DataFrame,
@@ -603,8 +605,12 @@ class EnhancedAlphaEngine:
         alpha_names = alpha_names or list(self.alpha_engine.alpha_functions.keys())
         alpha_df = self.alpha_engine.compute_all_alphas(enhanced_data)
         
-        # 3. 应用风险模型中性化
-        if 'return' in enhanced_data.columns:
+        # 3. 应用风险模型中性化（可选，避免重复中性化）
+        if ('return' in enhanced_data.columns and 
+            hasattr(self, 'config') and self.config and 
+            self.config.get('neutralize_alphas_with_risk_model', False)):
+            
+            logger.info("应用风险模型中性化（二次中性化）")
             # 拟合风险模型
             self.risk_model.fit_risk_model(enhanced_data)
             
@@ -613,6 +619,8 @@ class EnhancedAlphaEngine:
                 alpha_df[alpha_name] = self.risk_model.apply_neutralization(
                     alpha_df[alpha_name], enhanced_data
                 )
+        else:
+            logger.info("跳过风险模型中性化，避免重复中性化（Alpha引擎已处理）")
         
         return alpha_df
     

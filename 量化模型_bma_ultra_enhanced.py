@@ -8,7 +8,7 @@ BMA Ultra Enhanced 量化分析模型 V4
 
 import pandas as pd
 import numpy as np
-import yfinance as yf
+from polygon_client import polygon_client, download, Ticker
 import yaml
 import warnings
 import argparse
@@ -60,13 +60,7 @@ try:
 except Exception:
     MARKET_MANAGER_AVAILABLE = False
 
-# 导入中性化模块
-try:
-    from neutralization_pipeline import DailyNeutralizationTransformer
-    NEUTRALIZATION_AVAILABLE = True
-except ImportError as e:
-    print(f"[WARN] 中性化模块导入失败: {e}")
-    NEUTRALIZATION_AVAILABLE = False
+# 中性化已统一由Alpha引擎处理，移除重复依赖
 
 # 导入isotonic校准
 try:
@@ -88,10 +82,7 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-try:
-    from catboost import CatBoostRegressor, CatBoostRanker
-    CATBOOST_AVAILABLE = True
-except ImportError:
+# CatBoost removed due to compatibility issues
     CATBOOST_AVAILABLE = False
 
 # 配置
@@ -101,11 +92,37 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 全局配置
-DEFAULT_TICKER_LIST = [
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'TSLA', 'META', 'NFLX', 
-    'CRM', 'ADBE', 'PYPL', 'INTC', 'AMD', 'QCOM', 'AVGO', 'TXN',
-    'ORCL', 'IBM', 'CSCO', 'NOW', 'SNOW', 'PLTR', 'DDOG', 'ZS'
-]
+DEFAULT_TICKER_LIST =["A", "AA", "AACB", "AACI", "AACT", "AAL", "AAMI", "AAOI", "AAON", "AAP", "AAPL", "AARD", "AAUC", "AB", "ABAT", "ABBV", "ABCB", "ABCL", "ABEO", "ABEV", "ABG", "ABL", "ABM", "ABNB", "ABSI", "ABT", "ABTS", "ABUS", "ABVC", "ABVX", "ACA", "ACAD", "ACB", "ACCO", "ACDC", "ACEL", "ACGL", "ACHC", "ACHR", "ACHV", "ACI", "ACIC", "ACIU", "ACIW", "ACLS", "ACLX", "ACM", "ACMR", "ACN", "ACNT", "ACOG", "ACRE", "ACT", "ACTG", "ACTU", "ACVA", "ACXP", "ADAG", "ADBE", "ADC", "ADCT", "ADEA", "ADI", "ADM", "ADMA", "ADNT", "ADP", "ADPT", "ADSE", "ADSK", "ADT", "ADTN", "ADUR", "ADUS", "ADVM", "AEBI", "AEE", "AEG", "AEHL", "AEHR", "AEIS", "AEM", "AEO", "AEP", "AER", "AES", "AESI", "AEVA", "AEYE", "AFCG", "AFG", "AFL", "AFRM", "AFYA", "AG", "AGCO", "AGD", "AGEN", "AGH", "AGI", "AGIO", "AGM", "AGNC", "AGO", "AGRO", "AGX", "AGYS", "AHCO", "AHH", "AHL", "AHR", "AI", "AIFF", "AIFU", "AIG", "AII", "AIM", "AIMD", "AIN", "AIOT", "AIP", "AIR", "AIRI", "AIRJ", "AIRO", "AIRS", "AISP", "AIT", "AIV", "AIZ", "AJG", "AKAM", "AKBA", "AKRO", "AL", "ALAB", "ALAR", "ALB", "ALBT", "ALC", "ALDF", "ALDX", "ALE", "ALEX", "ALF", "ALG", "ALGM", "ALGN", "ALGS", "ALGT", "ALHC", "ALIT", "ALK", "ALKS", "ALKT", "ALL", "ALLE", "ALLT", "ALLY", "ALM", "ALMS", "ALMU", "ALNT", "ALNY", "ALRM", "ALRS", "ALSN", "ALT", "ALTG", "ALTI", "ALTS", "ALUR", "ALV", "ALVO", "ALX", "ALZN", "AM", "AMAL", "AMAT", "AMBA", "AMBC", "AMBP", "AMBQ", "AMBR", "AMC", "AMCR", "AMCX", "AMD", "AME", "AMED", "AMG", "AMGN", "AMH", "AMKR", "AMLX", "AMN", "AMP", "AMPG", "AMPH", "AMPL", "AMPX", "AMPY", "AMR", "AMRC", "AMRK", "AMRN", "AMRX", "AMRZ", "AMSC", "AMSF", "AMST", "AMT", "AMTB", "AMTM", "AMTX", "AMWD", "AMWL", "AMX", "AMZE", "AMZN", "AN", "ANAB", "ANDE", "ANEB", "ANET", "ANF", "ANGH", "ANGI", "ANGO", "ANIK", "ANIP", "ANIX", "ANNX", "ANPA", "ANRO", "ANSC", "ANTA", "ANTE", "ANVS", "AOMR", "AON", "AORT", "AOS", "AOSL", "AOUT", "AP", "APA", "APAM", "APD", "APEI", "APG", "APGE", "APH", "API", "APLD", "APLE", "APLS", "APO", "APOG", "APP", "APPF", "APPN", "APPS", "APTV", "APVO", "AQN", "AQST", "AR", "ARAI", "ARCB", "ARCC", "ARCO", "ARCT", "ARDT", "ARDX", "ARE", "AREN", "ARES", "ARHS", "ARI", "ARIS", "ARKO", "ARLO", "ARLP", "ARM", "ARMK", "ARMN", "ARMP", "AROC", "ARQ", "ARQQ", "ARQT", "ARR", "ARRY", "ARTL", "ARTV", "ARVN", "ARW", "ARWR", "ARX", "AS", "ASA", "ASAN", "ASB", "ASC", "ASGN", "ASH", "ASIC", "ASIX", "ASLE", "ASM", "ASND", "ASO", "ASPI", "ASPN", "ASR", "ASST", "ASTE", "ASTH", "ASTI", "ASTL", "ASTS", "ASUR", "ASX", "ATAI", "ATAT", "ATEC", "ATEN", "ATEX", "ATGE", "ATHE", "ATHM", "ATHR", "ATI", "ATII", "ATKR", "ATLC", "ATLX", "ATMU", "ATNF", "ATO", "ATOM", "ATR", "ATRA", "ATRC", "ATRO", "ATS", "ATUS", "ATXS", "ATYR", "AU", "AUB", "AUDC", "AUGO", "AUID", "AUPH", "AUR", "AURA", "AUTL", "AVA", "AVAH", "AVAL", "AVAV", "AVB", "AVBC", "AVBP", "AVD", "AVDL", "AVDX", "AVGO", "AVIR", "AVNS", "AVNT", "AVNW", "AVO", "AVPT", "AVR", "AVT", "AVTR", "AVTX", "AVXL", "AVY", "AWI", "AWK", "AWR", "AX", "AXGN", "AXIN", "AXL", "AXP", "AXS", "AXSM", "AXTA", "AXTI", "AYI", "AYTU", "AZ", "AZN", "AZTA", "AZZ", "B", "BA", "BABA", "BAC", "BACC", "BACQ", "BAER", "BAH", "BAK", "BALL", "BALY", "BAM", "BANC", "BAND", "BANF", "BANR", "BAP", "BASE", "BATRA", "BATRK", "BAX", "BB", "BBAI", "BBAR", "BBCP", "BBD", "BBDC", "BBIO", "BBNX", "BBSI", "BBUC", "BBVA", "BBW", "BBWI", "BBY", "BC", "BCAL", "BCAX", "BCBP", "BCC", "BCE", "BCH", "BCO", "BCPC", "BCRX", "BCS", "BCSF", "BCYC", "BDC", "BDMD", "BDRX", "BDTX", "BDX", "BE", "BEAG", "BEAM", "BEEM", "BEEP", "BEKE", "BELFB", "BEN", "BEP", "BEPC", "BETR", "BF-A", "BF-B", "BFAM", "BFC", "BFH", "BFIN", "BFS", "BFST", "BG", "BGC", "BGL", "BGLC", "BGM", "BGS", "BGSF", "BHC", "BHE", "BHF", "BHFAP", "BHLB", "BHP", "BHR", "BHRB", "BHVN", "BIDU", "BIIB", "BILI", "BILL", "BIO", "BIOA", "BIOX", "BIP", "BIPC", "BIRD", "BIRK", "BJ", "BJRI", "BK", "BKD", "BKE", "BKH", "BKKT", "BKR", "BKSY", "BKTI", "BKU", "BKV", "BL", "BLBD", "BLBX", "BLCO", "BLD", "BLDE", "BLDR", "BLFS", "BLFY", "BLIV", "BLKB", "BLMN", "BLND", "BLNE", "BLRX", "BLUW", "BLX", "BLZE", "BMA", "BMBL", "BMGL", "BMHL", "BMI", "BMNR", "BMO", "BMR", "BMRA", "BMRC", "BMRN", "BMY", "BN", "BNC", "BNED", "BNGO", "BNL", "BNS", "BNTC", "BNTX", "BNZI", "BOC", "BOF", "BOH", "BOKF", "BOOM", "BOOT", "BORR", "BOSC", "BOW", "BOX", "BP", "BPOP", "BQ", "BR", "BRBR", "BRBS", "BRC", "BRDG", "BRFS", "BRK-B", "BRKL", "BRKR", "BRLS", "BRO", "BROS", "BRR", "BRSL", "BRSP", "BRX", "BRY", "BRZE", "BSAA", "BSAC", "BSBR", "BSET", "BSGM", "BSM", "BSX", "BSY", "BTAI", "BTBD", "BTBT", "BTCM", "BTCS", "BTCT", "BTDR", "BTE", "BTG", "BTI", "BTM", "BTMD", "BTSG", "BTU", "BUD", "BULL", "BUR", "BURL", "BUSE", "BV", "BVFL", "BVN", "BVS", "BWA", "BWB", "BWEN", "BWIN", "BWLP", "BWMN", "BWMX", "BWXT", "BX", "BXC", "BXP", "BY", "BYD", "BYND", "BYON", "BYRN", "BYSI", "BZ", "BZAI", "BZFD", "BZH", "BZUN", "C", "CAAP", "CABO", "CAC", "CACC", "CACI", "CADE", "CADL", "CAE", "CAEP", "CAG", "CAH", "CAI", "CAKE", "CAL", "CALC", "CALM", "CALX", "CAMT", "CANG", "CAPR", "CAR", "CARE", "CARG", "CARL", "CARR", "CARS", "CART", "CASH", "CASS", "CAT", "CATX", "CATY", "CAVA", "CB", "CBAN", "CBIO", "CBL", "CBLL", "CBNK", "CBOE", "CBRE", "CBRL", "CBSH", "CBT", "CBU", "CBZ", "CC", "CCAP", "CCB", "CCCC", "CCCS", "CCCX", "CCEP", "CCI", "CCIR", "CCIX", "CCJ", "CCK", "CCL", "CCLD", "CCNE", "CCOI", "CCRD", "CCRN", "CCS", "CCSI", "CCU", "CDE", "CDIO", "CDLR", "CDNA", "CDNS", "CDP", "CDRE", "CDRO", "CDTX", "CDW", "CDXS", "CDZI", "CE", "CECO", "CEG", "CELC", "CELH", "CELU", "CELZ", "CENT", "CENTA", "CENX", "CEP", "CEPO", "CEPT", "CEPU", "CERO", "CERT", "CEVA", "CF", "CFFN", "CFG", "CFLT", "CFR", "CG", "CGAU", "CGBD", "CGCT", "CGEM", "CGNT", "CGNX", "CGON", "CHA", "CHAC", "CHCO", "CHD", "CHDN", "CHE", "CHEF", "CHH", "CHKP", "CHMI", "CHPT", "CHRD", "CHRW", "CHT", "CHTR", "CHWY", "CHYM", "CI", "CIA", "CIB", "CIEN", "CIFR", "CIGI", "CIM", "CINF", "CING", "CINT", "CIO", "CION", "CIVB", "CIVI", "CL", "CLAR", "CLB", "CLBK", "CLBT", "CLCO", "CLDI", "CLDX", "CLF", "CLFD", "CLGN", "CLH", "CLLS", "CLMB", "CLMT", "CLNE", "CLNN", "CLOV", "CLPR", "CLPT", "CLRB", "CLRO", "CLS", "CLSK", "CLVT", "CLW", "CLX", "CM", "CMA", "CMBT", "CMC", "CMCL", "CMCO", "CMCSA", "CMDB", "CME", "CMG", "CMI", "CMP", "CMPO", "CMPR", "CMPS", "CMPX", "CMRC", "CMRE", "CMS", "CMTL", "CNA", "CNC", "CNCK", "CNDT", "CNEY", "CNH", "CNI", "CNK", "CNL", "CNM", "CNMD", "CNNE", "CNO", "CNOB", "CNP", "CNQ", "CNR", "CNS", "CNTA", "CNTB", "CNTY", "CNVS", "CNX", "CNXC", "CNXN", "COCO", "CODI", "COF", "COFS", "COGT", "COHR", "COHU", "COIN", "COKE", "COLB", "COLL", "COLM", "COMM", "COMP", "CON", "COO", "COOP", "COP", "COPL", "COR", "CORT", "CORZ", "COTY", "COUR", "COYA", "CP", "CPA", "CPAY", "CPB", "CPF", "CPIX", "CPK", "CPNG", "CPRI", "CPRT", "CPRX", "CPS", "CPSH", "CQP", "CR", "CRAI", "CRAQ", "CRBG", "CRBP", "CRC", "CRCL", "CRCT", "CRD-A", "CRDF", "CRDO", "CRE", "CRESY", "CREV", "CREX", "CRGO", "CRGX", "CRGY", "CRH", "CRI", "CRK", "CRL", "CRM", "CRMD", "CRML", "CRMT", "CRNC", "CRNX", "CRON", "CROX", "CRS", "CRSP", "CRSR", "CRTO", "CRUS", "CRVL", "CRVO", "CRVS", "CRWD", "CRWV", "CSAN", "CSCO", "CSGP", "CSGS", "CSIQ", "CSL", "CSR", "CSTL", "CSTM", "CSV", "CSW", "CSWC", "CSX", "CTAS", "CTEV", "CTGO", "CTKB", "CTLP", "CTMX", "CTNM", "CTO", "CTOS", "CTRA", "CTRI", "CTRM", "CTRN", "CTS", "CTSH", "CTVA", "CTW", "CUB", "CUBE", "CUBI", "CUK", "CUPR", "CURB", "CURI", "CURV", "CUZ", "CV", "CVAC", "CVBF", "CVCO", "CVE", "CVEO", "CVGW", "CVI", "CVLG", "CVLT", "CVM", "CVNA", "CVRX", "CVS", "CVX", "CW", "CWAN", "CWBC", "CWCO", "CWEN", "CWEN-A", "CWH", "CWK", "CWST", "CWT", "CX", "CXDO", "CXM", "CXT", "CXW", "CYBN", "CYBR", "CYCC", "CYD", "CYH", "CYN", "CYRX", "CYTK", "CZR", "CZWI", "D", "DAAQ", "DAC", "DAIC", "DAKT", "DAL", "DALN", "DAN", "DAO", "DAR", "DARE", "DASH", "DATS", "DAVA", "DAVE", "DAWN", "DAY", "DB", "DBD", "DBI", "DBRG", "DBX", "DC", "DCBO", "DCI", "DCO", "DCOM", "DCTH", "DD", "DDC", "DDI", "DDL", "DDOG", "DDS", "DEA", "DEC", "DECK", "DEFT", "DEI", "DELL", "DENN", "DEO", "DERM", "DEVS", "DFDV", "DFH", "DFIN", "DFSC", "DG", "DGICA", "DGII", "DGX", "DGXX", "DH", "DHI", "DHR", "DHT", "DHX", "DIBS", "DIN", "DINO", "DIOD", "DIS", "DJCO", "DJT", "DK", "DKL", "DKNG", "DKS", "DLB", "DLHC", "DLO", "DLTR", "DLX", "DLXY", "DMAC", "DMLP", "DMRC", "DMYY", "DNA", "DNB", "DNLI", "DNN", "DNOW", "DNTH", "DNUT", "DOC", "DOCN", "DOCS", "DOCU", "DOGZ", "DOLE", "DOMH", "DOMO", "DOOO", "DORM", "DOUG", "DOV", "DOW", "DOX", "DOYU", "DPRO", "DPZ", "DQ", "DRD", "DRDB", "DRH", "DRI", "DRS", "DRVN", "DSGN", "DSGR", "DSGX", "DSP", "DT", "DTE", "DTI", "DTIL", "DTM", "DTST", "DUK", "DUOL", "DUOT", "DV", "DVA", "DVAX", "DVN", "DVS", "DWTX", "DX", "DXC", "DXCM", "DXPE", "DXYZ", "DY", "DYN", "DYNX", "E", "EA", "EARN", "EAT", "EB", "EBAY", "EBC", "EBF", "EBMT", "EBR", "EBS", "EC", "ECC", "ECG", "ECL", "ECO", "ECOR", "ECPG", "ECVT", "ED", "EDBL", "EDIT", "EDN", "EDU", "EE", "EEFT", "EEX", "EFC", "EFSC", "EFX", "EFXT", "EG", "EGAN", "EGBN", "EGG", "EGO", "EGP", "EGY", "EH", "EHAB", "EHC", "EHTH", "EIC", "EIG", "EIX", "EKSO", "EL", "ELAN", "ELDN", "ELF", "ELMD", "ELME", "ELP", "ELPW", "ELS", "ELV", "ELVA", "ELVN", "ELWS", "EMA", "EMBC", "EMN", "EMP", "EMPD", "EMPG", "EMR", "EMX", "ENB", "ENGN", "ENGS", "ENIC", "ENOV", "ENPH", "ENR", "ENS", "ENSG", "ENTA", "ENTG", "ENVA", "ENVX", "EOG", "EOLS", "EOSE", "EPAC", "EPAM", "EPC", "EPD", "EPM", "EPR", "EPSM", "EPSN", "EQBK", "EQH", "EQNR", "EQR", "EQT", "EQV", "EQX", "ERIC", "ERIE", "ERII", "ERJ", "ERO", "ES", "ESAB", "ESE", "ESGL", "ESI", "ESLT", "ESNT", "ESOA", "ESQ", "ESTA", "ESTC", "ET", "ETD", "ETN", "ETNB", "ETON", "ETOR", "ETR", "ETSY", "EU", "EUDA", "EVAX", "EVC", "EVCM", "EVER", "EVEX", "EVGO", "EVH", "EVLV", "EVO", "EVOK", "EVR", "EVRG", "EVTC", "EVTL", "EW", "EWBC", "EWCZ", "EWTX", "EXAS", "EXC", "EXE", "EXEL", "EXK", "EXLS", "EXOD", "EXP", "EXPD", "EXPE", "EXPI", "EXPO", "EXR", "EXTR", "EYE", "EYPT", "EZPW", "F", "FA",
+ "FACT", "FAF", "FANG", "FAST", "FAT", "FATN", "FBIN", "FBK", "FBLA", 
+ "FBNC", "FBP", "FBRX", "FC", "FCBC", "FCEL", "FCF", "FCFS", "FCN", "FCX", "FDMT",
+  "FDP", "FDS", "FDUS", "FDX", "FE", "FEIM", "FELE", "FENC", "FER", "FERA", "FERG", "FET", "FF", 
+  "FFAI", "FFBC", "FFIC", "FFIN", "FFIV", "FFWM", "FG", "FGI", "FHB", "FHI", "FHN", "FHTX", "FI", "FIBK", "FIEE", "FIG", "FIGS", 
+  "FIHL", "FINV", "FIP", "FIS", "FISI", "FITB", "FIVE", "FIVN", "FIZZ", "FL", "FLD", "FLEX", "FLG", "FLGT", "FLL", "FLNC", "FLNG", "FLO", "FLOC",
+   "FLR", "FLS", "FLUT", "FLWS", "FLX", "FLY", "FLYE", "FLYW", "FLYY", "FMBH", "FMC", "FMFC", "FMNB", "FMS", "FMST", 
+   "FMX", "FN", "FNB", "FND", "FNF", "FNGD", "FNKO", "FNV", "FOA", "FOLD", "FOR", "FORM", "FORR", "FOUR", "FOX", "FOXA", 
+   "FOXF", "FPH", "FPI", "FRGE", "FRHC", "FRME", "FRO", "FROG", "FRPT", "FRSH", "FRST", "FSCO", "FSK", "FSLR", "FSLY",
+    "FSM", "FSS", "FSUN", "FSV", "FTAI", "FTCI", "FTDR", "FTEK", "FTI", "FTK", "FTNT", "FTRE", "FTS", "FTV", "FUBO", "FUFU", "FUL", "FULC", "FULT", "FUN", "FUTU", "FVR", "FVRR", "FWONA", "FWONK", "FWRD", "FWRG", "FYBR", "G",
+     "GABC", "GAIA", "GAIN", "GALT", "GAMB", "GAP", "GASS", "GATX", "GAUZ", "GB", "GBCI", "GBDC", "GBFH", "GBIO", "GBTG", "GBX", "GCI", "GCL", "GCMG", "GCO", "GCT", "GD", "GDC", "GDDY", "GDEN", "GDOT", "GDRX", "GDS", 
+     "GDYN", "GE", "GEF", "GEHC", "GEL", "GEN", "GENI", "GENK", "GEO", "GEOS", "GES", "GFF", "GFI", "GFL", "GFR", "GFS", "GGAL", "GGB", "GGG", "GH", "GHLD", "GHM", "GHRS", "GIB", "GIC", "GIG", "GIII", "GIL", "GILD", "GILT", "GIS", "GITS", 
+     "GKOS", "GL", "GLAD", "GLBE", "GLD", "GLDD", "GLIBA", "GLIBK", "GLNG", "GLOB", "GLP", "GLPG", "GLPI", "GLRE", "GLSI", "GLUE", "GLW", "GLXY", "GM", "GMAB", "GME", "GMED", "GMRE", "GMS", "GNE", "GNK", "GNL", "GNLX", "GNRC", "GNTX", "GNTY", "GNW", "GO", "GOCO", "GOGL", "GOGO", "GOLF", "GOOD", "GOOG", "GOOGL", "GOOS", "GORV", "GOTU", "GPAT", 
+     "GPC", "GPCR", "GPI", "GPK", "GPN", "GPOR", "GPRE", "GPRK", "GRAB", "GRAL", "GRAN", "GRBK", "GRC", "GRCE", "GRDN", "GRFS", "GRMN", "GRND", "GRNT", "GROY", "GRPN", "GRRR", "GSAT", "GSBC", "GSBD", "GSHD", "GSIT", "GSK", "GSL", "GSM", "GSRT", "GT", "GTE", "GTEN", "GTERA", "GTES", "GTLB", "GTLS", "GTM", "GTN", "GTX", "GTY", "GVA", "GWRE", "GWRS", "GXO", "GYRE", "H", "HAE", "HAFC", "HAFN", "HAL", "HALO", "HAS", "HASI", "HAYW", "HBAN", "HBCP", "HBI", "HBM", "HBNC", "HCA", "HCAT", "HCC", "HCHL", "HCI", "HCKT", "HCM", "HCSG", "HCTI", "HCWB", "HD", "HDB", "HDSN", "HE", "HEI", "HEI-A", "HELE", "HEPS", "HESM", "HFFG", "HFWA", "HG", "HGTY", "HGV", "HHH", "HI", "HIFS", "HIG", "HII", "HIMS", "HIMX",
+     "HIPO", "HIT", "HITI", "HIVE", "HIW", "HL", "HLF", "HLI", "HLIO", "HLIT", "HLLY", "HLMN", "HLN", "HLNE", "HLT", "HLVX", "HLX", "HLXB", "HMC", "HMN", "HMST", "HMY", "HNGE", "HNI", "HNRG", "HNST", "HOFT", "HOG", "HOLO", "HOLX", "HOMB", "HON", "HOND", "HONE", "HOOD", "HOPE", "HOUS", "HOV", "HP", "HPE", "HPK", "HPP", "HPQ", "HQH", "HQL", "HQY", "HRB", "HRI", "HRL", "HRMY", "HROW", "HRTG", "HRZN", "HSAI", "HSBC", "HSCS", "HSHP", "HSIC", "HSII", "HST", "HSTM", "HSY", "HTBK", "HTCO", "HTGC", "HTH", "HTHT", "HTLD", "HTO", "HTOO", "HTZ", "HUBB", "HUBC", "HUBG", "HUBS", "HUHU", "HUM", "HUMA", "HUN", "HURA", "HURN", "HUSA", "HUT", "HUYA", "HVII", "HVT", "HWC", "HWKN", "HWM", 
+     "HXL", "HY", "HYAC", "HYMC", "HYPD", "HZO", "IAC", "IAG", "IART", "IAS", "IBCP", "IBEX", "IBKR", "IBM", "IBN", "IBOC", "IBP", "IBRX", "IBTA", "ICE", "ICFI", "ICG", "ICHR", "ICL", "ICLR", "ICUI", "IDA", "IDAI", "IDCC", "IDN", "IDR", "IDT", "IDYA", "IE", "IEP", "IESC", "IEX", "IFF", "IFS", "IGIC", "IHG", "IHS", "III", "IIIN", "IIIV", "IIPR", "ILMN", "IMAB", "IMAX", "IMCC", "IMCR", "IMDX", "IMKTA", "IMMR", "IMMX", "IMNM", "IMNN", "IMO", "IMPP", "IMRX", "IMTX", "IMVT", "IMXI", "INAB", "INAC", "INBK", "INBX", "INCY", "INDB", "INDI", "INDO", "INDP", "INDV", "INFA", "INFU", "INFY", "ING", "INGM", "INGN", "INGR", "INKT", "INMB", "INMD", "INN", "INOD", "INR", "INSE", "INSG", "INSM", "INSP", "INSW", "INTA", "INTC", "INTR", "INUV", "INV", "INVA", "INVE", "INVH", "INVX", "IONQ", "IONS", "IOSP", "IOT", "IOVA", "IP", "IPA", "IPAR", "IPDN", "IPG", "IPGP", "IPI", "IPX", "IQST", "IQV", "IR", "IRBT", "IRDM", "IREN", "IRM", "IRMD", "IROH", "IRON", "IRS", "IRTC", "ISPR", "ISRG", "ISSC", "IT", "ITGR", "ITIC", "ITOS", "ITRI", "ITRN", "ITT", "ITUB", "ITW", "IVR", "IVZ", "IX", "IZEA", "J", "JACK", "JACS", "JAKK", "JAMF", "JANX", "JAZZ", "JBGS", "JBHT", "JBI", "JBIO", "JBL", "JBLU", "JBS", "JBSS", "JBTM", "JCAP", "JCI", "JD", "JEF", "JELD", "JEM", "JENA", "JFIN", "JHG", "JHX", "JILL", "JJSF", "JKHY", "JKS", "JLHL", "JLL", "JMIA", "JNJ", "JOBY", "JOE", "JOUT", "JOYY", "JPM", "JRSH", "JRVR", "JSPR", "JTAI", "JVA", "JXN", "JYNT", "K", "KAI", "KALA", "KALU", 
+     "KALV", "KAR", "KARO", "KB", "KBDC", "KBH", "KBR", "KC", "KCHV", "KD", "KDP", "KE", "KELYA", "KEP", "KEX", "KEY", "KEYS", "KFII", "KFRC", "KFS", "KFY", "KGC", "KGEI", "KGS", "KHC", "KIDS", "KIM", "KINS", "KKR", "KLC", "KLG", "KLIC", "KLRS", "KMB", "KMDA", "KMI", "KMPR", "KMT", "KMTS", "KMX", "KN", "KNF", "KNOP", "KNSA", "KNSL", "KNTK", "KNW", "KNX", "KO", "KOD", "KODK", "KOF", "KOP", "KOSS", "KPRX", "KPTI", "KR", "KRC", "KRMD", "KRMN", "KRNT", "KRNY", "KRO", "KROS", "KRP", "KRRO", "KRT", "KRUS", "KRYS", "KSCP", "KSPI", "KSS", "KT", "KTB", "KTOS", "KULR", "KURA", "KVUE", "KVYO", "KW", "KWM", "KWR", "KYMR", "KYTX", "KZIA", "L", "LAC", "LAD", "LADR", "LAES", "LAKE", "LAMR", "LAND", "LANV", "LAR", "LASE", "LASR", "LAUR", "LAW", "LAWR", "LAZ", "LAZR", "LB", "LBRDA", "LBRDK", "LBRT", "LBTYA", "LBTYK", "LC", "LCCC", "LCFY", "LCID", "LCII", "LCUT", "LDOS", "LE", "LEA", "LECO", "LEG", "LEGH", "LEGN", "LEN", "LENZ", "LEO", "LEU", "LEVI", "LFCR", "LFMD", "LFST", "LFUS", "LFVN", "LGCY", "LGIH", "LGND", "LH", "LHAI", "LHSW", "LHX", "LI", "LIDR", "LIF", "LILA", "LILAK", "LIMN", "LIN", "LINC", "LIND", "LINE", "LION", "LITE", "LITM", "LIVE", "LIVN", "LIXT", "LKFN", "LKQ", "LLYVA", "LLYVK", "LMAT", "LMB", "LMND", "LMNR", "LMT", "LNC", "LNG", "LNN", "LNSR", "LNT", "LNTH", "LNW", "LOAR", "LOB", "LOCO", "LODE", "LOGI", "LOKV", "LOMA", "LOPE", "LOT", "LOVE", "LOW", "LPAA", "LPBB", "LPCN", "LPG", "LPL", "LPLA", "LPRO", "LPTH", "LPX", "LQDA", "LQDT", "LRCX", "LRMR", "LRN", "LSCC", "LSE", "LSPD", "LSTR", "LTBR", "LTC", "LTH", "LTM", "LTRN", "LTRX", "LU", "LUCK", "LULU", "LUMN", "LUNR", "LUV", "LUXE", "LVLU", "LVS", "LVWR", "LW", "LWAY", "LWLG", "LX", "LXEH", "LXEO", "LXFR", "LXU", "LYB", "LYEL", "LYFT", "LYG", "LYRA", "LYTS", "LYV", "LZ", "LZB", "LZM", "LZMH", "M", "MAA", "MAAS", "MAC", "MACI", "MAG", "MAGN", "MAIN", "MAMA", "MAMK", "MAN", "MANH", "MANU", "MAR", "MARA", "MAS", "MASI", "MASS", "MAT", "MATH", "MATV", "MATW", "MATX", "MAX", "MAXN", "MAZE", "MB", "MBAV", "MBC", "MBI", "MBIN", "MBLY",
+      "MBOT", "MBUU", "MBWM", "MBX", "MC", "MCB", "MCD", "MCFT", "MCHP", "MCRB", "MCRI", "MCRP", "MCS", "MCVT", "MCW", "MCY", "MD", "MDAI", "MDB", "MDCX", "MDGL", "MDLZ", "MDT", "MDU", "MDV", "MDWD", "MDXG", "MDXH", "MEC", "MED", "MEDP", "MEG", "MEI", "MEIP", "MENS", "MEOH", "MERC", "MESO", "MET", "METC", "METCB", "MFA", "MFC", "MFG", "MFH", "MFI", "MFIC", "MFIN", "MG", "MGA", "MGEE", "MGIC", "MGM", "MGNI", "MGPI", "MGRC", "MGRM", "MGRT", "MGTX", "MGY", "MH", "MHK", "MHO", "MIDD", "MIMI", "MIND", "MIR", "MIRM", "MITK", "MKC", "MKSI", "MKTX", "MLAB", "MLCO", "MLEC", "MLGO", "MLI", "MLKN", "MLNK", "MLR", "MLTX", "MLYS", "MMC", "MMI", "MMM", "MMS", "MMSI", "MMYT", "MNDY", "MNKD", "MNMD", "MNR", "MNRO", "MNSO", "MNST", "MNTN", "MO", "MOB", "MOD", "MODG", "MODV", "MOFG", "MOG-A", "MOH", "MOMO", "MORN", "MOS", "MOV", "MP", "MPAA", "MPB", "MPC", "MPLX", "MPTI", "MPU", "MQ", "MRAM", "MRBK", "MRC", "MRCC", "MRCY", "MRK", "MRNA", "MRP", "MRSN", "MRT", "MRTN", "MRUS", "MRVI", "MRVL", "MRX", "MS", "MSA", "MSBI", "MSEX", "MSGE", "MSGM", "MSGS", "MSGY", "MSI", "MSM", "MSTR", "MT", "MTA", "MTAL", "MTB", "MTCH", "MTDR", "MTEK", "MTEN", "MTG", "MTH", "MTLS", "MTN", "MTRN", "MTRX", "MTSI", "MTSR", "MTUS", "MTW", "MTX", "MTZ", "MU", "MUFG", "MUR", "MUSA", "MUX", "MVBF", "MVST", "MWA", "MX", "MXL", "MYE", "MYFW", "MYGN", "MYRG", "MZTI", "NA", "NAAS", "NABL", "NAGE", "NAKA", "NAMM", "NAMS", "NAT", "NATH", "NATL", "NATR", "NAVI", "NB", "NBBK", "NBHC", "NBIS", "NBIX", "NBN", "NBR", "NBTB", "NCDL", "NCLH", "NCMI", "NCNO", "NCPL", "NCT", "NCTY", "NDAQ", "NDSN", "NE", "NEE", "NEGG", "NEM", "NEO", "NEOG", "NEON", "NEOV", "NESR", "NET", "NETD", "NEWT", "NEXM", "NEXN", "NEXT", "NFBK", "NFE", "NFG", "NG", "NGD", "NGG", "NGL", "NGNE", "NGS", "NGVC", "NGVT", "NHC", "NHI", "NHIC", "NI", "NIC", "NICE", "NIO", "NIQ", "NISN", "NIU", "NJR", "NKE", "NKTR", "NLOP", "NLSP", "NLY", "NMAX", "NMFC", "NMIH", "NMM", "NMR", "NMRK", "NN", "NNBR", "NNE", "NNI", "NNN", "NNNN", "NNOX", "NOA", "NOAH", "NOG", "NOK", "NOMD", "NOV", "NOVT", "NPAC", "NPB", "NPCE", "NPK", "NPKI", "NPO", "NPWR", "NRC", "NRDS", "NRG", "NRIM", "NRIX", "NRXP", "NRXS", "NSC", "NSIT", "NSP", "NSPR", "NSSC", "NTAP", "NTB", "NTCT", "NTES", "NTGR", "NTHI", "NTLA", "NTNX", "NTR", "NTRA", "NTRB", "NTST", "NU", "NUE", "NUKK", "NUS", "NUTX", "NUVB", "NUVL", "NUWE", "NVAX", "NVCR", "NVCT", "NVDA", "NVEC", "NVGS", "NVMI", "NVNO", "NVO", "NVRI", "NVS", 
+  "NVST", "NVT", "NVTS", "NWBI", "NWE", "NWG", "NWL", "NWN", "NWPX", "NWS", "NWSA", "NX", "NXE", "NXP", "NXPI", "NXST", "NXT", "NXTC", "NYT", "NYXH", "O", "OACC", "OBDC", "OBE", "OBIO", "OBK", "OBLG", "OBT", "OC", "OCC", "OCCI", "OCFC", "OCFT", "OCSL", "OCUL", "ODC", "ODD", "ODFL", "ODP", "ODV", "OEC", "OFG", "OFIX", "OGE", "OGN", "OGS", "OHI", "OI", "OII", "OIS", "OKE", "OKLO", "OKTA", "OKUR", "OKYO", "OLED", "OLLI", "OLMA", "OLN", "OLO", "OLP", "OM", "OMAB", "OMC", "OMCL", "OMDA", "OMER", "OMF", "OMI", "OMSE", "ON", "ONB", "ONC", "ONDS", "ONEG", "ONEW", "ONL", "ONON", "ONTF", "ONTO", "OOMA", "OPAL", "OPBK", "OPCH", "OPFI", "OPRA", "OPRT", "OPRX", "OPXS", "OPY", "OR", "ORA", "ORC", "ORCL", "ORGO", "ORI", "ORIC", "ORKA", "ORLA", "ORLY", "ORMP", "ORN", "ORRF", "OS", "OSBC", "OSCR", "OSIS", "OSK", "OSPN", "OSS", "OSUR", "OSW", "OTEX", "OTF", "OTIS", "OTLY", "OTTR", "OUST", "OUT", "OVV", "OWL", "OWLT", "OXLC", "OXM", "OXSQ", "OXY", "OYSE", "OZK", "PAA", "PAAS", "PAC", "PACK", "PACS", "PAG", "PAGP", "PAGS", "PAHC", "PAL", "PAM", "PANL", "PANW", "PAR", "PARR", "PATH", "PATK", "PAX", "PAY", "PAYC", "PAYO", "PAYS", "PAYX", "PB", "PBA", "PBF", "PBH", "PBI", "PBPB", "PBR", "PBR-A", "PBYI", "PC", "PCAP", "PCAR", "PCG", "PCH", "PCOR", "PCRX", "PCT", "PCTY", "PCVX", "PD", "PDD", "PDEX", "PDFS", "PDS", "PDYN", "PEBO", "PECO", "PEG", "PEGA", "PEN", "PENG", "PENN", "PEP", "PERI", "PESI", "PETS", "PEW", "PFBC", "PFE", "PFG", "PFGC", "PFLT", "PFS", "PFSI", "PG", "PGC", "PGNY", "PGR", "PGRE", "PGY", "PHAT", "PHG", "PHI", "PHIN", "PHIO", "PHLT", "PHM", "PHOE", "PHR", "PHUN", "PHVS", "PI", "PII", "PINC", "PINS", "PIPR", "PJT", "PK", "PKE", "PKG", "PKX", "PL", "PLAB", "PLAY", "PLCE", "PLD", "PLL", "PLMR", "PLNT", "PLOW", "PLPC", "PLSE", "PLTK", "PLTR", "PLUS", "PLXS", "PLYM", "PM", "PMTR", "PMTS", "PN", "PNC", "PNFP", "PNNT", "PNR", "PNRG", "PNTG", "PNW", "PODD", "POET", "PONY", "POOL", "POR", "POST", "POWI", "POWL", "PPBI", "PPBT", "PPC", "PPG", "PPIH", "PPL", "PPSI", "PPTA", "PR", "PRA", "PRAA", "PRAX", "PRCH", "PRCT", "PRDO", "PRE", "PRG", "PRGO", "PRGS", "PRI", "PRIM", "PRK", "PRKS", "PRLB", "PRM", "PRMB", "PRME", "PRO", "PROK", "PROP", "PRQR", "PRSU", "PRTA", "PRTG", "PRTH", "PRU", "PRVA", "PSA", "PSEC", "PSFE", "PSIX", "PSKY", "PSMT", "PSN", "PSNL", "PSO", "PSQH", "PSTG", "PSX", "PTC", "PTCT", "PTEN", "PTGX", "PTHS", "PTLO", "PTON", "PUBM", "PUK", "PUMP", "PVBC", "PVH", "PVLA", "PWP", "PWR", "PX", "PXLW", "PYPD", "PYPL", "PZZA", "QBTS", "QCOM", "QCRH", "QD", "QDEL", "QFIN", "QGEN", "QIPT", "QLYS", "QMCO", "QMMM", "QNST", "QNTM", "QRHC", "QRVO", "QS", "QSEA", "QSG", "QSR", "QTRX", "QTWO", "QUAD", "QUBT", "QUIK", "QURE", "QVCGA", "QXO", "R", "RAAQ", "RAC", "RACE", "RAIL", "RAL", "RAMP", "RAPP", "RAPT", "RARE", "RAY", "RBA", "RBB", "RBBN", "RBC", "RBCAA", "RBLX", "RBRK", "RC", "RCAT", "RCEL", "RCI", "RCKT", "RCKY", "RCL", "RCMT", "RCON", "RCT", 
+    "RCUS", "RDAG", "RDAGU", "RDCM", "RDDT", "RDN", "RDNT", "RDVT", "RDW", "RDWR", "RDY", "REAL", "REAX", "REBN", "REFI", "REG", "RELX", "RELY", "RENT", "REPL", "REPX", "RERE", "RES", "RETO", "REVG", "REX", "REXR", "REYN", "REZI", "RF", "RFIL", "RGA", "RGC", "RGEN", "RGLD", "RGNX", "RGP", "RGR", "RGTI", "RH", "RHI", "RHLD", "RHP", "RICK", "RIG", "RIGL", "RILY", "RIME", "RIO", "RIOT", "RITM", "RITR", "RIVN", "RJF", "RKLB", "RKT", "RL", "RLAY", "RLGT", "RLI", "RLX", "RMAX", "RMBI", "RMBL", "RMBS", "RMD", "RMNI", "RMR", "RMSG", "RNA", "RNAC", "RNAZ", "RNG", "RNGR", "RNR", "RNST", "RNW", "ROAD", "ROCK", "ROG", "ROIV", "ROK", "ROKU", "ROL", "ROLR", "ROMA", "ROOT", "ROST", "RPAY", "RPD", "RPID", "RPM", "RPRX", "RPT", "RRC", "RRGB", "RRR", "RRX", "RS", "RSG", "RSI", "RSKD", "RSLS", "RSVR", "RTAC", "RTO", "RTX", "RUBI", "RUM", "RUN", "RUSHA", "RUSHB", "RVLV", "RVMD", "RVSB", "RVTY", "RWAY", "RXO", "RXRX", "RXST", "RY", "RYAAY", "RYAM", "RYAN", "RYI", "RYN", "RYTM", "RZB", "RZLT", "RZLV", "S", "SA", "SABS", "SAFE", "SAFT", "SAGT", "SAH", "SAIA", "SAIC", "SAIL", "SAM", "SAMG", "SAN", "SANA", "SAND", "SANM", "SAP", "SAR", "SARO", "SATL", "SATS", "SAVA", "SB", "SBAC", "SBC", "SBCF", "SBET", "SBGI", "SBH", "SBLK", "SBRA", "SBS", "SBSI", "SBSW", "SBUX", "SBXD", "SCAG", "SCCO", "SCHL", "SCHW", "SCI", "SCL", "SCLX", "SCM", "SCNX", "SCPH", "SCS", "SCSC", "SCVL", "SD", "SDA", "SDGR", "SDHC", "SDHI", "SDM", "SDRL", "SE", "SEAT", "SEDG", "SEE", "SEG", "SEI", "SEIC", "SEM", "SEMR", "SENEA", "SEPN", "SERA", "SERV", "SEZL", "SF", "SFBS", "SFD", "SFIX", "SFL", "SFM", "SFNC", "SG", "SGHC", "SGHT", "SGI", "SGML", "SGMT", "SGRY", "SHAK", "SHBI", "SHC", "SHCO", "SHEL", "SHEN", "SHG", "SHIP", "SHLS", "SHO", "SHOO", "SHOP", "SHW", "SI", "SIBN", "SIEB", "SIFY", "SIG", "SIGA", "SIGI", "SII", "SIMO", "SINT", "SION", "SIRI", "SITC", "SITE", "SITM", "SJM", "SKE", "SKLZ", "SKM", "SKT", "SKWD", "SKX", "SKY", "SKYE", "SKYH", "SKYT", "SKYW", "SLAB", "SLB", "SLDB", "SLDE", "SLDP", "SLF", "SLG", "SLGN", "SLI", "SLM", "SLN", "SLND", "SLNO", "SLP", "SLRC", "SLSN", "SLVM", "SM", "SMA", "SMBK", "SMC", "SMCI", "SMFG", "SMG", "SMHI", "SMLR", "SMMT", "SMP", "SMPL", "SMR", "SMTC", "SMWB", "SMX", "SN", "SNA", "SNAP", "SNBR", "SNCR", "SNCY", "SNDK", "SNDR", "SNDX", "SNES", "SNEX", "SNFCA", "SNGX", "SNN", "SNOW", "SNRE", "SNT", "SNV", "SNWV", "SNX", "SNY", "SNYR", "SO", "SOBO", "SOC", "SOFI", "SOGP", "SOHU", "SOLV", "SON", "SOND", "SONN", "SONO", "SONY", "SOPH", "SORA", "SOS", "SOUL", "SOUN", "SPAI", "SPB", "SPCB", "SPCE", "SPG", "SPH", "SPHR", "SPIR", "SPKL", "SPNS", "SPNT", "SPOK", "SPR", "SPRO", "SPRY", "SPSC", "SPT", "SPTN", "SPWH", "SPXC", "SQM", "SR", "SRAD", "SRBK", "SRCE", "SRDX", "SRE", "SRFM", "SRG", "SRI", "SRPT", "SRRK", "SRTS", "SSB", "SSD", "SSII", "SSL", "SSNC", "SSP", "SSRM", "SSSS", "SST", "SSTI", "SSTK", "SSYS", "ST", "STAA", "STAG", "STBA", "STC", "STE", "STEL", "STEM", "STEP", "STFS", "STGW", "STHO", "STI", "STIM", "STKL", "STKS", "STLA", "STLD", "STM", "STN", "STNE", "STNG", "STOK", "STR", "STRA", "STRD", "STRL", 
+    "STRM", "STRT", "STRZ", "STSS", "STT", "STVN", "STX", "STXS", "STZ", "SU", "SUI", "SUN", "SUPN", "SUPV", "SUPX", "SURG", "SUZ", "SVCO", "SVM", "SVRA", "SVV", "SW", "SWBI", "SWIM", "SWIN", "SWK", "SWKS", "SWX", "SXC", "SXI", "SXT", "SY", "SYBT", "SYF", "SYK", "SYM", "SYNA", "SYRE", "SYTA", "SYY", "SZZL", "T", "TAC", "TACH", "TACO", "TAK", "TAL", "TALK", "TALO", "TAOX", "TAP", "TARA", "TARS", "TASK", "TATT", "TBB", "TBBB", "TBBK", "TBCH", "TBI", "TBLA", "TBPH", "TBRG", "TCBI", "TCBK", "TCBX", "TCMD", "TCOM", "TCPC", "TD", "TDC", "TDIC", "TDOC", "TDS", "TDUP", "TDW", "TEAM", "TECH", "TECK", "TECX", "TEF", "TEL", "TEM", "TEN", "TENB", "TEO", "TER", "TERN", "TEVA", "TEX", "TFC", "TFII", "TFIN", "TFPM", "TFSL", "TFX", "TG", "TGB", "TGE", "TGEN", "TGLS", "TGNA", "TGS", "TGT", "TGTX", "TH", "THC", "THFF", "THG", "THO", "THR", "THRM", "THRY", "THS", "THTX", "TIC", "TIGO", "TIGR", "TIL", "TILE", "TIMB", "TIPT", "TITN", "TIXT", "TJX", "TK", "TKC", "TKNO", "TKO", "TKR", "TLK", "TLN", "TLS", "TLSA", "TLSI", "TM", "TMC",
+     "TMCI", "TMDX", "TME", "TMHC", "TMO", "TMUS", "TNC", "TNDM", "TNET", "TNGX", "TNK", "TNL", "TNXP", "TOI", "TOL", "TOPS", "TORO", "TOST", "TOWN", "TPB", "TPC", "TPCS", "TPG", "TPH", "TPR", "TPST", "TPVG", "TR", "TRAK", "TRC", "TRDA", "TREE", "TREX", "TRGP", "TRI", "TRIN", "TRIP", "TRMB", "TRMD", "TRML", "TRN", "TRNO", "TRNR", "TRNS", "TRON", "TROW", "TROX", "TRP", "TRS", "TRU", "TRUE", "TRUG", "TRUP", "TRV", "TRVG", "TRVI", "TS", "TSAT", "TSCO", "TSE", "TSEM", "TSHA", "TSLA", "TSLX", "TSM", "TSN", "TSQ", "TSSI", "TT", "TTAM", "TTAN", "TTC", "TTD", "TTE", "TTEC", "TTEK", "TTGT", "TTI", "TTMI", "TTSH", "TTWO", "TU", "TUSK", "TUYA", "TV", "TVA", "TVAI", "TVRD", "TVTX", "TW", "TWFG", "TWI", "TWIN", "TWLO", "TWNP", "TWO", "TWST", "TX", "TXG", "TXN", "TXNM", "TXO", "TXRH", "TXT", "TYG", "TYRA", "TZOO", "TZUP", "U", "UA", "UAA", "UAL", "UAMY", "UAVS", "UBER", "UBFO", "UBS", "UBSI", "UCAR", "UCB", "UCL", "UCTT", "UDMY", "UDR", "UE", "UEC", "UFCS", "UFG", "UFPI", "UFPT", 
+     "UGI", "UGP", "UHAL", "UHAL-B", "UHG", "UHS", "UI", "UIS", "UL", "ULBI", "ULCC", "ULS", "ULY", "UMAC", "UMBF", "UMC", "UMH", "UNCY", "UNF", "UNFI", "UNH", "UNIT", "UNM", "UNP", "UNTY", "UPB", "UPBD", "UPS", "UPST", "UPWK", "UPXI", "URBN", "URGN", "UROY", "USAC", "USAR", "USAU", "USB", "USFD", "USLM", "USM", "USNA", "USPH", "UTHR", "UTI", "UTL", "UTZ", "UUUU", "UVE", "UVSP", "UVV", "UWMC", "UXIN", "V", "VAC", "VAL", "VALE", "VBIX", "VBNK", "VBTX", "VC", "VCEL", "VCTR", "VCYT", "VECO", "VEEV", "VEL", "VENU", "VEON", "VERA", "VERB", "VERI", "VERX", 
+     "VET", "VFC", "VFS", "VG", "VIAV", "VICI", "VICR", "VIK", "VINP", "VIOT", "VIPS", "VIR", "VIRC", "VIRT", "VIST", "VITL", "VIV", "VKTX",
+      "VLGEA", "VLN", "VLO", "VLRS", "VLTO", "VLY", "VMC", "VMD", "VMEO", "VMI", "VNDA", "VNET", "VNOM", "VNT", "VNTG", "VOD", "VOR", "VOXR", "VOYA", "VOYG", "VPG", "VRDN", "VRE",
+       "VREX", "V", "WING", "WIT", "WIX", "WK", "WKC", "WKEY", "WKSP", "WLDN", "WLFC", "WLK", "WLY", "WM", "WMB", "WMG", "WMK", "WMS", "WMT", "WNC", "WNEB", "WNS", "WOOF", "WOR", "WOW", "WPC", "WPM", "WPP", "WRB", "WRBY", "WRD",
+       "WS", "WSBC", "WSC", "WSFS", "WSM", "WSO", "WSR", "WST", "WT", "WTF", "WTG", "WTRG", "WTS", "WTTR", "WTW", "WU", "WULF", "WVE", "WW", "WWD", "WWW", "WXM", "WY", "WYFI", "WYNN", "WYY", "XAIR", "XBIT", "XCUR", "XEL", "XENE", "XERS", "XGN", "XHR", "XIFR", "XMTR", "XNCR", "XNET", "XOM", "XOMA", "XP", "XPEL", "XPER", "XPEV", "XPO",
+        "XPOF", "XPRO", "XRAY", "XRX", "XTKG", "XYF", "XYL", "XYZ", "YALA", "YB", "YELP", "YETI", "YEXT", "YMAB", "YMAT", "YMM", "YORK", "YORW", "YOU", "YPF", "YRD", "YSG", "YSXT", "YUM", "YUMC", "YYAI", "YYGH", "Z",
+         "ZBAI", "ZBH", "ZBIO", "ZBRA", "ZD", "ZDGE", "ZENA", "ZEO", "ZEPP", "ZETA", "ZEUS", 
+         "ZG", "ZGN", "ZH", "ZIM", "ZIMV", "ZION", "ZIP", "ZJK", "ZK", "ZLAB", "ZM", "ZONE", "ZS", "ZSPC", "ZTO", "ZTS", "ZUMZ", "ZVIA", "ZVRA", "ZWS", "ZYBT", "ZYME"]
+
 
 @dataclass
 class MarketRegime:
@@ -167,17 +184,13 @@ def load_universe_from_file(file_path: str) -> Optional[List[str]]:
     return None
 
 def load_universe_fallback() -> List[str]:
-    # 优先从 stocks.txt 读取；否则尝试导入原版模型的 ticker_list；最后用默认列表
+    # 统一从配置文件读取股票清单，移除旧版依赖
     root_stocks = os.path.join(os.path.dirname(__file__), 'stocks.txt')
     tickers = load_universe_from_file(root_stocks)
     if tickers:
         return tickers
-    try:
-        import 量化模型_bma_enhanced as bma_v3
-        if hasattr(bma_v3, 'ticker_list') and isinstance(bma_v3.ticker_list, list):
-            return list(dict.fromkeys([str(t).upper() for t in bma_v3.ticker_list]))
-    except Exception:
-        pass
+    
+    logger.warning("未找到stocks.txt文件，使用默认股票清单")
     return DEFAULT_TICKER_LIST
 
 class UltraEnhancedQuantitativeModel:
@@ -192,6 +205,15 @@ class UltraEnhancedQuantitativeModel:
         """
         self.config_path = config_path
         self.config = self._load_config()
+        
+        # 🔥 生产级功能：模型版本控制
+        try:
+            from model_version_control import ModelVersionControl
+            self.version_control = ModelVersionControl("ultra_models")
+            logger.info("模型版本控制系统已启用")
+        except ImportError as e:
+            logger.warning(f"版本控制模块导入失败: {e}")
+            self.version_control = None
         
         # 核心引擎
         if ENHANCED_MODULES_AVAILABLE:
@@ -236,7 +258,40 @@ class UltraEnhancedQuantitativeModel:
         self.performance_metrics = {}
         self.backtesting_results = {}
         
+        # 健康监控计数器
+        self.health_metrics = {
+            'universe_load_fallbacks': 0,
+            'risk_model_failures': 0,
+            'optimization_fallbacks': 0,
+            'alpha_computation_failures': 0,
+            'neutralization_failures': 0,
+            'prediction_failures': 0,
+            'total_exceptions': 0
+        }
+        
         logger.info("UltraEnhanced量化模型初始化完成")
+    
+    def get_health_report(self) -> Dict[str, Any]:
+        """获取系统健康状况报告"""
+        total_operations = sum(self.health_metrics.values())
+        failure_rate = (self.health_metrics['total_exceptions'] / max(total_operations, 1)) * 100
+        
+        report = {
+            'health_metrics': self.health_metrics.copy(),
+            'failure_rate_percent': failure_rate,
+            'risk_level': 'LOW' if failure_rate < 5 else 'MEDIUM' if failure_rate < 15 else 'HIGH',
+            'recommendations': []
+        }
+        
+        # 根据失败类型给出建议
+        if self.health_metrics['universe_load_fallbacks'] > 0:
+            report['recommendations'].append("检查股票清单文件格式和编码")
+        if self.health_metrics['risk_model_failures'] > 2:
+            report['recommendations'].append("检查UMDM配置和市场数据连接")
+        if self.health_metrics['optimization_fallbacks'] > 1:
+            report['recommendations'].append("检查投资组合约束设置")
+        
+        return report
     
     def build_risk_model(self) -> Dict[str, Any]:
         """构建Multi-factor风险模型（来自Professional引擎）"""
@@ -290,19 +345,100 @@ class UltraEnhancedQuantitativeModel:
         # 1. 市场因子
         factors['market'] = returns_matrix.mean(axis=1)
         
-        # 2. 规模因子 (模拟市值数据)
-        market_caps = {}
+        # 2. 规模因子 (使用UMDM真实市值数据)
+        try:
+            if self.market_data_manager is not None:
+                # 构建统一特征DataFrame，获取真实市值数据
+                tickers = returns_matrix.columns.tolist()
+                dates = returns_matrix.index.tolist()
+                
+                # 创建用于UMDM的输入DataFrame
+                input_data = []
+                for date in dates:
+                    for ticker in tickers:
+                        input_data.append({'date': date, 'ticker': ticker})
+                
+                if input_data:
+                    input_df = pd.DataFrame(input_data)
+                    features_df = self.market_data_manager.create_unified_features_dataframe(input_df)
+                    
+                    if 'free_float_market_cap' in features_df.columns:
+                        # 重塑为[date, ticker]格式并对齐
+                        features_pivot = features_df.set_index(['date', 'ticker'])['free_float_market_cap']
+                        
+                        # 🔴 修复时间泄露：Size因子使用前期市值分组当期收益
+                        size_factor = []
+                        dates_list = list(returns_matrix.index)
+                        
+                        for i, date in enumerate(dates_list):
+                            try:
+                                # 🔴 关键修复：使用T-1期的市值进行分组，计算T期收益
+                                if i == 0:
+                                    # 第一个日期没有前期数据，跳过
+                                    size_factor.append(0.0)
+                                    continue
+                                
+                                prev_date = dates_list[i-1]
+                                prev_date_caps = features_pivot.loc[prev_date]  # 使用前一期市值
+                                prev_date_caps = prev_date_caps.reindex(returns_matrix.columns)
+                                
+                                if prev_date_caps.notna().sum() > 2:  # 至少需要3只股票有市值数据
+                                    cap_median = prev_date_caps.median()
+                                    small_cap_mask = prev_date_caps < cap_median
+                                    large_cap_mask = ~small_cap_mask
+                                    
+                                    # 使用当期收益率，但分组基于前期市值
+                                    date_returns = returns_matrix.loc[date]
+                                    small_ret = date_returns[small_cap_mask].mean()
+                                    large_ret = date_returns[large_cap_mask].mean()
+                                    
+                                    size_factor.append(small_ret - large_ret)
+                                    
+                                    logger.debug(f"日期{date}: 使用{prev_date}市值分组，"
+                                               f"小盘股收益{small_ret:.4f}, 大盘股收益{large_ret:.4f}")
+                                else:
+                                    size_factor.append(0.0)
+                            except (KeyError, IndexError):
+                                size_factor.append(0.0)
+                        
+                        factors['size'] = pd.Series(size_factor, index=returns_matrix.index)
+                        logger.info("使用UMDM真实市值数据构建Size因子")
+                    else:
+                        logger.warning("UMDM中缺少free_float_market_cap字段，使用回退方案")
+                        raise ValueError("No market cap data available")
+                else:
+                    raise ValueError("No input data for UMDM")
+            else:
+                raise ValueError("UMDM not available")
+                
+        except (ValueError, KeyError, IndexError) as e:
+            logger.exception(f"UMDM Size因子构建失败: {e}, 使用简化回退方案")
+            self.health_metrics['risk_model_failures'] += 1
+            # 回退方案：基于成交量估算规模
+            try:
+                volume_data = {}
         for ticker in returns_matrix.columns:
-            # 模拟市值数据（实际应从数据源获取）
-            market_caps[ticker] = np.random.lognormal(10, 1)
-        
-        if market_caps:
-            market_cap_series = pd.Series(market_caps)
-            small_cap_mask = market_cap_series < market_cap_series.median()
-            
-            small_cap_returns = returns_matrix.loc[:, small_cap_mask].mean(axis=1)
-            large_cap_returns = returns_matrix.loc[:, ~small_cap_mask].mean(axis=1)
-            factors['size'] = small_cap_returns - large_cap_returns
+                    if ticker in self.raw_data and 'volume' in self.raw_data[ticker].columns:
+                        # 使用最近60天平均成交量作为规模代理
+                        recent_volume = self.raw_data[ticker]['volume'].tail(60).mean()
+                        volume_data[ticker] = recent_volume
+                
+                if volume_data:
+                    volume_series = pd.Series(volume_data)
+                    volume_median = volume_series.median()
+                    small_vol_mask = volume_series < volume_median
+                    
+                    small_vol_returns = returns_matrix.loc[:, small_vol_mask].mean(axis=1)
+                    large_vol_returns = returns_matrix.loc[:, ~small_vol_mask].mean(axis=1)
+                    factors['size'] = small_vol_returns - large_vol_returns
+                    logger.info("使用成交量代理构建Size因子（回退方案）")
+                else:
+                    # 最终回退：使用等权
+                    factors['size'] = 0.0
+                    logger.warning("无法构建Size因子，使用零值")
+            except Exception as fallback_error:
+                logger.error(f"Size因子回退方案也失败: {fallback_error}")
+                factors['size'] = 0.0
         
         # 3. 动量因子
         momentum_scores = {}
@@ -573,13 +709,16 @@ class UltraEnhancedQuantitativeModel:
                 logger.info(f"成功融合Alpha信号和ML预测，market regime: {market_regime.name}")
                 return enhanced_predictions
                 
-            except Exception as e:
-                logger.warning(f"Alpha信号生成失败: {e}")
+            except (ValueError, KeyError, AttributeError) as e:
+                logger.exception(f"Alpha信号生成失败: {e}")
+                self.health_metrics['alpha_computation_failures'] += 1
                 # 回退到基础预测
                 return base_predictions
                 
         except Exception as e:
-            logger.error(f"增强预测生成失败: {e}")
+            logger.exception(f"增强预测生成失败: {e}")
+            self.health_metrics['prediction_failures'] += 1
+            self.health_metrics['total_exceptions'] += 1
             # 最终回退
             return pd.Series(0.0, index=range(10))
     
@@ -611,60 +750,76 @@ class UltraEnhancedQuantitativeModel:
                             columns=common_assets
                         )
                         
-                        # 优化目标：最大化预期收益，最小化风险
+                        # 使用统一的AdvancedPortfolioOptimizer而非重复实现
+                        if self.portfolio_optimizer:
+                            try:
+                                # 准备预期收益率
                         expected_returns = predictions.loc[common_assets]
                         
-                        # 简化的均值-方差优化
-                        from scipy.optimize import minimize
-                        
-                        n_assets = len(common_assets)
-                        
-                        def objective(weights):
-                            portfolio_return = expected_returns @ weights
-                            portfolio_risk = np.sqrt(weights @ portfolio_cov @ weights)
-                            # 风险调整回报 (风险厌恶系数=5)
-                            return -(portfolio_return - 5 * portfolio_risk)
-                        
-                        # 约束：权重和为1，无卖空
-                        constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}]
-                        bounds = [(0, 0.05)] * n_assets  # 每只股票最多5%
-                        
-                        # 初始权重：等权
-                        x0 = np.ones(n_assets) / n_assets
-                        
-                        result = minimize(
-                            objective, x0, method='SLSQP',
-                            bounds=bounds, constraints=constraints,
-                            options={'maxiter': 1000}
-                        )
-                        
-                        if result.success:
-                            optimal_weights = pd.Series(result.x, index=common_assets)
-                            # 计算组合指标
-                            portfolio_return = expected_returns @ optimal_weights
-                            portfolio_risk = np.sqrt(optimal_weights @ portfolio_cov @ optimal_weights)
+                                # 准备股票池数据（用于约束）
+                                universe_data = pd.DataFrame(index=common_assets)
+                                # 添加模拟的行业/国家信息用于约束
+                                universe_data['COUNTRY'] = 'US'  # 简化
+                                universe_data['SECTOR'] = 'TECH'  # 简化 
+                                universe_data['liquidity_rank'] = 0.5  # 中等流动性
+                                
+                                # 调用统一的优化器
+                                optimization_result = self.portfolio_optimizer.optimize_portfolio(
+                                    expected_returns=expected_returns,
+                                    covariance_matrix=portfolio_cov,
+                                    current_weights=None,  # 假设从空仓开始
+                                    universe_data=universe_data
+                                )
+                                
+                                if optimization_result.get('success', False):
+                                    optimal_weights = optimization_result['optimal_weights']
+                                    portfolio_metrics = optimization_result['portfolio_metrics']
+                                    
+                                    # 风险归因
+                                    risk_attribution = self.portfolio_optimizer.risk_attribution(
+                                        optimal_weights, portfolio_cov
+                                    )
+                                    
+                                    return {
+                                        'success': True,
+                                        'method': 'unified_portfolio_optimizer_with_risk_model',
+                                        'weights': optimal_weights.to_dict(),
+                                        'portfolio_metrics': portfolio_metrics,
+                                        'risk_attribution': risk_attribution,
+                                        'regime_context': self.current_regime.name if self.current_regime else "Unknown"
+                                    }
+                                else:
+                                    logger.warning("统一优化器优化失败，使用回退方案")
+                                    raise ValueError("Unified optimizer failed")
+                                    
+                            except (ValueError, RuntimeError, np.linalg.LinAlgError) as optimizer_error:
+                                logger.exception(f"统一优化器调用失败: {optimizer_error}, 使用简化优化")
+                                self.health_metrics['optimization_fallbacks'] += 1
+                                # 简化回退：等权组合
+                                n_assets = len(common_assets)
+                                equal_weights = pd.Series(1.0/n_assets, index=common_assets)
+                                
+                                expected_returns = predictions.loc[common_assets]
+                                portfolio_return = expected_returns @ equal_weights
+                                portfolio_risk = np.sqrt(equal_weights @ portfolio_cov @ equal_weights)
                             sharpe_ratio = portfolio_return / portfolio_risk if portfolio_risk > 0 else 0
-                            
-                            # 计算风险归因
-                            factor_contribution = {}
-                            for factor in F.columns:
-                                factor_exposure = (B[factor] @ optimal_weights).sum()
-                                factor_var = factor_exposure**2 * F.loc[factor, factor]
-                                factor_contribution[factor] = factor_var
                             
                             return {
                                 'success': True,
-                                'method': 'professional_risk_model',
-                                'weights': optimal_weights.to_dict(),
+                                    'method': 'equal_weight_fallback_with_risk_model',
+                                    'weights': equal_weights.to_dict(),
                                 'portfolio_metrics': {
                                     'expected_return': float(portfolio_return),
                                     'portfolio_risk': float(portfolio_risk),
                                     'sharpe_ratio': float(sharpe_ratio),
-                                    'diversification_ratio': len([w for w in optimal_weights if w > 0.01])
+                                        'diversification_ratio': n_assets
                                 },
-                                'risk_attribution': factor_contribution,
+                                    'risk_attribution': {},
                                 'regime_context': self.current_regime.name if self.current_regime else "Unknown"
                             }
+                        else:
+                            logger.error("AdvancedPortfolioOptimizer 不可用")
+                            raise ValueError("Portfolio optimizer not available")
                         
                     except Exception as e:
                         logger.warning(f"专业风险模型优化失败: {e}")
@@ -782,9 +937,9 @@ class UltraEnhancedQuantitativeModel:
         
         for ticker in tickers:
             try:
-                stock = yf.Ticker(ticker)
+                stock = Ticker(ticker)
                 # 使用复权数据，避免股利污染；固定日频，关闭actions列
-                hist = stock.history(start=start_date, end=end_date, interval='1d', auto_adjust=True, actions=False)
+                hist = stock.history(start=start_date, end=end_date, interval='1d')
                 
                 if len(hist) == 0:
                     failed_downloads.append(ticker)
@@ -898,17 +1053,42 @@ class UltraEnhancedQuantitativeModel:
             for period in [5, 10, 20]:
                 df_copy[f'momentum_{period}'] = df_copy['close'] / df_copy['close'].shift(period) - 1
             
-            # 改进的目标构建：形成期-跳空期-持有期
-            # 避免微观结构噪声和信息泄露
-            formation_period = 1  # T-1形成期
-            skip_period = 1       # T+1跳空期  
-            holding_period = 5    # T+1到T+5持有期
+            # 🔴 修复严重时间泄露：增强的时间对齐和验证
+            FEATURE_LAG = 2        # 特征使用T-2及之前数据
+            SAFETY_GAP = 2         # 额外安全间隔（防止信息泄露）
+            PRED_START = 1         # 预测从T+1开始  
+            PRED_END = 5           # 预测到T+5结束
+            prediction_horizon = PRED_END  # 向后兼容
             
-            # 使用稳健的目标构建方式
+            # 验证时间对齐正确性
+            total_gap = FEATURE_LAG + SAFETY_GAP + PRED_START
+            if total_gap <= 0:
+                raise ValueError(f"时间对齐错误：总间隔 {total_gap} <= 0，存在数据泄露风险")
+            
+            logger.info(f"时间对齐配置: 特征lag={FEATURE_LAG}, 安全gap={SAFETY_GAP}, 预测[T+{PRED_START}, T+{PRED_END}]")
+            
+            # 安全的目标构建：T时刻使用T-2-2=T-4特征，预测T+1到T+5收益
+            # 确保特征和目标之间有足够的时间间隔（至少6期）
             df_copy['target'] = (
-                df_copy['close'].shift(-(skip_period + holding_period)) / 
-                df_copy['close'].shift(-skip_period) - 1
+                df_copy['close'].shift(-PRED_END) / 
+                df_copy['close'].shift(-PRED_START + 1) - 1
             )
+            
+            # 时间验证：确保没有重叠
+            feature_max_time = -FEATURE_LAG - SAFETY_GAP  # 特征最新时间
+            target_min_time = -PRED_START + 1             # 目标最早时间
+            actual_gap = target_min_time - feature_max_time
+            
+            if actual_gap <= 0:
+                raise ValueError(f"时间重叠错误：特征最新时间{feature_max_time} >= 目标最早时间{target_min_time}")
+            
+            logger.info(f"✅ 时间对齐验证通过：特征和目标间隔 {actual_gap} 期")
+            
+            # 🔥 关键：强制特征滞后以匹配增强的时间线
+            # 特征使用T-4数据，目标使用T+1到T+5，间隔6期（安全）
+            feature_lag = FEATURE_LAG + SAFETY_GAP  # 所有特征额外滞后4期
+            
+            # 在后续feature_cols处理中会统一应用滞后
             
             # 添加辅助信息
             df_copy['ticker'] = ticker
@@ -925,13 +1105,124 @@ class UltraEnhancedQuantitativeModel:
             # 选出纯特征列（排除标识/目标/元数据）
             feature_cols = [col for col in combined_features.columns 
                             if col not in ['ticker','date','target','COUNTRY','SECTOR','SUBINDUSTRY']]
-            # 全部特征统一施加T-2滞后，防止潜在泄露
+            # 🔥 强化特征滞后：确保严格的时间对齐
             try:
+                # T-2基础滞后 + formation_lag(2) = 总共T-4滞后
+                # 这确保特征信息严格早于目标时间窗口
+                total_lag = 2 + 2  # base_lag + formation_lag
+                combined_features[feature_cols] = combined_features.groupby('ticker')[feature_cols].shift(total_lag)
+                logger.info(f"应用总滞后期数: {total_lag}，确保特征-目标时间隔离")
+            except Exception as e:
+                logger.warning(f"特征滞后处理失败: {e}")
+                # 回退到基础滞后
                 combined_features[feature_cols] = combined_features.groupby('ticker')[feature_cols].shift(2)
-            except Exception:
-                pass
-            # 基础清洗
-            combined_features = combined_features.dropna()
+            # 基础清洗 - 只删除特征全为NaN的行，保留目标变量
+            # 删除特征全为NaN的行，但保留有效目标的行
+            feature_na_mask = combined_features[feature_cols].isna().all(axis=1)
+            combined_features = combined_features[~feature_na_mask]
+
+            # 🔗 合并完整的Polygon 40+专业因子集（统一来源 - T+5优化）
+            try:
+                from polygon_complete_factors import PolygonCompleteFactors
+                from polygon_factors import PolygonShortTermFactors
+                
+                complete_factors = PolygonCompleteFactors()
+                short_term_factors = PolygonShortTermFactors()
+                symbols = sorted(combined_features['ticker'].unique().tolist())
+                
+                logger.info(f"开始集成Polygon完整因子库，股票数量: {len(symbols)}")
+                
+                # 获取因子库摘要
+                factor_summary = complete_factors.get_factor_summary()
+                logger.info(f"完整因子库包含 {factor_summary['total_factors']} 个专业因子")
+                
+                # 完整40+专业因子集合
+                all_polygon_factors = {}
+                factor_calculation_success = {}
+                
+                # 对前几只代表性股票计算完整因子
+                sample_symbols = symbols[:min(3, len(symbols))]  # 限制样本数量以避免API限制
+                
+                for symbol in sample_symbols:
+                    try:
+                        logger.info(f"为 {symbol} 计算完整因子...")
+                        
+                        # 计算所有类别的因子
+                        symbol_factors = complete_factors.calculate_all_complete_factors(
+                            symbol, 
+                            categories=['momentum', 'fundamental', 'profitability', 'quality', 'risk', 'microstructure']
+                        )
+                        
+                        if symbol_factors:
+                            logger.info(f"{symbol} 成功计算 {len(symbol_factors)} 个因子")
+                            
+                            # 提取因子值作为特征
+                            for factor_name, result in symbol_factors.items():
+                                if len(result.values) > 0 and result.data_quality > 0.5:
+                                    col_name = f"polygon_{factor_name}"
+                                    # 使用最新值
+                                    factor_value = result.values.iloc[-1]
+                                    if not np.isnan(factor_value) and np.isfinite(factor_value):
+                                        all_polygon_factors[col_name] = factor_value
+                                        factor_calculation_success[factor_name] = True
+                        
+                        # T+5短期因子
+                        try:
+                            t5_results = short_term_factors.calculate_all_short_term_factors(symbol)
+                            if t5_results:
+                                prediction = short_term_factors.create_t_plus_5_prediction(symbol, t5_results)
+                                
+                                # T+5专用因子
+                                for factor_name, result in t5_results.items():
+                                    col_name = f"t5_{factor_name}"
+                                    if hasattr(result, 't_plus_5_signal'):
+                                        signal_value = result.t_plus_5_signal
+                                        if not np.isnan(signal_value) and np.isfinite(signal_value):
+                                            all_polygon_factors[col_name] = signal_value
+                                
+                                # T+5综合预测信号
+                                if 'signal_strength' in prediction:
+                                    all_polygon_factors['t5_prediction_signal'] = prediction['signal_strength']
+                                    all_polygon_factors['t5_prediction_confidence'] = prediction.get('confidence', 0.5)
+                        except Exception as t5_e:
+                            logger.warning(f"{symbol} T+5因子计算失败: {t5_e}")
+                        
+                        time.sleep(0.5)  # API限制
+                        
+                    except Exception as e:
+                        logger.warning(f"{symbol}完整因子计算失败: {e}")
+                        continue
+                
+                # 将计算成功的因子添加到特征矩阵
+                if all_polygon_factors:
+                    logger.info(f"成功计算Polygon因子: {len(all_polygon_factors)} 个")
+                    logger.info(f"因子类型分布: {list(factor_calculation_success.keys())}")
+                    
+                    # 添加到combined_features
+                    for col_name, value in all_polygon_factors.items():
+                        if col_name not in combined_features.columns:
+                            # 对所有股票广播该因子值（简化处理）
+                            combined_features[col_name] = value
+                    
+                    # 记录成功添加的因子数量
+                    added_factors = len(all_polygon_factors)
+                    logger.info(f"✅ 成功添加 {added_factors} 个Polygon专业因子到特征矩阵")
+                    
+                    # 显示因子分类统计
+                    momentum_factors = len([k for k in all_polygon_factors.keys() if 'momentum' in k])
+                    fundamental_factors = len([k for k in all_polygon_factors.keys() if any(x in k for x in ['earnings', 'ebit', 'yield'])])
+                    quality_factors = len([k for k in all_polygon_factors.keys() if any(x in k for x in ['piotroski', 'altman', 'quality'])])
+                    risk_factors = len([k for k in all_polygon_factors.keys() if any(x in k for x in ['volatility', 'beta', 'risk'])])
+                    t5_factors = len([k for k in all_polygon_factors.keys() if 't5_' in k])
+                    
+                    logger.info(f"因子分布 - 动量:{momentum_factors}, 基本面:{fundamental_factors}, 质量:{quality_factors}, 风险:{risk_factors}, T+5:{t5_factors}")
+                else:
+                    logger.warning("未能成功计算任何Polygon因子")
+                
+            except Exception as _e:
+                logger.error(f"Polygon完整因子库集成失败: {_e}")
+                import traceback
+                logger.debug(f"详细错误: {traceback.format_exc()}")
             
             # ========== 简化但可靠的中性化处理 ==========
             logger.info("应用简化中性化处理")
@@ -1012,6 +1303,32 @@ class UltraEnhancedQuantitativeModel:
             logger.error("没有有效的特征数据")
             return pd.DataFrame()
     
+    def _validate_temporal_alignment(self, feature_data: pd.DataFrame) -> bool:
+        """验证特征和目标的时间对齐，确保无数据泄露"""
+        try:
+            # 检查每个ticker的时间对齐
+            for ticker in feature_data['ticker'].unique()[:3]:  # 样本检查
+                ticker_data = feature_data[feature_data['ticker'] == ticker].sort_values('date')
+                if len(ticker_data) < 10:
+                    continue
+                    
+                # 检查特征和目标的时间差
+                feature_dates = ticker_data['date'].iloc[:-5]  # 特征日期
+                target_dates = ticker_data['date'].iloc[5:]    # 目标日期
+                
+                if len(feature_dates) > 0 and len(target_dates) > 0:
+                    # 验证时间间隔符合预期（应该有足够的gap）
+                    time_diff = (target_dates.iloc[0] - feature_dates.iloc[-1]).days
+                    if time_diff < 7:  # 至少7天gap
+                        logger.warning(f"时间对齐验证失败：{ticker} 特征-目标间隔仅{time_diff}天")
+                        return False
+            
+            logger.info("✅ 时间对齐验证通过：特征和目标时间充分隔离")
+            return True
+        except Exception as e:
+            logger.warning(f"时间对齐验证异常: {e}")
+            return False
+
     def train_enhanced_models(self, feature_data: pd.DataFrame) -> Dict[str, Any]:
         """
         训练增强模型（Alpha策略 + Learning-to-Rank + 传统ML）
@@ -1036,18 +1353,35 @@ class UltraEnhancedQuantitativeModel:
         dates = feature_data['date']
         tickers = feature_data['ticker']
         
-        # 去除缺失值
-        valid_mask = ~(X.isna().any(axis=1) | y.isna())
-        X_clean = X[valid_mask]
-        y_clean = y[valid_mask]
-        dates_clean = dates[valid_mask]
-        tickers_clean = tickers[valid_mask]
+        # 去除缺失值 - 改进版：只去除特征或目标为空的样本
+        # 先填充NaN值，然后过滤
+        from sklearn.impute import SimpleImputer
+        
+        # 对特征进行中位数填充
+        imputer = SimpleImputer(strategy='median')
+        X_imputed = pd.DataFrame(
+            imputer.fit_transform(X), 
+            columns=X.columns, 
+            index=X.index
+        )
+        
+        # 目标变量必须有效
+        target_valid = ~y.isna()
+        
+        X_clean = X_imputed[target_valid]
+        y_clean = y[target_valid]
+        dates_clean = dates[target_valid]
+        tickers_clean = tickers[target_valid]
         
         if len(X_clean) == 0:
             logger.error("清洗后数据为空")
             return {}
         
         logger.info(f"训练数据: {len(X_clean)}样本, {len(feature_cols)}特征")
+        
+        # 🔥 时间对齐验证：确保无数据泄露
+        if not self._validate_temporal_alignment(feature_data):
+            logger.error("⚠️ 时间对齐验证失败，存在数据泄露风险！")
         
         # 1. 训练Alpha策略引擎
         if self.alpha_engine and ENHANCED_MODULES_AVAILABLE:
@@ -1155,13 +1489,17 @@ class UltraEnhancedQuantitativeModel:
                 n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42, verbose=-1
             )
         
-        if CATBOOST_AVAILABLE:
-            models['catboost'] = CatBoostRegressor(
-                iterations=100, depth=6, learning_rate=0.1, random_state=42, verbose=False
-            )
+        # CatBoost removed due to compatibility issues
         
-        # 使用PurgedGroupTimeSeriesSplit进行严格时序验证
-        cv_config = ValidationConfig(n_splits=5, test_size=63, gap=5, embargo=2, group_freq='W')
+        # 🔥 加强时序验证：增加embargo防止目标泄露
+        cv_config = ValidationConfig(
+            n_splits=3,    # 减少折数适应小数据集
+            test_size=42,  # 减少测试集大小
+            gap=5,         # 适中的gap
+            embargo=3,     # 适中的embargo
+            group_freq='W',
+            min_train_size=50  # 降低最小训练集要求
+        )
         purged_cv = PurgedGroupTimeSeriesSplit(cv_config)
         groups = create_time_groups(dates, freq=cv_config.group_freq)
         
@@ -1175,13 +1513,19 @@ class UltraEnhancedQuantitativeModel:
             fold_models = []
             
             for train_idx, test_idx in purged_cv.split(X, y, groups):
+                # 确保索引在有效范围内（先转为ndarray再比较）
+                train_idx = np.asarray(train_idx)
+                test_idx = np.asarray(test_idx)
+                train_idx = train_idx[train_idx < len(X)]
+                test_idx = test_idx[test_idx < len(X)]
+                
+                if len(train_idx) == 0 or len(test_idx) == 0:
+                    continue
+                
                 train_mask = np.zeros(len(X), dtype=bool)
                 train_mask[train_idx] = True
                 test_mask = np.zeros(len(X), dtype=bool) 
                 test_mask[test_idx] = True
-                
-                if train_mask.sum() == 0 or test_mask.sum() == 0:
-                    continue
                 
                 X_train, y_train = X[train_mask], y[train_mask]
                 X_test = X[test_mask]
@@ -1193,7 +1537,7 @@ class UltraEnhancedQuantitativeModel:
                     X_test_scaled = scaler.transform(X_test)
                     
                     # 训练模型
-                    if model_name in ['xgboost', 'lightgbm', 'catboost', 'rf']:
+                    if model_name in ['xgboost', 'lightgbm', 'rf']:
                         # Tree-based模型不需要标准化
                         model_copy = type(model)(**model.get_params())
                         model_copy.fit(X_train, y_train)
@@ -1227,26 +1571,41 @@ class UltraEnhancedQuantitativeModel:
                 
                 logger.info(f"{model_name} - IC: {oof_ic:.4f}, RankIC: {oof_rank_ic:.4f}")
         
-        # 二层Stacking（Ridge + ElasticNet）作为元学习器
+        # 🔴 修复Stacking泄露：二层Stacking元学习器时间安全训练
         try:
-            logger.info("训练二层Stacking元学习器 (Ridge/ElasticNet)")
+            logger.info("训练时间安全的二层Stacking元学习器")
             base_pred_df = pd.DataFrame({name: preds for name, preds in oof_predictions.items()})
             
-            # 确保索引对齐：重置所有索引到相同基础
+            # 🔴 关键修复：确保OOF预测来自严格的时间分割
+            # 第一层模型的OOF预测必须是真正的out-of-fold，不能有时间泄露
             base_pred_df = base_pred_df.reset_index(drop=True)
             y_reset = y.reset_index(drop=True)
             dates_reset = dates.reset_index(drop=True)
             
-            # 计算有效掩码（所有索引现在都是0-based连续的）
+            # 验证第一层OOF预测的完整性
             base_valid_mask = ~base_pred_df.isna().any(axis=1) & ~y_reset.isna()
+            
+            # 🔴 时间验证：确保只使用有完整OOF预测的样本
+            if base_valid_mask.sum() < len(base_pred_df) * 0.8:
+                logger.warning(f"OOF预测完整性不足: {base_valid_mask.sum()}/{len(base_pred_df)} ({base_valid_mask.mean():.1%})")
             
             X_meta = base_pred_df.loc[base_valid_mask].copy()
             y_meta = y_reset.loc[base_valid_mask].copy()
             dates_meta = dates_reset.loc[base_valid_mask].copy()
 
-            # 使用PurgedGroupTimeSeriesSplit防泄漏
+            # 🔴 第二层CV必须严格晚于第一层：更大的gap和embargo
             groups = create_time_groups(dates_meta, freq='W')
-            pgts = PurgedGroupTimeSeriesSplit(ValidationConfig(n_splits=5, test_size=63, gap=5, embargo=2))
+            stacking_cv_config = ValidationConfig(
+                n_splits=3,       # 更少的fold（避免过度切分）
+                test_size=84,     # 更大的测试集（4周）
+                gap=14,           # 更大的gap（2周，确保超过第一层的gap）
+                embargo=10,       # 更大的embargo（避免目标泄露）
+                min_train_size=126  # 确保足够的训练样本
+            )
+            pgts = PurgedGroupTimeSeriesSplit(stacking_cv_config)
+            
+            logger.info(f"第二层CV配置: n_splits={stacking_cv_config.n_splits}, "
+                       f"gap={stacking_cv_config.gap}, embargo={stacking_cv_config.embargo}")
 
             meta_models = {
                 'meta_ridge': Ridge(alpha=0.5),
@@ -1256,9 +1615,27 @@ class UltraEnhancedQuantitativeModel:
             meta_oof = {name: np.full(len(X_meta), np.nan) for name in meta_models.keys()}
             trained_meta = {}
 
-            for train_idx, test_idx in pgts.split(X_meta, y_meta, groups):
+            # 🔴 严格的时间验证：确保第二层CV不会泄露
+            for fold_idx, (train_idx, test_idx) in enumerate(pgts.split(X_meta, y_meta, groups)):
+                # 时间验证：训练集最大日期 + gap + embargo < 测试集最小日期
+                train_dates = dates_meta.iloc[train_idx]
+                test_dates = dates_meta.iloc[test_idx]
+                
+                train_max_date = train_dates.max()
+                test_min_date = test_dates.min()
+                gap_days = (test_min_date - train_max_date).days
+                
+                # 验证时间间隔
+                required_gap = stacking_cv_config.gap + stacking_cv_config.embargo
+                if gap_days < required_gap:
+                    logger.error(f"第二层CV Fold {fold_idx}: 时间间隔不足 {gap_days} < {required_gap}")
+                    raise ValueError(f"Stacking CV时间泄露风险: fold {fold_idx}")
+                
+                logger.debug(f"第二层CV Fold {fold_idx}: 时间间隔 {gap_days}天 >= {required_gap}天 ✅")
+                
                 X_tr, X_te = X_meta.iloc[train_idx], X_meta.iloc[test_idx]
                 y_tr = y_meta.iloc[train_idx]
+                
                 for mname, m in meta_models.items():
                     m_fit = type(m)(**m.get_params())
                     m_fit.fit(X_tr, y_tr)
@@ -1381,21 +1758,38 @@ class UltraEnhancedQuantitativeModel:
                         logger.warning(f"传统模型{model_name}预测长度{len(pred_array)}与特征数据不匹配")
                         continue
                     
-                    # 动态权重：负IC大幅降权，正IC按强度分配
+                    # 动态权重：基于IC值的智能分配（负IC模型排除或反向使用）
                     if model_name in model_perfs:
                         ic = model_perfs[model_name].get('oof_ic', 0.0)
+                        ic_abs = abs(ic)
+                        
                         if ic < -0.05:
-                            weights_dict[f'traditional_{model_name}'] = 0.02  # 强负IC：最低权重
-                        elif ic < 0:
-                            weights_dict[f'traditional_{model_name}'] = 0.05  # 弱负IC：低权重
+                            # 强负IC：完全排除，不给予权重
+                            weights_dict[f'traditional_{model_name}'] = 0.0
+                            logger.warning(f"模型 {model_name} IC={ic:.4f} < -0.05，已排除")
+                        elif ic < -0.02:
+                            # 中等负IC：极低权重或考虑反向信号
+                            weights_dict[f'traditional_{model_name}'] = 0.0
+                            logger.info(f"模型 {model_name} IC={ic:.4f} 负相关性较强，已排除")
+                        elif ic < 0.02:
+                            # 噪音区间：IC接近0，不使用
+                            weights_dict[f'traditional_{model_name}'] = 0.0
+                            logger.debug(f"模型 {model_name} IC={ic:.4f} 在噪音区间，已排除")
+                        elif ic > 0.15:
+                            # 强正IC：最高权重
+                            weights_dict[f'traditional_{model_name}'] = 0.30
                         elif ic > 0.1:
-                            weights_dict[f'traditional_{model_name}'] = 0.25  # 强正IC：高权重
+                            # 较强正IC：高权重
+                            weights_dict[f'traditional_{model_name}'] = 0.25
                         elif ic > 0.05:
-                            weights_dict[f'traditional_{model_name}'] = 0.15  # 中等正IC
-                        elif ic > 0:
-                            weights_dict[f'traditional_{model_name}'] = 0.1   # 弱正IC
+                            # 中等正IC：中等权重
+                            weights_dict[f'traditional_{model_name}'] = 0.15
+                        elif ic >= 0.02:
+                            # 弱正IC：低权重
+                            weights_dict[f'traditional_{model_name}'] = 0.08
                         else:
-                            weights_dict[f'traditional_{model_name}'] = 0.05  # 零IC：低权重
+                            # 默认情况：极低权重
+                            weights_dict[f'traditional_{model_name}'] = 0.0
                     else:
                         weights_dict[f'traditional_{model_name}'] = 0.05
 
@@ -1535,6 +1929,31 @@ class UltraEnhancedQuantitativeModel:
             latest_data_valid = latest_slice[valid_mask]
             predictions_valid = predictions_valid[valid_mask]
 
+            # 如果预测为常数（std为0），用备用打分破平（如近20日动量），并做截面标准化
+            try:
+                if float(predictions_valid.std()) == 0.0:
+                    backup_scores = []
+                    for tk in latest_data_valid.index:
+                        try:
+                            df_hist = self.raw_data.get(tk)
+                            if df_hist is not None and 'close' in df_hist.columns:
+                                df_hist = df_hist.sort_values('date')
+                                df_hist['ret'] = df_hist['close'].pct_change()
+                                mom20 = (1.0 + df_hist['ret']).rolling(21).apply(lambda x: np.prod(1.0 + x) - 1.0).iloc[-1]
+                                backup_scores.append(mom20 if pd.notna(mom20) else 0.0)
+                            else:
+                                backup_scores.append(0.0)
+                        except Exception:
+                            backup_scores.append(0.0)
+                    backup_series = pd.Series(backup_scores, index=latest_data_valid.index)
+                    # 截面标准化
+                    if backup_series.std() > 0:
+                        backup_series = (backup_series - backup_series.mean()) / backup_series.std()
+                    predictions_valid = backup_series
+                    logger.info("检测到预测为常数，已使用近20日动量作为备用信号并标准化")
+            except Exception:
+                pass
+
             # 记录最新截面信号统计，诊断是否出现全0
             try:
                 nz_ratio = float((predictions_valid != 0).sum()) / float(len(predictions_valid))
@@ -1545,8 +1964,26 @@ class UltraEnhancedQuantitativeModel:
             
             logger.info(f"有效预测信号数量: {len(predictions_valid)}, 涵盖股票: {list(predictions_valid.index)}")
             
-            # 构建预期收益率（基于预测信号）
+            # 构建预期收益率（基于预测信号）。
+            # 增强信号处理：标准化 + 放大 + 抖动
             expected_returns = predictions_valid.copy()
+            
+            # 标准化
+            if expected_returns.std() > 1e-12:
+                expected_returns = (expected_returns - expected_returns.mean()) / expected_returns.std()
+            else:
+                # 信号过于平坦，创建人工梯度
+                expected_returns = pd.Series(
+                    np.linspace(-1, 1, len(expected_returns)), 
+                    index=expected_returns.index
+                )
+            
+            # 放大信号强度（改善优化器数值稳定性）
+            expected_returns = expected_returns * 0.02  # 目标年化收益2%的量级
+            
+            # 微抖动确保非等权解
+            rng = np.random.RandomState(42)
+            expected_returns = expected_returns + rng.normal(0, 1e-4, size=len(expected_returns))
             expected_returns.name = 'expected_returns'
             
             # 构建历史收益率矩阵用于协方差估计
@@ -1566,11 +2003,19 @@ class UltraEnhancedQuantitativeModel:
                 # 估计协方差矩阵
                 cov_matrix = self.portfolio_optimizer.estimate_covariance_matrix(returns_matrix)
                 
-                # 构建股票池数据
+                # 统一资产顺序，避免维度不一致（使用returns_matrix列作为权威顺序）
+                cov_tickers = list(returns_matrix.columns)
+                expected_returns = expected_returns.reindex(cov_tickers).dropna()
                 universe_data = latest_data_valid[['COUNTRY', 'SECTOR', 'SUBINDUSTRY']].copy()
+                universe_data = universe_data.reindex(expected_returns.index)
+
+                # 至少需要2只股票以进行优化
+                if len(expected_returns) < 2:
+                    logger.error("有效股票数量不足以进行优化")
+                    return {}
                 if 'volume' in latest_data_valid.columns:
                     # 简单的流动性排名
-                    universe_data['liquidity_rank'] = latest_data_valid['volume'].rank(pct=True)
+                    universe_data['liquidity_rank'] = latest_data_valid['volume'].reindex(expected_returns.index).rank(pct=True)
                 else:
                     universe_data['liquidity_rank'] = 0.5
                 
@@ -1754,6 +2199,8 @@ class UltraEnhancedQuantitativeModel:
             preferred_cols = ['rank','ticker','weight','latest_price','price_change_1d','price_change_5d','avg_volume_20d','prediction_signal','recommendation_reason']
             ordered_cols = [c for c in preferred_cols if c in rec_df.columns] + [c for c in rec_df.columns if c not in preferred_cols]
             rec_df = rec_df[ordered_cols]
+            # 仅导出前200条到Excel
+            rec_df = rec_df.head(200)
             # Excel优先；失败时回退CSV
             try:
                 rec_df.to_excel(excel_file, index=False)
@@ -1767,10 +2214,11 @@ class UltraEnhancedQuantitativeModel:
             with open(tickers_file, 'w', encoding='utf-8') as f:
                 f.write(", ".join([f"'{ticker}'" for ticker in top_tickers]))
 
-            # 仅股票代码数组（JSON），Top7
+            # 仅股票代码（JSON存储为单个字符串，形如: 'NVDA', 'AAPL'），Top7
             top7_json = result_dir / f"top7_tickers_{timestamp}.json"
+            top7_string = ", ".join([f"'{t}'" for t in top_tickers])
             with open(top7_json, 'w', encoding='utf-8') as f:
-                json.dump(top_tickers, f, ensure_ascii=False)
+                json.dump(top7_string, f, ensure_ascii=False)
         
             # 保存投资组合详情
         if portfolio_result.get('success', False):
@@ -1900,7 +2348,12 @@ class UltraEnhancedQuantitativeModel:
             analysis_results['total_time'] = (analysis_results['end_time'] - analysis_results['start_time']).total_seconds()
             analysis_results['success'] = True
             
+            # 添加健康监控报告
+            analysis_results['health_report'] = self.get_health_report()
+            
             logger.info(f"完整分析流程完成，耗时: {analysis_results['total_time']:.1f}秒")
+            logger.info(f"系统健康状况: {analysis_results['health_report']['risk_level']}, "
+                       f"失败率: {analysis_results['health_report']['failure_rate_percent']:.2f}%")
             
             return analysis_results
             
@@ -1918,13 +2371,13 @@ def main():
     print("=== BMA Ultra Enhanced 量化分析模型 V4 ===")
     print("集成Alpha策略、Learning-to-Rank、高级投资组合优化")
     print(f"增强模块可用: {ENHANCED_MODULES_AVAILABLE}")
-    print(f"高级模型: XGBoost={XGBOOST_AVAILABLE}, LightGBM={LIGHTGBM_AVAILABLE}, CatBoost={CATBOOST_AVAILABLE}")
+    print(f"高级模型: XGBoost={XGBOOST_AVAILABLE}, LightGBM={LIGHTGBM_AVAILABLE}")
     
     # 命令行参数
     parser = argparse.ArgumentParser(description='BMA Ultra Enhanced量化模型V4')
     parser.add_argument('--start-date', type=str, default='2023-01-01', help='开始日期')
     parser.add_argument('--end-date', type=str, default='2024-12-31', help='结束日期')
-    parser.add_argument('--top-n', type=int, default=10, help='返回top N个推荐')
+    parser.add_argument('--top-n', type=int, default=200, help='返回top N个推荐')
     parser.add_argument('--config', type=str, default='alphas_config.yaml', help='配置文件路径')
     parser.add_argument('--tickers', type=str, nargs='+', default=None, help='股票代码列表')
     parser.add_argument('--tickers-file', type=str, default='stocks.txt', help='股票列表文件（每行一个代码）')

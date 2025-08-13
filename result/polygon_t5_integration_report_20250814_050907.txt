@@ -1,0 +1,1 @@
+Polygon T+5集成测试报告\n测试时间: 2025-08-14 05:09:07.181482\n总体状态: FAIL\n通过率: 1/5 (20.0%)\n\nPolygon客户端: FAIL\nPolygon因子库: FAIL\nAutoTrader集成: FAIL\nBMA Ultra集成: PASS\n端到端T+5预测: FAIL\n

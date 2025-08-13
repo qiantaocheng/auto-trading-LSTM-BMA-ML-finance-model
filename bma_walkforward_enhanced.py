@@ -7,7 +7,7 @@ BMA增强版滚动前向回测系统 V2
 
 import pandas as pd
 import numpy as np
-import yfinance as yf
+from polygon_client import polygon_client, download, Ticker
 import json
 import logging
 import matplotlib.pyplot as plt
@@ -41,11 +41,8 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-try:
-    from catboost import CatBoostRegressor
-    CATBOOST_AVAILABLE = True
-except ImportError:
-    CATBOOST_AVAILABLE = False
+# CatBoost removed due to compatibility issues
+CATBOOST_AVAILABLE = False
 
 # 设置日志和警告
 logging.basicConfig(level=logging.INFO)
@@ -227,11 +224,7 @@ class EnhancedBMAWalkForward:
                 random_state=42, verbose=-1
             )
             
-        if CATBOOST_AVAILABLE:
-            base_models['CatBoost'] = CatBoostRegressor(
-                iterations=150, depth=6, learning_rate=0.1,
-                random_state=42, verbose=False
-            )
+        # CatBoost removed due to compatibility issues
         
         return base_models
     
@@ -413,8 +406,7 @@ class EnhancedBMAWalkForward:
                 
                 for attempt in range(2):
                     try:
-                        data = yf.download(ticker, start=start_date, end=end_date, 
-                                         progress=False, auto_adjust=True, threads=False)
+                        data = download(ticker, start=start_date, end=end_date)
                         
                         if data is not None and not data.empty:
                             # 处理多级列名

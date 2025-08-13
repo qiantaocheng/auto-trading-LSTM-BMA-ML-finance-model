@@ -7,7 +7,7 @@
 
 import pandas as pd
 import numpy as np
-import yfinance as yf
+from polygon_client import polygon_client, download, Ticker
 import warnings
 import logging
 from datetime import datetime, timedelta
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class MarketDataConfig:
     """市场数据配置"""
     # 数据源优先级
-    data_sources: List[str] = field(default_factory=lambda: ['yfinance', 'local_db', 'fallback'])
+    data_sources: List[str] = field(default_factory=lambda: ['polygon', 'local_db', 'fallback'])
     
     # 缓存设置
     cache_enabled: bool = True
@@ -190,36 +190,41 @@ class MarketDataCache:
             is_index_component=index_components
         )
 
-class YFinanceDataProvider:
-    """Yahoo Finance数据提供者"""
+class PolygonDataProvider:
+    """Polygon.io数据提供者"""
     
     def __init__(self):
-        self.session = requests.Session()
+        from polygon_client import polygon_client
+        self.client = polygon_client
         
     def get_stock_info(self, ticker: str) -> Optional[StockInfo]:
-        """从Yahoo Finance获取股票信息"""
+        """从Polygon.io获取股票信息"""
         try:
-            stock = yf.Ticker(ticker)
+            from polygon_client import Ticker
+            stock = Ticker(ticker)
             info = stock.info
             
-            if not info or 'marketCap' not in info:
+            if not info:
                 return None
             
-            # 处理GICS分类
-            gics_sector = info.get('sector', 'Unknown')
-            gics_industry = info.get('industry', 'Unknown')
+            # 处理GICS分类 (Polygon doesn't provide sector/industry directly)
+            gics_sector = info.get('sector', 'Technology')
+            gics_industry = info.get('industry', 'Software')
             
             # 市值信息
-            market_cap = info.get('marketCap', 0)
-            float_market_cap = info.get('floatShares', 0) * info.get('currentPrice', 0)
-            free_float_market_cap = market_cap * 0.85  # 估算自由流通比例
+            market_cap = info.get('market_cap', 0)
+            shares_outstanding = info.get('share_class_shares_outstanding', 0)
+            weighted_shares = info.get('weighted_shares_outstanding', 0)
+            current_price = self.client.get_current_price(ticker) or 0
+            float_market_cap = shares_outstanding * current_price
+            free_float_market_cap = weighted_shares * current_price
             
             return StockInfo(
                 ticker=ticker,
-                name=info.get('longName', ticker),
+                name=info.get('longName', info.get('name', ticker)),
                 sector=gics_sector,
                 industry=gics_industry,
-                country=info.get('country', 'Unknown'),
+                country=info.get('country', info.get('locale', 'us').upper()),
                 market_cap=market_cap,
                 float_market_cap=float_market_cap if float_market_cap > 0 else None,
                 free_float_market_cap=free_float_market_cap,
@@ -227,12 +232,12 @@ class YFinanceDataProvider:
                 gics_industry_group=self._map_to_industry_group(gics_sector),
                 gics_industry=gics_industry,
                 gics_sub_industry=gics_industry,  # Yahoo Finance没有细分
-                exchange=info.get('exchange', 'Unknown'),
-                currency=info.get('currency', 'USD')
+                exchange=info.get('market', 'stocks').upper(),
+                currency=info.get('currency_name', 'USD').upper()
             )
             
         except Exception as e:
-            logger.warning(f"获取{ticker}的Yahoo Finance数据失败: {e}")
+            logger.warning(f"获取{ticker}的Polygon数据失败: {e}")
             return None
     
     def _map_to_industry_group(self, sector: str) -> str:
@@ -281,7 +286,7 @@ class IndexComponentProvider:
         """获取NASDAQ 100成分股"""
         try:
             # 使用QQQ ETF的持仓作为近似
-            qqq = yf.Ticker("QQQ")
+            qqq = Ticker("QQQ")
             # 这里简化处理，实际可以通过其他API获取
             return self._get_fallback_nasdaq100()
             
@@ -335,7 +340,7 @@ class UnifiedMarketDataManager:
         
         # 初始化组件
         self.cache = MarketDataCache(self.config.cache_path) if self.config.cache_enabled else None
-        self.yfinance_provider = YFinanceDataProvider()
+        self.polygon_provider = PolygonDataProvider()
         self.index_provider = IndexComponentProvider()
         
         # 数据缓存
@@ -360,8 +365,8 @@ class UnifiedMarketDataManager:
         for source in self.config.data_sources:
             stock_info = None
             
-            if source == 'yfinance':
-                stock_info = self.yfinance_provider.get_stock_info(ticker)
+            if source == 'polygon':
+                stock_info = self.polygon_provider.get_stock_info(ticker)
             elif source == 'fallback':
                 stock_info = self._get_fallback_stock_info(ticker)
             

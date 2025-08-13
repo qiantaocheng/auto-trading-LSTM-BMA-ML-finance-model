@@ -2,6 +2,7 @@
 """
 统一数据源管理器
 解决stocks.txt、数据库tickers、配置文件universe之间的数据源混乱问题
+集成Polygon.io API作为统一数据源，支持T+5预测
 """
 
 import json
@@ -11,6 +12,19 @@ from pathlib import Path
 from threading import RLock
 from collections import defaultdict
 import time
+import sys
+import os
+
+# 添加上级目录到路径，以便导入polygon模块
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from polygon_client import polygon_client, download, Ticker
+    from polygon_factors import PolygonFactorIntegrator, PolygonShortTermFactors
+    POLYGON_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"Polygon模块导入失败: {e}")
+    POLYGON_AVAILABLE = False
 
 class UnifiedDataSourceManager:
     """统一的数据源管理器"""
@@ -20,10 +34,21 @@ class UnifiedDataSourceManager:
         self.logger = logging.getLogger("DataSourceManager")
         self.lock = RLock()
         
+        # Polygon集成
+        self.polygon_available = POLYGON_AVAILABLE
+        if self.polygon_available:
+            self.polygon_client = polygon_client
+            self.polygon_integrator = PolygonFactorIntegrator()
+            self.polygon_short_term = PolygonShortTermFactors()
+            self.logger.info("Polygon数据源已集成")
+        else:
+            self.logger.warning("Polygon数据源不可用，使用传统数据源")
+        
         # 缓存
         self._universe_cache: Optional[List[str]] = None
         self._cache_timestamp: float = 0
         self._cache_ttl: float = 300.0  # 5分钟缓存
+        self._factor_cache: Dict[str, Any] = {}  # 因子缓存
         
         # 数据源优先级（数字越大优先级越高）
         self.source_priority = {
@@ -458,8 +483,203 @@ class UnifiedDataSourceManager:
                 'sources': source_stats,
                 'cache_valid': self._universe_cache is not None,
                 'cache_age_seconds': time.time() - self._cache_timestamp if self._cache_timestamp else 0,
+                'polygon_available': self.polygon_available,
+                'factor_cache_size': len(self._factor_cache),
                 **self._stats
             }
+    
+    # ===============================
+    # Polygon数据集成方法
+    # ===============================
+    
+    def get_polygon_market_data(self, symbol: str, period: str = "1d", limit: int = 100) -> Dict[str, Any]:
+        """获取Polygon市场数据"""
+        if not self.polygon_available:
+            self.logger.error("Polygon数据源不可用")
+            return {}
+        
+        try:
+            # 使用Polygon客户端获取历史数据
+            end_date = time.strftime("%Y-%m-%d")
+            start_date = time.strftime("%Y-%m-%d", time.gmtime(time.time() - limit * 24 * 3600))
+            
+            data = download(symbol, start=start_date, end=end_date)
+            
+            if len(data) > 0:
+                return {
+                    'symbol': symbol,
+                    'data': data,
+                    'source': 'polygon',
+                    'timestamp': time.time(),
+                    'records': len(data)
+                }
+            else:
+                self.logger.warning(f"Polygon未返回{symbol}的数据")
+                return {}
+                
+        except Exception as e:
+            self.logger.error(f"获取Polygon数据失败 {symbol}: {e}")
+            return {}
+    
+    def calculate_t5_factors(self, symbol: str, use_cache: bool = True) -> Dict[str, Any]:
+        """计算T+5短期预测因子"""
+        if not self.polygon_available:
+            self.logger.error("Polygon因子库不可用")
+            return {}
+        
+        cache_key = f"t5_factors_{symbol}"
+        
+        # 检查缓存
+        if use_cache and cache_key in self._factor_cache:
+            cached_data = self._factor_cache[cache_key]
+            if time.time() - cached_data['timestamp'] < 3600:  # 1小时缓存
+                return cached_data['factors']
+        
+        try:
+            # 计算所有T+5因子
+            factors = self.polygon_short_term.calculate_all_short_term_factors(symbol)
+            
+            if factors:
+                # 创建T+5预测
+                prediction = self.polygon_short_term.create_t_plus_5_prediction(symbol, factors)
+                
+                result = {
+                    'symbol': symbol,
+                    'factors': factors,
+                    'prediction': prediction,
+                    'timestamp': time.time(),
+                    'factor_count': len(factors)
+                }
+                
+                # 缓存结果
+                if use_cache:
+                    self._factor_cache[cache_key] = {
+                        'factors': result,
+                        'timestamp': time.time()
+                    }
+                
+                self.logger.info(f"计算T+5因子完成 {symbol}: {len(factors)} 个因子")
+                return result
+            else:
+                self.logger.warning(f"未能计算{symbol}的T+5因子")
+                return {}
+                
+        except Exception as e:
+            self.logger.error(f"计算T+5因子失败 {symbol}: {e}")
+            return {}
+    
+    def get_polygon_factors_batch(self, symbols: List[str], factor_types: List[str] = None) -> Dict[str, Any]:
+        """批量获取Polygon因子"""
+        if not self.polygon_available:
+            self.logger.error("Polygon因子库不可用")
+            return {}
+        
+        if factor_types is None:
+            factor_types = ['microstructure', 'technical', 'momentum', 'volume']
+        
+        try:
+            results = {}
+            
+            for symbol in symbols:
+                try:
+                    # 使用因子集成器
+                    factor_matrix = self.polygon_integrator.create_factor_matrix(
+                        [symbol], 
+                        factors=factor_types
+                    )
+                    
+                    if len(factor_matrix) > 0:
+                        results[symbol] = {
+                            'factor_matrix': factor_matrix,
+                            'timestamp': time.time(),
+                            'factor_types': factor_types
+                        }
+                    
+                    time.sleep(0.1)  # API限制
+                    
+                except Exception as e:
+                    self.logger.error(f"获取{symbol}因子失败: {e}")
+                    continue
+            
+            self.logger.info(f"批量获取因子完成: {len(results)}/{len(symbols)} 个股票")
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"批量获取因子失败: {e}")
+            return {}
+    
+    def validate_polygon_data_quality(self, symbols: List[str]) -> Dict[str, Any]:
+        """验证Polygon数据质量"""
+        if not self.polygon_available:
+            return {'error': 'Polygon不可用'}
+        
+        quality_report = {
+            'total_symbols': len(symbols),
+            'successful': 0,
+            'failed': 0,
+            'data_quality_scores': {},
+            'issues': []
+        }
+        
+        for symbol in symbols:
+            try:
+                # 获取基本数据
+                data = self.get_polygon_market_data(symbol, limit=30)
+                
+                if data and 'data' in data:
+                    df = data['data']
+                    
+                    # 数据质量检查
+                    quality_score = 1.0
+                    issues = []
+                    
+                    # 检查数据完整性
+                    if len(df) < 20:
+                        quality_score -= 0.3
+                        issues.append("数据点不足")
+                    
+                    # 检查价格异常
+                    if (df['Close'] <= 0).any():
+                        quality_score -= 0.4
+                        issues.append("存在无效价格")
+                    
+                    # 检查成交量异常
+                    if (df['Volume'] <= 0).any():
+                        quality_score -= 0.2
+                        issues.append("存在无效成交量")
+                    
+                    # 检查数据连续性
+                    missing_ratio = df.isnull().sum().sum() / (len(df) * len(df.columns))
+                    if missing_ratio > 0.1:
+                        quality_score -= missing_ratio
+                        issues.append(f"缺失数据比例: {missing_ratio:.2%}")
+                    
+                    quality_report['data_quality_scores'][symbol] = max(0, quality_score)
+                    if issues:
+                        quality_report['issues'].append({'symbol': symbol, 'issues': issues})
+                    
+                    quality_report['successful'] += 1
+                else:
+                    quality_report['failed'] += 1
+                    quality_report['issues'].append({'symbol': symbol, 'issues': ['数据获取失败']})
+                
+            except Exception as e:
+                quality_report['failed'] += 1
+                quality_report['issues'].append({'symbol': symbol, 'issues': [str(e)]})
+        
+        # 计算整体质量分数
+        if quality_report['data_quality_scores']:
+            quality_report['overall_quality'] = sum(quality_report['data_quality_scores'].values()) / len(quality_report['data_quality_scores'])
+        else:
+            quality_report['overall_quality'] = 0.0
+        
+        return quality_report
+    
+    def clear_factor_cache(self):
+        """清理因子缓存"""
+        with self.lock:
+            self._factor_cache.clear()
+            self.logger.info("因子缓存已清理")
 
 
 # 全局数据源管理器

@@ -69,7 +69,7 @@ class UnifiedConfigManager:
         self._configs['default'] = {
             'connection': {
                 'host': '127.0.0.1',
-                'port': 4002,
+                'port': 7497,
                 'client_id': 3130,
                 'account_id': 'c2dvdongg',
                 'use_delayed_if_no_realtime': True,

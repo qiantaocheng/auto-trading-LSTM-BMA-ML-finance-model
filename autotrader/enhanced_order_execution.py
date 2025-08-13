@@ -1,5 +1,211 @@
 #!/usr/bin/env python3
 """
+RiskRewardBalancer 集成器
+在无实时行情（延迟环境）下，为模型信号提供保守但可落地的下单决策：
+- 流动性筛选
+- 信号门槛
+- 动态限价（基于昨收/ATR/30bps 带）
+- 交易决策（APPROVE/DEGRADE/REJECT）
+- 组合权重分配（Top-N boost + 单票上限）
+- 节流与下单尺寸控制
+
+注：行情源使用 Polygon（延迟），交易下单走 IBKR。
+"""
+
+from dataclasses import dataclass
+from typing import Dict, Optional, List, Tuple
+import math
+
+
+@dataclass
+class RRConfig:
+    enabled: bool = False
+    min_price: float = 5.0
+    min_adv_usd: float = 500_000
+    max_median_spread_bps: float = 50.0
+    min_alpha_bps: float = 50.0
+    min_alpha_vs_15m_sigma: float = 2.0
+    max_weight: float = 0.03
+    top_n_boost: int = 10
+    top_n_boost_multiplier: float = 1.25
+    max_child_adv_pct: float = 0.10
+    max_child_book_pct: float = 0.10
+    min_child_shares: int = 50
+
+
+@dataclass
+class Signal:
+    symbol: str
+    side: str  # BUY / SELL
+    expected_alpha_bps: float
+    model_price: Optional[float] = None
+    confidence: float = 1.0
+
+
+@dataclass
+class Metrics:
+    prev_close: float
+    atr_14: Optional[float]
+    adv_usd_20: Optional[float]
+    median_spread_bps_20: Optional[float]
+    sigma_15m: Optional[float] = None
+
+
+@dataclass
+class Quote:
+    last: Optional[float]
+    tickSize: float
+    source: str  # DELAYED / REALTIME
+
+
+@dataclass
+class Decision:
+    action: str  # APPROVE / DEGRADE / REJECT
+    reason: str
+    shrink_to_pct: Optional[float] = None
+
+
+class RiskRewardBalancer:
+    def __init__(self, cfg: RRConfig):
+        self.cfg = cfg
+
+    # ---------- Filters ----------
+    def passes_static_liquidity_filters(self, m: Metrics) -> bool:
+        if m.prev_close is None or m.prev_close < self.cfg.min_price:
+            return False
+        if m.adv_usd_20 is None or m.adv_usd_20 < self.cfg.min_adv_usd:
+            return False
+        if m.median_spread_bps_20 is not None and m.median_spread_bps_20 > self.cfg.max_median_spread_bps:
+            return False
+        return True
+
+    def passes_signal_thresholds(self, s: Signal, m: Metrics) -> bool:
+        if s.expected_alpha_bps is None or s.expected_alpha_bps < self.cfg.min_alpha_bps:
+            return False
+        if m.sigma_15m is not None and m.sigma_15m > 0:
+            if s.expected_alpha_bps < self.cfg.min_alpha_vs_15m_sigma * m.sigma_15m * 1e4:  # sigma->bps 近似
+                return False
+        return True
+
+    # ---------- Pricing ----------
+    def _round_to_tick(self, px: float, tick: float) -> float:
+        if tick <= 0:
+            return px
+        return round(px / tick) * tick
+
+    def build_limit_price(self, s: Signal, q_delayed: Quote, m: Metrics, q_rt: Optional[Quote] = None) -> Optional[float]:
+        if q_rt and q_rt.last:
+            mid = q_rt.last
+        else:
+            if q_delayed.last is None or m.prev_close is None:
+                return None
+            band_bps = max(30.0, (m.atr_14 or 0) / (m.prev_close or 1) * 1e4)
+            band = band_bps / 1e4 * m.prev_close
+            mid = m.prev_close
+            if s.side.upper() == 'BUY':
+                px = min(mid + band, (s.model_price or mid + band))
+            else:
+                px = max(mid - band, (s.model_price or mid - band))
+            return self._round_to_tick(px, q_delayed.tickSize)
+
+        # 实时分支（简化为用 last 做近似 mid）
+        px = mid
+        return self._round_to_tick(px, (q_rt or q_delayed).tickSize)
+
+    # ---------- Decision ----------
+    def should_trade(self, s: Signal, q_delayed: Quote, m: Metrics, q_rt: Optional[Quote] = None) -> Decision:
+        if not self.passes_static_liquidity_filters(m):
+            return Decision('REJECT', 'liquidity_filters')
+        if not self.passes_signal_thresholds(s, m):
+            return Decision('REJECT', 'signal_thresholds')
+        # 可扩展实时 spread/depth 检查；延迟场景保守降级
+        if q_rt is None:
+            if s.expected_alpha_bps < max(self.cfg.min_alpha_bps * 1.5, 75.0):
+                return Decision('DEGRADE', 'delayed_env', shrink_to_pct=0.5)
+        return Decision('APPROVE', 'ok')
+
+    # ---------- Portfolio ----------
+    def allocate_portfolio(self, signals: List[Signal]) -> Dict[str, float]:
+        if not signals:
+            return {}
+        raw = {s.symbol: max(0.0, s.expected_alpha_bps) * (s.confidence or 1.0) for s in signals}
+        if not any(raw.values()):
+            return {s.symbol: 0.0 for s in signals}
+        # Top-N boost
+        ranked = sorted(raw.items(), key=lambda kv: kv[1], reverse=True)
+        boosted = {}
+        for i, (sym, val) in enumerate(ranked):
+            boosted[sym] = val * (self.cfg.top_n_boost_multiplier if i < self.cfg.top_n_boost else 1.0)
+        total = sum(boosted.values())
+        weights = {sym: (val / total) for sym, val in boosted.items()}
+        # 单票上限
+        for sym in list(weights.keys()):
+            weights[sym] = min(weights[sym], self.cfg.max_weight)
+        # 归一
+        z = sum(weights.values()) or 1.0
+        weights = {k: v / z for k, v in weights.items()}
+        return weights
+
+    # ---------- Sizing ----------
+    def compute_child_qty(self, target_delta: int, adv_shares: Optional[float], top_of_book_shares: Optional[float]) -> int:
+        if target_delta == 0:
+            return 0
+        size = abs(target_delta)
+        if adv_shares:
+            size = min(size, int(adv_shares * self.cfg.max_child_adv_pct))
+        if top_of_book_shares:
+            size = min(size, int(top_of_book_shares * self.cfg.max_child_book_pct))
+        size = max(size, self.cfg.min_child_shares)
+        return int(math.copysign(size, target_delta))
+
+
+class RiskRewardController:
+    """对接 GUI 与 IBKR 的门面。
+    - cfg.enabled=False 时，所有方法透明直通，不改变现有行为。
+    - cfg.enabled=True 时，应用上述策略。
+    """
+    def __init__(self, cfg: RRConfig):
+        self.cfg = cfg
+        self.core = RiskRewardBalancer(cfg)
+
+    def plan_orders(self,
+                    model_signals: List[Signal],
+                    metrics: Dict[str, Metrics],
+                    quotes_delayed: Dict[str, Quote],
+                    portfolio_nav: float,
+                    current_positions: Dict[str, int]) -> List[Dict]:
+        if not self.cfg.enabled:
+            return []
+        weights = self.core.allocate_portfolio(model_signals)
+        planned: List[Dict] = []
+        for s in model_signals:
+            m = metrics.get(s.symbol)
+            qd = quotes_delayed.get(s.symbol)
+            if not m or not qd:
+                continue
+            decision = self.core.should_trade(s, qd, m)
+            if decision.action == 'REJECT':
+                continue
+            limit_px = self.core.build_limit_price(s, qd, m)
+            if not limit_px:
+                continue
+            target_weight = weights.get(s.symbol, 0.0)
+            target_shares = int(target_weight * portfolio_nav / max(m.prev_close, 1e-6))
+            delta = target_shares - int(current_positions.get(s.symbol, 0))
+            if decision.action == 'DEGRADE' and decision.shrink_to_pct:
+                delta = int(delta * decision.shrink_to_pct)
+            child_qty = self.core.compute_child_qty(delta, adv_shares=(m.adv_usd_20 or 0)/max(m.prev_close,1e-6), top_of_book_shares=None)
+            if child_qty == 0:
+                continue
+            planned.append({
+                'symbol': s.symbol,
+                'side': 'BUY' if child_qty>0 else 'SELL',
+                'quantity': abs(child_qty),
+                'limit': float(limit_px)
+            })
+        return planned
+#!/usr/bin/env python3
+"""
 增强订单执行模块 - 专业级订单执行算法
 """
 

@@ -35,10 +35,29 @@ from collections import deque
 from enum import Enum
 import os
 import json
+import sys
 # 清理：移除未使用的导入
 # import urllib.request
 # import urllib.error
 from time import time as _now
+
+# 添加Polygon数据源集成和风控收益平衡器
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from polygon_client import polygon_client, download, Ticker
+    from data_source_manager import get_data_source_manager
+    from polygon_unified_factors import (
+        get_polygon_unified_factors,
+        enable_polygon_factors,
+        enable_polygon_risk_balancer,
+        disable_polygon_risk_balancer,
+        check_polygon_trading_conditions,
+        process_signals_with_polygon
+    )
+    POLYGON_INTEGRATED = True
+except ImportError as e:
+    logging.warning(f"Polygon集成失败: {e}")
+    POLYGON_INTEGRATED = False
 
 from ib_insync import (
     IB,
@@ -303,6 +322,18 @@ class IbkrAutoTrader:
         }
         self._daily_order_count: int = 0
         self._last_reset_day: Optional[datetime.date] = None
+        
+        # Polygon统一因子集成
+        self.polygon_enabled = False
+        self.polygon_risk_balancer_enabled = False
+        if POLYGON_INTEGRATED:
+            try:
+                self.polygon_unified = get_polygon_unified_factors()
+                self.polygon_enabled = self.polygon_unified.is_enabled()
+                self.logger.info(f"Polygon统一因子集成: {'成功' if self.polygon_enabled else '失败'}")
+            except Exception as e:
+                self.logger.error(f"Polygon统一因子初始化失败: {e}")
+                self.polygon_unified = None
         self._notify_throttle: Dict[str, float] = {}
 
         # 止损/止盈配置（可从 data/risk_config.json 读取覆盖）
@@ -354,6 +385,16 @@ class IbkrAutoTrader:
         except Exception:
             pass
         
+        # 风控-收益平衡控制器（可选）
+        try:
+            from .enhanced_order_execution import RRConfig, RiskRewardController
+            enabled = bool(self.config_manager.get('risk_reward.enabled', False)) if self.config_manager else False
+            self.rr_cfg = RRConfig(enabled=enabled)
+            self.rr_controller = RiskRewardController(self.rr_cfg)
+        except Exception:
+            self.rr_cfg = None
+            self.rr_controller = None
+
         # 事件绑定
         self._bind_events()
 
@@ -511,12 +552,9 @@ class IbkrAutoTrader:
             
             # 设置市场数据类型
             try:
-                if self.use_delayed_if_no_realtime:
-                    self.ib.reqMarketDataType(3)  # 延迟数据
-                    self.logger.info("市场数据类型设置为: 延迟数据")
-                else:
-                    self.ib.reqMarketDataType(1)  # 实时数据
-                    self.logger.info("市场数据类型设置为: 实时数据")
+                # 优先尝试实时；若报无权限错误，错误处理器会自动降级到延迟
+                self.ib.reqMarketDataType(1)
+                self.logger.info("市场数据类型设置为: 实时数据")
             except Exception as e:
                 self.logger.warning(f"设置市场数据类型失败: {e}")
             
@@ -1007,11 +1045,16 @@ class IbkrAutoTrader:
         if symbol in self.tickers:
             return
         c = await self.qualify_stock(symbol)
-        ticker = self.ib.reqMktData(c, snapshot=False)
+        # 强制非快照，订阅流式 L1；确保合约资格化主交易所
+        try:
+            self.ib.reqMarketDataType(1)
+        except Exception:
+            pass
+        ticker = self.ib.reqMktData(c, '', False, False, [])
         self.tickers[symbol] = ticker
         # 优化：减少订阅延迟，提高性能
         await self.ib.sleep(0.1)
-        price = await self.wait_for_price(symbol, timeout=3.0)  # 主动等待价格
+        price = await self.wait_for_price(symbol, timeout=5.0)  # 主动等待价格
         if price is not None:
             self.logger.info(f"{symbol} 订阅成功，初始价格: {price:.4f}")
         else:
@@ -1678,6 +1721,68 @@ class IbkrAutoTrader:
         
         return enhanced_ref
 
+    async def plan_and_place_with_rr(
+        self,
+        model_signals: List[dict],
+        polygon_metrics: Dict[str, dict],
+        polygon_quotes: Dict[str, dict],
+        portfolio_nav: float,
+        current_positions: Dict[str, int],
+    ) -> List[OrderRef]:
+        """在延迟环境下使用 RiskRewardController 规划并下限价单。
+        - model_signals: [{symbol, side, expected_alpha_bps, model_price, confidence}]
+        - polygon_metrics: {symbol: {prev_close, atr_14, adv_usd_20, median_spread_bps_20, sigma_15m}}
+        - polygon_quotes:  {symbol: {last, tickSize}}
+        """
+        refs: List[OrderRef] = []
+        if not hasattr(self, 'rr_controller') or not hasattr(self, 'rr_cfg') or not self.rr_cfg or not self.rr_cfg.enabled:
+            self.logger.info("RiskRewardController 未启用，跳过规划")
+            return refs
+        try:
+            from .enhanced_order_execution import Signal, Metrics, Quote
+            signals: List[Signal] = []
+            for s in model_signals:
+                sym = s.get('symbol')
+                if not sym:
+                    continue
+                signals.append(Signal(
+                    symbol=sym,
+                    side=s.get('side', 'BUY'),
+                    expected_alpha_bps=float(s.get('expected_alpha_bps', 0) or 0.0),
+                    model_price=s.get('model_price'),
+                    confidence=float(s.get('confidence', 1.0) or 1.0)
+                ))
+            metrics: Dict[str, Metrics] = {}
+            for sym, md in polygon_metrics.items():
+                metrics[sym] = Metrics(
+                    prev_close=float(md.get('prev_close', 0) or 0.0),
+                    atr_14=(float(md.get('atr_14')) if md.get('atr_14') is not None else None),
+                    adv_usd_20=(float(md.get('adv_usd_20')) if md.get('adv_usd_20') is not None else None),
+                    median_spread_bps_20=(float(md.get('median_spread_bps_20')) if md.get('median_spread_bps_20') is not None else None),
+                    sigma_15m=(float(md.get('sigma_15m')) if md.get('sigma_15m') is not None else None),
+                )
+            quotes: Dict[str, Quote] = {}
+            for sym, q in polygon_quotes.items():
+                quotes[sym] = Quote(
+                    last=(float(q.get('last')) if q.get('last') is not None else None),
+                    tickSize=float(q.get('tickSize', 0.01) or 0.01),
+                    source='DELAYED'
+                )
+            planned = self.rr_controller.plan_orders(
+                model_signals=signals,
+                metrics=metrics,
+                quotes_delayed=quotes,
+                portfolio_nav=float(portfolio_nav or 0.0),
+                current_positions=current_positions or {}
+            )
+            for p in planned:
+                ref = await self.place_limit_order(p['symbol'], p['side'], int(p['quantity']), float(p['limit']))
+                refs.append(ref)
+            return refs
+        except Exception as e:
+            self.logger.error(f"RR 规划下单失败: {e}")
+            return refs
+
     async def place_bracket_order(
         self,
         symbol: str,
@@ -1916,26 +2021,103 @@ class IbkrAutoTrader:
         return None
 
     # ------------------------- 账户/持仓/PnL 回调 -------------------------
-    def _on_account_summary(self, rows) -> None:
-        for r in rows:
-            key = f"{r.tag}:{r.currency or ''}"
-            self.account_values[key] = r.value
+    def _on_account_summary(self, *args) -> None:
+        """兼容 ib_insync 的 accountSummaryEvent 单条触发与批量行。"""
         try:
-            cash = float(self.account_values.get(f"TotalCashValue:{self.default_currency}", "0"))
-            netliq = float(self.account_values.get(f"NetLiquidation:{self.default_currency}", "0"))
-            self.cash_balance, self.net_liq = cash, netliq
+            rows = []
+            if len(args) == 1:
+                first = args[0]
+                if isinstance(first, (list, tuple)):
+                    rows = list(first)
+                else:
+                    rows = [first]
+            else:
+                rows = list(args)
+
+            for r in rows:
+                try:
+                    if isinstance(r, str):
+                        continue
+                    tag = getattr(r, 'tag', getattr(r, 'key', None))
+                    value = getattr(r, 'value', None)
+                    currency = getattr(r, 'currency', None)
+                    if tag is None:
+                        continue
+                    key = f"{tag}:{currency or ''}"
+                    self.account_values[key] = value
+                except Exception:
+                    continue
+
+            try:
+                cash = float(self.account_values.get(f"TotalCashValue:{self.default_currency}", "0") or 0)
+                netliq = float(self.account_values.get(f"NetLiquidation:{self.default_currency}", "0") or 0)
+                if cash > 0:
+                    self.cash_balance = cash
+                if netliq > 0:
+                    self.net_liq = netliq
+            except Exception:
+                pass
         except Exception:
             pass
 
-    def _on_update_account_value(self, tag, value, currency, account) -> None:
-        key = f"{tag}:{currency or ''}"
-        self.account_values[key] = value
+    def _on_update_account_value(self, *args, **_kwargs) -> None:
+        """Handle both legacy and ib_insync-style account value events.
 
-    def _on_update_portfolio(self, position, contract, *_args) -> None:
+        Supported payloads:
+        - (tag, value, currency, account)
+        - (AccountValue(tag=..., value=..., currency=..., account=...),)
+        """
         try:
-            symbol = contract.symbol
-            quantity = int(position)
-            current_price = self.get_price(symbol) or 100.0  # 默认价格
+            tag = value = currency = account = None
+            if len(args) == 1:
+                av = args[0]
+                # ib_insync AccountValue dataclass/tuple
+                tag = getattr(av, 'tag', getattr(av, 'key', None))
+                value = getattr(av, 'value', None)
+                currency = getattr(av, 'currency', None)
+                account = getattr(av, 'account', None)
+            elif len(args) >= 4:
+                tag, value, currency, account = args[:4]
+            else:
+                return
+
+            if tag is None:
+                return
+
+            key = f"{tag}:{currency or ''}"
+            self.account_values[key] = value
+
+            # Opportunistically keep cash/net liq in sync when currency matches
+            try:
+                cur_ok = (currency in (self.default_currency, 'BASE', None))
+                if cur_ok and tag == 'TotalCashValue':
+                    self.cash_balance = float(value)
+                elif cur_ok and tag == 'NetLiquidation':
+                    self.net_liq = float(value)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.logger.debug(f"账户值回调处理异常: {e}")
+            except Exception:
+                pass
+
+    def _on_update_portfolio(self, *args, **kwargs) -> None:
+        try:
+            symbol = None
+            quantity = 0
+            if len(args) == 1 and hasattr(args[0], 'contract'):
+                item = args[0]
+                c = getattr(item, 'contract', None)
+                symbol = getattr(c, 'symbol', None)
+                quantity = int(getattr(item, 'position', 0) or 0)
+            elif len(args) >= 2:
+                position, contract = args[:2]
+                symbol = getattr(contract, 'symbol', None)
+                quantity = int(position)
+            if not symbol:
+                return
+            current_price = self.get_price(symbol) or 100.0
             
             # 异步更新持仓（在事件循环中执行）
             asyncio.create_task(
@@ -1944,10 +2126,23 @@ class IbkrAutoTrader:
         except Exception as e:
             self.logger.debug(f"持仓组合更新失败: {e}")
 
-    def _on_position(self, account, contract, position, avgCost) -> None:
+    def _on_position(self, *args) -> None:
         try:
-            symbol = contract.symbol
-            quantity = int(position)
+            symbol = None
+            quantity = 0
+            avgCost = None
+            if len(args) == 1 and hasattr(args[0], 'contract'):
+                p = args[0]
+                c = getattr(p, 'contract', None)
+                symbol = getattr(c, 'symbol', None)
+                quantity = int(getattr(p, 'position', 0) or 0)
+                avgCost = getattr(p, 'avgCost', None)
+            elif len(args) >= 4:
+                _, contract, position, avgCost = args[:4]
+                symbol = getattr(contract, 'symbol', None)
+                quantity = int(position)
+            if not symbol:
+                return
             current_price = self.get_price(symbol) or (float(avgCost) if avgCost and avgCost > 0 else 100.0)
             
             # 异步更新持仓（在事件循环中执行）
@@ -2052,11 +2247,16 @@ class IbkrAutoTrader:
         except Exception:
             pass
 
-    def _on_commission(self, trade, report) -> None:
+    def _on_commission(self, *args) -> None:
         try:
-            self.logger.info(
-                f"佣金: orderId={trade.order.orderId} commission={report.commission} currency={report.currency} realizedPNL={report.realizedPNL}"
-            )
+            report = args[-1] if args else None
+            if report is None:
+                return
+            exec_id = getattr(report, 'execId', '')
+            commission = getattr(report, 'commission', 0.0)
+            currency = getattr(report, 'currency', '')
+            realized = getattr(report, 'realizedPNL', 0.0)
+            self.logger.info(f"佣金: execId={exec_id} commission={commission} currency={currency} realizedPNL={realized}")
         except Exception:
             pass
 
@@ -2796,6 +2996,124 @@ class IbkrAutoTrader:
             except Exception as loop_err:
                 self.logger.error(f"观察列表交易循环错误: {loop_err}")
                 await asyncio.sleep(poll_sec)
+    
+    # =================== Polygon统一因子集成方法 ===================
+    
+    def enable_polygon_factors(self):
+        """启用Polygon因子"""
+        if POLYGON_INTEGRATED and hasattr(self, 'polygon_unified') and self.polygon_unified:
+            try:
+                enable_polygon_factors()
+                self.polygon_enabled = True
+                self.logger.info("Polygon因子已启用")
+            except Exception as e:
+                self.logger.error(f"启用Polygon因子失败: {e}")
+    
+    def enable_polygon_risk_balancer(self):
+        """启用Polygon风控收益平衡器"""
+        if POLYGON_INTEGRATED and hasattr(self, 'polygon_unified') and self.polygon_unified:
+            try:
+                enable_polygon_risk_balancer()
+                self.polygon_risk_balancer_enabled = True
+                self.logger.info("Polygon风控收益平衡器已启用")
+            except Exception as e:
+                self.logger.error(f"启用Polygon风控收益平衡器失败: {e}")
+    
+    def disable_polygon_risk_balancer(self):
+        """禁用Polygon风控收益平衡器"""
+        if POLYGON_INTEGRATED and hasattr(self, 'polygon_unified') and self.polygon_unified:
+            try:
+                disable_polygon_risk_balancer()
+                self.polygon_risk_balancer_enabled = False
+                self.logger.info("Polygon风控收益平衡器已禁用")
+            except Exception as e:
+                self.logger.error(f"禁用Polygon风控收益平衡器失败: {e}")
+    
+    def is_polygon_risk_balancer_enabled(self) -> bool:
+        """检查Polygon风控收益平衡器状态"""
+        if POLYGON_INTEGRATED and hasattr(self, 'polygon_unified') and self.polygon_unified:
+            return self.polygon_unified.is_risk_balancer_enabled()
+        return False
+    
+    def check_polygon_trading_conditions(self, symbol: str) -> Dict[str, Any]:
+        """
+        使用Polygon数据检查交易条件(替代原有的超短期判断)
+        """
+        if not POLYGON_INTEGRATED or not hasattr(self, 'polygon_unified') or not self.polygon_unified:
+            return {'can_trade': False, 'reason': 'Polygon未集成'}
+        
+        return check_polygon_trading_conditions(symbol)
+    
+    def process_signals_with_polygon_risk_control(self, signals) -> List[Dict]:
+        """
+        使用Polygon风控收益平衡器处理信号
+        """
+        if not POLYGON_INTEGRATED or not hasattr(self, 'polygon_unified') or not self.polygon_unified:
+            self.logger.warning("Polygon未集成，使用基础信号处理")
+            return self._process_signals_basic(signals)
+        
+        try:
+            return process_signals_with_polygon(signals)
+        except Exception as e:
+            self.logger.error(f"Polygon信号处理失败: {e}")
+            return self._process_signals_basic(signals)
+    
+    def _process_signals_basic(self, signals) -> List[Dict]:
+        """基础信号处理(fallback)"""
+        orders = []
+        
+        try:
+            if hasattr(signals, 'to_dict'):  # pandas DataFrame
+                signal_data = signals.to_dict('records')
+            elif isinstance(signals, list):
+                signal_data = signals
+            else:
+                return orders
+            
+            for signal in signal_data:
+                symbol = signal.get('symbol', '')
+                prediction = signal.get('weighted_prediction', 0)
+                
+                # 简单阈值过滤
+                if abs(prediction) < 0.005:  # 0.5%
+                    continue
+                
+                side = "BUY" if prediction > 0 else "SELL"
+                
+                orders.append({
+                    'symbol': symbol,
+                    'side': side,
+                    'quantity': 100,  # 固定数量
+                    'order_type': 'MKT',
+                    'source': 'basic_processing'
+                })
+            
+            self.logger.info(f"基础处理生成{len(orders)}个订单")
+            
+        except Exception as e:
+            self.logger.error(f"基础信号处理失败: {e}")
+        
+        return orders
+    
+    def get_polygon_stats(self) -> Dict[str, Any]:
+        """获取Polygon统计信息"""
+        if not POLYGON_INTEGRATED or not hasattr(self, 'polygon_unified') or not self.polygon_unified:
+            return {}
+        
+        try:
+            return self.polygon_unified.get_stats()
+        except Exception as e:
+            self.logger.error(f"获取Polygon统计失败: {e}")
+            return {}
+    
+    def clear_polygon_cache(self):
+        """清理Polygon缓存"""
+        if POLYGON_INTEGRATED and hasattr(self, 'polygon_unified') and self.polygon_unified:
+            try:
+                self.polygon_unified.clear_cache()
+                self.logger.info("Polygon缓存已清理")
+            except Exception as e:
+                self.logger.error(f"清理Polygon缓存失败: {e}")
 
 
 # ----------------------------- CLI 入口 -----------------------------

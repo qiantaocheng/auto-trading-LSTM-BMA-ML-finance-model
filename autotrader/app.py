@@ -1,6 +1,3 @@
-# 清理：移除未使用的导入
-# from __future__ import annotations
-
 import asyncio
 import threading
 import tkinter as tk
@@ -15,8 +12,6 @@ from datetime import datetime, timedelta
 
 from .ibkr_auto_trader import IbkrAutoTrader
 from .engine import Engine
-# 已改用统一配置管理器
-# from .config import HotConfig
 from .database import StockDatabase
 
 
@@ -28,7 +23,7 @@ class AppState:
     column: Optional[str] = None
     symbols_csv: Optional[str] = None
     host: str = "127.0.0.1"
-    port: int = 4002
+    port: int = 7497
     client_id: int = 3130
     # 交易参数
     alloc: float = 0.03
@@ -87,6 +82,8 @@ class AutoTraderGUI(tk.Tk):
         self._model_training: bool = False
         self._model_trained: bool = False
         self._daily_trade_count: int = 0
+        # 状态栏缓存，避免数值抖动/闪烁
+        self._last_net_liq: Optional[float] = None
         
         # Ensure proper cleanup on window close
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -137,6 +134,11 @@ class AutoTraderGUI(tk.Tk):
         risk_frame = ttk.Frame(notebook)
         notebook.add(risk_frame, text="风险管理")
         self._build_risk_tab(risk_frame)
+
+        # Polygon风控收益平衡器选项卡
+        polygon_frame = ttk.Frame(notebook)
+        notebook.add(polygon_frame, text="Polygon风控")
+        self._build_polygon_tab(polygon_frame)
 
         # 策略引擎选项卡（集成模式2）
         engine_frame = ttk.Frame(notebook)
@@ -211,6 +213,16 @@ class AutoTraderGUI(tk.Tk):
             pass
 
     def log(self, msg: str) -> None:
+        # 同时输出到控制台和GUI
+        try:
+            print(msg)  # 输出到终端控制台
+        except UnicodeEncodeError:
+            # Windows控制台中文编码问题的备选方案
+            print(msg.encode('gbk', errors='ignore').decode('gbk', errors='ignore'))
+        except Exception:
+            # 如果控制台输出失败，至少确保GUI日志还能工作
+            pass
+        
         # UI尚未完成或Text尚未创建时，先写入缓冲区
         try:
             if hasattr(self, "txt") and isinstance(self.txt, tk.Text):
@@ -392,6 +404,176 @@ class AutoTraderGUI(tk.Tk):
         except Exception as e:
             self.log(f"保存风险配置失败: {e}")
 
+    def _build_polygon_tab(self, parent) -> None:
+        """构建Polygon风控收益平衡器选项卡"""
+        frm = ttk.Frame(parent)
+        frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Polygon连接状态
+        status_frame = ttk.LabelFrame(frm, text="Polygon连接状态")
+        status_frame.pack(fill=tk.X, pady=5)
+        
+        self.polygon_status_label = tk.Label(status_frame, text="状态: 检查中...", fg="gray")
+        self.polygon_status_label.pack(side=tk.LEFT, padx=10, pady=5)
+        
+        ttk.Button(status_frame, text="刷新状态", command=self._update_polygon_status).pack(side=tk.RIGHT, padx=10, pady=5)
+
+        # Polygon因子控制
+        factor_frame = ttk.LabelFrame(frm, text="Polygon因子控制")
+        factor_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(factor_frame, text="启用Polygon因子", command=self._enable_polygon_factors).grid(row=0, column=0, padx=5, pady=5)
+        ttk.Button(factor_frame, text="清理因子缓存", command=self._clear_polygon_cache).grid(row=0, column=1, padx=5, pady=5)
+
+        # 风控收益平衡器控制
+        balancer_frame = ttk.LabelFrame(frm, text="风控收益平衡器控制")
+        balancer_frame.pack(fill=tk.X, pady=5)
+        
+        # 一键开启/关闭
+        control_row = ttk.Frame(balancer_frame)
+        control_row.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.polygon_balancer_var = tk.BooleanVar()
+        self.polygon_balancer_check = ttk.Checkbutton(
+            control_row, 
+            text="启用风控收益平衡器", 
+            variable=self.polygon_balancer_var,
+            command=self._toggle_polygon_balancer
+        )
+        self.polygon_balancer_check.pack(side=tk.LEFT)
+        
+        ttk.Button(control_row, text="打开配置面板", command=self._open_balancer_config).pack(side=tk.RIGHT, padx=5)
+
+        # 统计信息显示
+        stats_frame = ttk.LabelFrame(frm, text="统计信息")
+        stats_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.polygon_stats_text = tk.Text(stats_frame, height=12, state=tk.DISABLED)
+        scrollbar = ttk.Scrollbar(stats_frame, orient=tk.VERTICAL, command=self.polygon_stats_text.yview)
+        self.polygon_stats_text.configure(yscrollcommand=scrollbar.set)
+        
+        self.polygon_stats_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 定时更新状态
+        self._update_polygon_status()
+        self.after(5000, self._schedule_polygon_update)  # 每5秒更新一次
+
+    def _enable_polygon_factors(self):
+        """启用Polygon因子"""
+        try:
+            if hasattr(self, 'trader') and self.trader:
+                self.trader.enable_polygon_factors()
+                self.log("Polygon因子已启用")
+            else:
+                self.log("请先连接交易系统")
+        except Exception as e:
+            self.log(f"启用Polygon因子失败: {e}")
+
+    def _clear_polygon_cache(self):
+        """清理Polygon缓存"""
+        try:
+            if hasattr(self, 'trader') and self.trader:
+                self.trader.clear_polygon_cache()
+                self.log("Polygon缓存已清理")
+            else:
+                self.log("请先连接交易系统")
+        except Exception as e:
+            self.log(f"清理Polygon缓存失败: {e}")
+
+    def _toggle_polygon_balancer(self):
+        """切换风控收益平衡器状态"""
+        try:
+            if hasattr(self, 'trader') and self.trader:
+                if self.polygon_balancer_var.get():
+                    self.trader.enable_polygon_risk_balancer()
+                    self.log("风控收益平衡器已启用")
+                else:
+                    self.trader.disable_polygon_risk_balancer()
+                    self.log("风控收益平衡器已禁用")
+            else:
+                self.log("请先连接交易系统")
+                self.polygon_balancer_var.set(False)
+        except Exception as e:
+            self.log(f"切换风控收益平衡器状态失败: {e}")
+            self.polygon_balancer_var.set(False)
+
+    def _open_balancer_config(self):
+        """打开风控收益平衡器配置面板"""
+        try:
+            # 导入GUI面板
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            
+            from risk_balancer_gui_panel import create_standalone_gui
+            
+            # 在新线程中打开GUI，避免阻塞主界面
+            import threading
+            gui_thread = threading.Thread(target=create_standalone_gui, daemon=True)
+            gui_thread.start()
+            
+            self.log("风控收益平衡器配置面板已打开")
+            
+        except Exception as e:
+            self.log(f"打开配置面板失败: {e}")
+
+    def _update_polygon_status(self):
+        """更新Polygon状态显示"""
+        try:
+            if hasattr(self, 'trader') and self.trader:
+                # 检查Polygon连接状态
+                polygon_enabled = hasattr(self.trader, 'polygon_enabled') and self.trader.polygon_enabled
+                balancer_enabled = hasattr(self.trader, 'polygon_risk_balancer_enabled') and self.trader.polygon_risk_balancer_enabled
+                
+                if polygon_enabled:
+                    status_text = "状态: Polygon已连接"
+                    status_color = "green"
+                else:
+                    status_text = "状态: Polygon未连接"
+                    status_color = "red"
+                
+                self.polygon_status_label.config(text=status_text, fg=status_color)
+                self.polygon_balancer_var.set(balancer_enabled)
+                
+                # 更新统计信息
+                stats = self.trader.get_polygon_stats()
+                if stats:
+                    stats_text = "Polygon统计信息:\n"
+                    stats_text += f"  启用状态: {'是' if stats.get('enabled', False) else '否'}\n"
+                    stats_text += f"  风控平衡器: {'是' if stats.get('risk_balancer_enabled', False) else '否'}\n"
+                    stats_text += f"  缓存大小: {stats.get('cache_size', 0)}\n"
+                    stats_text += f"  总计算次数: {stats.get('total_calculations', 0)}\n"
+                    stats_text += f"  成功次数: {stats.get('successful_calculations', 0)}\n"
+                    stats_text += f"  失败次数: {stats.get('failed_calculations', 0)}\n"
+                    stats_text += f"  缓存命中: {stats.get('cache_hits', 0)}\n"
+                    
+                    # 组件状态
+                    components = stats.get('components', {})
+                    stats_text += "\n组件状态:\n"
+                    for comp, status in components.items():
+                        stats_text += f"  {comp}: {'[OK]' if status else '[FAIL]'}\n"
+                    
+                    self.polygon_stats_text.config(state=tk.NORMAL)
+                    self.polygon_stats_text.delete(1.0, tk.END)
+                    self.polygon_stats_text.insert(1.0, stats_text)
+                    self.polygon_stats_text.config(state=tk.DISABLED)
+                else:
+                    self.polygon_stats_text.config(state=tk.NORMAL)
+                    self.polygon_stats_text.delete(1.0, tk.END)
+                    self.polygon_stats_text.insert(1.0, "暂无统计信息")
+                    self.polygon_stats_text.config(state=tk.DISABLED)
+            else:
+                self.polygon_status_label.config(text="状态: 未连接交易系统", fg="gray")
+                
+        except Exception as e:
+            self.polygon_status_label.config(text=f"状态: 检查失败 ({e})", fg="red")
+
+    def _schedule_polygon_update(self):
+        """定时更新Polygon状态"""
+        self._update_polygon_status()
+        self.after(5000, self._schedule_polygon_update)  # 每5秒更新一次
+
     def _build_engine_tab(self, parent) -> None:
         frm = ttk.Frame(parent)
         frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -494,9 +676,10 @@ class AutoTraderGUI(tk.Tk):
                         self.after(0, lambda e_msg=error_msg: self.log(f"策略引擎启动失败: {e_msg}"))
                     except Exception:
                         print(f"策略引擎启动失败: {e}")  # 降级日志
-            # 使用线程安全的事件循环管理器
+            # 使用线程安全的事件循环管理器（非阻塞）
             try:
-                self.loop_manager.submit_coroutine(_run(), timeout=60)
+                task_id = self.loop_manager.submit_coroutine_nowait(_run())
+                self.after(0, lambda: self.log(f"策略引擎任务已提交 (ID: {task_id[:8]}...)"))
             except Exception as e:
                 error_msg = str(e)
                 self.after(0, lambda e_msg=error_msg: self.log(f"策略引擎启动失败: {e_msg}"))
@@ -1175,7 +1358,8 @@ class AutoTraderGUI(tk.Tk):
                         except Exception as e:
                             self.log(f"停止引擎/交易器失败: {e}")
                             
-                    self.loop_manager.submit_coroutine(_cleanup_all(), timeout=10)
+                    self.loop_manager.submit_coroutine_nowait(_cleanup_all())
+                    self.log("清理任务已提交到后台")
                 else:
                     self.trader = None
             
@@ -1225,7 +1409,8 @@ class AutoTraderGUI(tk.Tk):
                     except Exception as e:
                         self.log(f"断开API失败: {e}")
                 try:
-                    self.loop_manager.submit_coroutine(_do_close(), timeout=5)
+                    self.loop_manager.submit_coroutine_nowait(_do_close())
+                    self.log("关闭任务已提交到后台")
                 except Exception:
                     pass
             else:
@@ -1418,8 +1603,8 @@ class AutoTraderGUI(tk.Tk):
             if removed:
                 if self.trader and self.loop and self.loop.is_running():
                     try:
-                        self.loop_manager.submit_coroutine(self._auto_sell_stocks(removed), timeout=30)
-                        self.log("已触发自动清仓任务")
+                        task_id = self.loop_manager.submit_coroutine_nowait(self._auto_sell_stocks(removed))
+                        self.log(f"自动清仓任务已提交 (ID: {task_id[:8]}...)")
                     except Exception as e:
                         self.log(f"触发自动清仓失败: {e}")
                 else:
@@ -1557,7 +1742,8 @@ class AutoTraderGUI(tk.Tk):
             auto_clear = bool(self.var_auto_clear.get())
             if auto_clear and removed_before:
                 if self.trader and self.loop and self.loop.is_running():
-                    self.loop_manager.submit_coroutine(self._auto_sell_stocks(removed_before), timeout=30)
+                    task_id = self.loop_manager.submit_coroutine_nowait(self._auto_sell_stocks(removed_before))
+                    self.log(f"自动清仓任务已提交 (ID: {task_id[:8]}...)")
                 else:
                     self.log("检测到被移除标的，但当前未连接交易或事件循环未运行，跳过自动清仓。")
         except Exception as e:
@@ -1889,7 +2075,8 @@ class AutoTraderGUI(tk.Tk):
                                 self.log(f"停止引擎/交易器失败: {e}")
                         
                         try:
-                            self.loop_manager.submit_coroutine(_cleanup_all(), timeout=3.0)
+                            self.loop_manager.submit_coroutine_nowait(_cleanup_all())
+                            self.log("清理任务已提交到后台")
                         except Exception:
                             pass
                     
@@ -1999,6 +2186,7 @@ class AutoTraderGUI(tk.Tk):
                     self._model_training = True
                     self._model_trained = False
                     self.after(0, lambda: self.log("[BMA] 开始优化执行..."))
+                    self.after(0, lambda: self.log("[BMA] 注意：GUI应保持响应状态"))
                     
                     # 使用性能优化器
                     from .performance_optimizer import get_performance_optimizer
@@ -2015,7 +2203,7 @@ class AutoTraderGUI(tk.Tk):
                     extra_args = []
                     if script_path.endswith('量化模型_bma_ultra_enhanced.py'):
                         # 小样本先测50只，随后脚本内部自动全量
-                        extra_args = ['--tickers-file', 'stocks.txt', '--tickers-limit', '50']
+                        extra_args = ['--tickers-file', 'stocks.txt', '--tickers-limit', '4000']
 
                     result = await optimizer.optimize_bma_execution(
                         script_path, start_date, end_date, progress_callback, extra_args=extra_args
@@ -2034,23 +2222,26 @@ class AutoTraderGUI(tk.Tk):
                         stats = optimizer.get_performance_stats()
                         speedup = stats['optimization_stats'].get('average_speedup', 1.0)
                         if speedup > 1.0:
-                            self.after(0, lambda: self.log(f"[BMA] 🚀 性能提升: {speedup:.1f}x"))
+                            self.after(0, lambda s=speedup: self.log(f"[BMA] 🚀 性能提升: {s:.1f}x"))
                     else:
                         error_msg = result.error if result.error else "未知错误"
-                        self.after(0, lambda: self.log(f"[BMA] ❌ 运行失败: {error_msg}"))
-                        self.after(0, lambda: messagebox.showwarning("BMA运行", f"BMA模型运行失败: {error_msg}"))
+                        self.after(0, lambda msg=error_msg: self.log(f"[BMA] ❌ 运行失败: {msg}"))
+                        self.after(0, lambda msg=error_msg: messagebox.showwarning("BMA运行", f"BMA模型运行失败: {msg}"))
                         
                 except Exception as e:
                     self._model_training = False
                     self._model_trained = False
-                    self.after(0, lambda: self.log(f"[BMA] 优化执行异常: {e}"))
+                    error_msg = str(e)
+                    self.after(0, lambda msg=error_msg: self.log(f"[BMA] 优化执行异常: {msg}"))
 
             # 在事件循环中运行优化的执行器
             def _start_optimized():
                 try:
-                    # 在事件循环中创建任务
+                    # 在事件循环中创建任务（非阻塞）
                     if hasattr(self, 'loop_manager') and self.loop_manager.is_running():
-                        self.loop_manager.submit_coroutine(_runner_optimized())
+                        # 使用非阻塞方式提交协程
+                        task_id = self.loop_manager.submit_coroutine_nowait(_runner_optimized())
+                        self.log(f"[BMA] 任务已提交到事件循环 (ID: {task_id[:8]}...)")
                     else:
                         # 回退到线程执行
                         import asyncio
@@ -2058,6 +2249,7 @@ class AutoTraderGUI(tk.Tk):
                             target=lambda: asyncio.run(_runner_optimized()), 
                             daemon=True
                         ).start()
+                        self.log("[BMA] 使用后台线程执行")
                 except Exception as e:
                     self.log(f"[BMA] 启动优化执行失败: {e}")
                     # 回退到原始方法（已移除subprocess部分）
@@ -2341,8 +2533,9 @@ class AutoTraderGUI(tk.Tk):
                 self._run_weekly_backtest()
                 
         except Exception as e:
-            self.after(0, lambda: self._update_backtest_status(f"回测执行失败: {e}"))
-            self.after(0, lambda: messagebox.showerror("错误", f"回测执行失败: {e}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"回测执行失败: {msg}"))
+            self.after(0, lambda msg=error_msg: messagebox.showerror("错误", f"回测执行失败: {msg}"))
         finally:
             self.after(0, lambda: self.bt_progress.stop())
     
@@ -2361,8 +2554,9 @@ class AutoTraderGUI(tk.Tk):
             self.after(0, lambda: messagebox.showinfo("完成", "策略对比回测完成！\n结果已保存到当前目录"))
             
         except Exception as e:
-            self.after(0, lambda: self._update_backtest_status(f"策略对比失败: {e}"))
-            self.after(0, lambda: messagebox.showerror("错误", f"策略对比失败: {e}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"策略对比失败: {msg}"))
+            self.after(0, lambda msg=error_msg: messagebox.showerror("错误", f"策略对比失败: {msg}"))
         finally:
             self.after(0, lambda: self.bt_progress.stop())
     
@@ -2430,15 +2624,17 @@ AutoTrader BMA 回测完成！
                 """
                 
                 self.after(0, lambda: self._update_backtest_status(summary))
-                self.after(0, lambda: messagebox.showinfo("回测完成", f"AutoTrader BMA 回测完成！\n\n{summary}"))
+                self.after(0, lambda s=summary: messagebox.showinfo("回测完成", f"AutoTrader BMA 回测完成！\n\n{s}"))
                 
             else:
                 self.after(0, lambda: self._update_backtest_status("回测失败：无结果数据"))
                 
         except ImportError as e:
-            self.after(0, lambda: self._update_backtest_status(f"导入回测模块失败: {e}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"导入回测模块失败: {msg}"))
         except Exception as e:
-            self.after(0, lambda: self._update_backtest_status(f"AutoTrader 回测失败: {e}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"AutoTrader 回测失败: {msg}"))
             import traceback
             traceback.print_exc()
     
@@ -2495,14 +2691,16 @@ AutoTrader BMA 回测完成！
                 """
 
                 self.after(0, lambda: self._update_backtest_status(summary))
-                self.after(0, lambda: messagebox.showinfo("回测完成", f"周频 BMA 回测完成！\n\n{summary}"))
+                self.after(0, lambda s=summary: messagebox.showinfo("回测完成", f"周频 BMA 回测完成！\n\n{s}"))
             else:
                 self.after(0, lambda: self._update_backtest_status("周频回测失败：无结果数据"))
 
         except ImportError as e:
-            self.after(0, lambda: self._update_backtest_status(f"导入回测模块失败: {e}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"导入回测模块失败: {msg}"))
         except Exception as e:
-            self.after(0, lambda: self._update_backtest_status(f"周频回测失败: {e}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"周频回测失败: {msg}"))
             import traceback
             traceback.print_exc()
     
@@ -2613,7 +2811,16 @@ AutoTrader BMA 回测完成！
             
             # 更新账户信息
             if self.trader and hasattr(self.trader, 'net_liq'):
-                self.lbl_net_value.config(text=f"${self.trader.net_liq:,.2f}")
+                # 使用缓存避免短期为0/None导致闪烁
+                try:
+                    current_net = getattr(self.trader, 'net_liq', None)
+                    if isinstance(current_net, (int, float)) and current_net is not None:
+                        if self._last_net_liq is None or abs(float(current_net) - float(self._last_net_liq)) > 1e-6:
+                            self._last_net_liq = float(current_net)
+                    if self._last_net_liq is not None:
+                        self.lbl_net_value.config(text=f"${self._last_net_liq:,.2f}")
+                except Exception:
+                    pass
                 # 更新账户ID与客户端ID
                 try:
                     acc_id = getattr(self.trader, 'account_id', None)
@@ -2624,8 +2831,14 @@ AutoTrader BMA 回测完成！
                 except Exception:
                     pass
                 try:
-                    cid_ok = (getattr(self.trader, 'client_id', None) == 3130)
-                    self.lbl_client_id.config(text=str(getattr(self.trader, 'client_id', '-')), fg=("green" if cid_ok else "black"))
+                    # 与当前配置的 client_id 对齐，而不是固定 3130
+                    actual_cid = getattr(self.trader, 'client_id', None)
+                    try:
+                        expected_cid = self.config_manager.get('connection.client_id', None)
+                    except Exception:
+                        expected_cid = None
+                    cid_ok = bool(actual_cid is not None and expected_cid is not None and actual_cid == expected_cid)
+                    self.lbl_client_id.config(text=str(actual_cid if actual_cid is not None else '-'), fg=("green" if cid_ok else "black"))
                 except Exception:
                     pass
                 

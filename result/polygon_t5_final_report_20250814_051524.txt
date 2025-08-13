@@ -1,0 +1,1 @@
+Polygon T+5系统集成最终报告\n测试时间: 2025-08-14 05:15:24.502521\n整体评估: FAIR - 基本集成\n通过率: 4/6 (66.7%)\n\n详细结果:\nimports: PASS\nintegrator: FAIL\nshort_term_factors: PASS\nautotrader: PASS\nbma_ultra: FAIL\npolygon_client: PASS\n\n建议: 基础功能可用，需要进一步完善集成\n

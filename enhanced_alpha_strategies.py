@@ -150,8 +150,8 @@ class AlphaStrategiesEngine:
     
     def neutralize_factor(self, df: pd.DataFrame, target_col: str, 
                          group_cols: List[str]) -> pd.Series:
-        """线性回归中性化"""
-        def _neutralize_cross_section(block):
+        """🔴 时间安全的线性回归中性化 - 防止使用未来数据"""
+        def _neutralize_cross_section_safe(block):
             if len(block) < 2 or target_col not in block.columns:
                 return block[target_col] if target_col in block.columns else pd.Series(index=block.index)
             
@@ -159,26 +159,54 @@ class AlphaStrategiesEngine:
             if len(y) < 2:
                 return block[target_col]
             
-            # 构建虚拟变量矩阵
-            X_df = pd.get_dummies(block[group_cols], drop_first=False)
-            X_df = X_df.loc[y.index]  # 对齐索引
+            # 🔴 关键修复：使用expanding window确保只使用历史数据
+            # 在实时交易中，T时刻不应该知道同一天其他股票的未来表现
+            result = pd.Series(index=block.index, dtype=float)
             
-            if X_df.shape[1] == 0 or X_df.var().sum() == 0:
-                return y - y.mean()
+            # 使用时间递进的方式计算中性化参数
+            sorted_indices = block.index.tolist()
             
-            try:
-                lr = LinearRegression(fit_intercept=True)
-                lr.fit(X_df.values, y.values)
-                residuals = y.values - lr.predict(X_df.values)
+            for i, idx in enumerate(sorted_indices):
+                if idx not in y.index:
+                    result.loc[idx] = 0.0
+                    continue
                 
-                result = pd.Series(index=block.index, dtype=float)
-                result.loc[y.index] = residuals
-                return result.fillna(0)
-            except Exception as e:
-                logger.warning(f"中性化失败: {e}")
-                return y - y.mean()
+                # 只使用到当前时点的历史数据（expanding window）
+                hist_indices = sorted_indices[:i+1]
+                hist_y = y.loc[y.index.intersection(hist_indices)]
+                
+                if len(hist_y) < 2:
+                    result.loc[idx] = y.loc[idx] - y.loc[hist_y.index].mean()
+                    continue
+                
+                # 构建历史虚拟变量矩阵
+                hist_block = block.loc[hist_indices]
+                X_df = pd.get_dummies(hist_block[group_cols], drop_first=False)
+                X_df = X_df.loc[hist_y.index]
+                
+                if X_df.shape[1] == 0 or X_df.var().sum() == 0:
+                    result.loc[idx] = hist_y.loc[idx] - hist_y.mean()
+                    continue
+                
+                try:
+                    # 使用历史数据拟合回归模型
+                    lr = LinearRegression(fit_intercept=True)
+                    lr.fit(X_df.values, hist_y.values)
+                    
+                    # 对当前点进行中性化
+                    current_X = pd.get_dummies(block.loc[[idx]][group_cols], drop_first=False)
+                    current_X = current_X.reindex(columns=X_df.columns, fill_value=0)
+                    
+                    predicted = lr.predict(current_X.values)[0]
+                    result.loc[idx] = y.loc[idx] - predicted
+                    
+                except Exception as e:
+                    logger.warning(f"点{idx}中性化失败: {e}")
+                    result.loc[idx] = hist_y.loc[idx] - hist_y.mean()
+            
+            return result.fillna(0)
         
-        return df.groupby('date').apply(_neutralize_cross_section).reset_index(level=0, drop=True)
+        return df.groupby('date').apply(_neutralize_cross_section_safe).reset_index(level=0, drop=True)
     
     def hump_transform(self, z: pd.Series, hump: float = 0.003) -> pd.Series:
         """门控变换：小信号置零"""
@@ -189,25 +217,31 @@ class AlphaStrategiesEngine:
         return z.rank(pct=True) - 0.5
     
     def ema_decay(self, s: pd.Series, span: int) -> pd.Series:
-        """指数移动平均衰减"""
-        return s.ewm(span=span, adjust=False).mean()
+        """时间安全的指数移动平均衰减 - 只使用历史数据"""
+        # 使用expanding window确保每个时点只使用历史数据
+        result = s.ewm(span=span, adjust=False).mean()
+        # 增加一期延迟确保不使用当期数据
+        return result.shift(1)
     
     # ========== Alpha因子计算函数 ==========
     
     def _compute_momentum(self, df: pd.DataFrame, windows: List[int], 
                          decay: int = 6) -> pd.Series:
-        """动量因子：多窗口价格动量"""
+        """时间安全的动量因子：多窗口价格动量"""
         results = []
         
         for window in windows:
-            # 计算对数收益率动量，添加delay=1（避免未来信息）
+            # 计算对数收益率动量，增加安全边际（T-2到T-window-2）
             momentum = df.groupby('ticker')['Close'].transform(
-                lambda x: np.log(x.shift(1) / x.shift(window + 1))
+                lambda x: np.log(x.shift(2) / x.shift(window + 2))
             )
 
-            # 指数衰减（按ticker分组对该Series做EWMA）
+            # 时间安全的指数衰减 - 使用expanding计算确保只用历史数据
             momentum_decayed = momentum.groupby(df['ticker']).apply(
-                lambda s: s.ewm(span=decay, adjust=False).mean()
+                lambda s: s.expanding(min_periods=1).apply(
+                    lambda x: pd.Series(x).ewm(span=decay, adjust=False).mean().iloc[-1]
+                    if len(x) > 0 else np.nan
+                )
             ).reset_index(level=0, drop=True)
 
             results.append(momentum_decayed)
@@ -418,10 +452,11 @@ class AlphaStrategiesEngine:
     
     # ===== v2 新增因子：统一进入类方法并在注册表登记 =====
     def _compute_reversal_5(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
-        """短期反转（1-5日），与中长期动量互补"""
+        """时间安全的短期反转（1-5日），增加安全边际"""
         try:
             g = df.groupby('ticker')['Close']
-            rev = -(g.shift(1) / g.shift(6) - 1.0)
+            # 使用T-2到T-7的数据，增加安全边际
+            rev = -(g.shift(2) / g.shift(7) - 1.0)
             return rev.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).fillna(0)
         except Exception as e:
             logger.warning(f"短期反转计算失败: {e}")
@@ -490,88 +525,39 @@ class AlphaStrategiesEngine:
             return pd.Series(0.0, index=df.index)
     
     def _compute_low_beta_anomaly(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
-        """低β异象：计算个股相对市场的β，取负值（低β更优）"""
+        """低β异象：使用滚动闭式估计或 ewm.cov 实现 O(N) 近似，取负值（低β更优）"""
         try:
             window = windows[0] if windows else 60
-            stock_returns = df.groupby('ticker')['Close'].pct_change()
-            market_returns = df.groupby('date')['Close'].transform('mean').pct_change()
-            
-            def calc_rolling_beta(stock_ret, market_ret, window):
-                betas = []
-                for i in range(len(stock_ret)):
-                    start_idx = max(0, i - window + 1)
-                    x_window = market_ret.iloc[start_idx:i+1]
-                    y_window = stock_ret.iloc[start_idx:i+1]
-                    valid = ~(x_window.isna() | y_window.isna())
-                    
-                    if valid.sum() < 10:
-                        betas.append(1.0)
-                        continue
-                    
-                    try:
-                        x_valid, y_valid = x_window[valid].values, y_window[valid].values
-                        if x_valid.std() < 1e-8:
-                            betas.append(1.0)
-                        else:
-                            beta = np.cov(x_valid, y_valid)[0, 1] / np.var(x_valid)
-                            betas.append(beta)
-                    except:
-                        betas.append(1.0)
-                return pd.Series(-np.array(betas), index=stock_ret.index)  # 取负值
-            
-            low_beta = df.groupby('ticker').apply(
-                lambda group: calc_rolling_beta(
-                    stock_returns[group.index], 
-                    market_returns[group.index], 
-                    window
-                )
-            ).reset_index(level=0, drop=True)
-            
-            return low_beta.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).fillna(0)
+            close = df['Close']
+            ret = close.groupby(df['ticker']).pct_change()
+            mkt = close.groupby(df['date']).transform('mean')
+            mkt_ret = mkt.groupby(df['ticker']).pct_change()  # 与个股索引对齐
+
+            # 使用 ewm.cov 的向量化估计 beta = Cov(r_i, r_m)/Var(r_m)
+            cov_im = ret.ewm(span=window, min_periods=max(10, window//3)).cov(mkt_ret)
+            var_m = mkt_ret.ewm(span=window, min_periods=max(10, window//3)).var()
+            beta = cov_im / (var_m + 1e-12)
+            low_beta = (-beta).groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return low_beta.fillna(0)
         except Exception as e:
             logger.warning(f"低β异象计算失败: {e}")
             return pd.Series(0.0, index=df.index)
     
     def _compute_idiosyncratic_volatility(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
-        """特异波动率：剔除市场因子后的残差波动率，取负值（低波动更优）"""
+        """特异波动率：使用 ewm.cov 快速估计残差方差，取负值（低波动更优）"""
         try:
             window = windows[0] if windows else 60
-            stock_returns = df.groupby('ticker')['Close'].pct_change()
-            market_returns = df.groupby('date')['Close'].transform('mean').pct_change()
-            
-            def calc_idio_vol(group):
-                stock_ret = stock_returns[group.index]
-                market_ret = market_returns[group.index]
-                
-                idio_vols = []
-                for i in range(len(group)):
-                    start_idx = max(0, i - window + 1)
-                    x_window = market_ret.iloc[start_idx:i+1]
-                    y_window = stock_ret.iloc[start_idx:i+1]
-                    valid = ~(x_window.isna() | y_window.isna())
-                    
-                    if valid.sum() < 20:
-                        idio_vols.append(0.0)
-                        continue
-                    
-                    try:
-                        x_valid, y_valid = x_window[valid].values, y_window[valid].values
-                        
-                        if x_valid.std() < 1e-8:
-                            residuals = y_valid - y_valid.mean()
-                        else:
-                            beta = np.cov(x_valid, y_valid)[0, 1] / np.var(x_valid)
-                            alpha = y_valid.mean() - beta * x_valid.mean()
-                            residuals = y_valid - (alpha + beta * x_valid)
-                        
-                        idio_vol = np.std(residuals)
-                        idio_vols.append(-idio_vol)  # 取负值，低波动更优
-                    except:
-                        idio_vols.append(0.0)
-                
-                return pd.Series(idio_vols, index=group.index)
-            
-            idio_vol = df.groupby('ticker').apply(calc_idio_vol).reset_index(level=0, drop=True)
+            close = df['Close']
+            ret = close.groupby(df['ticker']).pct_change()
+            mkt = close.groupby(df['date']).transform('mean')
+            mkt_ret = mkt.groupby(df['ticker']).pct_change()
+
+            cov_im = ret.ewm(span=window, min_periods=max(20, window//3)).cov(mkt_ret)
+            var_m = mkt_ret.ewm(span=window, min_periods=max(20, window//3)).var()
+            beta = cov_im / (var_m + 1e-12)
+            alpha = ret.ewm(span=window, min_periods=max(20, window//3)).mean() - beta * mkt_ret.ewm(span=window, min_periods=max(20, window//3)).mean()
+            residual = ret - (alpha + beta * mkt_ret)
+            idio_vol = -residual.ewm(span=window, min_periods=max(20, window//3)).std()
             return idio_vol.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).fillna(0)
         except Exception as e:
             logger.warning(f"特异波动率计算失败: {e}")
@@ -964,13 +950,14 @@ class AlphaStrategiesEngine:
         temp_df = df[['date', 'ticker'] + self.config['neutralization']].copy()
         temp_df[alpha_name] = alpha_factor
         
-        # 3. 中性化
-        for neutralize_level in self.config['neutralization']:
-            if neutralize_level in temp_df.columns:
-                alpha_factor = self.neutralize_factor(
-                    temp_df, alpha_name, [neutralize_level]
-                )
-                temp_df[alpha_name] = alpha_factor
+        # 3. 中性化（默认关闭，避免与全局Pipeline重复；仅研究使用时打开）
+        if self.config.get('enable_alpha_level_neutralization', False):
+            for neutralize_level in self.config['neutralization']:
+                if neutralize_level in temp_df.columns:
+                    alpha_factor = self.neutralize_factor(
+                        temp_df, alpha_name, [neutralize_level]
+                    )
+                    temp_df[alpha_name] = alpha_factor
         
         # 4. 截面标准化
         alpha_factor = self.zscore_by_group(
@@ -1001,7 +988,32 @@ class AlphaStrategiesEngine:
             每个Alpha的OOF评分
         """
         logger.info(f"开始计算OOF评分，指标: {metric}")
-        
+
+        # 统一索引以避免布尔索引不对齐
+        try:
+            alpha_index = alpha_df.index
+            common_index = alpha_index
+            if isinstance(target, pd.Series):
+                common_index = common_index.intersection(target.index)
+            if isinstance(dates, pd.Series):
+                common_index = common_index.intersection(dates.index)
+
+            if len(common_index) == 0:
+                logger.warning("OOF评分跳过：alpha/target/dates无共同索引")
+                return pd.Series(dtype=float)
+
+            alpha_df = alpha_df.loc[common_index]
+            if isinstance(target, pd.Series):
+                target = target.loc[common_index]
+            else:
+                target = pd.Series(target, index=common_index)
+            if isinstance(dates, pd.Series):
+                dates = dates.loc[common_index]
+            else:
+                dates = pd.Series(dates, index=common_index)
+        except Exception as e:
+            logger.warning(f"索引对齐失败，尝试继续：{e}")
+
         # 只评估数值型的因子列，排除标识/价格/元数据列
         exclude_cols = set(['date','ticker','COUNTRY','SECTOR','SUBINDUSTRY',
                             'Open','High','Low','Close','Adj Close',
@@ -1020,19 +1032,26 @@ class AlphaStrategiesEngine:
             for train_idx, test_idx in tscv.split(unique_dates):
                 # 获取测试期间的数据
                 test_dates = [unique_dates[i] for i in test_idx]
-                test_mask = dates.isin(test_dates)
+                # 使用numpy布尔数组，避免索引不一致
+                test_mask = dates.isin(test_dates).values
                 
                 if test_mask.sum() == 0:
                     continue
                 
-                y_test = target[test_mask]
-                x_test = alpha_df[col][test_mask]
+                # 使用iloc配合布尔数组，确保位置索引对齐
+                y_test = target.iloc[test_mask]
+                x_test = alpha_df[col].iloc[test_mask]
+                
+                # 重置索引以确保对齐
+                y_test = y_test.reset_index(drop=True)
+                x_test = x_test.reset_index(drop=True)
                 
                 # 去除NaN值
                 valid_mask = ~(x_test.isna() | y_test.isna())
                 if valid_mask.sum() < 10:  # 最少需要10个有效样本
                     continue
                 
+                # 直接使用布尔索引，因为索引已重置
                 x_valid = x_test[valid_mask]
                 y_valid = y_test[valid_mask]
                 
@@ -1150,6 +1169,55 @@ class AlphaStrategiesEngine:
         
         return combined_signal
     
+    def apply_trading_filters(self, signal: pd.Series, df: pd.DataFrame) -> pd.Series:
+        """
+        应用交易过滤器：hump门控、截断、仓位限制
+        
+        Args:
+            signal: 原始信号
+            df: 包含日期信息的DataFrame
+            
+        Returns:
+            过滤后的交易信号
+        """
+        logger.info("应用交易过滤器")
+        
+        # 1. 截面标准化
+        temp_df = df[['date', 'ticker']].copy()
+        temp_df['signal'] = signal
+        
+        filtered_signal = temp_df.groupby('date')['signal'].transform(
+            lambda x: (x - x.mean()) / (x.std(ddof=0) + 1e-12)
+        )
+        
+        # 2. Hump门控
+        hump_levels = self.config.get('hump_levels', [0.003, 0.008])
+        for hump_level in hump_levels:
+            filtered_signal = self.hump_transform(filtered_signal, hump=hump_level)
+        
+        # 3. 截断控制集中度
+        truncation = self.config.get('truncation', 0.10)
+        if truncation > 0:
+            lower_q = filtered_signal.quantile(truncation)
+            upper_q = filtered_signal.quantile(1 - truncation)
+            filtered_signal = filtered_signal.clip(lower=lower_q, upper=upper_q)
+        
+        # 4. 仅保留顶部和底部信号
+        top_frac = self.config.get('top_fraction', 0.10)
+        if top_frac > 0:
+            def mask_top_bottom(x):
+                if len(x) < 10:
+                    return x
+                lo_threshold = x.quantile(top_frac)
+                hi_threshold = x.quantile(1 - top_frac)
+                return x.where((x <= lo_threshold) | (x >= hi_threshold), 0.0)
+            
+            temp_df['signal'] = filtered_signal
+            filtered_signal = temp_df.groupby('date')['signal'].transform(mask_top_bottom)
+        
+        logger.info(f"交易过滤完成，非零信号比例: {(filtered_signal != 0).mean():.2%}")
+        
+        return filtered_signal    
     def get_stats(self) -> Dict:
         """获取计算统计信息"""
         return self.stats.copy()

@@ -54,7 +54,13 @@ class DailyNeutralizationTransformer(BaseEstimator, TransformerMixin):
         return self
         
     def transform(self, X):
-        """转换过程：逐日处理中性化"""
+        """转换过程：单次 groupby(['date']) + transform 的高效中性化
+
+        步骤：
+        1) 分位数winsorize：一次性 groupby(date) 计算分位数向量并 clip
+        2) 截面标准化：groupby(date).transform 做 Z-score
+        3) 行业/β中性化与正交化：仅在需要时进行（保持逐日，但已极简）
+        """
         if not self.is_fitted_:
             raise ValueError("Transformer not fitted. Call fit() first.")
             
@@ -67,23 +73,39 @@ class DailyNeutralizationTransformer(BaseEstimator, TransformerMixin):
             # 如果没有日期/股票列，跳过中性化，只做标准化
             return self._simple_standardize(X)
             
-        # 逐日处理
-        result_list = []
-        for date, group in X.groupby(self.date_col):
-            processed_group = self._process_daily_group(group, date)
-            result_list.append(processed_group)
-            
-        result = pd.concat(result_list, ignore_index=True)
-        
-        # 返回特征列（去掉日期/股票列）
-        feature_cols = [c for c in result.columns 
-                       if c not in [self.date_col, self.ticker_col]]
-        
-        if self.orthogonalize_method == 'pca' and len(feature_cols) > 1:
-            # PCA处理返回主成分
-            return result[[c for c in result.columns if c.startswith('PC')]]
-        else:
-            return result[feature_cols]
+        df = X.copy()
+        feature_cols = [c for c in df.columns if c not in [self.date_col, self.ticker_col]]
+
+        if not feature_cols:
+            return self._simple_standardize(df)
+
+        # 1) winsorize（向量化）：每日分位数 -> clip
+        if self.winsorize_quantiles:
+            lower_q, upper_q = self.winsorize_quantiles
+            low = df.groupby(self.date_col)[feature_cols].transform(lambda g: g.quantile(lower_q))
+            high = df.groupby(self.date_col)[feature_cols].transform(lambda g: g.quantile(upper_q))
+            df[feature_cols] = df[feature_cols].clip(lower=low, upper=high)
+
+        # 2) 截面Z-score（向量化）
+        means = df.groupby(self.date_col)[feature_cols].transform('mean')
+        stds = df.groupby(self.date_col)[feature_cols].transform(lambda g: g.std(ddof=0).replace(0, np.nan))
+        df[feature_cols] = (df[feature_cols] - means) / (stds + 1e-12)
+
+        # 3) 行业/β中性化（如启用）
+        if (self.neutralize_industry or self.neutralize_beta) and len(df) > 1:
+            # 逐日 apply，内部用最小代价回归
+            df = df.groupby(self.date_col, group_keys=False).apply(
+                lambda g: self._neutralize_group(g, [c for c in g.columns if c in feature_cols])
+            )
+
+        # 4) 正交化（可选）
+        if self.orthogonalize_method and len(feature_cols) > 1:
+            df = df.groupby(self.date_col, group_keys=False).apply(
+                lambda g: self._orthogonalize_group(g, feature_cols, g[self.date_col].iloc[0])
+            )
+
+        # 返回特征矩阵
+        return df[feature_cols]
             
     def _simple_standardize(self, X):
         """简单标准化（无日期信息时的回退）"""

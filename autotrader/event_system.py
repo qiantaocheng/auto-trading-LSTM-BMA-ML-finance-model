@@ -254,16 +254,15 @@ class EventBus:
         
         for weak_callback in subscribers:
             try:
-                # 检查是否是弱引用
-                if hasattr(weak_callback, '__call__') and not hasattr(weak_callback, '__func__'):
-                    # 直接的函数对象
-                    callback = weak_callback
-                else:
-                    # 弱引用对象
+                # 统一获取真实可调用对象
+                if isinstance(weak_callback, weakref.WeakMethod):
                     callback = weak_callback()
                     if callback is None:
                         invalid_refs.add(weak_callback)
                         continue
+                else:
+                    # 普通函数或已绑定可调用
+                    callback = weak_callback
                 
                 start_time = time.time()
                 callback(event)
@@ -315,16 +314,14 @@ class EventBus:
         
         for weak_callback in subscribers:
             try:
-                # 检查是否是弱引用
-                if hasattr(weak_callback, '__call__') and not hasattr(weak_callback, '__func__'):
-                    # 直接的函数对象
-                    callback = weak_callback
-                else:
-                    # 弱引用对象
+                # 统一获取真实可调用对象
+                if isinstance(weak_callback, weakref.WeakMethod):
                     callback = weak_callback()
                     if callback is None:
                         invalid_refs.add(weak_callback)
                         continue
+                else:
+                    callback = weak_callback
                 
                 start_time = time.time()
                 callback(event)

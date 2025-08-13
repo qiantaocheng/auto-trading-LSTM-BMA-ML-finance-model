@@ -102,7 +102,7 @@ class AdvancedPortfolioOptimizer:
             return cov_matrix + diagonal_reg
     
     def estimate_covariance_matrix(self, returns: pd.DataFrame, 
-                                  factor_returns: Optional[pd.DataFrame] = None) -> np.ndarray:
+                                  factor_returns: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         """
         估计协方差矩阵
         
@@ -127,37 +127,38 @@ class AdvancedPortfolioOptimizer:
             if self.covariance_method == "ledoit_wolf":
                 # Ledoit-Wolf收缩估计
                 lw = LedoitWolf()
-                cov_matrix = lw.fit(returns_clean).covariance_
+                cov_arr = lw.fit(returns_clean).covariance_
                 
             elif self.covariance_method == "oas":
                 # Oracle Approximating Shrinkage
                 oas = OAS()
-                cov_matrix = oas.fit(returns_clean).covariance_
+                cov_arr = oas.fit(returns_clean).covariance_
                 
             elif self.covariance_method == "empirical":
                 # 经验协方差
                 emp = EmpiricalCovariance()
-                cov_matrix = emp.fit(returns_clean).covariance_
+                cov_arr = emp.fit(returns_clean).covariance_
                 
             elif self.covariance_method == "factor_model":
                 # 因子模型协方差
                 if factor_returns is not None:
-                    cov_matrix = self._estimate_factor_covariance(returns_clean, factor_returns)
+                    cov_arr = self._estimate_factor_covariance(returns_clean, factor_returns)
                 else:
                     # 降级到Ledoit-Wolf
                     lw = LedoitWolf()
-                    cov_matrix = lw.fit(returns_clean).covariance_
+                    cov_arr = lw.fit(returns_clean).covariance_
                     
             elif self.covariance_method == "robust":
                 # 稳健协方差估计
-                cov_matrix = self._estimate_robust_covariance(returns_clean)
+                cov_arr = self._estimate_robust_covariance(returns_clean)
                 
             else:
                 # 默认使用样本协方差
-                cov_matrix = returns_clean.cov().values
+                cov_arr = returns_clean.cov().values
             
             # 确保协方差矩阵正定
-            cov_matrix = self._ensure_positive_definite(cov_matrix)
+            cov_arr = self._ensure_positive_definite(cov_arr)
+            cov_matrix = pd.DataFrame(cov_arr, index=returns_clean.columns, columns=returns_clean.columns)
             
             logger.info(f"协方差矩阵估计完成，条件数: {np.linalg.cond(cov_matrix):.2f}")
             
@@ -166,7 +167,8 @@ class AdvancedPortfolioOptimizer:
         except Exception as e:
             logger.error(f"协方差估计失败: {e}")
             n_assets = len(returns.columns)
-            return np.eye(n_assets) * 0.01
+            eye_arr = np.eye(n_assets) * 0.01
+            return pd.DataFrame(eye_arr, index=returns.columns, columns=returns.columns)
     
     def _estimate_factor_covariance(self, returns: pd.DataFrame, 
                                    factor_returns: pd.DataFrame) -> np.ndarray:
@@ -276,6 +278,30 @@ class AdvancedPortfolioOptimizer:
         cov_matrix_pd = eigenvecs @ np.diag(eigenvals) @ eigenvecs.T
         
         return cov_matrix_pd
+
+    def _project_to_capped_simplex(self, weights: np.ndarray, cap: float, target_sum: float = 1.0,
+                                   max_iter: int = 100, tol: float = 1e-9) -> np.ndarray:
+        """将权重投影到 {w_i in [0, cap], sum w_i = target_sum} 的集合。
+        使用对阈值 tau 的二分搜索：w' = clip(w - tau, 0, cap)，使 sum w' = target_sum。
+        """
+        n = len(weights)
+        if n == 0:
+            return weights
+        # 初始区间：tau 低界与高界
+        lo = -cap
+        hi = cap
+        for _ in range(max_iter):
+            tau = (lo + hi) / 2.0
+            w = np.clip(weights - tau, 0.0, cap)
+            s = w.sum()
+            if abs(s - target_sum) < tol:
+                return w
+            if s > target_sum:
+                lo = tau
+            else:
+                hi = tau
+        # 兜底返回最后一次
+        return np.clip(weights - (lo + hi) / 2.0, 0.0, cap)
     
     def optimize_portfolio(self, 
                           expected_returns: pd.Series,
@@ -417,48 +443,26 @@ class AdvancedPortfolioOptimizer:
         
         # 执行优化
         try:
-            # 尝试多种优化器配置（按稳健性排序）
+            # 固定一种优化器：SLSQP 宽容差，较低 maxiter
+            # 在此之前做 top-K 裁剪以减少维度、提升稳定性
+            top_k = min(20, n_assets)
+            if n_assets > top_k:
+                top_idx = np.argsort(-mu)[:top_k]
+                asset_names = [asset_names[i] for i in top_idx]
+                mu = mu[top_idx]
+                mu_scaled = mu_scaled[top_idx]
+                sigma_regularized = sigma_regularized[np.ix_(top_idx, top_idx)]
+                current_weights = current_weights.reindex(asset_names, fill_value=0.0)
+                bounds = Bounds(lb=np.full(top_k, 0.0), ub=np.full(top_k, self.max_position))
+                n_assets = top_k
             optimization_configs = [
-                # 最稳健：信赖域方法
-                {
-                    'method': 'trust-constr',
-                    'options': {
-                        'gtol': 1e-6, 
-                        'xtol': 1e-6,
-                        'barrier_tol': 1e-6,
-                        'disp': False, 
-                        'maxiter': 3000,
-                        'initial_tr_radius': 1.0
-                    }
-                },
-                # 中等稳健：序列二次规划，宽松容差
                 {
                     'method': 'SLSQP',
                     'options': {
-                        'ftol': 1e-4, 
-                        'eps': 1e-6,
-                        'disp': False, 
-                        'maxiter': 2000
-                    }
-                },
-                # 最宽松：快速收敛
-                {
-                    'method': 'SLSQP',
-                    'options': {
-                        'ftol': 1e-3, 
-                        'eps': 1e-5,
-                        'disp': False, 
-                        'maxiter': 1000
-                    }
-                },
-                # 备用：有限内存BFGS
-                {
-                    'method': 'L-BFGS-B',
-                    'options': {
-                        'ftol': 1e-4,
-                        'gtol': 1e-4,
+                        'ftol': 1e-2,    # 降低收敛要求
+                        'eps': 1e-4,     # 降低梯度精度要求
                         'disp': False,
-                        'maxiter': 1000
+                        'maxiter': 200   # 降低最大迭代次数
                     }
                 }
             ]
@@ -517,20 +521,44 @@ class AdvancedPortfolioOptimizer:
             optimal_weights = pd.Series(result.x, index=asset_names)
             
             # 后处理：确保权重合理
-            # 1. 小权重置零
+            # 1) 小权重置零（提高稀疏性）
             weight_threshold = 0.001
             optimal_weights[optimal_weights < weight_threshold] = 0.0
-            
-            # 2. 重新标准化
-            if optimal_weights.sum() > 0:
-                optimal_weights = optimal_weights / optimal_weights.sum()
+
+            # 2) 如果求解失败或结果不佳，使用启发式构造一个多样化的解
+            if (not result.success) or optimal_weights.sum() == 0 or np.isclose(optimal_weights.std(), 0):
+                logger.warning("优化器未返回可用解，使用启发式替代方案")
+                
+                # 基于信号排序的分层权重分配
+                signal_ranks = np.argsort(-mu_scaled)  # 信号从高到低排序
+                n_assets_to_use = min(len(asset_names), max(5, int(len(asset_names) * 0.8)))
+                
+                # 创建分层权重：前20%获得更高权重
+                w0 = np.zeros(len(asset_names))
+                for i, rank_idx in enumerate(signal_ranks[:n_assets_to_use]):
+                    if i < n_assets_to_use // 5:  # 前20%
+                        w0[rank_idx] = 0.12  # 高权重
+                    elif i < n_assets_to_use // 2:  # 中间30%
+                        w0[rank_idx] = 0.08  # 中等权重
+                    else:  # 其余50%
+                        w0[rank_idx] = 0.04  # 低权重
+                
+                # 确保不超过max_position并归一化
+                w0 = np.minimum(w0, self.max_position)
+                if w0.sum() > 0:
+                    w0 = w0 / w0.sum()
+                else:
+                    # 兜底：等权重配置
+                    w0 = np.full(len(asset_names), 1.0 / len(asset_names))
+                    w0 = np.minimum(w0, self.max_position)
+                    w0 = w0 / w0.sum()
+                
+                optimal_weights = pd.Series(w0, index=asset_names)
             else:
-                logger.warning("所有权重为零，回退到等权重")
-                optimal_weights = pd.Series(1.0 / n_assets, index=asset_names)
-            
-            # 3. 确保满足约束
-            optimal_weights = optimal_weights.clip(0, self.max_position)
-            optimal_weights = optimal_weights / optimal_weights.sum()
+                # 3) 正式解：投影到 {0<=w<=cap, sum w = 1}
+                w_vec = optimal_weights.values
+                w_proj = self._project_to_capped_simplex(w_vec, cap=self.max_position, target_sum=1.0)
+                optimal_weights = pd.Series(w_proj, index=asset_names)
             
             # 计算优化后的组合特征
             portfolio_metrics = self._calculate_portfolio_metrics(
@@ -678,23 +706,30 @@ class AdvancedPortfolioOptimizer:
         return metrics
     
     def risk_attribution(self, weights: pd.Series, 
-                         covariance_matrix: np.ndarray) -> Dict[str, Any]:
+                         covariance_matrix) -> Dict[str, Any]:
         """风险归因分析"""
         logger.info("进行风险归因分析")
         
+        # 支持DataFrame或ndarray协方差
+        if hasattr(covariance_matrix, 'values'):
+            sigma = covariance_matrix.values
+        else:
+            sigma = np.asarray(covariance_matrix)
         w = weights.values.reshape(-1, 1)
         
         # 总风险
-        total_risk = np.sqrt(w.T @ covariance_matrix @ w)[0, 0]
+        total_var = float((w.T @ sigma @ w).squeeze())
+        total_risk = float(np.sqrt(max(total_var, 0.0)))
         
         # 边际风险贡献 (MCTR)
-        mctr = (covariance_matrix @ w).flatten() / total_risk
+        denom = total_risk if total_risk > 1e-12 else 1e-12
+        mctr = (sigma @ w).flatten() / denom
         
         # 组件风险贡献 (CTR)
         ctr = weights.values * mctr
         
         # 百分比风险贡献
-        pct_ctr = ctr / (total_risk**2) * 100
+        pct_ctr = ctr / (total_var if total_var > 1e-12 else 1e-12) * 100
         
         attribution_result = {
             'total_risk': total_risk,

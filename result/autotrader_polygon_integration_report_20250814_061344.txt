@@ -1,0 +1,13 @@
+AutoTrader Polygon集成测试报告
+测试时间: 2025-08-14 06:13:44.501717
+整体评估: GOOD - 良好集成
+通过率: 4/5 (80.0%)
+
+详细结果:
+polygon_unified_factors: PASS
+ibkr_autotrader_integration: FAIL
+app_gui_integration: PASS
+data_source_manager_integration: PASS
+end_to_end_workflow: PASS
+
+建议: 主要功能正常，建议修复剩余问题

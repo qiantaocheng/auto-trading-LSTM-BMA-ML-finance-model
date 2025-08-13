@@ -90,8 +90,8 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
             # 应用gap和embargo
             train_end_idx = max(0, test_start_idx - self.config.gap - self.config.embargo)
             
-            # 确保最小训练集大小 - 降低要求以适应小数据集
-            min_train_groups = max(3, self.config.min_train_size // 50)  # 降低要求
+            # 确保最小训练集大小
+            min_train_groups = max(10, self.config.min_train_size // 20)
             if train_end_idx < min_train_groups:
                 logger.warning(f"第{i+1}折训练数据不足，跳过")
                 continue

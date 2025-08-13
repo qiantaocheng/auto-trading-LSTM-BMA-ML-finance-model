@@ -36,9 +36,9 @@ echo ✅ 环境检查通过
 echo.
 
 :: 启动统一GUI界面
-echo 🚀 启动专业交易界面 (包含所有功能)...
+echo [启动] 专业交易界面 (包含所有功能)...
 echo.
-py -3 autotrader/launcher.py
+trading_env\Scripts\python.exe autotrader/launcher.py
 goto end
 
 :end

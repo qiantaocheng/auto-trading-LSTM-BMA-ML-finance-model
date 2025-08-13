@@ -59,7 +59,7 @@ class TradingSystemLauncher:
             return gui
             
         except Exception as e:
-            print(f"❌ GUI模式启动失败: {e}")
+            print(f"[ERROR] GUI模式启动失败: {e}")
             self.logger.error(f"GUI mode failed: {e}")
             return None
             
@@ -81,13 +81,13 @@ class TradingSystemLauncher:
             # 创建策略引擎
             engine = Engine(cfg, trader)
             
-            print("✅ 策略引擎已启动")
-            print("💡 提示: 使用 engine.start() 开始策略执行")
+            print("[OK] 策略引擎已启动")
+            print("[提示] 使用 engine.start() 开始策略执行")
             
             return engine
             
         except Exception as e:
-            print(f"❌ 策略模式启动失败: {e}")
+            print(f"[ERROR] 策略模式启动失败: {e}")
             self.logger.error(f"Strategy mode failed: {e}")
             return None
             
@@ -103,13 +103,13 @@ class TradingSystemLauncher:
             config_manager = get_unified_config()
             trader = IbkrAutoTrader(config_manager=config_manager)
             
-            print("✅ 直接交易器已启动")
-            print("💡 提示: 使用 await trader.connect() 连接到IBKR")
+            print("[OK] 直接交易器已启动")
+            print("[提示] 使用 await trader.connect() 连接到IBKR")
             
             return trader
             
         except Exception as e:
-            print(f"❌ 直接模式启动失败: {e}")
+            print(f"[ERROR] 直接模式启动失败: {e}")
             self.logger.error(f"Direct mode failed: {e}")
             return None
             
@@ -128,10 +128,10 @@ class TradingSystemLauncher:
                 from autotrader.engine import Engine
                 from autotrader.unified_config import get_unified_config
                 test_results['imports'] = True
-                print("  ✅ 核心模块导入成功")
+                print("  [OK] 核心模块导入成功")
             except Exception as e:
                 test_results['imports'] = False
-                print(f"  ❌ 模块导入失败: {e}")
+                print(f"  [ERROR] 模块导入失败: {e}")
                 
             print("🔧 功能组件测试...")
             try:
@@ -140,10 +140,10 @@ class TradingSystemLauncher:
                 db = StockDatabase()
                 configs = db.get_trading_configs()
                 test_results['database'] = True
-                print(f"  ✅ 数据库连接成功，配置数量: {len(configs)}")
+                print(f"  [OK] 数据库连接成功，配置数量: {len(configs)}")
             except Exception as e:
                 test_results['database'] = False
-                print(f"  ❌ 数据库测试失败: {e}")
+                print(f"  [ERROR] 数据库测试失败: {e}")
                 
             print("🎯 组件创建测试...")
             try:
@@ -152,10 +152,10 @@ class TradingSystemLauncher:
                 config_manager = get_unified_config()
                 trader = IbkrAutoTrader(config_manager=config_manager)
                 test_results['trader'] = True
-                print("  ✅ 交易器创建成功")
+                print("  [OK] 交易器创建成功")
             except Exception as e:
                 test_results['trader'] = False
-                print(f"  ❌ 交易器创建失败: {e}")
+                print(f"  [ERROR] 交易器创建失败: {e}")
                 
             # 汇总结果
             passed = sum(test_results.values())
@@ -165,7 +165,7 @@ class TradingSystemLauncher:
             print()
             print("📊 测试结果汇总:")
             for test, result in test_results.items():
-                status = "✅ 通过" if result else "❌ 失败"
+                status = "[OK] 通过" if result else "[ERROR] 失败"
                 print(f"  {test:<15} - {status}")
                 
             print(f"\n🎯 总成功率: {passed}/{total} ({success_rate:.1f}%)")
@@ -178,15 +178,15 @@ class TradingSystemLauncher:
                 return False
                 
         except Exception as e:
-            print(f"❌ 测试模式失败: {e}")
+            print(f"[ERROR] 测试模式失败: {e}")
             self.logger.error(f"Test mode failed: {e}")
             return False
     
     def auto_launcher(self):
         """自动启动器 - 直接启动GUI模式"""
         self.print_banner()
-        print("🚀 正在启动专业交易界面...")
-        print("💡 提示: 所有功能（策略引擎、直接交易、系统测试）已集成到GUI中")
+        print("[启动] 正在启动专业交易界面...")
+        print("[提示] 所有功能（策略引擎、直接交易、系统测试）已集成到GUI中")
         print()
         
         try:
@@ -194,14 +194,14 @@ class TradingSystemLauncher:
             if gui:
                 return gui
             else:
-                print("❌ GUI启动失败，请检查系统环境")
+                print("[ERROR] GUI启动失败，请检查系统环境")
                 return None
                 
         except KeyboardInterrupt:
-            print("\n👋 用户取消，再见！")
+            print("\n[EXIT] 用户取消，再见！")
             return None
         except Exception as e:
-            print(f"❌ 系统启动失败: {e}")
+            print(f"[ERROR] 系统启动失败: {e}")
             return None
 
 

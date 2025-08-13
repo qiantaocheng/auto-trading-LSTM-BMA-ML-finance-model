@@ -77,7 +77,7 @@ def install_all_dependencies():
     
     # 金融数据包
     finance_packages = [
-        "yfinance>=0.1.87",
+        "requests>=2.25.0",
         "tushare>=1.2.89",
         "akshare>=1.8.0",
         "baostock>=0.8.0"
@@ -88,7 +88,7 @@ def install_all_dependencies():
         "scikit-learn>=1.0.0",
         "xgboost>=1.6.0",
         "lightgbm>=3.3.0", 
-        "catboost>=1.0.0",
+        # "# catboost>=1.0.0  # Removed due to compatibility issues",  # Removed due to compatibility issues
         "hyperopt>=0.2.7"
     ]
     
@@ -224,7 +224,7 @@ def verify_installations():
     print("\n🔍 验证关键包安装...")
     
     critical_packages = [
-        "pandas", "numpy", "scipy", "yfinance", "scikit-learn",
+        "pandas", "numpy", "scipy", "requests", "scikit-learn",
         "matplotlib", "seaborn", "openpyxl", "Pillow", "plyer",
         "apscheduler", "tkcalendar"
     ]
@@ -249,7 +249,7 @@ xlrd>=2.0.0
 chardet>=4.0.0
 
 # 金融数据
-yfinance>=0.1.87
+requests>=2.25.0
 tushare>=1.2.89
 akshare>=1.8.0
 baostock>=0.8.0
@@ -258,7 +258,7 @@ baostock>=0.8.0
 scikit-learn>=1.0.0
 xgboost>=1.6.0
 lightgbm>=3.3.0
-catboost>=1.0.0
+# catboost>=1.0.0  # Removed due to compatibility issues
 hyperopt>=0.2.7
 
 # 统计建模
@@ -318,7 +318,7 @@ import importlib.util
 def check_dependencies():
     """检查关键依赖"""
     critical_packages = [
-        "pandas", "numpy", "yfinance", "scikit-learn",
+        "pandas", "numpy", "requests", "scikit-learn",
         "matplotlib", "Pillow", "apscheduler"
     ]
     

@@ -8,7 +8,7 @@ Professional Quantitative Engine V5
 
 import pandas as pd
 import numpy as np
-import yfinance as yf
+from polygon_client import polygon_client, download, Ticker
 import warnings
 import logging
 from datetime import datetime, timedelta
@@ -45,11 +45,8 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-try:
-    from catboost import CatBoostRegressor
-    CATBOOST_AVAILABLE = True
-except ImportError:
-    CATBOOST_AVAILABLE = False
+# CatBoost removed due to compatibility issues
+CATBOOST_AVAILABLE = False
 
 # 配置
 warnings.filterwarnings('ignore')
@@ -174,7 +171,7 @@ class ProfessionalQuantEngine:
         
         for ticker in tickers:
             try:
-                stock = yf.Ticker(ticker)
+                stock = Ticker(ticker)
                 hist = stock.history(start=start_date, end=end_date)
                 
                 if len(hist) < 100:  # 至少需要100天数据
@@ -202,9 +199,9 @@ class ProfessionalQuantEngine:
                 
                 # 添加元数据
                 info = stock.info
-                hist['market_cap'] = info.get('marketCap', 1e9)
-                hist['sector'] = info.get('sector', 'Unknown')
-                hist['country'] = info.get('country', 'Unknown')
+                hist['market_cap'] = info.get('market_cap', info.get('marketCap', 1e9))
+                hist['sector'] = info.get('sector', 'Technology')
+                hist['country'] = info.get('country', info.get('locale', 'us').upper())
                 
                 all_data[ticker] = hist
                 

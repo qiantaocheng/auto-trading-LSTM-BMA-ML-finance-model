@@ -32,7 +32,7 @@ class ReconnectStrategy(Enum):
 class ConnectionConfig:
     """连接配置"""
     host: str = "127.0.0.1"
-    port: int = 4002
+    port: int = 7497
     client_id: int = 3130
     timeout: float = 20.0
     
@@ -486,7 +486,7 @@ def create_connection_manager(ib_client, config_manager,
     # 从配置管理器构建连接配置
     conn_config = ConnectionConfig(
         host=config_manager.get('connection.host', '127.0.0.1'),
-        port=config_manager.get('connection.port', 4002),
+        port=config_manager.get('connection.port', 7497),
         client_id=config_manager.get('connection.client_id', 3130),
         timeout=config_manager.get('connection.timeout', 20.0),
         max_reconnect_attempts=config_manager.get('connection.max_reconnect_attempts', 10),

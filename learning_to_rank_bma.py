@@ -29,11 +29,8 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-try:
-    from catboost import CatBoostRegressor, CatBoostRanker
-    CATBOOST_AVAILABLE = True
-except ImportError:
-    CATBOOST_AVAILABLE = False
+# CatBoost removed due to compatibility issues
+CATBOOST_AVAILABLE = False
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -76,6 +73,57 @@ class LearningToRankBMA:
         
         logger.info(f"LearningToRankBMA初始化完成，排序目标: {ranking_objective}")
     
+    def _create_robust_time_groups(self, dates: pd.Series, min_gap_days: int = 1) -> np.ndarray:
+        """
+        创建严格的时间分组，确保训练测试集之间有足够的时间隔离
+        
+        Args:
+            dates: 日期序列
+            min_gap_days: 最小间隔天数
+            
+        Returns:
+            组ID数组，-1表示buffer区域（不用于训练或测试）
+        """
+        unique_dates = sorted(dates.unique())
+        if len(unique_dates) < 10:
+            logger.warning(f"唯一日期数量过少({len(unique_dates)})，可能影响CV质量")
+        
+        # 将日期分成时间块（确保严格顺序）
+        n_blocks = min(10, len(unique_dates) // 3)  # 最多10个块，每块至少3天
+        if n_blocks < 3:
+            n_blocks = 3
+            
+        # 创建时间块
+        date_to_block = {}
+        dates_per_block = len(unique_dates) // n_blocks
+        
+        for i, date in enumerate(unique_dates):
+            block_id = min(i // dates_per_block, n_blocks - 1)
+            date_to_block[date] = block_id
+        
+        # 创建buffer区域防止边界泄露
+        buffered_mapping = {}
+        for date, block_id in date_to_block.items():
+            if block_id > 0:
+                # 检查是否在块边界的buffer区域内
+                block_start_idx = block_id * dates_per_block
+                if abs(unique_dates.index(date) - block_start_idx) < min_gap_days:
+                    buffered_mapping[date] = -1  # 标记为buffer
+                    continue
+            buffered_mapping[date] = block_id
+        
+        # 映射到原始日期序列
+        group_ids = np.array([buffered_mapping[date] for date in dates])
+        
+        # 过滤掉buffer区域
+        valid_mask = group_ids >= 0
+        n_buffer = np.sum(~valid_mask)
+        n_valid = np.sum(valid_mask)
+        
+        logger.info(f"时间分组创建完成: {n_blocks}个块, {n_valid}个有效样本, {n_buffer}个buffer样本")
+        
+        return group_ids
+    
     def create_ranking_dataset(self, X: pd.DataFrame, y: pd.Series, 
                               dates: pd.Series, group_col: str = 'date') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -106,8 +154,18 @@ class LearningToRankBMA:
         if len(df_temp) == 0:
             raise ValueError("数据清洗后为空")
         
-        # 创建分组ID（每个交易日为一组，且相同日期样本连续）
-        group_ids = pd.factorize(df_temp['date'])[0]
+        # 创建严格的时间分组ID，防止数据泄露
+        group_ids = self._create_robust_time_groups(df_temp['date'])
+        
+        # 过滤掉buffer区域（group_id = -1）
+        valid_mask = group_ids >= 0
+        if not np.any(valid_mask):
+            raise ValueError("所有样本都在buffer区域，无法进行训练")
+            
+        df_temp = df_temp[valid_mask].reset_index(drop=True)
+        group_ids = group_ids[valid_mask]
+        
+        logger.info(f"过滤buffer后剩余样本数: {len(df_temp)}")
         
         # 提取特征和目标
         feature_cols = [col for col in df_temp.columns if col not in ['y', 'date']]
@@ -118,51 +176,103 @@ class LearningToRankBMA:
         
         return X_clean, y_clean, group_ids
 
-    def _discretize_labels_by_group(self, y: np.ndarray, group_ids: np.ndarray, n_bins: int = 10) -> np.ndarray:
-        """增强的标签离散化：更细致分箱+标准化处理"""
+    def _create_smart_labels(self, y: np.ndarray, group_ids: np.ndarray, 
+                            mode: str = 'soft', n_bins: int = 5, temperature: float = 1.0) -> Dict[str, np.ndarray]:
+        """
+        智能标签处理：支持连续、离散和软标签
+        
+        Args:
+            y: 原始连续标签
+            group_ids: 分组ID
+            mode: 'continuous' | 'discrete' | 'soft' | 'multi'
+            n_bins: 离散化分箱数（仅在需要时使用）
+            temperature: 软标签温度参数
+            
+        Returns:
+            包含不同类型标签的字典
+        """
+        results = {
+            'continuous': y.copy(),  # 始终保留原始连续标签
+            'group_ids': group_ids
+        }
+        
         y_series = pd.Series(y)
         g_series = pd.Series(group_ids)
-        labels = np.zeros_like(y, dtype=int)
         
+        # 1. 连续标签标准化（组内）
+        standardized_labels = np.zeros_like(y)
         for g in np.unique(group_ids):
             mask = (g_series == g)
-            if mask.sum() == 0:
+            if mask.sum() <= 1:
                 continue
-            try:
+            y_group = y_series[mask]
+            # 使用Z-score标准化，保留相对排序
+            standardized = (y_group - y_group.mean()) / (y_group.std() + 1e-8)
+            standardized_labels[mask] = standardized.values
+        
+        results['standardized'] = standardized_labels
+        
+        # 2. 离散标签（仅在需要时创建，减少分箱数）
+        if mode in ['discrete', 'multi']:
+            discrete_labels = np.zeros_like(y, dtype=int)
+            for g in np.unique(group_ids):
+                mask = (g_series == g)
+                if mask.sum() <= 1:
+                    continue
+                
                 y_group = y_series[mask]
-                # 方法1：基于组内标准化的分位数分箱
-                if y_group.std() > 0:
-                    y_norm = (y_group - y_group.mean()) / y_group.std()
-                    # 使用标准正态分位点
-                    percentiles = np.linspace(0, 100, n_bins + 1)
-                    bins = np.percentile(y_norm, percentiles)
-                    bins = np.unique(bins)  # 去重
-                    if len(bins) > 1:
-                        qbins = pd.cut(y_norm, bins=bins, labels=False, duplicates='drop')
-                    else:
-                        qbins = np.zeros(len(y_group), dtype=int)
+                if y_group.nunique() <= 1:
+                    discrete_labels[mask] = 0
                 else:
-                    qbins = np.zeros(len(y_group), dtype=int)
+                    try:
+                        # 使用更少的分箱数减少信息损失
+                        effective_bins = min(n_bins, max(3, y_group.nunique() // 2))
+                        discrete_labels[mask] = pd.qcut(
+                            y_group, q=effective_bins, labels=False, duplicates='drop'
+                        ).fillna(0).astype(int)
+                    except Exception:
+                        # 回退到简单二分类
+                        median_val = y_group.median()
+                        discrete_labels[mask] = (y_group > median_val).astype(int)
+            
+            results['discrete'] = discrete_labels
+        
+        # 3. 软标签（概率分布）
+        if mode in ['soft', 'multi']:
+            soft_labels = np.zeros((len(y), n_bins))
+            for g in np.unique(group_ids):
+                mask = (g_series == g)
+                if mask.sum() <= 1:
+                    continue
                 
-                # 方法2：回退到简单分位数
-                if qbins is None or pd.isna(qbins).all():
-                    qbins = pd.qcut(y_group, q=min(n_bins, mask.sum()), labels=False, duplicates='drop')
-                
-                # 归一化并填充NaN
-                if qbins is not None:
-                    qbins = pd.Series(qbins).fillna(0).astype(int)
-                    labels[mask.values] = qbins.values
-                    
-            except Exception:
-                # 最终回退：线性分割
                 y_group = y_series[mask]
-                ranks = y_group.rank(method='first')
-                q = np.floor((ranks - 1) / (max(1, mask.sum() // n_bins)))
-                labels[mask.values] = np.clip(q.astype(int), 0, n_bins - 1)
-                
-        logger.info(f"标签离散化完成：{len(np.unique(labels))}个等级，分布: {np.bincount(labels)}")
-        return labels
+                # 使用温度参数控制软化程度
+                if y_group.std() > 0:
+                    y_scaled = (y_group - y_group.min()) / (y_group.max() - y_group.min() + 1e-8)
+                    
+                    # 创建软标签分布
+                    for i, val in enumerate(y_scaled):
+                        # 基于值计算在各分箱的概率
+                        bin_centers = np.linspace(0, 1, n_bins)
+                        distances = np.abs(bin_centers - val)
+                        probabilities = np.exp(-distances / temperature)
+                        probabilities = probabilities / probabilities.sum()
+                        
+                        mask_indices = np.where(mask)[0]
+                        if i < len(mask_indices):
+                            soft_labels[mask_indices[i]] = probabilities
+            
+            results['soft'] = soft_labels
+        
+        logger.info(f"智能标签创建完成，模式: {mode}, 包含: {list(results.keys())}")
+        return results
+
+    def _discretize_labels_by_group(self, y: np.ndarray, group_ids: np.ndarray, n_bins: int = 10) -> np.ndarray:
+        """向后兼容的离散化方法（建议使用_create_smart_labels）"""
+        labels_dict = self._create_smart_labels(y, group_ids, mode='discrete', n_bins=n_bins)
+        return labels_dict.get('discrete', np.zeros_like(y, dtype=int))
     
+
     def train_ranking_models(self, X: pd.DataFrame, y: pd.Series, dates: pd.Series,
                            cv_folds: int = 5, optimize_hyperparams: bool = True) -> Dict[str, Any]:
         """
@@ -184,23 +294,47 @@ class LearningToRankBMA:
         X_rank, y_rank, group_ids = self.create_ranking_dataset(X, y, dates)
         # 为LightGBM准备离散标签
         y_rank_discrete = self._discretize_labels_by_group(y_rank, group_ids, n_bins=5)
-        # 创建Purged CV（按周分组示例）
+        # 统一使用Purged CV，避免信息泄露
         try:
-            from purged_time_series_cv import ValidationConfig, PurgedGroupTimeSeriesSplit
-            cv = PurgedGroupTimeSeriesSplit(ValidationConfig(
-                n_splits=cv_folds, test_size=63, gap=5, embargo=2, min_train_size=252, group_freq='W'
-            ))
+            from purged_time_series_cv import ValidationConfig, PurgedGroupTimeSeriesSplit, create_time_groups
+            
+            # 创建时间组（按周分组）
+            unique_dates = np.unique(dates)
+            time_groups = create_time_groups(pd.Series(unique_dates), freq='W')
+            
+            # 精简CV配置：更短窗口，更多可用折
+            cv_config = ValidationConfig(
+                n_splits=max(3, min(5, cv_folds)), 
+                test_size=42, 
+                gap=5,
+                embargo=3,
+                min_train_size=126, 
+                group_freq='W'
+            )
+            cv = PurgedGroupTimeSeriesSplit(cv_config)
             unique_groups = np.unique(group_ids)
-            cv_splits = list(cv.split(X_rank, y_rank, group_ids))
-        except Exception:
+            # 确保group_ids是pandas Series
+            if isinstance(group_ids, np.ndarray):
+                group_ids_series = pd.Series(group_ids)
+            else:
+                group_ids_series = group_ids
+            cv_splits = list(cv.split(X_rank, y_rank, group_ids_series))
+            
+            logger.info(f"使用PurgedGroupTimeSeriesSplit，{len(cv_splits)}个fold，gap={cv_config.gap}，embargo={cv_config.embargo}")
+            
+        except Exception as e:
+            logger.warning(f"PurgedGroupTimeSeriesSplit初始化失败: {e}, 回退到TimeSeriesSplit")
             # 回退到简单TimeSeriesSplit
             tscv = TimeSeriesSplit(n_splits=cv_folds)
             unique_groups = np.unique(group_ids)
             cv_splits = list(tscv.split(unique_groups))
-        
-        # 时间序列交叉验证
-        tscv = TimeSeriesSplit(n_splits=cv_folds)
-        unique_groups = np.unique(group_ids)
+            
+        # 确保cv_splits可用
+        if not cv_splits:
+            logger.error("CV splits为空，使用默认分割")
+            tscv = TimeSeriesSplit(n_splits=cv_folds)
+            unique_groups = np.unique(group_ids)
+            cv_splits = list(tscv.split(unique_groups))
         
         models_results = {}
         
@@ -220,25 +354,19 @@ class LearningToRankBMA:
             )
             models_results['lightgbm_ranker'] = lgb_results
         
-        # 3. CatBoost排序模型
-        if CATBOOST_AVAILABLE:
-            logger.info("训练CatBoost排序模型")
-            cat_results = self._train_catboost_ranker(
-                X_rank, y_rank, group_ids, cv_splits, unique_groups, optimize_hyperparams
-            )
-            models_results['catboost_ranker'] = cat_results
+        # CatBoost removed due to compatibility issues
         
         # 4. 分位数回归模型
         logger.info("训练分位数回归模型")
         quantile_results = self._train_quantile_models(
-            X_rank, y_rank, group_ids, tscv, unique_groups
+            X_rank, y_rank, group_ids, cv_splits, unique_groups
         )
         models_results['quantile_models'] = quantile_results
         
         # 5. 传统回归模型（作为基准）
         logger.info("训练传统回归模型")
         baseline_results = self._train_baseline_models(
-            X_rank, y_rank, group_ids, tscv, unique_groups
+            X_rank, y_rank, group_ids, cv_splits, unique_groups
         )
         models_results['baseline_models'] = baseline_results
         
@@ -499,87 +627,10 @@ class LearningToRankBMA:
             'model_type': 'lightgbm_ranker'
         }
     
-    def _train_catboost_ranker(self, X: np.ndarray, y: np.ndarray, group_ids: np.ndarray,
-                              cv_splits, unique_groups: np.ndarray,
-                              optimize_hyperparams: bool) -> Dict[str, Any]:
-        """训练CatBoost排序模型"""
-        if not CATBOOST_AVAILABLE:
-            return {}
-        
-        models = []
-        oof_predictions = np.full(len(X), np.nan)
-        oof_uncertainties = np.full(len(X), np.nan)
-        
-        for split in cv_splits:
-            if isinstance(split[0][0], (np.integer, int)) and len(split[0].shape) == 1:
-                # 样本索引
-                train_mask = np.zeros(len(X), dtype=bool)
-                train_mask[split[0]] = True
-                test_mask = np.zeros(len(X), dtype=bool)
-                test_mask[split[1]] = True
-            else:
-                train_groups_idx, test_groups_idx = split
-                train_groups = unique_groups[train_groups_idx]
-                test_groups = unique_groups[test_groups_idx]
-                train_mask = np.isin(group_ids, train_groups)
-                test_mask = np.isin(group_ids, test_groups)
-            
-            if train_mask.sum() == 0 or test_mask.sum() == 0:
-                continue
-            
-            X_train, y_train = X[train_mask], y[train_mask]
-            X_test = X[test_mask]
-            
-            # 计算组大小
-            train_group_ids = group_ids[train_mask]
-            # 确保组内样本连续：已在创建数据阶段按日期排序+factorize
-            
-            # CatBoost排序参数
-            if optimize_hyperparams:
-                params = {
-                    'loss_function': 'YetiRank',
-                    'iterations': 100,
-                    'learning_rate': 0.1,
-                    'depth': 6,
-                    'l2_leaf_reg': 3,
-                    'verbose': False
-                }
-            else:
-                params = {
-                    'loss_function': 'YetiRank',
-                    'iterations': 100,
-                    'verbose': False
-                }
-            
-            try:
-                model = CatBoostRanker(**params)
-                # 训练模型（CatBoost 要求 group_id 与训练样本一一对应）
-                model.fit(X_train, y_train, group_id=train_group_ids, verbose=False)
-                
-                # 预测
-                test_pred = model.predict(X_test)
-                
-                # 简化的不确定性估计
-                test_uncertainty = np.ones(len(test_pred)) * 0.1
-                
-                oof_predictions[test_mask] = test_pred
-                oof_uncertainties[test_mask] = test_uncertainty
-                
-                models.append(model)
-                
-            except Exception as e:
-                logger.warning(f"CatBoost训练失败: {e}")
-                continue
-        
-        return {
-            'models': models,
-            'oof_predictions': oof_predictions,
-            'oof_uncertainties': oof_uncertainties,
-            'model_type': 'catboost_ranker'
-        }
+    # CatBoost ranker method removed due to compatibility issues
     
     def _train_quantile_models(self, X: np.ndarray, y: np.ndarray, group_ids: np.ndarray,
-                              tscv: TimeSeriesSplit, unique_groups: np.ndarray) -> Dict[str, Any]:
+                              cv_splits: List[Tuple], unique_groups: np.ndarray) -> Dict[str, Any]:
         """训练分位数回归模型"""
         models = {}
         oof_predictions = {}
@@ -591,7 +642,7 @@ class LearningToRankBMA:
             models[f'q{int(quantile*100)}'] = []
             oof_predictions[f'q{int(quantile*100)}'] = np.full(len(X), np.nan)
             
-            for train_groups_idx, test_groups_idx in tscv.split(unique_groups):
+            for train_groups_idx, test_groups_idx in cv_splits:
                 train_groups = unique_groups[train_groups_idx]
                 test_groups = unique_groups[test_groups_idx]
                 
@@ -650,7 +701,7 @@ class LearningToRankBMA:
         }
     
     def _train_baseline_models(self, X: np.ndarray, y: np.ndarray, group_ids: np.ndarray,
-                              tscv: TimeSeriesSplit, unique_groups: np.ndarray) -> Dict[str, Any]:
+                              cv_splits: List[Tuple], unique_groups: np.ndarray) -> Dict[str, Any]:
         """训练基准回归模型"""
         baseline_models = {
             'linear': LinearRegression(),
@@ -664,7 +715,7 @@ class LearningToRankBMA:
             oof_predictions = np.full(len(X), np.nan)
             oof_uncertainties = np.full(len(X), np.nan)
             
-            for train_groups_idx, test_groups_idx in tscv.split(unique_groups):
+            for train_groups_idx, test_groups_idx in cv_splits:
                 train_groups = unique_groups[train_groups_idx]
                 test_groups = unique_groups[test_groups_idx]
                 
@@ -1093,73 +1144,5 @@ def clone(estimator):
     return deepcopy(estimator)
 
 
-# ============ 测试代码 ============
-
-def test_learning_to_rank_bma():
-    """测试Learning-to-Rank BMA"""
-    
-    # 生成模拟数据
-    np.random.seed(42)
-    n_dates = 100
-    n_stocks = 200
-    n_features = 10
-    
-    dates = pd.date_range('2020-01-01', periods=n_dates, freq='D')
-    
-    data = []
-    for date in dates:
-        for stock_id in range(n_stocks):
-            # 生成特征
-            features = np.random.randn(n_features)
-            
-            # 生成目标变量（有一定的信号）
-            signal = np.sum(features[:3] * [0.1, -0.05, 0.08])
-            noise = np.random.randn() * 0.2
-            target = signal + noise
-            
-            row = {'date': date, 'stock_id': stock_id, 'target': target}
-            for i, feat in enumerate(features):
-                row[f'feature_{i}'] = feat
-            
-            data.append(row)
-    
-    df = pd.DataFrame(data)
-    
-    # 准备数据
-    feature_cols = [f'feature_{i}' for i in range(n_features)]
-    X = df[feature_cols]
-    y = df['target']
-    dates = df['date']
-    
-    # 初始化Learning-to-Rank BMA
-    ltrank_bma = LearningToRankBMA(
-        ranking_objective="rank:pairwise",
-        uncertainty_method="ensemble",
-        temperature=1.2
-    )
-    
-    # 训练模型
-    logger.info("开始训练Learning-to-Rank模型")
-    training_results = ltrank_bma.train_ranking_models(
-        X=X, y=y, dates=dates, cv_folds=3, optimize_hyperparams=False
-    )
-    
-    print(f"训练完成，模型类别: {list(training_results.keys())}")
-    
-    # 获取性能总结
-    performance_summary = ltrank_bma.get_performance_summary()
-    print(f"性能总结: {performance_summary}")
-    
-    # 测试预测
-    test_X = X.iloc[:100]  # 使用前100个样本作为测试
-    try:
-        predictions, uncertainties = ltrank_bma.predict_with_uncertainty(test_X)
-        print(f"预测完成，预测形状: {predictions.shape}, 不确定性形状: {uncertainties.shape}")
-        print(f"预测统计: {pd.Series(predictions).describe()}")
-        print(f"不确定性统计: {pd.Series(uncertainties).describe()}")
-    except Exception as e:
-        print(f"预测失败: {e}")
-
-
-if __name__ == "__main__":
-    test_learning_to_rank_bma()
+# 测试代码已移除，避免生产代码包含演示逻辑
+# 如需测试，请参考 tests/ 或 examples/ 目录

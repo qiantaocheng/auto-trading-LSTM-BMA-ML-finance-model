@@ -60,7 +60,7 @@ class DynamicClientIDManager:
         # 清理过期注册
         self._cleanup_expired_registrations()
     
-    def allocate_client_id(self, host: str = "127.0.0.1", port: int = 4002, 
+    def allocate_client_id(self, host: str = "127.0.0.1", port: int = 7497, 
                           preferred_id: Optional[int] = None) -> int:
         """分配一个可用的ClientID"""
         with self.lock:
@@ -252,9 +252,25 @@ class DynamicClientIDManager:
     def _is_process_alive(self, pid: int) -> bool:
         """检查进程是否还活着"""
         try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
+            # Windows兼容的进程检查
+            import platform
+            if platform.system() == "Windows":
+                try:
+                    import psutil
+                    return psutil.pid_exists(pid)
+                except ImportError:
+                    # 回退到os.kill方法，但加强异常处理
+                    try:
+                        os.kill(pid, 0)
+                        return True
+                    except (OSError, PermissionError, ProcessLookupError):
+                        return False
+            else:
+                # Unix/Linux系统
+                os.kill(pid, 0)
+                return True
+        except Exception:
+            # 所有其他异常都视为进程不存在
             return False
     
     def _generate_fallback_id(self) -> int:
@@ -291,7 +307,7 @@ def get_client_id_manager() -> DynamicClientIDManager:
         _global_client_id_manager = DynamicClientIDManager()
     return _global_client_id_manager
 
-def allocate_dynamic_client_id(host: str = "127.0.0.1", port: int = 4002, 
+def allocate_dynamic_client_id(host: str = "127.0.0.1", port: int = 7497, 
                               preferred_id: Optional[int] = None) -> int:
     """便捷函数：分配动态ClientID"""
     manager = get_client_id_manager()
