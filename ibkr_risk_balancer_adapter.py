@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IBKR风控收益平衡器适配器
-连接现有的IBKR交易系统和风控收益平衡器
+IBKR Risk-Reward Balancer Adapter
+Connects existing IBKR trading system with risk-reward balancer
 """
 
 import logging
@@ -12,36 +12,60 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 import pandas as pd
 
-# 添加项目路径
+# Add project path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from risk_reward_balancer_integrated import (
     RiskRewardBalancer, Config, Signal, TradeSide
 )
 
-try:
-    from polygon_client import polygon_client
-    from autotrader.ibkr_auto_trader import IBKRAutoTrader
-    from autotrader.unified_position_manager import UnifiedPositionManager
-    from autotrader.data_source_manager import get_data_source_manager
-    from autotrader.trading_auditor_v2 import TradingAuditor
-except ImportError as e:
-    logging.warning(f"导入现有模块失败: {e}")
+# Use lazy imports to avoid circular dependencies
+polygon_client = None
+IBKRAutoTrader = None
+UnifiedPositionManager = None
+get_data_source_manager = None
+TradingAuditor = None
+
+def _lazy_import():
+    """Lazy import of modules to avoid circular dependencies"""
+    global polygon_client, IBKRAutoTrader, UnifiedPositionManager, get_data_source_manager, TradingAuditor
+    
+    try:
+        if polygon_client is None:
+            from polygon_client import polygon_client as _pc
+            polygon_client = _pc
+            
+        if IBKRAutoTrader is None:
+            from autotrader.ibkr_auto_trader import IbkrAutoTrader
+            IBKRAutoTrader = IbkrAutoTrader
+            
+        if UnifiedPositionManager is None:
+            from autotrader.unified_position_manager import UnifiedPositionManager as _upm
+            UnifiedPositionManager = _upm
+            
+        if TradingAuditor is None:
+            from autotrader.trading_auditor_v2 import TradingAuditor as _ta
+            TradingAuditor = _ta
+            
+        return True
+    except ImportError as e:
+        logging.warning(f"Failed to lazy import modules: {e}")
+        return False
 
 logger = logging.getLogger(__name__)
 
 class IBKRRiskBalancerAdapter:
     """
-    IBKR风控收益平衡器适配器
-    将风控收益平衡器与现有的IBKR交易系统无缝集成
+    IBKR Risk-Reward Balancer Adapter
+    将风控Return balancing器与现有的IBKR交易系统无缝集成
     """
     
     def __init__(self, enable_balancer: bool = False):
         """
-        初始化适配器
+        Initialize adapter
         
         Args:
-            enable_balancer: 是否启用风控收益平衡器
+            enable_balancer: 是否启用风控Return balancing器
         """
         self.enable_balancer = enable_balancer
         
@@ -58,26 +82,32 @@ class IBKRRiskBalancerAdapter:
         self._initialize_components()
         
     def _initialize_components(self):
-        """初始化各个组件"""
+        """Initialize components with lazy imports"""
         try:
-            # 初始化数据源管理器
-            self.data_source_manager = get_data_source_manager()
+            # Lazy import modules
+            if not _lazy_import():
+                logging.warning("Some modules could not be imported, adapter will work in limited mode")
+                return
             
-            # 初始化IBKR交易器
-            if 'IBKRAutoTrader' in globals():
+            # Initialize data source manager
+            if get_data_source_manager:
+                self.data_source_manager = get_data_source_manager()
+            
+            # Initialize IBKR trader
+            if IBKRAutoTrader:
                 self.ibkr_trader = IBKRAutoTrader()
             
-            # 初始化持仓管理器
-            if 'UnifiedPositionManager' in globals():
+            # Initialize position manager
+            if UnifiedPositionManager:
                 self.position_manager = UnifiedPositionManager()
             
-            # 初始化审计器
-            if 'TradingAuditor' in globals():
+            # Initialize auditor
+            if TradingAuditor:
                 self.trading_auditor = TradingAuditor()
             
-            # 初始化风控收益平衡器
+            # Initialize risk balancer
             self.risk_balancer = RiskRewardBalancer(
-                polygon_client=polygon_client if 'polygon_client' in globals() else None,
+                polygon_client=polygon_client,
                 ibkr_trader=self.ibkr_trader,
                 config=self.balancer_config
             )
@@ -85,33 +115,33 @@ class IBKRRiskBalancerAdapter:
             if self.enable_balancer:
                 self.risk_balancer.enable()
                 
-            logger.info("IBKR风控收益平衡器适配器初始化完成")
+            logger.info("IBKR Risk-Reward Balancer Adapter初始化完成")
             
         except Exception as e:
             logger.error(f"组件初始化失败: {e}")
     
     def enable_risk_balancer(self):
-        """启用风控收益平衡器"""
+        """启用风控Return balancing器"""
         self.enable_balancer = True
         if self.risk_balancer:
             self.risk_balancer.enable()
-        logger.info("风控收益平衡器已启用")
+        logger.info("风控Return balancing器已启用")
     
     def disable_risk_balancer(self):
-        """禁用风控收益平衡器"""
+        """禁用风控Return balancing器"""
         self.enable_balancer = False
         if self.risk_balancer:
             self.risk_balancer.disable()
-        logger.info("风控收益平衡器已禁用")
+        logger.info("风控Return balancing器已禁用")
     
     def is_risk_balancer_enabled(self) -> bool:
-        """检查风控收益平衡器状态"""
+        """检查风控Return balancing器状态"""
         return self.enable_balancer and (self.risk_balancer and self.risk_balancer.is_enabled())
     
     def update_balancer_config(self, config_dict: Dict[str, Any]):
-        """更新风控收益平衡器配置"""
+        """更新风控Return balancing器配置"""
         try:
-            # 更新配置对象
+            # Update configuration对象
             for key, value in config_dict.items():
                 if hasattr(self.balancer_config, key):
                     setattr(self.balancer_config, key, value)
@@ -127,14 +157,14 @@ class IBKRRiskBalancerAdapter:
             if self.risk_balancer:
                 self.risk_balancer.update_config(self.balancer_config)
                 
-            logger.info("风控收益平衡器配置已更新")
+            logger.info("风控Return balancing器配置已更新")
             
         except Exception as e:
-            logger.error(f"更新配置失败: {e}")
+            logger.error(f"Update configuration失败: {e}")
     
     def convert_bma_signals_to_risk_signals(self, bma_results: pd.DataFrame) -> List[Signal]:
         """
-        将BMA模型结果转换为风控收益平衡器信号
+        将BMA模型结果转换为风控Return balancing器信号
         
         Args:
             bma_results: BMA模型输出结果
@@ -185,16 +215,16 @@ class IBKRRiskBalancerAdapter:
         
         try:
             if self.position_manager:
-                # 使用持仓管理器获取持仓
+                # 使用持仓管理器Get positions
                 position_data = self.position_manager.get_all_positions()
                 for symbol, position_info in position_data.items():
                     positions[symbol] = position_info.get('quantity', 0)
             elif self.ibkr_trader:
-                # 直接从IBKR获取持仓
+                # 直接从IBKRGet positions
                 positions = self.ibkr_trader.get_positions()
                 
         except Exception as e:
-            logger.error(f"获取持仓失败: {e}")
+            logger.error(f"Get positions失败: {e}")
             
         return positions
     
@@ -223,7 +253,7 @@ class IBKRRiskBalancerAdapter:
             订单列表
         """
         if not self.is_risk_balancer_enabled():
-            logger.info("风控收益平衡器未启用，使用原始交易逻辑")
+            logger.info("风控Return balancing器未启用，使用原始交易逻辑")
             return self._process_signals_original(signals_data)
         
         try:
@@ -244,14 +274,14 @@ class IBKRRiskBalancerAdapter:
             current_positions = self.get_current_positions()
             portfolio_nav = self.get_portfolio_nav()
             
-            # 使用风控收益平衡器处理信号
+            # 使用风控Return balancing器处理信号
             orders = self.risk_balancer.process_signals(
                 signals=signals,
                 current_positions=current_positions,
                 portfolio_nav=portfolio_nav
             )
             
-            logger.info(f"风控收益平衡器处理{len(signals)}个信号，生成{len(orders)}个订单")
+            logger.info(f"风控Return balancing器处理{len(signals)}个信号，生成{len(orders)}个订单")
             
             # 记录审计信息
             if self.trading_auditor:
@@ -267,7 +297,7 @@ class IBKRRiskBalancerAdapter:
             return orders
             
         except Exception as e:
-            logger.error(f"风控收益平衡器处理信号失败: {e}")
+            logger.error(f"风控Return balancing器处理信号失败: {e}")
             # 降级到原始处理逻辑
             return self._process_signals_original(signals_data)
     
@@ -275,7 +305,7 @@ class IBKRRiskBalancerAdapter:
         """原始信号处理逻辑(备用)"""
         try:
             # 这里实现原始的信号处理逻辑
-            # 作为风控收益平衡器的fallback
+            # 作为风控Return balancing器的fallback
             orders = []
             
             if isinstance(signals_data, pd.DataFrame):
@@ -310,7 +340,7 @@ class IBKRRiskBalancerAdapter:
         
         try:
             if self.is_risk_balancer_enabled():
-                # 使用风控收益平衡器的IBKR接口
+                # 使用风控Return balancing器的IBKR接口
                 return self.risk_balancer.send_orders_to_ibkr(orders)
             else:
                 # 使用原始的IBKR接口
@@ -348,7 +378,7 @@ class IBKRRiskBalancerAdapter:
             return False
     
     def get_balancer_stats(self) -> Dict:
-        """获取风控收益平衡器统计信息"""
+        """获取风控Return balancing器统计信息"""
         if self.risk_balancer:
             return self.risk_balancer.get_stats()
         return {}
@@ -367,24 +397,24 @@ class IBKRRiskBalancerAdapter:
 _adapter_instance = None
 
 def get_risk_balancer_adapter(enable_balancer: bool = False) -> IBKRRiskBalancerAdapter:
-    """获取风控收益平衡器适配器单例"""
+    """获取Risk-Reward Balancer Adapter单例"""
     global _adapter_instance
     if _adapter_instance is None:
         _adapter_instance = IBKRRiskBalancerAdapter(enable_balancer=enable_balancer)
     return _adapter_instance
 
 def enable_risk_balancer():
-    """启用风控收益平衡器的便捷函数"""
+    """启用风控Return balancing器的便捷函数"""
     adapter = get_risk_balancer_adapter()
     adapter.enable_risk_balancer()
 
 def disable_risk_balancer():
-    """禁用风控收益平衡器的便捷函数"""
+    """禁用风控Return balancing器的便捷函数"""
     adapter = get_risk_balancer_adapter()
     adapter.disable_risk_balancer()
 
 def is_risk_balancer_enabled() -> bool:
-    """检查风控收益平衡器状态的便捷函数"""
+    """检查风控Return balancing器状态的便捷函数"""
     adapter = get_risk_balancer_adapter()
     return adapter.is_risk_balancer_enabled()
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SQLite数据库模块 - 管理股票列表和交易配置
+SQLite database module - Manages stock lists and trading configurations
 """
 
 import sqlite3
@@ -100,16 +100,16 @@ class StockDatabase:
                 raise
 
     def _init_database(self):
-        """初始化数据库表结构（使用重试机制）"""
+        """Initialize database table structure（using retry mechanism）"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # 开始事务
+                # Start transaction
                 cursor.execute("BEGIN IMMEDIATE;")
                 
                 try:
-                    # 股票列表表
+                    # Stock list table
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS stock_lists (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,7 +120,7 @@ class StockDatabase:
                         )
                     """)
                     
-                    # 股票表
+                    # Stock table
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS stocks (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,7 +133,7 @@ class StockDatabase:
                         )
                     """)
 
-                    # 简化模式：全局tickers表（仅保存股票代码，满足"只存字符串代号"的需求）
+                    # Simplified mode：Global tickers table（only save stock codes，satisfy"only store string codes" requirements）
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS tickers (
                             symbol TEXT PRIMARY KEY,
@@ -141,7 +141,7 @@ class StockDatabase:
                         )
                     """)
                     
-                    # 交易配置表
+                    # Trading configuration table
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS trading_configs (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,7 +154,7 @@ class StockDatabase:
                         )
                     """)
 
-                    # 交易审计表
+                    # Trading audit table
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS trade_history (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,7 +170,7 @@ class StockDatabase:
                         )
                     """)
 
-                    # 风险管理配置表
+                    # Risk management configuration table
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS risk_configs (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,42 +182,42 @@ class StockDatabase:
                     
                     conn.commit()
                     
-                    # 创建默认股票列表
+                    # Create default stock list
                     self._create_default_data()
                     
-                    self.logger.info(f"数据库初始化完成: {self.db_path}")
+                    self.logger.info(f"Database initialization completed: {self.db_path}")
                     
                 except Exception as inner_e:
                     conn.rollback()
-                    self.logger.error(f"数据库表创建失败: {inner_e}")
+                    self.logger.error(f"Database table creation failed: {inner_e}")
                     raise
                 
         except Exception as e:
-            self.logger.error(f"数据库初始化失败: {e}")
+            self.logger.error(f"Database initialization failed: {e}")
             raise
     
     def _create_default_data(self):
-        """创建默认数据"""
+        """Create default data"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # 检查是否已有数据
+                # Check if data already exists
                 cursor.execute("SELECT COUNT(*) FROM stock_lists")
                 if cursor.fetchone()[0] > 0:
-                    return  # 已有数据，不创建默认数据
+                    return  # has数据，notCreate default data
                 
-                # 创建默认股票列表（幂等）
+                # Create default stock list（idempotent）
                 cursor.execute("""
                     INSERT INTO stock_lists (name, description)
-                    VALUES ('科技股', '美股主要科技公司')
+                    VALUES ('Tech Stocks', 'Major US tech companies')
                     ON CONFLICT(name) DO NOTHING
                 """)
-                # 获取或创建后的列表ID
+                # Get or create list ID
                 if cursor.lastrowid:
                     list_id = cursor.lastrowid
                 else:
-                    cursor.execute("SELECT id FROM stock_lists WHERE name=?", ("科技股",))
+                    cursor.execute("SELECT id FROM stock_lists WHERE name=?", ("Tech Stocks",))
                     row = cursor.fetchone()
                     list_id = row[0] if row else None
                 
@@ -237,14 +237,14 @@ class StockDatabase:
                             (list_id, symbol, name),
                         )
                 
-                # 创建默认交易配置（幂等）
+                # 创建默认交易配置（idempotent）
                 cursor.execute("""
                     INSERT INTO trading_configs (name, alloc, poll_sec, auto_sell_removed, fixed_qty)
                     VALUES ('默认配置', 0.03, 10.0, 1, 0)
                     ON CONFLICT(name) DO NOTHING
                 """)
                 
-                # 创建默认风险配置（幂等）
+                # 创建默认风险配置（idempotent）
                 import json as _json
                 default_risk_config = {
                     "default_stop_pct": 0.02,  # 2% 止损
@@ -265,10 +265,10 @@ class StockDatabase:
                 """, (_json.dumps(default_risk_config, ensure_ascii=False),))
                 
                 conn.commit()
-                self.logger.info("默认数据创建完成")
+                self.logger.info("默认数据创建completed")
                 
         except Exception as e:
-            self.logger.warning(f"创建默认数据失败: {e}")
+            self.logger.warning(f"Create default datafailed: {e}")
 
     # ===== 交易审计 API =====
     def record_trade(self, symbol: str, side: str, quantity: int, avg_fill_price: float,
@@ -286,7 +286,7 @@ class StockDatabase:
                 conn.commit()
                 return True
         except Exception as e:
-            self.logger.error(f"记录交易失败: {e}")
+            self.logger.error(f"记录交易failed: {e}")
             return False
 
     def get_recent_trades(self, limit: int = 100) -> List[Dict]:
@@ -305,7 +305,7 @@ class StockDatabase:
                 columns = [desc[0] for desc in cursor.description]
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
         except Exception as e:
-            self.logger.error(f"读取交易记录失败: {e}")
+            self.logger.error(f"读取交易记录failed: {e}")
             return []
 
     # ===== 风险配置 API =====
@@ -326,7 +326,7 @@ class StockDatabase:
                 conn.commit()
                 return True
         except Exception as e:
-            self.logger.error(f"保存风险配置失败: {e}")
+            self.logger.error(f"保存风险配置failed: {e}")
             return False
 
     def get_risk_config(self, name: str = "default") -> Optional[Dict]:
@@ -340,23 +340,23 @@ class StockDatabase:
                     return _json.loads(row[0])
                 return None
         except Exception as e:
-            self.logger.error(f"读取风险配置失败: {e}")
+            self.logger.error(f"读取风险配置failed: {e}")
             return None
 
-    # ===== 简化模式 API：全局 tickers 表 =====
+    # ===== Simplified mode API：全局 tickers 表 =====
     def get_all_tickers(self) -> List[str]:
-        """获取全局 tickers 表中的所有股票代码（大写，按字母排序）。"""
+        """retrieval全局 tickers 表in所has股票代码（大写，按字母排序）。"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT symbol FROM tickers ORDER BY symbol")
                 return [row[0] for row in cursor.fetchall()]
         except Exception as e:
-            self.logger.error(f"获取全局tickers失败: {e}")
+            self.logger.error(f"retrieval全局tickersfailed: {e}")
             return []
     
     def get_stock_universe(self) -> List[str]:
-        """获取股票池（兼容方法，等同于get_all_tickers）"""
+        """retrieval股票池（兼容方法，等同atget_all_tickers）"""
         return self.get_all_tickers()
     
     def clear_tickers(self) -> bool:
@@ -366,14 +366,14 @@ class StockDatabase:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM tickers")
                 conn.commit()
-                self.logger.info("已清空tickers表")
+                self.logger.info("清空tickers表")
                 return True
         except Exception as e:
-            self.logger.error(f"清空tickers表失败: {e}")
+            self.logger.error(f"清空tickers表failed: {e}")
             return False
     
     def batch_add_tickers(self, symbols: List[str]) -> bool:
-        """批量添加股票代码到tickers表"""
+        """批量添加股票代码totickers表"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -388,21 +388,21 @@ class StockDatabase:
                                 VALUES (?, ?)
                             """, (symbol, datetime.now().isoformat()))
                         except sqlite3.OperationalError:
-                            # 如果没有added_at列，只插入symbol
+                            # if果没hasadded_at列，只插入symbol
                             cursor.execute("""
                                 INSERT OR IGNORE INTO tickers (symbol) 
                                 VALUES (?)
                             """, (symbol,))
                 
                 conn.commit()
-                self.logger.info(f"批量添加 {len(symbols)} 只股票到tickers表")
+                self.logger.info(f"批量添加 {len(symbols)} 只股票totickers表")
                 return True
         except Exception as e:
-            self.logger.error(f"批量添加tickers失败: {e}")
+            self.logger.error(f"批量添加tickersfailed: {e}")
             return False
 
     def get_all_tickers_with_meta(self) -> List[Dict]:
-        """获取全局 tickers 及其元数据（symbol, added_at）。"""
+        """retrieval全局 tickers 及其元数据（symbol, added_at）。"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -410,11 +410,11 @@ class StockDatabase:
                 columns = [desc[0] for desc in cursor.description]
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
         except Exception as e:
-            self.logger.error(f"获取全局tickers(含元数据)失败: {e}")
+            self.logger.error(f"retrieval全局tickers(含元数据)failed: {e}")
             return []
 
     def clear_all_tickers(self) -> List[str]:
-        """清空全局 tickers 表，返回之前存在的股票代码。"""
+        """清空全局 tickers 表，返回之before存in股票代码。"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -424,11 +424,11 @@ class StockDatabase:
                 conn.commit()
                 return prev
         except Exception as e:
-            self.logger.error(f"清空全局tickers失败: {e}")
+            self.logger.error(f"清空全局tickersfailed: {e}")
             return []
 
     def add_ticker(self, symbol: str) -> bool:
-        """向全局 tickers 表添加一个股票代码。"""
+        """to全局 tickers 表添加一个股票代码。"""
         try:
             sym = (symbol or "").strip().upper()
             if not sym:
@@ -439,11 +439,11 @@ class StockDatabase:
                 conn.commit()
                 return True
         except Exception as e:
-            self.logger.error(f"添加ticker失败: {symbol} -> {e}")
+            self.logger.error(f"添加tickerfailed: {symbol} -> {e}")
             return False
 
     def remove_ticker(self, symbol: str) -> bool:
-        """从全局 tickers 表移除一个股票代码。"""
+        """from全局 tickers 表移除一个股票代码。"""
         try:
             sym = (symbol or "").strip().upper()
             with sqlite3.connect(self.db_path) as conn:
@@ -452,11 +452,11 @@ class StockDatabase:
                 conn.commit()
                 return cursor.rowcount > 0
         except Exception as e:
-            self.logger.error(f"移除ticker失败: {symbol} -> {e}")
+            self.logger.error(f"移除tickerfailed: {symbol} -> {e}")
             return False
 
     def replace_all_tickers(self, symbols: List[str]) -> Tuple[List[str], int, int]:
-        """用给定symbols替换全局 tickers。返回：(被删除的旧代码, 成功添加数, 失败数)。"""
+        """use给定symbols替换全局 tickers。返回：(be删除旧代码, success添加数, failed数)。"""
         try:
             prev = self.clear_all_tickers()
             success, fail = 0, 0
@@ -473,11 +473,11 @@ class StockDatabase:
                     fail += 1
             return prev, success, fail
         except Exception as e:
-            self.logger.error(f"替换全局tickers失败: {e}")
+            self.logger.error(f"替换全局tickersfailed: {e}")
             return [], 0, 0
     
     def get_stock_lists(self) -> List[Dict]:
-        """获取所有股票列表"""
+        """retrieval所has股票列表"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -494,11 +494,11 @@ class StockDatabase:
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
                 
         except Exception as e:
-            self.logger.error(f"获取股票列表失败: {e}")
+            self.logger.error(f"retrieval股票列表failed: {e}")
             return []
     
     def get_stocks_in_list(self, list_id: int) -> List[Dict]:
-        """获取指定列表中的股票"""
+        """retrieval指定列表in股票"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -513,16 +513,16 @@ class StockDatabase:
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
                 
         except Exception as e:
-            self.logger.error(f"获取股票失败: {e}")
+            self.logger.error(f"retrieval股票failed: {e}")
             return []
     
     def get_stocks_as_csv(self, list_id: int) -> str:
-        """获取股票列表为CSV格式"""
+        """retrieval股票列表asCSV格式"""
         stocks = self.get_stocks_in_list(list_id)
         return ",".join([stock["symbol"] for stock in stocks])
     
     def create_stock_list(self, name: str, description: str = "") -> int:
-        """创建新的股票列表"""
+        """创建新股票列表"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -534,13 +534,13 @@ class StockDatabase:
                 return cursor.lastrowid
                 
         except sqlite3.IntegrityError:
-            raise ValueError(f"股票列表 '{name}' 已存在")
+            raise ValueError(f"股票列表 '{name}' 存in")
         except Exception as e:
-            self.logger.error(f"创建股票列表失败: {e}")
+            self.logger.error(f"创建股票列表failed: {e}")
             raise
     
     def add_stock(self, list_id: int, symbol: str, name: str = "") -> bool:
-        """添加股票到列表"""
+        """添加股票to列表"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -549,7 +549,7 @@ class StockDatabase:
                     VALUES (?, ?, ?)
                 """, (list_id, symbol.upper(), name))
                 
-                # 更新列表的修改时间
+                # updates列表修改when间
                 cursor.execute("""
                     UPDATE stock_lists 
                     SET updated_at = CURRENT_TIMESTAMP 
@@ -560,14 +560,14 @@ class StockDatabase:
                 return True
                 
         except sqlite3.IntegrityError:
-            self.logger.warning(f"股票 {symbol} 已在列表中")
+            self.logger.warning(f"股票 {symbol} in列表in")
             return False
         except Exception as e:
-            self.logger.error(f"添加股票失败: {e}")
+            self.logger.error(f"添加股票failed: {e}")
             return False
     
     def remove_stock(self, list_id: int, symbol: str) -> bool:
-        """从列表中移除股票"""
+        """from列表in移除股票"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -577,7 +577,7 @@ class StockDatabase:
                 """, (list_id, symbol.upper()))
                 
                 if cursor.rowcount > 0:
-                    # 更新列表的修改时间
+                    # updates列表修改when间
                     cursor.execute("""
                         UPDATE stock_lists 
                         SET updated_at = CURRENT_TIMESTAMP 
@@ -588,7 +588,7 @@ class StockDatabase:
                 return False
                 
         except Exception as e:
-            self.logger.error(f"移除股票失败: {e}")
+            self.logger.error(f"移除股票failed: {e}")
             return False
     
     def delete_stock_list(self, list_id: int) -> bool:
@@ -601,11 +601,11 @@ class StockDatabase:
                 return cursor.rowcount > 0
                 
         except Exception as e:
-            self.logger.error(f"删除股票列表失败: {e}")
+            self.logger.error(f"删除股票列表failed: {e}")
             return False
     
     def get_trading_configs(self) -> List[Dict]:
-        """获取所有交易配置"""
+        """retrieval所has交易配置"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -619,7 +619,7 @@ class StockDatabase:
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
                 
         except Exception as e:
-            self.logger.error(f"获取交易配置失败: {e}")
+            self.logger.error(f"retrieval交易配置failed: {e}")
             return []
     
     def save_trading_config(self, name: str, alloc: float, poll_sec: float, 
@@ -637,7 +637,7 @@ class StockDatabase:
                 return True
                 
         except Exception as e:
-            self.logger.error(f"保存交易配置失败: {e}")
+            self.logger.error(f"保存交易配置failed: {e}")
             return False
     
     def load_trading_config(self, name: str) -> Optional[Dict]:
@@ -662,11 +662,11 @@ class StockDatabase:
                 return None
                 
         except Exception as e:
-            self.logger.error(f"加载交易配置失败: {e}")
+            self.logger.error(f"加载交易配置failed: {e}")
             return None
     
     def import_from_csv(self, list_id: int, csv_symbols: str) -> Tuple[int, int]:
-        """从CSV导入股票（返回：成功数量，失败数量）"""
+        """fromCSV导入股票（返回：success数量，failed数量）"""
         success_count = 0
         fail_count = 0
         
@@ -681,19 +681,19 @@ class StockDatabase:
         return success_count, fail_count
     
     def clear_stock_list(self, list_id: int) -> List[str]:
-        """清空股票列表，返回被删除的股票代码列表"""
+        """清空股票列表，返回be删除股票代码列表"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # 先获取要删除的股票代码
+                # 先retrieval要删除股票代码
                 cursor.execute("SELECT symbol FROM stocks WHERE list_id = ?", (list_id,))
                 symbols = [row[0] for row in cursor.fetchall()]
                 
-                # 删除所有股票
+                # 删除所has股票
                 cursor.execute("DELETE FROM stocks WHERE list_id = ?", (list_id,))
                 
-                # 更新列表的修改时间
+                # updates列表修改when间
                 cursor.execute("""
                     UPDATE stock_lists 
                     SET updated_at = CURRENT_TIMESTAMP 
@@ -704,13 +704,13 @@ class StockDatabase:
                 return symbols
                 
         except Exception as e:
-            self.logger.error(f"清空股票列表失败: {e}")
+            self.logger.error(f"清空股票列表failed: {e}")
             return []
     
     def import_from_file_with_clear(self, list_id: int, csv_symbols: str) -> Tuple[List[str], int, int]:
-        """从文件导入股票，先清空原有股票（返回：被删除的股票，成功数量，失败数量）"""
+        """from文件导入股票，先清空原has股票（返回：be删除股票，success数量，failed数量）"""
         try:
-            # 先清空原有股票
+            # 先清空原has股票
             removed_symbols = self.clear_stock_list(list_id)
             
             # 导入新股票
@@ -719,5 +719,5 @@ class StockDatabase:
             return removed_symbols, success_count, fail_count
             
         except Exception as e:
-            self.logger.error(f"文件导入失败: {e}")
+            self.logger.error(f"文件导入failed: {e}")
             return [], 0, 0

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ClientID 动态分配管理器
-解决多实例运行时的ClientID冲突问题
+解决多实例运行whenClientID冲突问题
 """
 
 import os
@@ -12,7 +12,7 @@ import random
 import logging
 from pathlib import Path
 from typing import Optional, Dict
-# 清理：移除未使用的导入
+# 清理：移除未使use导入
 # import socket
 # from typing import Set
 from threading import Lock
@@ -23,7 +23,7 @@ try:
     import fcntl
     HAS_FCNTL = True
 except ImportError:
-    # Windows环境下fcntl不可用，使用替代方案
+    # Windows环境下fcntlnotcanuse，使use替代方案
     HAS_FCNTL = False
 
 @dataclass
@@ -48,13 +48,13 @@ class DynamicClientIDManager:
         # ClientID范围配置
         self.min_client_id = 1000
         self.max_client_id = 9999
-        self.reserved_ids = {7496, 7497}  # TWS默认使用的ID
+        self.reserved_ids = {7496, 7497}  # TWS默认使useID
         
-        # 当前分配的ID
+        # 当before分配ID
         self.current_client_id: Optional[int] = None
         self.registration: Optional[ClientIDRegistration] = None
         
-        # 确保注册文件目录存在
+        # 确保注册文件目录存in
         self.registry_file.parent.mkdir(parents=True, exist_ok=True)
         
         # 清理过期注册
@@ -62,35 +62,35 @@ class DynamicClientIDManager:
     
     def allocate_client_id(self, host: str = "127.0.0.1", port: int = 7497, 
                           preferred_id: Optional[int] = None) -> int:
-        """分配一个可用的ClientID"""
+        """分配一个canuseClientID"""
         with self.lock:
             try:
-                # 如果指定了首选ID且可用，优先使用
+                # if果指定了首选ID且canuse，优先使use
                 if preferred_id and self._is_client_id_available(preferred_id, host, port):
                     client_id = preferred_id
                 else:
-                    # 查找可用的ID
+                    # 查找canuseID
                     client_id = self._find_available_client_id(host, port)
                 
                 # 注册ClientID
                 self._register_client_id(client_id, host, port)
                 self.current_client_id = client_id
                 
-                self.logger.info(f"分配ClientID: {client_id} (Host: {host}:{port})")
+                self.logger.info(f"Assigned ClientID: {client_id} (Host: {host}:{port})")
                 return client_id
                 
             except Exception as e:
-                self.logger.error(f"ClientID分配失败: {e}")
-                # 回退到随机ID
+                self.logger.error(f"ClientID分配failed: {e}")
+                # 回退to随机ID
                 fallback_id = self._generate_fallback_id()
-                self.logger.warning(f"使用回退ClientID: {fallback_id}")
+                self.logger.warning(f"使use回退ClientID: {fallback_id}")
                 return fallback_id
     
     def _find_available_client_id(self, host: str, port: int) -> int:
-        """查找可用的ClientID"""
+        """查找canuseClientID"""
         active_registrations = self._load_active_registrations()
         
-        # 获取已使用的ID
+        # retrieval使useID
         used_ids = set()
         for reg in active_registrations.values():
             if reg.host == host and reg.port == port:
@@ -99,16 +99,16 @@ class DynamicClientIDManager:
         # 添加保留ID
         used_ids.update(self.reserved_ids)
         
-        # 查找可用ID
+        # 查找canuseID
         for client_id in range(self.min_client_id, self.max_client_id + 1):
             if client_id not in used_ids:
                 return client_id
         
-        # 如果没有可用ID，使用随机ID
+        # if果没hascanuseID，使use随机ID
         return self._generate_fallback_id()
     
     def _is_client_id_available(self, client_id: int, host: str, port: int) -> bool:
-        """检查ClientID是否可用"""
+        """checkClientIDis否canuse"""
         if client_id in self.reserved_ids:
             return False
         
@@ -118,7 +118,7 @@ class DynamicClientIDManager:
             if (reg.client_id == client_id and 
                 reg.host == host and 
                 reg.port == port):
-                # 检查进程是否还活着
+                # check进程is否还活着
                 if self._is_process_alive(reg.process_id):
                     return False
         
@@ -140,7 +140,7 @@ class DynamicClientIDManager:
         self._save_registration(registration)
     
     def update_heartbeat(self):
-        """更新心跳时间"""
+        """updates心跳when间"""
         if self.registration:
             self.registration.heartbeat = time.time()
             self._save_registration(self.registration)
@@ -154,13 +154,13 @@ class DynamicClientIDManager:
             self.registration = None
     
     def _load_active_registrations(self) -> Dict[str, ClientIDRegistration]:
-        """加载活跃的注册信息"""
+        """加载活跃注册信息"""
         if not self.registry_file.exists():
             return {}
         
         try:
             with open(self.registry_file, 'r') as f:
-                # 使用文件锁（如果可用）
+                # 使use文件锁（if果canuse）
                 if HAS_FCNTL:
                     fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 data = json.load(f)
@@ -171,7 +171,7 @@ class DynamicClientIDManager:
             for key, reg_data in data.items():
                 reg = ClientIDRegistration(**reg_data)
                 
-                # 检查注册是否过期（30分钟无心跳）
+                # check注册is否过期（30分钟no心跳）
                 if (current_time - reg.heartbeat < 1800 and 
                     self._is_process_alive(reg.process_id)):
                     registrations[key] = reg
@@ -179,20 +179,20 @@ class DynamicClientIDManager:
             return registrations
             
         except Exception as e:
-            self.logger.warning(f"加载注册文件失败: {e}")
+            self.logger.warning(f"加载注册文件failed: {e}")
             return {}
     
     def _save_registration(self, registration: ClientIDRegistration):
         """保存注册信息"""
         try:
-            # 加载现有注册
+            # 加载现has注册
             registrations = self._load_active_registrations()
             
-            # 添加/更新当前注册
+            # 添加/updates当before注册
             key = f"{registration.process_id}_{registration.client_id}"
             registrations[key] = registration
             
-            # 保存到文件
+            # 保存to文件
             with open(self.registry_file, 'w') as f:
                 if HAS_FCNTL:
                     fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -203,7 +203,7 @@ class DynamicClientIDManager:
                 )
             
         except Exception as e:
-            self.logger.error(f"保存注册信息失败: {e}")
+            self.logger.error(f"保存注册信息failed: {e}")
     
     def _remove_registration(self, registration: ClientIDRegistration):
         """移除注册信息"""
@@ -224,17 +224,17 @@ class DynamicClientIDManager:
                     )
             
         except Exception as e:
-            self.logger.error(f"移除注册信息失败: {e}")
+            self.logger.error(f"移除注册信息failed: {e}")
     
     def _cleanup_expired_registrations(self):
-        """清理过期的注册信息"""
+        """清理过期注册信息"""
         try:
             if not self.registry_file.exists():
                 return
             
             active_registrations = self._load_active_registrations()
             
-            # 重新保存活跃的注册（自动清理过期的）
+            # 重新保存活跃注册（自动清理过期）
             with open(self.registry_file, 'w') as f:
                 if HAS_FCNTL:
                     fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -244,22 +244,22 @@ class DynamicClientIDManager:
                     indent=2
                 )
             
-            self.logger.debug(f"清理完成，活跃注册数: {len(active_registrations)}")
+            self.logger.debug(f"清理completed，活跃注册数: {len(active_registrations)}")
             
         except Exception as e:
-            self.logger.warning(f"清理过期注册失败: {e}")
+            self.logger.warning(f"清理过期注册failed: {e}")
     
     def _is_process_alive(self, pid: int) -> bool:
-        """检查进程是否还活着"""
+        """check进程is否还活着"""
         try:
-            # Windows兼容的进程检查
+            # Windows兼容进程check
             import platform
             if platform.system() == "Windows":
                 try:
                     import psutil
                     return psutil.pid_exists(pid)
                 except ImportError:
-                    # 回退到os.kill方法，但加强异常处理
+                    # 回退toos.kill方法，但加强异常处理
                     try:
                         os.kill(pid, 0)
                         return True
@@ -270,7 +270,7 @@ class DynamicClientIDManager:
                 os.kill(pid, 0)
                 return True
         except Exception:
-            # 所有其他异常都视为进程不存在
+            # 所has其他异常都视as进程not存in
             return False
     
     def _generate_fallback_id(self) -> int:
@@ -278,7 +278,7 @@ class DynamicClientIDManager:
         return random.randint(5000, 8999)
     
     def get_registry_status(self) -> Dict:
-        """获取注册状态信息"""
+        """retrieval注册状态信息"""
         active_registrations = self._load_active_registrations()
         
         return {
@@ -301,7 +301,7 @@ class DynamicClientIDManager:
 _global_client_id_manager: Optional[DynamicClientIDManager] = None
 
 def get_client_id_manager() -> DynamicClientIDManager:
-    """获取全局ClientID管理器实例"""
+    """retrieval全局ClientID管理器实例"""
     global _global_client_id_manager
     if _global_client_id_manager is None:
         _global_client_id_manager = DynamicClientIDManager()
@@ -309,7 +309,7 @@ def get_client_id_manager() -> DynamicClientIDManager:
 
 def allocate_dynamic_client_id(host: str = "127.0.0.1", port: int = 7497, 
                               preferred_id: Optional[int] = None) -> int:
-    """便捷函数：分配动态ClientID"""
+    """便捷函数：Assigned dynamic ClientID"""
     manager = get_client_id_manager()
     return manager.allocate_client_id(host, port, preferred_id)
 
@@ -319,6 +319,6 @@ def release_dynamic_client_id():
     manager.release_client_id()
 
 def update_client_id_heartbeat():
-    """便捷函数：更新心跳"""
+    """便捷函数：updates心跳"""
     manager = get_client_id_manager()
     manager.update_heartbeat()

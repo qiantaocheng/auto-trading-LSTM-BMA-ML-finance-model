@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 统一配置管理器，解决配置冲突问题
-解决HotConfig、数据库配置、GUI配置相互冲突的问题
+解决HotConfig、数据库配置、GUI配置相互冲突问题
 """
 
 import json
 import sqlite3
 import logging
 from typing import Dict, Any, Optional, List
-# 清理：移除未使用的导入
+# 清理：移除未使use导入
 # import os
 # from typing import Union
 from pathlib import Path
@@ -25,7 +25,7 @@ class UnifiedConfigManager:
         'file': 2,
         'database': 3,
         'hotconfig': 4,
-        'runtime': 5  # GUI或命令行参数
+        'runtime': 5  # GUIor命令行参数
     }
     
     def __init__(self, base_dir: str = "."):
@@ -42,7 +42,7 @@ class UnifiedConfigManager:
             'runtime': {}
         }
         
-        # 合并后的配置缓存
+        # 合并after配置缓存
         self._merged_config: Optional[Dict[str, Any]] = None
         self._cache_valid = False
         self._last_update = 0
@@ -124,11 +124,11 @@ class UnifiedConfigManager:
         }
     
     def load_all(self, force: bool = False):
-        """加载所有配置源"""
+        """加载所has配置源"""
         with self.lock:
-            self.logger.info("开始加载所有配置源...")
+            self.logger.info("Starting to load all configuration sources...")
             
-            # 检查文件修改时间
+            # check文件修改when间
             if not force and not self._files_changed():
                 return
             
@@ -139,12 +139,12 @@ class UnifiedConfigManager:
                         hot_config = json.load(f)
                         if 'CONFIG' in hot_config:
                             self._configs['hotconfig'] = hot_config['CONFIG']
-                            self.logger.info(f"已加载HotConfig: {self.paths['hotconfig']}")
+                            self.logger.info(f"加载HotConfig: {self.paths['hotconfig']}")
                         
-                        # 更新文件修改时间
+                        # updates文件修改when间
                         self._file_mtimes['hotconfig'] = self.paths['hotconfig'].stat().st_mtime
                 except Exception as e:
-                    self.logger.error(f"加载HotConfig失败: {e}")
+                    self.logger.error(f"加载HotConfigfailed: {e}")
             
             # 2. 加载风险配置文件
             if self.paths['risk'].exists():
@@ -155,23 +155,23 @@ class UnifiedConfigManager:
                             self._configs['file']['risk_management'] = risk_config['risk_management']
                         else:
                             self._configs['file']['risk_management'] = risk_config
-                        self.logger.info(f"已加载风险配置: {self.paths['risk']}")
+                        self.logger.info(f"Risk configuration loaded: {self.paths['risk']}")
                         
                         self._file_mtimes['risk'] = self.paths['risk'].stat().st_mtime
                 except Exception as e:
-                    self.logger.error(f"加载风险配置失败: {e}")
+                    self.logger.error(f"加载风险配置failed: {e}")
             
-            # 3. 加载连接配置文件
+            # 3. 加载connection配置文件
             if self.paths['connection'].exists():
                 try:
                     with open(self.paths['connection'], 'r', encoding='utf-8') as f:
                         connection_data = json.load(f)
                         self._configs['file']['connection'] = connection_data
-                        self.logger.info(f"已加载连接配置: {self.paths['connection']}")
+                        self.logger.info(f"加载connection配置: {self.paths['connection']}")
                         
                         self._file_mtimes['connection'] = self.paths['connection'].stat().st_mtime
                 except Exception as e:
-                    self.logger.error(f"加载连接配置失败: {e}")
+                    self.logger.error(f"加载connection配置failed: {e}")
             
             # 4. 加载数据库配置
             if self.paths['database'].exists():
@@ -179,16 +179,16 @@ class UnifiedConfigManager:
                     self._load_database_config()
                     self._file_mtimes['database'] = self.paths['database'].stat().st_mtime
                 except Exception as e:
-                    self.logger.error(f"加载数据库配置失败: {e}")
+                    self.logger.error(f"加载数据库配置failed: {e}")
             
             # 标记缓存失效
             self._cache_valid = False
             self._last_update = time.time()
             
-            self.logger.info("配置加载完成")
+            self.logger.info("Configuration loading completed")
     
     def _files_changed(self) -> bool:
-        """检查配置文件是否修改"""
+        """check配置文件is否修改"""
         for file_key, path in self.paths.items():
             if path.exists():
                 current_mtime = path.stat().st_mtime
@@ -197,7 +197,7 @@ class UnifiedConfigManager:
         return False
     
     def _load_database_config(self):
-        """从数据库加载配置"""
+        """from数据库加载配置"""
         conn = sqlite3.connect(self.paths['database'])
         cursor = conn.cursor()
         
@@ -208,7 +208,7 @@ class UnifiedConfigManager:
             """)
             
             if cursor.fetchone():
-                # 修复：使用实际的表结构 (config_json列而不是key,value列)
+                # 修复：使use实际表结构 (config_json列而notiskey,value列)
                 cursor.execute("""
                     SELECT config_json FROM risk_configs 
                     WHERE name = '默认风险配置'
@@ -221,28 +221,28 @@ class UnifiedConfigManager:
                         db_risk_config = json.loads(result[0])
                         if db_risk_config:
                             self._configs['database']['risk_management'] = db_risk_config
-                            self.logger.info(f"已加载数据库风险配置: {len(db_risk_config)}项")
+                            self.logger.info(f"Loaded database risk configuration: {len(db_risk_config)} items")
                     except Exception as e:
-                        self.logger.warning(f"解析数据库风险配置失败: {e}")
+                        self.logger.warning(f"解析数据库风险配置failed: {e}")
             
-            # 加载全局tickers作为universe（兼容不同的表结构）
+            # 加载全局tickers作asuniverse（兼容not同表结构）
             try:
                 cursor.execute("SELECT symbol FROM tickers WHERE is_active = 1")
                 tickers = [row[0] for row in cursor.fetchall()]
             except Exception:
-                # 如果没有is_active列，直接查询所有symbol
+                # if果没hasis_active列，直接查询所hassymbol
                 try:
                     cursor.execute("SELECT symbol FROM tickers")
                     tickers = [row[0] for row in cursor.fetchall()]
                 except Exception as e:
-                    self.logger.debug(f"tickers表查询失败: {e}")
+                    self.logger.debug(f"tickers表查询failed: {e}")
                     tickers = []
             
             if tickers:
                 self._configs['database']['scanner'] = {'universe': tickers}
-                self.logger.info(f"已加载数据库tickers: {len(tickers)}条")
+                self.logger.info(f"Loaded database tickers: {len(tickers)} records")
             
-            # 加载引擎配置（可选表，可能不存在）
+            # 加载引擎配置（can选表，can能not存in）
             try:
                 cursor.execute("""
                     SELECT name FROM sqlite_master WHERE type='table' AND name='engine_configs'
@@ -262,20 +262,20 @@ class UnifiedConfigManager:
                     
                     if engine_config:
                         self._configs['database'].update(engine_config)
-                        self.logger.info(f"已加载数据库引擎配置: {len(engine_config)}节")
+                        self.logger.info(f"加载数据库引擎配置: {len(engine_config)}节")
                 else:
-                    self.logger.debug("engine_configs表不存在，跳过引擎配置加载")
+                    self.logger.debug("engine_configs表not存in，跳过引擎配置加载")
             except Exception as e:
-                self.logger.debug(f"引擎配置加载失败: {e}")
+                self.logger.debug(f"引擎配置加载failed: {e}")
                 
         finally:
             conn.close()
     
     def get(self, key_path: str, default: Any = None) -> Any:
-        """获取配置值（支持点号路径）"""
+        """retrieval配置值（支持点号路径）"""
         with self.lock:
-            # 自动重加载检查
-            if time.time() - self._last_update > 60:  # 60秒检查一次
+            # 自动重加载check
+            if time.time() - self._last_update > 60:  # 60 secondscheck一次
                 self.load_all()
             
             config = self._get_merged_config()
@@ -295,7 +295,7 @@ class UnifiedConfigManager:
             return value if value is not None else default
     
     def set_runtime(self, key_path: str, value: Any):
-        """设置运行时配置（最高优先级）"""
+        """settings运行when配置（最高优先级）"""
         with self.lock:
             keys = key_path.split('.')
             config = self._configs['runtime']
@@ -309,35 +309,35 @@ class UnifiedConfigManager:
             config[keys[-1]] = value
             self._cache_valid = False
             
-            self.logger.debug(f"设置运行时配置: {key_path} = {value}")
+            self.logger.debug(f"settings运行when配置: {key_path} = {value}")
     
     def update_runtime_config(self, updates: Dict[str, Any]):
-        """批量更新运行时配置"""
+        """批量updates运行when配置"""
         with self.lock:
             for key_path, value in updates.items():
                 self.set_runtime(key_path, value)
                 
     def save_to_file(self, config_type: str = 'hotconfig') -> bool:
-        """保存配置到文件（持久化）"""
+        """保存配置to文件（持久化）"""
         try:
             with self.lock:
                 if config_type == 'hotconfig':
-                    # 保存合并后的配置到hotconfig文件
+                    # 保存合并after配置tohotconfig文件
                     merged = self._get_merged_config()
                     
-                    # 确保目录存在
+                    # 确保目录存in
                     self.paths['hotconfig'].parent.mkdir(parents=True, exist_ok=True)
                     
                     with open(self.paths['hotconfig'], 'w', encoding='utf-8') as f:
                         json.dump(merged, f, indent=2, ensure_ascii=False)
                     
-                    # 更新文件层配置
+                    # updates文件层配置
                     self._configs['file'] = merged.copy()
-                    self.logger.info(f"配置已保存到 {self.paths['hotconfig']}")
+                    self.logger.info(f"配置保存to {self.paths['hotconfig']}")
                     return True
                     
                 elif config_type == 'connection':
-                    # 保存连接配置
+                    # 保存connection配置
                     conn_config = self.get_connection_params()
                     
                     self.paths['connection'].parent.mkdir(parents=True, exist_ok=True)
@@ -345,23 +345,23 @@ class UnifiedConfigManager:
                     with open(self.paths['connection'], 'w', encoding='utf-8') as f:
                         json.dump(conn_config, f, indent=2, ensure_ascii=False)
                     
-                    self.logger.info(f"连接配置已保存到 {self.paths['connection']}")
+                    self.logger.info(f"connection配置保存to {self.paths['connection']}")
                     return True
                     
         except Exception as e:
-            self.logger.error(f"保存配置失败: {e}")
+            self.logger.error(f"保存配置failed: {e}")
             return False
             
     def persist_runtime_changes(self):
-        """将运行时配置持久化到文件"""
+        """will运行when配置持久化to文件"""
         try:
             with self.lock:
                 if self._configs['runtime']:
-                    # 将runtime配置合并到file配置中
+                    # willruntime配置合并tofile配置in
                     runtime_config = deepcopy(self._configs['runtime'])
                     file_config = deepcopy(self._configs['file'])
                     
-                    # 深度合并
+                    # depth合并
                     def deep_merge(base, updates):
                         for key, value in updates.items():
                             if key in base and isinstance(base[key], dict) and isinstance(value, dict):
@@ -371,26 +371,26 @@ class UnifiedConfigManager:
                     
                     deep_merge(file_config, runtime_config)
                     
-                    # 保存到hotconfig文件
+                    # 保存tohotconfig文件
                     self.paths['hotconfig'].parent.mkdir(parents=True, exist_ok=True)
                     
                     with open(self.paths['hotconfig'], 'w', encoding='utf-8') as f:
                         json.dump(file_config, f, indent=2, ensure_ascii=False)
                     
-                    # 更新file配置并清空runtime
+                    # updatesfile配置并清空runtime
                     self._configs['file'] = file_config
                     self._configs['runtime'] = {}
                     self._cache_valid = False
                     
-                    self.logger.info("运行时配置已持久化")
+                    self.logger.info("运行when配置持久化")
                     return True
                     
         except Exception as e:
-            self.logger.error(f"持久化运行时配置失败: {e}")
+            self.logger.error(f"持久化运行when配置failed: {e}")
             return False
     
     def _get_merged_config(self) -> Dict[str, Any]:
-        """获取合并后的配置"""
+        """retrieval合并after配置"""
         if self._cache_valid and self._merged_config:
             return self._merged_config
         
@@ -401,14 +401,14 @@ class UnifiedConfigManager:
                 self._deep_merge(merged, self._configs[source])
                 self.logger.debug(f"合并配置源: {source}")
         
-        # 原子性设置缓存
+        # 原子性settings缓存
         self._merged_config = merged
         self._cache_valid = True
         
         return merged
     
     def _deep_merge(self, target: Dict, source: Dict):
-        """深度合并字典"""
+        """depth合并字典"""
         for key, value in source.items():
             if key in target and isinstance(target[key], dict) and isinstance(value, dict):
                 self._deep_merge(target[key], value)
@@ -416,11 +416,11 @@ class UnifiedConfigManager:
                 target[key] = deepcopy(value)
     
     def get_universe(self) -> List[str]:
-        """获取统一的股票列表（使用数据源管理器）"""
+        """retrieval统一股票列表（使use数据源管理器）"""
         try:
             from .data_source_manager import get_data_source_manager
             
-            # 使用统一数据源管理器
+            # 使use统一数据源管理器
             data_manager = get_data_source_manager()
             universe = data_manager.get_universe()
             
@@ -428,32 +428,32 @@ class UnifiedConfigManager:
                 return universe
             
         except Exception as e:
-            self.logger.warning(f"数据源管理器获取失败: {e}")
+            self.logger.warning(f"数据源管理器retrievalfailed: {e}")
         
-        # 降级到配置文件
+        # 降级to配置文件
         universe = self.get('scanner.universe', [])
         
         if not universe:
-            self.logger.warning("未配置股票列表，使用默认")
+            self.logger.warning("未配置股票列表，使use默认")
             universe = self._configs['default']['scanner']['universe']
         
         # 确保唯一性并排序
         return sorted(list(set(universe)))
     
     def get_connection_params(self, auto_allocate_client_id: bool = True) -> Dict[str, Any]:
-        """获取连接参数"""
+        """retrievalconnection参数"""
         host = self.get('connection.host')
         port = self.get('connection.port')
         
         if auto_allocate_client_id:
-            # 使用动态ClientID分配
+            # 使use动态ClientID分配
             try:
                 from .client_id_manager import allocate_dynamic_client_id
                 preferred_id = self.get('connection.client_id')
                 client_id = allocate_dynamic_client_id(host, port, preferred_id)
-                self.logger.info(f"分配动态ClientID: {client_id}")
+                self.logger.info(f"Assigned dynamic ClientID: {client_id}")
             except Exception as e:
-                self.logger.warning(f"动态ClientID分配失败，使用配置值: {e}")
+                self.logger.warning(f"动态ClientID分配failed，使use配置值: {e}")
                 client_id = self.get('connection.client_id')
         else:
             client_id = self.get('connection.client_id')
@@ -468,7 +468,7 @@ class UnifiedConfigManager:
         }
     
     def save_to_file(self, filepath: Optional[str] = None):
-        """保存当前合并配置到文件"""
+        """保存当before合并配置to文件"""
         if not filepath:
             filepath = self.base_dir / 'unified_config.json'
         
@@ -481,24 +481,24 @@ class UnifiedConfigManager:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
             
-            self.logger.info(f"配置已保存到: {filepath}")
+            self.logger.info(f"配置保存to: {filepath}")
     
     def save_runtime_to_hotconfig(self):
-        """将运行时配置保存到HotConfig文件"""
+        """will运行when配置保存toHotConfig文件"""
         with self.lock:
             if not self._configs['runtime']:
                 return
             
-            # 读取现有HotConfig
+            # 读取现hasHotConfig
             hot_config = {}
             if self.paths['hotconfig'].exists():
                 try:
                     with open(self.paths['hotconfig'], 'r', encoding='utf-8') as f:
                         hot_config = json.load(f)
                 except Exception as e:
-                    self.logger.error(f"读取HotConfig失败: {e}")
+                    self.logger.error(f"读取HotConfigfailed: {e}")
             
-            # 合并运行时配置
+            # 合并运行when配置
             if 'CONFIG' not in hot_config:
                 hot_config['CONFIG'] = {}
             
@@ -510,43 +510,43 @@ class UnifiedConfigManager:
                 with open(self.paths['hotconfig'], 'w', encoding='utf-8') as f:
                     json.dump(hot_config, f, indent=2, ensure_ascii=False)
                 
-                self.logger.info("运行时配置已保存到HotConfig")
+                self.logger.info("运行when配置保存toHotConfig")
             except Exception as e:
-                self.logger.error(f"保存HotConfig失败: {e}")
+                self.logger.error(f"保存HotConfigfailed: {e}")
     
     def validate(self) -> List[str]:
         """验证配置一致性"""
         issues = []
         config = self._get_merged_config()
         
-        # 检查必要字段
+        # check必要字段
         if not config.get('connection', {}).get('host'):
-            issues.append("缺少连接主机地址")
+            issues.append("缺少connection主机地址")
         
         if not config.get('connection', {}).get('client_id'):
             issues.append("缺少客户端ID")
         
-        # 检查数值范围
+        # check数值范围
         cash_reserve = config.get('capital', {}).get('cash_reserve_pct', 0)
         if not 0 <= cash_reserve <= 1:
             issues.append(f"现金预留比例异常: {cash_reserve}")
         
-        # 检查universe
+        # checkuniverse
         universe = config.get('scanner', {}).get('universe', [])
         if len(universe) == 0:
-            issues.append("股票列表为空")
+            issues.append("股票列表as空")
         elif len(universe) > 500:
             issues.append(f"股票列表过大: {len(universe)}")
         
-        # 检查端口范围
+        # check端口范围
         port = config.get('connection', {}).get('port', 0)
         if port not in [4001, 4002, 7496, 7497]:
-            issues.append(f"不标准的IBKR端口: {port}")
+            issues.append(f"not标准IBKR端口: {port}")
         
         return issues
     
     def print_config_sources(self):
-        """打印所有配置源的内容"""
+        """打印所has配置源内容"""
         with self.lock:
             print("\n" + "="*60)
             print("配置源详细信息")
@@ -574,7 +574,7 @@ class UnifiedConfigManager:
         """检测配置冲突"""
         conflicts = {}
         
-        # 检查同一个配置项在不同源中的不同值
+        # check同一个配置 itemsinnot同源innot同值
         for source1 in self._configs:
             for source2 in self._configs:
                 if source1 >= source2:  # 避免重复比较
@@ -593,7 +593,7 @@ class UnifiedConfigManager:
         return conflicts
     
     def _find_conflicts(self, config1: Dict, config2: Dict, source1: str, source2: str, path: str = "") -> List[str]:
-        """查找两个配置字典间的冲突"""
+        """查找两个配置字典间冲突"""
         conflicts = []
         
         all_keys = set(config1.keys()) | set(config2.keys())
@@ -605,35 +605,35 @@ class UnifiedConfigManager:
                 val1, val2 = config1[key], config2[key]
                 
                 if isinstance(val1, dict) and isinstance(val2, dict):
-                    # 递归检查嵌套字典
+                    # 递归check嵌套字典
                     sub_conflicts = self._find_conflicts(val1, val2, source1, source2, current_path)
                     conflicts.extend(sub_conflicts)
                 elif val1 != val2:
-                    # 值不同
+                    # 值not同
                     conflicts.append(f"{current_path}: {source1}={val1} vs {source2}={val2}")
         
         return conflicts
     
     def clear_runtime_config(self):
-        """清空运行时配置"""
+        """清空运行when配置"""
         with self.lock:
             self._configs['runtime'].clear()
             self._cache_valid = False
-            self.logger.info("已清空运行时配置")
+            self.logger.info("清空运行when配置")
 
 
 # 全局配置管理器实例
 _global_config_manager: Optional[UnifiedConfigManager] = None
 
 def get_unified_config() -> UnifiedConfigManager:
-    """获取全局统一配置管理器"""
+    """retrieval全局统一配置管理器"""
     global _global_config_manager
     if _global_config_manager is None:
         _global_config_manager = UnifiedConfigManager()
     return _global_config_manager
 
 def reload_all_configs():
-    """重新加载所有配置"""
+    """重新加载所has配置"""
     global _global_config_manager
     if _global_config_manager:
         _global_config_manager.load_all(force=True)

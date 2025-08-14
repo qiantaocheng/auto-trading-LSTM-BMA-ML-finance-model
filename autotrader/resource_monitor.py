@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-资源监控器，检测和预防资源泄漏
-监控任务、连接、内存、线程等资源使用情况
+资源监控器，检测and预防资源泄漏
+监控任务、connection、内存、线程等资源使use情况
 """
 
 import asyncio
@@ -28,13 +28,13 @@ class ResourceInfo:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 class ResourceMonitor:
-    """资源监控器，检测和预防资源泄漏"""
+    """资源监控器，检测and预防资源泄漏"""
     
     def __init__(self, enable_traceback: bool = False):
         self.logger = logging.getLogger("ResourceMonitor")
         self.enable_traceback = enable_traceback
         
-        # 资源追踪（使用弱引用避免循环引用）
+        # 资源追踪（使use弱引use避免循环引use）
         self._tasks: weakref.WeakSet = weakref.WeakSet()
         self._connections: weakref.WeakSet = weakref.WeakSet()
         self._handlers: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
@@ -63,7 +63,7 @@ class ResourceMonitor:
         # 监控线程
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_monitoring = threading.Event()
-        self._monitor_interval = 30.0  # 30秒间隔
+        self._monitor_interval = 30.0  # 30 seconds间隔
         
         # 警告回调
         self._warning_callbacks: List[Callable[[str, Dict], None]] = []
@@ -82,9 +82,9 @@ class ResourceMonitor:
         self._total_cleanups = 0
     
     def start_monitoring(self, interval: float = 30.0):
-        """启动监控"""
+        """start监控"""
         if self._monitor_thread and self._monitor_thread.is_alive():
-            self.logger.warning("资源监控已在运行")
+            self.logger.warning("资源监控in运行")
             return
         
         self._monitor_interval = interval
@@ -95,14 +95,14 @@ class ResourceMonitor:
             daemon=True
         )
         self._monitor_thread.start()
-        self.logger.info(f"资源监控已启动，间隔: {interval}秒")
+        self.logger.info(f"Resource monitoring started, interval: {interval} seconds")
     
     def stop_monitoring(self):
         """停止监控"""
         self._stop_monitoring.set()
         if self._monitor_thread:
             self._monitor_thread.join(timeout=5)
-        self.logger.info("资源监控已停止")
+        self.logger.info("资源监控停止")
     
     def add_warning_callback(self, callback: Callable[[str, Dict], None]):
         """添加警告回调函数"""
@@ -123,30 +123,30 @@ class ResourceMonitor:
             self._stop_monitoring.wait(self._monitor_interval)
     
     def _check_all_resources(self):
-        """检查所有资源"""
-        # 1. 检查内存
+        """check所has资源"""
+        # 1. check内存
         self._check_memory()
         
-        # 2. 检查CPU
+        # 2. checkCPU
         self._check_cpu()
         
-        # 3. 检查任务
+        # 3. check任务
         self._check_tasks()
         
-        # 4. 检查连接
+        # 4. checkconnection
         self._check_connections()
         
-        # 5. 检查线程
+        # 5. check线程
         self._check_threads()
         
-        # 6. 检查文件句柄
+        # 6. check文件句柄
         self._check_file_handles()
         
-        # 7. 检查磁盘空间
+        # 7. check磁盘空间
         self._check_disk_space()
     
     def _check_memory(self):
-        """检查内存使用"""
+        """check内存使use"""
         try:
             memory_info = self._process.memory_info()
             memory_mb = memory_info.rss / 1024 / 1024
@@ -158,7 +158,7 @@ class ResourceMonitor:
                 'percent': self._process.memory_percent()
             })
             
-            # 检查内存增长趋势
+            # check内存增长趋势
             if len(self._memory_history) >= 10:
                 recent = list(self._memory_history)[-10:]
                 oldest = recent[0]['rss_mb']
@@ -178,7 +178,7 @@ class ResourceMonitor:
                         if growth_rate > 0.5:  # 50%增长触发强制清理
                             self._trigger_cleanup('memory')
             
-            # 检查内存限制
+            # check内存限制
             if memory_mb > self._memory_limit_mb:
                 self._trigger_warning("memory_limit", {
                     'current_mb': memory_mb,
@@ -193,10 +193,10 @@ class ResourceMonitor:
                 self._last_gc_time = current_time
         
         except Exception as e:
-            self.logger.error(f"内存检查失败: {e}")
+            self.logger.error(f"内存checkfailed: {e}")
     
     def _check_cpu(self):
-        """检查CPU使用"""
+        """checkCPU使use"""
         try:
             cpu_percent = self._process.cpu_percent()
             
@@ -205,22 +205,22 @@ class ResourceMonitor:
                 'cpu_percent': cpu_percent
             })
             
-            # 检查CPU持续高使用
+            # checkCPU持续高使use
             if len(self._cpu_history) >= 5:
                 recent_cpu = [item['cpu_percent'] for item in list(self._cpu_history)[-5:]]
                 avg_cpu = sum(recent_cpu) / len(recent_cpu)
                 
-                if avg_cpu > 80:  # 80% CPU使用
+                if avg_cpu > 80:  # 80% CPU使use
                     self._trigger_warning("high_cpu", {
                         'average_cpu': avg_cpu,
                         'current_cpu': cpu_percent
                     })
         
         except Exception as e:
-            self.logger.error(f"CPU检查失败: {e}")
+            self.logger.error(f"CPUcheckfailed: {e}")
     
     def _check_tasks(self):
-        """检查异步任务"""
+        """check异步任务"""
         try:
             active_tasks = len(self._tasks)
             self._resource_stats['tasks']['active'] = active_tasks
@@ -236,20 +236,20 @@ class ResourceMonitor:
                 })
                 self._trigger_cleanup('tasks')
             
-            # 检查僵尸任务
+            # check僵尸任务
             zombie_tasks = []
             for task in list(self._tasks):
                 if hasattr(task, 'done') and task.done():
                     zombie_tasks.append(task)
             
             if zombie_tasks:
-                self.logger.debug(f"发现 {len(zombie_tasks)} 个已完成的任务")
+                self.logger.debug(f"发现 {len(zombie_tasks)} 个completed任务")
         
         except Exception as e:
-            self.logger.error(f"任务检查失败: {e}")
+            self.logger.error(f"任务checkfailed: {e}")
     
     def _check_connections(self):
-        """检查连接"""
+        """checkconnection"""
         try:
             active_connections = len(self._connections)
             self._resource_stats['connections']['active'] = active_connections
@@ -262,10 +262,10 @@ class ResourceMonitor:
                 self._trigger_cleanup('connections')
         
         except Exception as e:
-            self.logger.error(f"连接检查失败: {e}")
+            self.logger.error(f"connectioncheckfailed: {e}")
     
     def _check_threads(self):
-        """检查线程状态"""
+        """check线程状态"""
         try:
             threads = threading.enumerate()
             thread_count = len(threads)
@@ -287,15 +287,15 @@ class ResourceMonitor:
                         'daemon': thread.daemon
                     })
                 
-                self.logger.warning(f"当前线程数: {thread_count}")
-                for info in thread_info[:10]:  # 只显示前10个
+                self.logger.warning(f"当before线程数: {thread_count}")
+                for info in thread_info[:10]:  # 只显示before10个
                     self.logger.debug(f"  - {info}")
         
         except Exception as e:
-            self.logger.error(f"线程检查失败: {e}")
+            self.logger.error(f"线程checkfailed: {e}")
     
     def _check_file_handles(self):
-        """检查文件句柄"""
+        """check文件句柄"""
         try:
             open_files = self._process.open_files()
             num_files = len(open_files)
@@ -321,17 +321,17 @@ class ResourceMonitor:
                     self.logger.debug(f"  - {info}")
         
         except (psutil.AccessDenied, psutil.NoSuchProcess):
-            pass  # 某些系统不允许访问文件句柄信息
+            pass  # 某些系统not允许访问文件句柄信息
         except Exception as e:
-            self.logger.error(f"文件句柄检查失败: {e}")
+            self.logger.error(f"文件句柄checkfailed: {e}")
     
     def _check_disk_space(self):
-        """检查磁盘空间"""
+        """check磁盘空间"""
         try:
             disk_usage = psutil.disk_usage('.')
             free_gb = disk_usage.free / (1024**3)
             
-            if free_gb < 1.0:  # 少于1GB
+            if free_gb < 1.0:  # 少at1GB
                 self._trigger_warning("low_disk_space", {
                     'free_gb': free_gb,
                     'total_gb': disk_usage.total / (1024**3),
@@ -339,7 +339,7 @@ class ResourceMonitor:
                 })
         
         except Exception as e:
-            self.logger.error(f"磁盘空间检查失败: {e}")
+            self.logger.error(f"磁盘空间checkfailed: {e}")
     
     def _trigger_warning(self, warning_type: str, data: Dict[str, Any]):
         """触发警告"""
@@ -348,14 +348,14 @@ class ResourceMonitor:
         
         self.logger.warning(warning_msg)
         
-        # 调用回调函数
+        # 调use回调函数
         for callback in self._warning_callbacks:
             try:
                 callback(warning_type, data)
             except Exception as e:
-                self.logger.error(f"警告回调失败: {e}")
+                self.logger.error(f"警告回调failed: {e}")
         
-        # 记录到性能警告历史
+        # 记录to性能警告历史
         self._performance_alerts.append({
             'timestamp': time.time(),
             'type': warning_type,
@@ -375,14 +375,14 @@ class ResourceMonitor:
                 self.logger.info(f"触发{resource_type}资源清理...")
                 self._cleanup_strategies[resource_type]()
             except Exception as e:
-                self.logger.error(f"{resource_type}清理失败: {e}")
+                self.logger.error(f"{resource_type}清理failed: {e}")
     
     def _cleanup_memory(self):
         """内存清理"""
         # 强制垃圾回收
         self._force_garbage_collection()
         
-        # 清理弱引用集合
+        # 清理弱引use集合
         self._tasks = weakref.WeakSet([t for t in self._tasks if not getattr(t, 'done', lambda: True)()])
         
         # 清理内存历史
@@ -399,9 +399,9 @@ class ResourceMonitor:
         for task in list(self._tasks):
             if hasattr(task, 'done'):
                 if task.done():
-                    continue  # 已完成的任务会被弱引用自动清理
+                    continue  # completed任务会be弱引use自动清理
                 elif hasattr(task, 'cancel'):
-                    # 取消未完成的任务
+                    # 取消未completed任务
                     try:
                         task.cancel()
                         cancelled_count += 1
@@ -409,10 +409,10 @@ class ResourceMonitor:
                         pass
         
         if cancelled_count > 0:
-            self.logger.info(f"已取消 {cancelled_count} 个任务")
+            self.logger.info(f"取消 {cancelled_count} 个任务")
     
     def _cleanup_connections(self):
-        """连接清理"""
+        """connection清理"""
         closed_count = 0
         
         for conn in list(self._connections):
@@ -424,7 +424,7 @@ class ResourceMonitor:
                     pass
         
         if closed_count > 0:
-            self.logger.info(f"已关闭 {closed_count} 个连接")
+            self.logger.info(f"关闭 {closed_count} 个connection")
     
     def _cleanup_files(self):
         """文件清理"""
@@ -439,13 +439,13 @@ class ResourceMonitor:
                     pass
         
         if closed_count > 0:
-            self.logger.info(f"已关闭 {closed_count} 个文件")
+            self.logger.info(f"关闭 {closed_count} 个文件")
     
     def _force_garbage_collection(self):
         """强制垃圾回收"""
         before = len(gc.get_objects())
         
-        # 执行全面的垃圾回收
+        # 执行全面垃圾回收
         for _ in range(3):
             collected = gc.collect()
             if collected == 0:
@@ -453,11 +453,11 @@ class ResourceMonitor:
         
         after = len(gc.get_objects())
         
-        self.logger.debug(f"垃圾回收: {before} -> {after} 对象 (减少 {before - after})")
+        self.logger.debug(f"垃圾回收: {before} -> {after} for象 (减少 {before - after})")
     
     def _update_statistics(self):
-        """更新统计信息"""
-        # 更新峰值统计
+        """updates统计信息"""
+        # updates峰值统计
         for resource_type in self._resource_stats:
             current = self._resource_stats[resource_type]['active']
             self._resource_stats[resource_type]['peak'] = max(
@@ -477,7 +477,7 @@ class ResourceMonitor:
             task._resource_traceback = traceback.format_stack()
     
     def register_connection(self, conn: Any, metadata: Optional[Dict] = None):
-        """注册连接"""
+        """注册connection"""
         self._connections.add(conn)
         self._resource_stats['connections']['created'] += 1
         self._resource_stats['connections']['total_created'] += 1
@@ -494,9 +494,9 @@ class ResourceMonitor:
         self._resource_stats['handlers']['created'] += 1
         self._resource_stats['handlers']['total_created'] += 1
     
-    # 获取统计信息
+    # retrieval统计信息
     def get_stats(self) -> Dict[str, Any]:
-        """获取统计信息"""
+        """retrieval统计信息"""
         try:
             memory_info = self._process.memory_info()
             cpu_percent = self._process.cpu_percent()
@@ -539,15 +539,15 @@ class ResourceMonitor:
                     'total_warnings': self._total_warnings,
                     'total_cleanups': self._total_cleanups,
                     'recent_alerts': len([a for a in self._performance_alerts 
-                                        if time.time() - a['timestamp'] < 3600])  # 1小时内
+                                        if time.time() - a['timestamp'] < 3600])  # 1小when内
                 }
             }
         except Exception as e:
-            self.logger.error(f"获取统计信息失败: {e}")
+            self.logger.error(f"retrieval统计信息failed: {e}")
             return {}
     
     def _get_average_cpu(self, seconds: int) -> float:
-        """获取指定时间内的平均CPU使用率"""
+        """retrieval指定when间内平均CPU使use率"""
         current_time = time.time()
         recent_cpu = [
             item['cpu_percent'] for item in self._cpu_history
@@ -557,7 +557,7 @@ class ResourceMonitor:
         return sum(recent_cpu) / len(recent_cpu) if recent_cpu else 0.0
     
     def get_recent_alerts(self, hours: int = 1) -> List[Dict]:
-        """获取最近的警告"""
+        """retrieval最近警告"""
         cutoff_time = time.time() - (hours * 3600)
         return [
             alert for alert in self._performance_alerts
@@ -565,8 +565,8 @@ class ResourceMonitor:
         ]
     
     def force_cleanup_all(self):
-        """强制清理所有资源"""
-        self.logger.info("开始强制清理所有资源...")
+        """强制清理所has资源"""
+        self.logger.info("starting强制清理所has资源...")
         
         for resource_type in self._cleanup_strategies:
             self._trigger_cleanup(resource_type)
@@ -574,21 +574,21 @@ class ResourceMonitor:
         # 强制垃圾回收
         self._force_garbage_collection()
         
-        self.logger.info("强制清理完成")
+        self.logger.info("强制清理completed")
 
 
 # 全局资源监控器
 _global_resource_monitor: Optional[ResourceMonitor] = None
 
 def get_resource_monitor() -> ResourceMonitor:
-    """获取全局资源监控器"""
+    """retrieval全局资源监控器"""
     global _global_resource_monitor
     if _global_resource_monitor is None:
         _global_resource_monitor = ResourceMonitor()
     return _global_resource_monitor
 
 def start_global_monitoring(interval: float = 30.0):
-    """启动全局资源监控"""
+    """start全局资源监控"""
     monitor = get_resource_monitor()
     monitor.start_monitoring(interval)
 
@@ -599,11 +599,11 @@ def stop_global_monitoring():
         _global_resource_monitor.stop_monitoring()
 
 def register_task(task: asyncio.Task):
-    """注册任务到全局监控"""
+    """注册任务to全局监控"""
     monitor = get_resource_monitor()
     monitor.register_task(task)
 
 def register_connection(conn: Any):
-    """注册连接到全局监控"""
+    """注册connectionto全局监控"""
     monitor = get_resource_monitor()
     monitor.register_connection(conn)

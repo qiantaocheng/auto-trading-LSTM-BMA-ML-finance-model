@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 任务生命周期管理器 - 防止内存泄漏
-统一管理所有asyncio任务的创建、监控和清理
+统一管理所hasasyncio任务创建、监控and清理
 """
 
 import asyncio
@@ -24,7 +24,7 @@ class TaskInfo:
     creator: str
     description: str
     cleanup_callback: Optional[Callable] = None
-    max_lifetime: Optional[float] = None  # 最大生存时间（秒）
+    max_lifetime: Optional[float] = None  # 最大生存when间（ seconds）
 
 class TaskLifecycleManager:
     """任务生命周期管理器"""
@@ -47,7 +47,7 @@ class TaskLifecycleManager:
         }
         
         # 配置
-        self.max_task_lifetime = 3600.0  # 默认1小时最大生存时间
+        self.max_task_lifetime = 3600.0  # 默认1小when最大生存when间
         self.cleanup_interval = 300.0   # 5分钟清理间隔
         self.warn_threshold = 100       # 任务数量警告阈值
         
@@ -78,51 +78,51 @@ class TaskLifecycleManager:
         )
         
         with self._lock:
-            # 检查重复ID
+            # check重复ID
             if task_id in self._tasks:
-                self.logger.warning(f"任务ID重复: {task_id}，将覆盖")
+                self.logger.warning(f"任务ID重复: {task_id}，will覆盖")
                 old_task = self._tasks[task_id].task
                 if not old_task.done():
                     old_task.cancel()
             
             self._tasks[task_id] = task_info
             
-            # 添加到组
+            # 添加to组
             if group:
                 self._task_groups[group].add(task_id)
             
             self._stats['created'] += 1
         
-        # 添加完成回调
+        # 添加completed回调
         task.add_done_callback(lambda t: self._on_task_done(task_id, t))
         
         self.logger.debug(f"创建任务: {task_id} ({creator}) - {description}")
         
-        # 检查任务数量
+        # check任务数量
         if len(self._tasks) > self.warn_threshold:
             self.logger.warning(f"活跃任务数量过多: {len(self._tasks)}")
         
         return task
     
     def _on_task_done(self, task_id: str, task: asyncio.Task):
-        """任务完成回调"""
+        """任务completed回调"""
         with self._lock:
             task_info = self._tasks.pop(task_id, None)
             if not task_info:
                 return
             
-            # 从组中移除
+            # from组in移除
             for group_tasks in self._task_groups.values():
                 group_tasks.discard(task_id)
             
-            # 更新统计
+            # updates统计
             if task.cancelled():
                 self._stats['cancelled'] += 1
             elif task.exception():
                 self._stats['completed'] += 1
                 exception = task.exception()
                 if not isinstance(exception, asyncio.CancelledError):
-                    self.logger.warning(f"任务异常完成 {task_id}: {exception}")
+                    self.logger.warning(f"任务异常completed {task_id}: {exception}")
             else:
                 self._stats['completed'] += 1
             
@@ -130,15 +130,15 @@ class TaskLifecycleManager:
             if task_info.cleanup_callback:
                 try:
                     if asyncio.iscoroutinefunction(task_info.cleanup_callback):
-                        # 异步回调需要在事件循环中执行
+                        # 异步回调需要in事件循环in执行
                         asyncio.create_task(task_info.cleanup_callback())
                     else:
                         task_info.cleanup_callback()
                 except Exception as e:
-                    self.logger.error(f"任务清理回调失败 {task_id}: {e}")
+                    self.logger.error(f"任务清理回调failed {task_id}: {e}")
                     self._stats['cleanup_errors'] += 1
         
-        self.logger.debug(f"任务完成: {task_id}")
+        self.logger.debug(f"任务completed: {task_id}")
     
     def cancel_task(self, task_id: str, reason: str = "") -> bool:
         """取消指定任务"""
@@ -152,7 +152,7 @@ class TaskLifecycleManager:
             return True
     
     def cancel_group(self, group: str, reason: str = "") -> int:
-        """取消整个组的任务"""
+        """取消整个组任务"""
         cancelled_count = 0
         with self._lock:
             task_ids = list(self._task_groups.get(group, set()))
@@ -165,7 +165,7 @@ class TaskLifecycleManager:
         return cancelled_count
     
     def get_task(self, task_id: str) -> Optional[asyncio.Task]:
-        """获取任务"""
+        """retrieval任务"""
         with self._lock:
             task_info = self._tasks.get(task_id)
             return task_info.task if task_info else None
@@ -184,7 +184,7 @@ class TaskLifecycleManager:
             return tasks.copy()
     
     def get_stats(self) -> Dict[str, Any]:
-        """获取统计信息"""
+        """retrieval统计信息"""
         with self._lock:
             active_tasks = len(self._tasks)
             active_groups = {k: len(v) for k, v in self._task_groups.items() if v}
@@ -213,7 +213,7 @@ class TaskLifecycleManager:
             }
     
     def _start_cleanup_monitor(self):
-        """启动清理监控任务"""
+        """start清理监控任务"""
         async def cleanup_monitor():
             while True:
                 try:
@@ -227,28 +227,28 @@ class TaskLifecycleManager:
         try:
             self._cleanup_task = asyncio.create_task(cleanup_monitor())
         except RuntimeError:
-            # 没有运行的事件循环，稍后再启动
-            self.logger.debug("暂无事件循环，清理监控将稍后启动")
+            # 没has运行事件循环，稍after再start
+            self.logger.debug("暂no事件循环，清理监控will稍afterstart")
     
     async def _periodic_cleanup(self):
-        """定期清理过期和异常任务"""
+        """定期清理过期and异常任务"""
         current_time = time.time()
         expired_tasks = []
         leaked_tasks = []
         
         with self._lock:
             for task_id, task_info in list(self._tasks.items()):
-                # 检查过期任务
+                # check过期任务
                 if current_time - task_info.created_at > task_info.max_lifetime:
                     expired_tasks.append(task_id)
                 
-                # 检查泄漏任务（已完成但未清理）
+                # check泄漏任务（completed但未清理）
                 if task_info.task.done() and task_id in self._tasks:
                     leaked_tasks.append(task_id)
         
         # 清理过期任务
         for task_id in expired_tasks:
-            self.cancel_task(task_id, "任务超时")
+            self.cancel_task(task_id, "任务超when")
         
         # 清理泄漏任务
         for task_id in leaked_tasks:
@@ -261,7 +261,7 @@ class TaskLifecycleManager:
     
     async def shutdown(self):
         """关闭管理器"""
-        self.logger.info("开始关闭任务生命周期管理器...")
+        self.logger.info("starting关闭任务生命周期管理器...")
         
         # 停止清理监控
         if self._cleanup_task:
@@ -271,7 +271,7 @@ class TaskLifecycleManager:
             except asyncio.CancelledError:
                 pass
         
-        # 取消所有活跃任务
+        # 取消所has活跃任务
         active_tasks = []
         with self._lock:
             for task_info in self._tasks.values():
@@ -279,9 +279,9 @@ class TaskLifecycleManager:
                     task_info.task.cancel()
                     active_tasks.append(task_info.task)
         
-        # 等待任务完成
+        # 等待任务completed
         if active_tasks:
-            self.logger.info(f"等待 {len(active_tasks)} 个任务完成...")
+            self.logger.info(f"等待 {len(active_tasks)} 个任务completed...")
             await asyncio.gather(*active_tasks, return_exceptions=True)
         
         # 清理状态
@@ -289,12 +289,12 @@ class TaskLifecycleManager:
             self._tasks.clear()
             self._task_groups.clear()
         
-        self.logger.info("任务生命周期管理器已关闭")
+        self.logger.info("任务生命周期管理器关闭")
     
     def force_cleanup(self):
         """强制清理（同步方法）"""
         with self._lock:
-            # 取消所有任务
+            # 取消所has任务
             for task_info in self._tasks.values():
                 if not task_info.task.done():
                     task_info.task.cancel()
@@ -311,7 +311,7 @@ class TaskLifecycleManager:
 _global_task_manager: Optional[TaskLifecycleManager] = None
 
 def get_task_manager() -> TaskLifecycleManager:
-    """获取全局任务生命周期管理器实例（兼容接口）"""
+    """retrieval全局任务生命周期管理器实例（兼容接口）"""
     global _global_task_manager
     if _global_task_manager is None:
         _global_task_manager = TaskLifecycleManager()
@@ -321,8 +321,8 @@ def create_managed_task(coro, task_id: Optional[str] = None,
                        creator: str = "unknown", description: str = "",
                        group: Optional[str] = None, 
                        cleanup_callback: Optional[Callable] = None) -> asyncio.Task:
-    """便捷函数：创建受管理的任务"""
-    # 自动获取调用者信息
+    """便捷函数：创建受管理任务"""
+    # 自动retrieval调use者信息
     if creator == "unknown":
         import inspect
         frame = inspect.currentframe().f_back

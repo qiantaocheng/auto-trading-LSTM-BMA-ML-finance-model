@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-增强的配置缓存系统
+增强配置缓存系统
 提供智能配置缓存、部分失效、预加载等优化功能
 """
 
@@ -18,25 +18,25 @@ import weakref
 
 @dataclass
 class CacheEntry:
-    """缓存条目"""
+    """缓存 records目"""
     value: Any
     timestamp: float
     access_count: int = 0
     last_access: float = field(default_factory=time.time)
-    dependencies: Set[str] = field(default_factory=set)  # 依赖的其他键
+    dependencies: Set[str] = field(default_factory=set)  # 依赖其他键
     version: int = 1
     
     def update_access(self):
-        """更新访问统计"""
+        """updates访问统计"""
         self.access_count += 1
         self.last_access = time.time()
 
 class EnhancedConfigCache:
-    """增强的配置缓存系统"""
+    """增强配置缓存系统"""
     
     def __init__(self,
                  max_entries: int = 1000,
-                 default_ttl: float = 3600.0,  # 1小时
+                 default_ttl: float = 3600.0,  # 1小when
                  enable_dependency_tracking: bool = True,
                  enable_preloading: bool = True):
         
@@ -59,7 +59,7 @@ class EnhancedConfigCache:
         
         # 访问模式分析
         self._access_patterns: Dict[str, List[float]] = defaultdict(list)
-        self._prediction_cache: Dict[str, float] = {}  # 预测下次访问时间
+        self._prediction_cache: Dict[str, float] = {}  # 预测下次访问when间
         
         # 变更监听
         self._change_listeners: List[Callable[[str, Any, Any], None]] = []
@@ -80,16 +80,16 @@ class EnhancedConfigCache:
         # 预加载队列
         self._preload_queue: List[str] = []
         
-        # 后台清理线程
+        # after台清理线程
         self._cleanup_thread: Optional[threading.Thread] = None
         self._shutdown_event = threading.Event()
         
         self._start_background_tasks()
     
     def get(self, key: str, default: Any = None, ttl: Optional[float] = None) -> Any:
-        """获取配置值（智能缓存）"""
+        """retrieval配置值（智能缓存）"""
         with self._lock:
-            # 热缓存检查
+            # 热缓存check
             if key in self._hot_cache:
                 entry = self._hot_cache[key]
                 if self._is_entry_valid(entry, ttl):
@@ -101,33 +101,33 @@ class EnhancedConfigCache:
                 else:
                     del self._hot_cache[key]
             
-            # 温缓存检查
+            # 温缓存check
             if key in self._warm_cache:
                 entry = self._warm_cache[key]
                 if self._is_entry_valid(entry, ttl):
                     self._stats['warm_hits'] += 1
                     entry.update_access()
                     self._update_access_pattern(key)
-                    # 提升到热缓存
+                    # 提升to热缓存
                     self._promote_to_hot(key, entry)
                     return deepcopy(entry.value)
                 else:
                     del self._warm_cache[key]
             
-            # 缓存未命中
+            # 缓存未命in
             self._stats['misses'] += 1
             return default
     
     def set(self, key: str, value: Any, ttl: Optional[float] = None, 
             dependencies: Optional[Set[str]] = None) -> None:
-        """设置配置值"""
+        """settings配置值"""
         with self._lock:
-            # 检查是否有变化
+            # checkis否has变化
             old_value = self.get(key)
             if old_value == value:
-                return  # 值未变化，无需更新
+                return  # 值未变化，no需updates
             
-            # 创建缓存条目
+            # 创建缓存 records目
             entry = CacheEntry(
                 value=deepcopy(value),
                 timestamp=time.time(),
@@ -140,14 +140,14 @@ class EnhancedConfigCache:
             else:
                 self._store_in_warm(key, entry)
             
-            # 更新依赖关系
+            # updates依赖关系
             if self.enable_dependency_tracking and dependencies:
                 self._update_dependencies(key, dependencies)
             
             # 通知变更监听器
             self._notify_change_listeners(key, old_value, value)
             
-            # 预测相关键的访问
+            # 预测相关键访问
             if self.enable_preloading:
                 self._schedule_preloading(key)
     
@@ -166,7 +166,7 @@ class EnhancedConfigCache:
             if removed:
                 self._stats['invalidations'] += 1
             
-            # 级联失效依赖项
+            # 级联失效依赖 items
             if cascade and self.enable_dependency_tracking:
                 dependents = self._reverse_dependencies.get(key, set())
                 for dependent in dependents:
@@ -179,12 +179,12 @@ class EnhancedConfigCache:
         with self._lock:
             keys_to_invalidate = []
             
-            # 检查热缓存
+            # check热缓存
             for key in self._hot_cache:
                 if fnmatch.fnmatch(key, pattern):
                     keys_to_invalidate.append(key)
             
-            # 检查温缓存
+            # check温缓存
             for key in self._warm_cache:
                 if fnmatch.fnmatch(key, pattern):
                     keys_to_invalidate.append(key)
@@ -195,9 +195,9 @@ class EnhancedConfigCache:
     
     def set_source(self, source_name: str, config_dict: Dict[str, Any], 
                    file_path: Optional[str] = None) -> None:
-        """设置配置源"""
+        """settings配置源"""
         with self._lock:
-            # 检查文件时间戳
+            # check文件when间戳
             if file_path and Path(file_path).exists():
                 file_timestamp = Path(file_path).stat().st_mtime
                 cached_timestamp = self._source_timestamps.get(source_name, 0)
@@ -207,11 +207,11 @@ class EnhancedConfigCache:
                 
                 self._source_timestamps[source_name] = file_timestamp
             
-            # 更新源缓存
+            # updates源缓存
             old_config = self._source_cache.get(source_name, {})
             self._source_cache[source_name] = deepcopy(config_dict)
             
-            # 找出变化的键
+            # 找出变化键
             changed_keys = self._find_changed_keys(old_config, config_dict, source_name)
             
             # 失效相关缓存
@@ -219,16 +219,16 @@ class EnhancedConfigCache:
                 self.invalidate(key, cascade=True)
     
     def get_source(self, source_name: str) -> Optional[Dict[str, Any]]:
-        """获取配置源"""
+        """retrieval配置源"""
         with self._lock:
             return deepcopy(self._source_cache.get(source_name))
     
     def _should_store_in_hot(self, key: str) -> bool:
-        """判断是否应该存储在热缓存"""
-        # 基于访问频率和模式决定
+        """判断is否应该存储in热缓存"""
+        # 基at访问频率and模式决定
         recent_accesses = self._access_patterns.get(key, [])
         
-        if len(recent_accesses) > 5:  # 有足够的访问历史
+        if len(recent_accesses) > 5:  # has足够访问历史
             # 计算访问频率
             now = time.time()
             recent_accesses_count = len([t for t in recent_accesses if now - t < 300])  # 5分钟内
@@ -236,54 +236,54 @@ class EnhancedConfigCache:
             if recent_accesses_count > 3:  # 高频访问
                 return True
         
-        # 检查是否是关键配置
+        # checkis否is关键配置
         critical_patterns = ['connection.', 'capital.', 'risk.', 'orders.']
         if any(key.startswith(pattern) for pattern in critical_patterns):
             return True
         
-        return len(self._hot_cache) < self.max_entries // 4  # 热缓存不超过总容量25%
+        return len(self._hot_cache) < self.max_entries // 4  # 热缓存not超过总容量25%
     
     def _store_in_hot(self, key: str, entry: CacheEntry) -> None:
-        """存储到热缓存"""
-        # 检查容量
+        """存储to热缓存"""
+        # check容量
         if len(self._hot_cache) >= self.max_entries // 4:
             self._evict_from_hot()
         
         self._hot_cache[key] = entry
     
     def _store_in_warm(self, key: str, entry: CacheEntry) -> None:
-        """存储到温缓存"""
-        # 检查容量
+        """存储to温缓存"""
+        # check容量
         if len(self._warm_cache) >= self.max_entries * 3 // 4:
             self._evict_from_warm()
         
         self._warm_cache[key] = entry
     
     def _promote_to_hot(self, key: str, entry: CacheEntry) -> None:
-        """提升到热缓存"""
+        """提升to热缓存"""
         if key in self._warm_cache:
             del self._warm_cache[key]
         self._store_in_hot(key, entry)
     
     def _evict_from_hot(self) -> None:
-        """从热缓存淘汰"""
+        """from热缓存淘汰"""
         if not self._hot_cache:
             return
         
-        # 使用LRU策略，但考虑访问频率
+        # 使useLRU策略，但考虑访问频率
         candidates = list(self._hot_cache.items())
         candidates.sort(key=lambda x: (x[1].access_count, x[1].last_access))
         
-        # 淘汰访问频率最低的
+        # 淘汰访问频率最低
         key, entry = candidates[0]
         del self._hot_cache[key]
         
-        # 降级到温缓存
+        # 降级to温缓存
         self._store_in_warm(key, entry)
         self._stats['evictions'] += 1
     
     def _evict_from_warm(self) -> None:
-        """从温缓存淘汰"""
+        """from温缓存淘汰"""
         if not self._warm_cache:
             return
         
@@ -294,31 +294,31 @@ class EnhancedConfigCache:
         self._stats['evictions'] += 1
     
     def _move_to_front(self, key: str, cache: Dict[str, CacheEntry]) -> None:
-        """移动到前面（LRU更新）"""
-        # Python 3.7+ 字典保持插入顺序，重新插入即可移到最后
+        """移动tobefore面（LRUupdates）"""
+        # Python 3.7+ 字典保持插入顺序，重新插入即can移to最after
         if key in cache:
             entry = cache.pop(key)
             cache[key] = entry
     
     def _is_entry_valid(self, entry: CacheEntry, ttl: Optional[float] = None) -> bool:
-        """检查缓存条目是否有效"""
+        """check缓存 records目is否has效"""
         effective_ttl = ttl or self.default_ttl
         return (time.time() - entry.timestamp) < effective_ttl
     
     def _update_dependencies(self, key: str, dependencies: Set[str]) -> None:
-        """更新依赖关系"""
+        """updates依赖关系"""
         # 清理旧依赖
         old_deps = self._dependency_graph.get(key, set())
         for dep in old_deps:
             self._reverse_dependencies[dep].discard(key)
         
-        # 设置新依赖
+        # settings新依赖
         self._dependency_graph[key] = dependencies
         for dep in dependencies:
             self._reverse_dependencies[dep].add(key)
     
     def _update_access_pattern(self, key: str) -> None:
-        """更新访问模式"""
+        """updates访问模式"""
         now = time.time()
         pattern = self._access_patterns[key]
         
@@ -327,7 +327,7 @@ class EnhancedConfigCache:
         if len(pattern) > 100:
             pattern.pop(0)
         
-        # 预测下次访问时间
+        # 预测下次访问when间
         if len(pattern) > 3:
             intervals = [pattern[i] - pattern[i-1] for i in range(1, len(pattern))]
             avg_interval = sum(intervals) / len(intervals)
@@ -338,7 +338,7 @@ class EnhancedConfigCache:
         if not self.enable_preloading:
             return
         
-        # 基于依赖关系预加载相关配置
+        # 基at依赖关系预加载相关配置
         related_keys = self._dependency_graph.get(key, set())
         related_keys.update(self._reverse_dependencies.get(key, set()))
         
@@ -350,7 +350,7 @@ class EnhancedConfigCache:
     
     def _find_changed_keys(self, old_config: Dict[str, Any], 
                           new_config: Dict[str, Any], prefix: str = "") -> Set[str]:
-        """找出变化的配置键"""
+        """找出变化配置键"""
         changed_keys = set()
         
         # 递归比较嵌套字典
@@ -388,7 +388,7 @@ class EnhancedConfigCache:
             self._change_listeners.remove(listener)
     
     def _start_background_tasks(self) -> None:
-        """启动后台任务"""
+        """startafter台任务"""
         self._cleanup_thread = threading.Thread(
             target=self._background_cleanup,
             name="ConfigCacheCleanup",
@@ -397,27 +397,27 @@ class EnhancedConfigCache:
         self._cleanup_thread.start()
     
     def _background_cleanup(self) -> None:
-        """后台清理任务"""
+        """after台清理任务"""
         while not self._shutdown_event.wait(60):  # 每分钟清理一次
             try:
                 self._cleanup_expired_entries()
                 self._process_preload_queue()
                 self._optimize_cache_layout()
             except Exception as e:
-                self.logger.error(f"后台清理异常: {e}")
+                self.logger.error(f"after台清理异常: {e}")
     
     def _cleanup_expired_entries(self) -> None:
-        """清理过期条目"""
+        """清理过期 records目"""
         with self._lock:
             now = time.time()
             
-            # 清理热缓存过期条目
+            # 清理热缓存过期 records目
             expired_hot = [k for k, v in self._hot_cache.items() 
                           if (now - v.timestamp) > self.default_ttl]
             for key in expired_hot:
                 del self._hot_cache[key]
             
-            # 清理温缓存过期条目
+            # 清理温缓存过期 records目
             expired_warm = [k for k, v in self._warm_cache.items() 
                            if (now - v.timestamp) > self.default_ttl * 2]  # 温缓存TTL更长
             for key in expired_warm:
@@ -432,29 +432,29 @@ class EnhancedConfigCache:
             return
         
         with self._lock:
-            # 处理前5个预加载请求
+            # 处理before5个预加载请求
             for _ in range(min(5, len(self._preload_queue))):
                 key = self._preload_queue.pop(0)
-                # 这里应该从实际数据源加载配置
-                # 为了示例，我们跳过实际加载
+                # 这里应该from实际数据源加载配置
+                # as了示例，我们跳过实际加载
                 self._stats['preloads'] += 1
     
     def _optimize_cache_layout(self) -> None:
         """优化缓存布局"""
         with self._lock:
-            # 基于访问模式调整热缓存
+            # 基at访问模式调整热缓存
             if len(self._warm_cache) > 0:
-                # 找出温缓存中访问频率高的条目
+                # 找出温缓存in访问频率高 records目
                 candidates = [(k, v) for k, v in self._warm_cache.items() 
                              if v.access_count > 5]
                 
-                # 提升到热缓存
+                # 提升to热缓存
                 for key, entry in candidates[:3]:  # 最多提升3个
                     if len(self._hot_cache) < self.max_entries // 4:
                         self._promote_to_hot(key, entry)
     
     def get_stats(self) -> Dict[str, Any]:
-        """获取缓存统计"""
+        """retrieval缓存统计"""
         with self._lock:
             total_hits = self._stats['hot_hits'] + self._stats['warm_hits']
             total_requests = total_hits + self._stats['misses']
@@ -476,7 +476,7 @@ class EnhancedConfigCache:
             }
     
     def clear(self) -> None:
-        """清空所有缓存"""
+        """清空所has缓存"""
         with self._lock:
             self._hot_cache.clear()
             self._warm_cache.clear()
@@ -496,7 +496,7 @@ class EnhancedConfigCache:
         """关闭缓存系统"""
         self.logger.info("关闭增强配置缓存")
         
-        # 停止后台线程
+        # 停止after台线程
         if self._cleanup_thread:
             self._shutdown_event.set()
             self._cleanup_thread.join(timeout=5)
@@ -509,7 +509,7 @@ class EnhancedConfigCache:
 _global_enhanced_config_cache: Optional[EnhancedConfigCache] = None
 
 def get_enhanced_config_cache() -> EnhancedConfigCache:
-    """获取全局增强配置缓存"""
+    """retrieval全局增强配置缓存"""
     global _global_enhanced_config_cache
     if _global_enhanced_config_cache is None:
         _global_enhanced_config_cache = EnhancedConfigCache()

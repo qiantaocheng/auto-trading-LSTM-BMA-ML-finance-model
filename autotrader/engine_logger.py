@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Engine日志适配器
-将Engine的日志调用重定向到事件系统，避免跨线程GUI调用
+willEngine日志调use重定toto事件系统，避免跨线程GUI调use
 """
 
 import logging
 from typing import Optional, Any
 
 class EngineLoggerAdapter(logging.LoggerAdapter):
-    """Engine日志适配器，将日志通过事件系统发送到GUI"""
+    """Engine日志适配器，will日志通过事件系统发送toGUI"""
     
     def __init__(self, logger: logging.Logger, source: str = "engine"):
         super().__init__(logger, {})
@@ -16,7 +16,7 @@ class EngineLoggerAdapter(logging.LoggerAdapter):
         self._event_bus = None
     
     def _get_event_bus(self):
-        """延迟获取事件总线（避免循环导入）"""
+        """延迟retrieval事件总线（避免循环导入）"""
         if self._event_bus is None:
             try:
                 from .event_system import get_event_bus
@@ -26,7 +26,7 @@ class EngineLoggerAdapter(logging.LoggerAdapter):
         return self._event_bus
     
     def _emit_to_gui(self, level: str, message: str):
-        """发送日志到GUI"""
+        """发送日志toGUI"""
         event_bus = self._get_event_bus()
         if event_bus:
             try:
@@ -42,7 +42,7 @@ class EngineLoggerAdapter(logging.LoggerAdapter):
                     priority=2
                 )
             except Exception:
-                # 降级到标准日志
+                # 降级to标准日志
                 pass
     
     def debug(self, msg: Any, *args, **kwargs) -> None:
@@ -81,7 +81,7 @@ def create_engine_logger(name: str, source: str = "engine") -> EngineLoggerAdapt
     return EngineLoggerAdapter(base_logger, source)
 
 def update_status(status: str, color: str = 'black', source: str = 'engine'):
-    """更新状态到GUI"""
+    """updates状态toGUI"""
     try:
         from .event_system import get_event_bus, EventType
         
@@ -96,5 +96,5 @@ def update_status(status: str, color: str = 'black', source: str = 'engine'):
             priority=3
         )
     except Exception:
-        # 静默失败，避免影响核心功能
+        # 静默failed，避免影响核心功能
         pass

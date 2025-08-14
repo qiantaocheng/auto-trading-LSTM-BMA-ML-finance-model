@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-集成风控收益平衡器
+集成风控Return balancing器
 支持GUI一键启用/禁用，集成Polygon数据源和IBKR交易系统
 """
 
@@ -359,17 +359,17 @@ def compute_child_qty(target_delta: int, adv_shares: float, top_of_book_shares: 
     
     return child_qty if target_delta > 0 else -child_qty
 
-# ==================== 集成风控收益平衡器类 ====================
+# ==================== 集成风控Return balancing器类 ====================
 
 class RiskRewardBalancer:
     """
-    集成风控收益平衡器
+    集成风控Return balancing器
     可通过GUI一键启用/禁用，集成Polygon数据源和IBKR交易系统
     """
     
     def __init__(self, polygon_client=None, ibkr_trader=None, config: Optional[Config] = None):
         """
-        初始化风控收益平衡器
+        初始化风控Return balancing器
         
         Args:
             polygon_client: Polygon数据客户端
@@ -399,26 +399,26 @@ class RiskRewardBalancer:
             'last_reset': datetime.now()
         }
         
-        logger.info("风控收益平衡器初始化完成")
+        logger.info("风控Return balancing器初始化完成")
     
     def enable(self):
-        """启用风控收益平衡器"""
+        """启用风控Return balancing器"""
         self.enabled = True
-        logger.info("风控收益平衡器已启用")
+        logger.info("风控Return balancing器已启用")
     
     def disable(self):
-        """禁用风控收益平衡器"""
+        """禁用风控Return balancing器"""
         self.enabled = False
-        logger.info("风控收益平衡器已禁用")
+        logger.info("风控Return balancing器已禁用")
     
     def is_enabled(self) -> bool:
         """检查是否启用"""
         return self.enabled
     
     def update_config(self, new_config: Config):
-        """更新配置"""
+        """Update configuration"""
         self.config = new_config
-        logger.info("风控收益平衡器配置已更新")
+        logger.info("风控Return balancing器配置已更新")
     
     def get_polygon_metrics(self, symbol: str) -> Optional[Metrics]:
         """从Polygon获取股票指标"""
@@ -555,7 +555,7 @@ class RiskRewardBalancer:
             订单列表
         """
         if not self.enabled:
-            logger.info("风控收益平衡器未启用，跳过信号处理")
+            logger.info("风控Return balancing器未启用，跳过信号处理")
             return []
         
         if not signals:

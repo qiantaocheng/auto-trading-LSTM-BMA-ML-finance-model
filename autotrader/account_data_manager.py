@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-账户数据管理器 - 解决账户数据获取的竞态条件和多币种支持
+account数据管理器 - 解决account数据retrieval竞态 records件and多币种支持
 """
 
 import asyncio
@@ -22,7 +22,7 @@ class CurrencyPriority(Enum):
 
 @dataclass
 class AccountSnapshot:
-    """账户快照"""
+    """account快照"""
     timestamp: float
     cash_balance: float
     net_liquidation: float
@@ -34,7 +34,7 @@ class AccountSnapshot:
     validation_errors: List[str] = field(default_factory=list)
 
 class RobustAccountDataManager:
-    """稳健的账户数据管理器"""
+    """稳健account数据管理器"""
     
     def __init__(self, ib_client, account_id: str = ""):
         self.ib = ib_client
@@ -45,7 +45,7 @@ class RobustAccountDataManager:
         self.data_lock = Lock()
         self.refresh_lock = asyncio.Lock()
         
-        # 缓存和历史
+        # 缓存and历史
         self.current_snapshot: Optional[AccountSnapshot] = None
         self.snapshot_history: List[AccountSnapshot] = []
         self.max_history = 100
@@ -67,7 +67,7 @@ class RobustAccountDataManager:
     
     async def refresh_with_retry(self, max_retries: int = 3, 
                                timeout: Optional[float] = None) -> AccountSnapshot:
-        """带重试的账户数据刷新"""
+        """带重试account数据刷新"""
         timeout = timeout or self.refresh_timeout
         
         async with self.refresh_lock:
@@ -86,7 +86,7 @@ class RobustAccountDataManager:
                         snapshot.validation_errors = validation_result['errors']
                         
                         if not snapshot.is_valid and attempt < max_retries - 1:
-                            self.logger.warning(f"账户数据验证失败 (尝试 {attempt + 1}): {snapshot.validation_errors}")
+                            self.logger.warning(f"account数据验证failed (尝试 {attempt + 1}): {snapshot.validation_errors}")
                             await asyncio.sleep(1.0 * (attempt + 1))
                             continue
                     
@@ -95,50 +95,50 @@ class RobustAccountDataManager:
                     self.refresh_count += 1
                     self.last_successful_refresh = time.time()
                     
-                    self.logger.debug(f"账户数据刷新成功 (尝试 {attempt + 1})")
+                    self.logger.debug(f"account数据刷新success (尝试 {attempt + 1})")
                     return snapshot
                     
                 except asyncio.TimeoutError:
                     self.error_count += 1
                     if attempt == max_retries - 1:
-                        self.logger.error(f"账户数据刷新超时 ({timeout}秒)")
+                        self.logger.error(f"account数据刷新超when ({timeout} seconds)")
                         raise
                     else:
-                        self.logger.warning(f"账户数据刷新超时，重试 {attempt + 1}/{max_retries}")
+                        self.logger.warning(f"account数据刷新超when，重试 {attempt + 1}/{max_retries}")
                         await asyncio.sleep(2.0 * (attempt + 1))
                         
                 except Exception as e:
                     self.error_count += 1
                     if attempt == max_retries - 1:
-                        self.logger.error(f"账户数据刷新失败: {e}")
+                        self.logger.error(f"account数据刷新failed: {e}")
                         raise
                     else:
-                        self.logger.warning(f"账户数据刷新失败，重试 {attempt + 1}/{max_retries}: {e}")
+                        self.logger.warning(f"account数据刷新failed，重试 {attempt + 1}/{max_retries}: {e}")
                         await asyncio.sleep(1.0 * (attempt + 1))
     
     async def _perform_refresh(self) -> AccountSnapshot:
-        """执行实际的账户数据刷新"""
+        """执行实际account数据刷新"""
         refresh_start = time.time()
         
-        # 请求账户摘要
+        # 请求accountsummary
         await self.ib.reqAccountUpdatesAsync(account=self.account_id)
         
-        # 等待数据更新
+        # 等待数据updates
         await asyncio.sleep(0.5)
         
-        # 提取账户数据
+        # 提取account数据
         account_values = {}
         for av in self.ib.accountValues():
             if not self.account_id or av.account == self.account_id:
                 key = f"{av.tag}:{av.currency}" if av.currency else av.tag
                 account_values[key] = av.value
         
-        # 多币种支持的数值提取
+        # 多币种支持数值提取
         cash_balance = self._extract_account_numeric(account_values, "CashBalance")
         net_liquidation = self._extract_account_numeric(account_values, "NetLiquidation") 
         buying_power = self._extract_account_numeric(account_values, "BuyingPower")
         
-        # 提取持仓信息
+        # 提取positions信息
         positions = {}
         for pos in self.ib.positions():
             if not self.account_id or pos.account == self.account_id:
@@ -157,12 +157,12 @@ class RobustAccountDataManager:
             currency=primary_currency
         )
         
-        self.logger.debug(f"账户刷新耗时: {time.time() - refresh_start:.2f}秒")
+        self.logger.debug(f"account刷新耗when: {time.time() - refresh_start:.2f} seconds")
         return snapshot
     
     def _extract_account_numeric(self, account_values: Dict[str, str], 
                                tag: str) -> float:
-        """多币种支持的账户数值提取"""
+        """多币种支持account数值提取"""
         candidates: Dict[CurrencyPriority, List[Tuple[str, float]]] = defaultdict(list)
         
         # 按货币优先级分类候选值
@@ -179,26 +179,26 @@ class RobustAccountDataManager:
         # 按优先级选择最佳值
         for priority in self.currency_priorities:
             if candidates[priority]:
-                # 如果有BASE货币，优先选择
+                # if果hasBASE货币，优先选择
                 if priority == CurrencyPriority.BASE:
                     return candidates[priority][0][1]
                 
-                # 对于USD和其他货币，选择最大值（通常更准确）
+                # foratUSDand其他货币，选择最大值（通常更准确）
                 best_value = max(candidates[priority], key=lambda x: abs(x[1]))
                 return best_value[1]
         
-        # 如果没有找到匹配的tag，尝试不带货币的版本
+        # if果没has找to匹配tag，尝试not带货币版本
         if tag in account_values:
             try:
                 return float(account_values[tag])
             except (ValueError, TypeError):
                 pass
         
-        self.logger.warning(f"无法提取账户数值: {tag}")
+        self.logger.warning(f"no法提取account数值: {tag}")
         return 0.0
     
     def _get_currency_priority(self, currency: str) -> CurrencyPriority:
-        """获取货币优先级"""
+        """retrieval货币优先级"""
         currency = currency.upper()
         
         if currency == "BASE":
@@ -211,13 +211,13 @@ class RobustAccountDataManager:
             return CurrencyPriority.ANY
     
     def _determine_primary_currency(self, account_values: Dict[str, str]) -> str:
-        """确定账户的主要货币"""
-        # 检查BASE货币
+        """确定account主要货币"""
+        # checkBASE货币
         for key in account_values:
             if ":BASE" in key:
                 return "BASE"
         
-        # 检查最大的NetLiquidation货币
+        # check最大NetLiquidation货币
         max_netliq = 0.0
         primary_currency = "USD"
         
@@ -235,11 +235,11 @@ class RobustAccountDataManager:
         return primary_currency
     
     def _validate_snapshot(self, snapshot: AccountSnapshot) -> Dict[str, Any]:
-        """验证账户快照数据"""
+        """验证account快照数据"""
         errors = []
         is_valid = True
         
-        # 基本数值检查
+        # 基本数值check
         if snapshot.net_liquidation <= 0:
             errors.append("净资产值异常")
             is_valid = False
@@ -248,19 +248,19 @@ class RobustAccountDataManager:
             errors.append("现金余额异常")
             is_valid = False
         
-        # 与历史数据对比
+        # and历史数据for比
         if self.current_snapshot:
             prev = self.current_snapshot
             
-            # 检查异常变化
+            # check异常变化
             netliq_change = abs(snapshot.net_liquidation - prev.net_liquidation) / max(prev.net_liquidation, 1)
             if netliq_change > 0.5:  # 50%变化
                 errors.append(f"净资产异常变化: {netliq_change:.1%}")
                 is_valid = False
             
-            # 检查时间戳
+            # checkwhen间戳
             if snapshot.timestamp <= prev.timestamp:
-                errors.append("时间戳异常")
+                errors.append("when间戳异常")
                 is_valid = False
         
         return {
@@ -269,7 +269,7 @@ class RobustAccountDataManager:
         }
     
     def _save_snapshot(self, snapshot: AccountSnapshot):
-        """保存快照到历史"""
+        """保存快照to历史"""
         with self.data_lock:
             self.current_snapshot = snapshot
             self.snapshot_history.append(snapshot)
@@ -279,12 +279,12 @@ class RobustAccountDataManager:
                 self.snapshot_history = self.snapshot_history[-self.max_history:]
     
     def get_current_data(self) -> Optional[AccountSnapshot]:
-        """获取当前账户数据"""
+        """retrieval当beforeaccount数据"""
         with self.data_lock:
             return self.current_snapshot
     
     def get_account_numeric(self, tag: str) -> float:
-        """兼容性方法：获取账户数值"""
+        """兼容性方法：retrievalaccount数值"""
         snapshot = self.get_current_data()
         if not snapshot:
             return 0.0
@@ -292,12 +292,12 @@ class RobustAccountDataManager:
         return self._extract_account_numeric(snapshot.account_values, tag)
     
     def get_positions(self) -> Dict[str, int]:
-        """获取当前持仓"""
+        """retrieval当beforepositions"""
         snapshot = self.get_current_data()
         return snapshot.positions if snapshot else {}
     
     def get_statistics(self) -> Dict[str, Any]:
-        """获取管理器统计信息"""
+        """retrieval管理器统计信息"""
         with self.data_lock:
             return {
                 'refresh_count': self.refresh_count,
@@ -310,7 +310,7 @@ class RobustAccountDataManager:
             }
     
     async def health_check(self) -> Dict[str, Any]:
-        """健康检查"""
+        """健康check"""
         try:
             # 尝试快速刷新
             snapshot = await self.refresh_with_retry(max_retries=1, timeout=5.0)

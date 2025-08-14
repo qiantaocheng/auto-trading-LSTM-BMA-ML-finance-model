@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-统一连接管理器 - 智能断线重连和连接状态管理
-提供稳健的连接恢复机制和连接监控功能
+统一connection管理器 - 智能断线重连andconnection状态管理
+提供稳健connection恢复机制andconnection监控功能
 """
 
 import asyncio
@@ -15,7 +15,7 @@ from threading import Lock
 import math
 
 class ConnectionState(Enum):
-    """连接状态"""
+    """connection状态"""
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
@@ -30,7 +30,7 @@ class ReconnectStrategy(Enum):
 
 @dataclass
 class ConnectionConfig:
-    """连接配置"""
+    """connection配置"""
     host: str = "127.0.0.1"
     port: int = 7497
     client_id: int = 3130
@@ -46,20 +46,20 @@ class ConnectionConfig:
     health_check_interval: float = 30.0
     connection_timeout: float = 15.0
     
-    # 账户配置
+    # account配置
     account_id: Optional[str] = None
     use_delayed_if_no_realtime: bool = True
 
 @dataclass
 class ConnectionEvent:
-    """连接事件"""
+    """connection事件"""
     timestamp: float
     event_type: str
     state: ConnectionState
     details: Dict[str, Any]
 
 class UnifiedConnectionManager:
-    """统一连接管理器"""
+    """统一connection管理器"""
     
     def __init__(self, ib_client, config: ConnectionConfig, 
                  logger: Optional[logging.Logger] = None):
@@ -67,13 +67,13 @@ class UnifiedConnectionManager:
         self.config = config
         self.logger = logger or logging.getLogger("UnifiedConnectionManager")
         
-        # 连接状态
+        # connection状态
         self.state = ConnectionState.DISCONNECTED
         self.last_connection_time = 0.0
         self.reconnect_attempts = 0
         self.consecutive_failures = 0
         
-        # 监控和回调
+        # 监控and回调
         self.connection_callbacks: List[Callable] = []
         self.disconnection_callbacks: List[Callable] = []
         self.health_check_task: Optional[asyncio.Task] = None
@@ -97,25 +97,25 @@ class UnifiedConnectionManager:
         }
     
     async def connect(self, force: bool = False) -> bool:
-        """建立连接"""
+        """建立connection"""
         async with self.connection_lock:
             if self.state == ConnectionState.CONNECTED and not force:
-                self.logger.debug("已连接，跳过重复连接")
+                self.logger.debug("connection，跳过重复connection")
                 return True
             
             if self.state == ConnectionState.CONNECTING:
-                self.logger.debug("正在连接中，等待完成")
+                self.logger.debug("正inconnectionin，等待completed")
                 return await self._wait_for_connection()
             
             self._set_state(ConnectionState.CONNECTING)
             self._record_event("connect_start", {"force": force})
             
             try:
-                # 如果强制重连，先断开现有连接
+                # if果强制重连，先断开现hasconnection
                 if force and self.ib.isConnected():
                     await self._disconnect_internal()
                 
-                # 执行连接
+                # 执行connection
                 connect_start = time.time()
                 await asyncio.wait_for(
                     self.ib.connectAsync(
@@ -126,11 +126,11 @@ class UnifiedConnectionManager:
                     timeout=self.config.connection_timeout
                 )
                 
-                # 验证连接
+                # 验证connection
                 if not self.ib.isConnected():
-                    raise ConnectionError("连接建立后验证失败")
+                    raise ConnectionError("connection建立after验证failed")
                 
-                # 连接成功处理
+                # connectionsuccess处理
                 connect_duration = time.time() - connect_start
                 self._set_state(ConnectionState.CONNECTED)
                 self.last_connection_time = time.time()
@@ -143,13 +143,13 @@ class UnifiedConnectionManager:
                     "client_id": self.config.client_id
                 })
                 
-                self.logger.info(f"连接成功: {self.config.host}:{self.config.port} "
-                               f"(ClientID: {self.config.client_id}, 耗时: {connect_duration:.2f}s)")
+                self.logger.info(f"connectionsuccess: {self.config.host}:{self.config.port} "
+                               f"(ClientID: {self.config.client_id}, 耗when: {connect_duration:.2f}s)")
                 
-                # 启动健康检查
+                # start健康check
                 await self._start_health_check()
                 
-                # 执行连接回调
+                # 执行connection回调
                 await self._execute_callbacks(self.connection_callbacks)
                 
                 return True
@@ -160,18 +160,18 @@ class UnifiedConnectionManager:
                 self._record_event("connect_timeout", {
                     "timeout": self.config.connection_timeout
                 })
-                self.logger.error(f"连接超时: {self.config.connection_timeout}秒")
+                self.logger.error(f"connection超when: {self.config.connection_timeout} seconds")
                 return False
                 
             except Exception as e:
                 self._set_state(ConnectionState.FAILED)
                 self.consecutive_failures += 1
                 self._record_event("connect_error", {"error": str(e)})
-                self.logger.error(f"连接失败: {e}")
+                self.logger.error(f"connectionfailed: {e}")
                 return False
     
     async def disconnect(self) -> bool:
-        """断开连接"""
+        """断开connection"""
         async with self.connection_lock:
             if self.state == ConnectionState.DISCONNECTED:
                 return True
@@ -179,9 +179,9 @@ class UnifiedConnectionManager:
             return await self._disconnect_internal()
     
     async def _disconnect_internal(self) -> bool:
-        """内部断开连接方法"""
+        """内部断开connection方法"""
         try:
-            # 停止健康检查
+            # 停止健康check
             if self.health_check_task:
                 self.health_check_task.cancel()
                 try:
@@ -190,12 +190,12 @@ class UnifiedConnectionManager:
                     pass
                 self.health_check_task = None
             
-            # 断开连接
+            # 断开connection
             if self.ib.isConnected():
                 self.ib.disconnect()
-                self.logger.info("连接已断开")
+                self.logger.info("connection断开")
             
-            # 更新状态和统计
+            # updates状态and统计
             self._set_state(ConnectionState.DISCONNECTED)
             self.stats['total_disconnections'] += 1
             
@@ -210,7 +210,7 @@ class UnifiedConnectionManager:
             return True
             
         except Exception as e:
-            self.logger.error(f"断开连接失败: {e}")
+            self.logger.error(f"断开connectionfailed: {e}")
             return False
     
     async def reconnect(self, strategy: Optional[ReconnectStrategy] = None) -> bool:
@@ -219,17 +219,17 @@ class UnifiedConnectionManager:
             strategy = self.config.reconnect_strategy
         
         self._set_state(ConnectionState.RECONNECTING)
-        self.logger.info(f"开始重连 (策略: {strategy.value}, 尝试次数: {self.reconnect_attempts + 1})")
+        self.logger.info(f"starting重连 (策略: {strategy.value}, 尝试次数: {self.reconnect_attempts + 1})")
         
         while self.reconnect_attempts < self.config.max_reconnect_attempts:
             self.reconnect_attempts += 1
             self.stats['total_reconnect_attempts'] += 1
             
-            # 计算延迟时间
+            # 计算延迟when间
             delay = self._calculate_reconnect_delay(strategy)
             
             self.logger.info(f"重连尝试 {self.reconnect_attempts}/{self.config.max_reconnect_attempts}, "
-                           f"等待 {delay:.1f}秒...")
+                           f"等待 {delay:.1f} seconds...")
             
             self._record_event("reconnect_attempt", {
                 "attempt": self.reconnect_attempts,
@@ -240,17 +240,17 @@ class UnifiedConnectionManager:
             # 等待延迟
             await asyncio.sleep(delay)
             
-            # 尝试连接
+            # 尝试connection
             if await self.connect(force=True):
                 self.stats['successful_reconnects'] += 1
-                self.logger.info(f"重连成功 (尝试次数: {self.reconnect_attempts})")
+                self.logger.info(f"重连success (尝试次数: {self.reconnect_attempts})")
                 return True
             
-            self.logger.warning(f"重连失败 (尝试 {self.reconnect_attempts}/{self.config.max_reconnect_attempts})")
+            self.logger.warning(f"重连failed (尝试 {self.reconnect_attempts}/{self.config.max_reconnect_attempts})")
         
-        # 重连失败
+        # 重连failed
         self._set_state(ConnectionState.FAILED)
-        self.logger.error(f"重连最终失败，已达最大尝试次数: {self.config.max_reconnect_attempts}")
+        self.logger.error(f"重连最终failed，达最大尝试次数: {self.config.max_reconnect_attempts}")
         self._record_event("reconnect_failed", {
             "total_attempts": self.reconnect_attempts,
             "reason": "max_attempts_reached"
@@ -259,7 +259,7 @@ class UnifiedConnectionManager:
         return False
     
     def _calculate_reconnect_delay(self, strategy: ReconnectStrategy) -> float:
-        """计算重连延迟时间"""
+        """计算重连延迟when间"""
         base_delay = self.config.base_reconnect_delay
         
         if strategy == ReconnectStrategy.FIXED_DELAY:
@@ -268,7 +268,7 @@ class UnifiedConnectionManager:
         elif strategy == ReconnectStrategy.EXPONENTIAL_BACKOFF:
             # 指数退避: base * (2 ^ attempt) + jitter
             exponential_delay = base_delay * (2 ** min(self.reconnect_attempts - 1, 10))
-            # 添加抖动以避免多客户端同时重连
+            # 添加抖动以避免多客户端同when重连
             jitter = base_delay * 0.1 * (time.time() % 1)
             delay = exponential_delay + jitter
             
@@ -284,7 +284,7 @@ class UnifiedConnectionManager:
         return min(delay, self.config.max_reconnect_delay)
     
     async def _start_health_check(self):
-        """启动连接健康检查"""
+        """startconnection健康check"""
         if self.health_check_task:
             return
         
@@ -293,30 +293,30 @@ class UnifiedConnectionManager:
                 try:
                     await asyncio.sleep(self.config.health_check_interval)
                     
-                    # 检查连接状态
+                    # checkconnection状态
                     if not self.ib.isConnected():
-                        self.logger.warning("健康检查发现连接断开")
+                        self.logger.warning("健康check发现connection断开")
                         self._set_state(ConnectionState.DISCONNECTED)
                         
                         # 触发自动重连
                         if await self.reconnect():
-                            self.logger.info("自动重连成功")
+                            self.logger.info("自动重连success")
                         else:
-                            self.logger.error("自动重连失败")
+                            self.logger.error("自动重连failed")
                         break
                     
-                    # 可选：发送心跳包验证连接活性
+                    # can选：发送心跳包验证connection活性
                     # await self._send_heartbeat()
                     
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    self.logger.warning(f"健康检查异常: {e}")
+                    self.logger.warning(f"健康check异常: {e}")
         
         self.health_check_task = asyncio.create_task(health_monitor())
     
     async def _wait_for_connection(self, timeout: float = 30.0) -> bool:
-        """等待连接完成"""
+        """等待connectioncompleted"""
         start_time = time.time()
         while time.time() - start_time < timeout:
             if self.state == ConnectionState.CONNECTED:
@@ -327,16 +327,16 @@ class UnifiedConnectionManager:
         return False
     
     def _set_state(self, new_state: ConnectionState):
-        """更新连接状态"""
+        """updatesconnection状态"""
         with self.state_lock:
             old_state = self.state
             self.state = new_state
             
             if old_state != new_state:
-                self.logger.debug(f"连接状态变化: {old_state.value} -> {new_state.value}")
+                self.logger.debug(f"connection状态变化: {old_state.value} -> {new_state.value}")
     
     def _record_event(self, event_type: str, details: Dict[str, Any] = None):
-        """记录连接事件"""
+        """记录connection事件"""
         event = ConnectionEvent(
             timestamp=time.time(),
             event_type=event_type,
@@ -359,14 +359,14 @@ class UnifiedConnectionManager:
                 else:
                     callback()
             except Exception as e:
-                self.logger.error(f"回调执行失败: {e}")
+                self.logger.error(f"回调执行failed: {e}")
     
     def add_connection_callback(self, callback: Callable):
-        """添加连接成功回调"""
+        """添加connectionsuccess回调"""
         self.connection_callbacks.append(callback)
     
     def add_disconnection_callback(self, callback: Callable):
-        """添加断开连接回调"""
+        """添加断开connection回调"""
         self.disconnection_callbacks.append(callback)
     
     def remove_callback(self, callback: Callable):
@@ -375,11 +375,11 @@ class UnifiedConnectionManager:
         self.disconnection_callbacks = [cb for cb in self.disconnection_callbacks if cb != callback]
     
     def is_connected(self) -> bool:
-        """检查是否已连接"""
+        """checkis否connection"""
         return self.state == ConnectionState.CONNECTED and self.ib.isConnected()
     
     def get_connection_info(self) -> Dict[str, Any]:
-        """获取连接信息"""
+        """retrievalconnection信息"""
         with self.state_lock:
             uptime = time.time() - self.last_connection_time if self.last_connection_time > 0 else 0
             
@@ -396,7 +396,7 @@ class UnifiedConnectionManager:
             }
     
     def get_statistics(self) -> Dict[str, Any]:
-        """获取连接统计信息"""
+        """retrievalconnection统计信息"""
         with self.state_lock:
             total_uptime = self.stats['connection_uptime']
             if self.last_connection_time > 0 and self.state == ConnectionState.CONNECTED:
@@ -410,7 +410,7 @@ class UnifiedConnectionManager:
             
             recent_events = [
                 e for e in self.connection_events 
-                if time.time() - e.timestamp < 3600  # 最近1小时
+                if time.time() - e.timestamp < 3600  # 最近1小when
             ]
             
             return {
@@ -427,11 +427,11 @@ class UnifiedConnectionManager:
             }
     
     def get_recent_events(self, limit: int = 20) -> List[ConnectionEvent]:
-        """获取最近的连接事件"""
+        """retrieval最近connection事件"""
         return self.connection_events[-limit:] if limit > 0 else self.connection_events
     
     async def force_health_check(self) -> Dict[str, Any]:
-        """强制执行健康检查"""
+        """强制执行健康check"""
         check_result = {
             'timestamp': time.time(),
             'ib_connected': self.ib.isConnected(),
@@ -439,12 +439,12 @@ class UnifiedConnectionManager:
             'uptime': time.time() - self.last_connection_time if self.last_connection_time > 0 else 0
         }
         
-        # 检查状态一致性
+        # check状态一致性
         ib_connected = self.ib.isConnected()
         manager_connected = self.state == ConnectionState.CONNECTED
         
         if ib_connected != manager_connected:
-            self.logger.warning(f"连接状态不一致: IB={ib_connected}, Manager={manager_connected}")
+            self.logger.warning(f"connection状态not一致: IB={ib_connected}, Manager={manager_connected}")
             check_result['status_mismatch'] = True
             
             # 修正状态
@@ -460,10 +460,10 @@ class UnifiedConnectionManager:
         return check_result
     
     async def shutdown(self):
-        """关闭连接管理器"""
-        self.logger.info("关闭连接管理器...")
+        """关闭connection管理器"""
+        self.logger.info("关闭connection管理器...")
         
-        # 停止健康检查
+        # 停止健康check
         if self.health_check_task:
             self.health_check_task.cancel()
             try:
@@ -471,19 +471,19 @@ class UnifiedConnectionManager:
             except asyncio.CancelledError:
                 pass
         
-        # 断开连接
+        # 断开connection
         await self.disconnect()
         
         # 清理回调
         self.connection_callbacks.clear()
         self.disconnection_callbacks.clear()
         
-        self.logger.info("连接管理器已关闭")
+        self.logger.info("connection管理器关闭")
 
 def create_connection_manager(ib_client, config_manager, 
                             logger: Optional[logging.Logger] = None) -> UnifiedConnectionManager:
-    """创建连接管理器的便捷函数"""
-    # 从配置管理器构建连接配置
+    """创建connection管理器便捷函数"""
+    # from配置管理器构建connection配置
     conn_config = ConnectionConfig(
         host=config_manager.get('connection.host', '127.0.0.1'),
         port=config_manager.get('connection.port', 7497),

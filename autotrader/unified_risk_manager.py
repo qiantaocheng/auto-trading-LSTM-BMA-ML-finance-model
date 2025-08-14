@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-统一风险管理器 - 整合所有风险控制逻辑
-解决风险验证分散在多个模块的问题
+统一风险管理器 - 整合所has风险控制逻辑
+解决风险验证分散in多个模块问题
 """
 
 import asyncio
@@ -43,7 +43,7 @@ class RiskValidationResult:
 
 @dataclass
 class PositionRisk:
-    """持仓风险信息"""
+    """positions风险信息"""
     symbol: str
     quantity: int
     current_price: float
@@ -83,16 +83,16 @@ class UnifiedRiskManager:
             'max_daily_orders': 20,           # 日订单限制
             'min_order_value': 1000.0,       # 最小订单价值
             'max_order_value': 50000.0,      # 最大订单价值
-            'concentration_warning_pct': 0.25, # 集中度警告阈值
+            'concentration_warning_pct': 0.25, # 集in度警告阈值
             'volatility_warning_pct': 0.05,   # 波动率警告阈值
         }
         
-        # 运行时状态
+        # 运行when状态
         self.daily_order_count = 0
         self.daily_pnl = 0.0
         self.last_reset_date = time.strftime('%Y-%m-%d')
         
-        # 持仓和组合数据
+        # positionsand组合数据
         self.positions: Dict[str, PositionRisk] = {}
         self.portfolio_risk: Optional[PortfolioRisk] = None
         
@@ -104,15 +104,15 @@ class UnifiedRiskManager:
         self._load_risk_config()
     
     def _load_risk_config(self):
-        """从配置管理器加载风险配置"""
+        """from配置管理器加载风险配置"""
         try:
-            # 从统一配置管理器获取风险设置
+            # from统一配置管理器retrieval风险settings
             risk_settings = self.config_manager.get('risk_management', {})
             if risk_settings:
                 self.risk_config.update(risk_settings)
-                self.logger.info(f"已加载风险配置: {len(risk_settings)}项")
+                self.logger.info(f"Risk configuration loaded: {len(risk_settings)} items")
             
-            # 从订单设置获取配置
+            # from订单settingsretrieval配置
             sizing_config = self.config_manager.get('sizing', {})
             if sizing_config:
                 if 'max_position_pct_of_equity' in sizing_config:
@@ -120,7 +120,7 @@ class UnifiedRiskManager:
                 if 'min_position_usd' in sizing_config:
                     self.risk_config['min_order_value'] = sizing_config['min_position_usd']
             
-            # 从风险控制设置获取配置
+            # from风险控制settingsretrieval配置
             risk_controls = self.config_manager.get('risk_controls', {})
             if risk_controls:
                 if 'daily_order_limit' in risk_controls:
@@ -131,11 +131,11 @@ class UnifiedRiskManager:
                     self.risk_config['max_correlation'] = risk_controls['max_correlation']
             
         except Exception as e:
-            self.logger.warning(f"加载风险配置失败，使用默认值: {e}")
+            self.logger.warning(f"加载风险配置failed，使use默认值: {e}")
     
     async def validate_order(self, symbol: str, side: str, quantity: int, 
                            price: float, account_value: float) -> RiskValidationResult:
-        """统一的订单风险验证入口"""
+        """统一订单风险验证入口"""
         violations = []
         warnings = []
         risk_level = RiskLevel.LOW
@@ -144,17 +144,17 @@ class UnifiedRiskManager:
         self._reset_daily_counters_if_needed()
         
         try:
-            # 1. 基础订单检查
+            # 1. 基础订单check
             order_value = quantity * price
             
-            # 订单价值检查
+            # 订单价值check
             if order_value < self.risk_config['min_order_value']:
                 violations.append(f"订单价值过小: ${order_value:.2f} < ${self.risk_config['min_order_value']:.2f}")
             
             if order_value > self.risk_config['max_order_value']:
                 violations.append(f"订单价值过大: ${order_value:.2f} > ${self.risk_config['max_order_value']:.2f}")
             
-            # 2. 持仓限制检查
+            # 2. positions限制check
             if account_value > 0:
                 position_pct = order_value / account_value
                 max_position_pct = self.risk_config['max_single_position_pct']
@@ -166,7 +166,7 @@ class UnifiedRiskManager:
                     warnings.append(f"仓位接近上限: {position_pct:.1%}")
                     risk_level = max(risk_level, RiskLevel.MEDIUM)
             
-            # 3. 日订单限制检查
+            # 3. 日订单限制check
             if self.daily_order_count >= self.risk_config['max_daily_orders']:
                 violations.append(f"日订单数超限: {self.daily_order_count} >= {self.risk_config['max_daily_orders']}")
                 risk_level = RiskLevel.CRITICAL
@@ -174,7 +174,7 @@ class UnifiedRiskManager:
                 warnings.append(f"日订单数接近上限: {self.daily_order_count}")
                 risk_level = max(risk_level, RiskLevel.MEDIUM)
             
-            # 4. 投资组合风险检查
+            # 4. 投资组合风险check
             portfolio_risk_result = await self._check_portfolio_risk(symbol, side, quantity, price, account_value)
             violations.extend(portfolio_risk_result.get('violations', []))
             warnings.extend(portfolio_risk_result.get('warnings', []))
@@ -206,7 +206,7 @@ class UnifiedRiskManager:
             )
             
         except Exception as e:
-            self.logger.error(f"订单风险验证失败: {e}")
+            self.logger.error(f"订单风险验证failed: {e}")
             return RiskValidationResult(
                 is_valid=False,
                 risk_level=RiskLevel.CRITICAL,
@@ -216,35 +216,35 @@ class UnifiedRiskManager:
     
     async def _check_portfolio_risk(self, symbol: str, side: str, quantity: int, 
                                   price: float, account_value: float) -> Dict:
-        """检查投资组合级别的风险"""
+        """check投资组合级别风险"""
         violations = []
         warnings = []
         risk_level = RiskLevel.LOW
         
         try:
-            # 更新组合风险计算
+            # updates组合风险计算
             await self._update_portfolio_risk(account_value)
             
             if self.portfolio_risk:
-                # 检查行业集中度
-                # 这里需要从外部获取行业信息，暂时跳过
+                # check行业集in度
+                # 这里需要from外部retrieval行业信息，暂when跳过
                 # sector_risk = self._check_sector_concentration(symbol, quantity * price)
                 
-                # 检查整体集中度
+                # check整体集in度
                 concentration_risk = self.portfolio_risk.concentration_risk
                 concentration_limit = self.risk_config['concentration_warning_pct']
                 
                 if concentration_risk > concentration_limit:
-                    warnings.append(f"投资组合集中度过高: {concentration_risk:.1%}")
+                    warnings.append(f"投资组合集in度过高: {concentration_risk:.1%}")
                     risk_level = max(risk_level, RiskLevel.MEDIUM)
                 
-                # 检查当前回撤
+                # check当before回撤
                 if self.portfolio_risk.current_drawdown > 0.10:  # 10%回撤警告
                     warnings.append(f"投资组合回撤较大: {self.portfolio_risk.current_drawdown:.1%}")
                     risk_level = max(risk_level, RiskLevel.HIGH)
             
         except Exception as e:
-            self.logger.warning(f"投资组合风险检查失败: {e}")
+            self.logger.warning(f"投资组合风险checkfailed: {e}")
         
         return {
             'violations': violations,
@@ -253,11 +253,11 @@ class UnifiedRiskManager:
         }
     
     async def _update_portfolio_risk(self, account_value: float):
-        """更新投资组合风险指标"""
+        """updates投资组合风险指标"""
         try:
             total_unrealized_pnl = sum(pos.unrealized_pnl for pos in self.positions.values())
             
-            # 计算集中度风险（最大仓位占比）
+            # 计算集in度风险（最大仓位ratio）
             if self.positions and account_value > 0:
                 max_position_weight = max(
                     abs(pos.quantity * pos.current_price) / account_value 
@@ -267,7 +267,7 @@ class UnifiedRiskManager:
             else:
                 concentration_risk = 0.0
             
-            # 简化的投资组合风险计算
+            # 简化投资组合风险计算
             self.portfolio_risk = PortfolioRisk(
                 total_value=account_value,
                 total_unrealized_pnl=total_unrealized_pnl,
@@ -278,30 +278,30 @@ class UnifiedRiskManager:
             )
             
         except Exception as e:
-            self.logger.warning(f"更新投资组合风险失败: {e}")
+            self.logger.warning(f"updates投资组合风险failed: {e}")
     
     def _calculate_recommended_size(self, symbol: str, price: float, 
                                   account_value: float, violations: List[str]) -> Optional[int]:
-        """计算推荐的订单大小"""
+        """计算推荐订单大小"""
         try:
-            if violations:  # 如果有违规，不推荐
+            if violations:  # if果has违规，not推荐
                 return None
             
-            # 基于风险预算计算推荐大小
+            # 基at风险预算计算推荐大小
             max_position_value = account_value * self.risk_config['max_single_position_pct'] * 0.8  # 保守80%
             max_size = int(max_position_value / price)
             
             # 考虑最小订单价值
             min_size = int(self.risk_config['min_order_value'] / price) + 1
             
-            return max(min_size, min(max_size, 1000))  # 限制在合理范围内
+            return max(min_size, min(max_size, 1000))  # 限制in合理范围内
             
         except Exception as e:
-            self.logger.warning(f"计算推荐订单大小失败: {e}")
+            self.logger.warning(f"计算推荐订单大小failed: {e}")
             return None
     
     def _calculate_max_allowed_size(self, symbol: str, price: float, account_value: float) -> Optional[int]:
-        """计算最大允许的订单大小"""
+        """计算最大允许订单大小"""
         try:
             max_position_value = account_value * self.risk_config['max_single_position_pct']
             max_order_value = min(max_position_value, self.risk_config['max_order_value'])
@@ -309,12 +309,12 @@ class UnifiedRiskManager:
             return int(max_order_value / price)
             
         except Exception as e:
-            self.logger.warning(f"计算最大允许订单大小失败: {e}")
+            self.logger.warning(f"计算最大允许订单大小failed: {e}")
             return None
     
     def update_position(self, symbol: str, quantity: int, current_price: float, 
                        entry_price: Optional[float] = None):
-        """更新持仓信息"""
+        """updatespositions信息"""
         try:
             if quantity == 0:
                 # 平仓
@@ -335,11 +335,11 @@ class UnifiedRiskManager:
                 entry_price=entry_price,
                 unrealized_pnl=unrealized_pnl,
                 unrealized_pnl_pct=unrealized_pnl_pct,
-                portfolio_weight=0.0  # 将在update_portfolio_risk中计算
+                portfolio_weight=0.0  # willinupdate_portfolio_riskin计算
             )
             
         except Exception as e:
-            self.logger.error(f"更新持仓信息失败 {symbol}: {e}")
+            self.logger.error(f"updatespositions信息failed {symbol}: {e}")
     
     def increment_order_count(self):
         """增加日订单计数"""
@@ -347,11 +347,11 @@ class UnifiedRiskManager:
         self.daily_order_count += 1
     
     def update_daily_pnl(self, pnl_change: float):
-        """更新日损益"""
+        """updates日损益"""
         self._reset_daily_counters_if_needed()
         self.daily_pnl += pnl_change
         
-        # 检查日亏损限制
+        # check日亏损限制
         daily_loss_limit = self.risk_config['daily_loss_limit_pct']
         if self.daily_pnl < -daily_loss_limit:
             self._log_risk_event(RiskEventType.DAILY_LOSS_LIMIT, {
@@ -367,7 +367,7 @@ class UnifiedRiskManager:
             self.daily_order_count = 0
             self.daily_pnl = 0.0
             self.last_reset_date = current_date
-            self.logger.info("日风险计数器已重置")
+            self.logger.info("日风险计数器重置")
     
     def _log_risk_event(self, event_type: RiskEventType, details: Dict):
         """记录风险事件"""
@@ -390,11 +390,11 @@ class UnifiedRiskManager:
             self.logger.info(f"风险事件: {event_type.value} - {details}")
     
     def get_risk_summary(self) -> Dict[str, Any]:
-        """获取风险状况摘要"""
+        """retrieval风险状况summary"""
         self._reset_daily_counters_if_needed()
         
         # 计算风险指标
-        recent_events = [e for e in self.risk_events if time.time() - e['timestamp'] < 3600]  # 最近1小时
+        recent_events = [e for e in self.risk_events if time.time() - e['timestamp'] < 3600]  # 最近1小when
         
         return {
             'daily_orders': {
@@ -417,18 +417,18 @@ class UnifiedRiskManager:
         }
     
     def get_position_risk(self, symbol: str) -> Optional[PositionRisk]:
-        """获取特定持仓的风险信息"""
+        """retrieval特定positions风险信息"""
         return self.position_manager.get_quantity(symbol)
     
     def check_emergency_stop_conditions(self) -> Tuple[bool, List[str]]:
-        """检查是否触发紧急停止条件"""
+        """checkis否触发紧急停止 records件"""
         violations = []
         
-        # 检查日亏损限制
+        # check日亏损限制
         if self.daily_pnl < -self.risk_config['daily_loss_limit_pct'] * 2:  # 2倍日亏损限制
             violations.append(f"日亏损超过紧急阈值: {self.daily_pnl:.1%}")
         
-        # 检查投资组合回撤
+        # check投资组合回撤
         if self.portfolio_risk and self.portfolio_risk.current_drawdown > 0.20:  # 20%回撤
             violations.append(f"投资组合回撤过大: {self.portfolio_risk.current_drawdown:.1%}")
         
@@ -438,7 +438,7 @@ class UnifiedRiskManager:
 _global_risk_manager: Optional[UnifiedRiskManager] = None
 
 def get_risk_manager(config_manager=None) -> UnifiedRiskManager:
-    """获取全局风险管理器实例"""
+    """retrieval全局风险管理器实例"""
     global _global_risk_manager
     if _global_risk_manager is None:
         if config_manager is None:

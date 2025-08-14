@@ -50,7 +50,7 @@ class IndicatorCache:
         self.total_computations = 0
         self.total_computation_time = 0.0
         
-        # 预定义的指标函数
+        # 预定义指标函数
         self._indicator_functions = {
             'sma': self._compute_sma,
             'ema': self._compute_ema,
@@ -64,22 +64,22 @@ class IndicatorCache:
     
     def get_indicator(self, indicator_name: str, symbol: str, data: List[float], 
                      period: int = 14, **kwargs) -> Any:
-        """获取技术指标值（带缓存）"""
+        """retrieval技术指标值（带缓存）"""
         with self.lock:
             # 生成缓存键
             cache_key = self._generate_cache_key(indicator_name, symbol, data, period, **kwargs)
             
-            # 检查缓存
+            # check缓存
             if self._is_cache_valid(cache_key):
                 self.cache_hits += 1
                 self._access_count[cache_key] += 1
                 self._access_time[cache_key] = time.time()
                 result = self._cache[cache_key]
                 
-                self.logger.debug(f"缓存命中: {indicator_name}({symbol}, {period})")
+                self.logger.debug(f"缓存命in: {indicator_name}({symbol}, {period})")
                 return result.value
             
-            # 缓存未命中，计算指标
+            # 缓存未命in，计算指标
             self.cache_misses += 1
             return self._compute_and_cache(cache_key, indicator_name, symbol, data, period, **kwargs)
     
@@ -93,9 +93,9 @@ class IndicatorCache:
         for key, value in sorted(kwargs.items()):
             data_str += f"_{key}_{value}"
         
-        # 添加数据哈希（只使用最后几个值）
+        # 添加数据哈希（只使use最after几个值）
         if len(data) > 10:
-            # 只使用最后10个数据点来生成哈希，提高效率
+            # 只使use最after10个数据点来生成哈希，提高效率
             recent_data = data[-10:]
         else:
             recent_data = data
@@ -106,13 +106,13 @@ class IndicatorCache:
         return data_str
     
     def _is_cache_valid(self, cache_key: str) -> bool:
-        """检查缓存是否有效"""
+        """check缓存is否has效"""
         if cache_key not in self._cache:
             return False
         
         result = self._cache[cache_key]
         
-        # 检查TTL
+        # checkTTL
         if time.time() - result.timestamp > self.ttl_seconds:
             self._remove_from_cache(cache_key)
             return False
@@ -125,9 +125,9 @@ class IndicatorCache:
         start_time = time.time()
         
         try:
-            # 获取计算函数
+            # retrieval计算函数
             if indicator_name not in self._indicator_functions:
-                raise ValueError(f"不支持的指标: {indicator_name}")
+                raise ValueError(f"not支持指标: {indicator_name}")
             
             compute_func = self._indicator_functions[indicator_name]
             
@@ -138,7 +138,7 @@ class IndicatorCache:
             self.total_computations += 1
             self.total_computation_time += computation_time
             
-            # 创建结果对象
+            # 创建结果for象
             result = IndicatorResult(
                 value=value,
                 timestamp=time.time(),
@@ -152,7 +152,7 @@ class IndicatorCache:
                 }
             )
             
-            # 存储到缓存
+            # 存储to缓存
             self._add_to_cache(cache_key, result)
             
             self.logger.debug(f"计算并缓存: {indicator_name}({symbol}, {period}) = {value}")
@@ -160,12 +160,12 @@ class IndicatorCache:
             return value
             
         except Exception as e:
-            self.logger.error(f"指标计算失败 {indicator_name}: {e}")
+            self.logger.error(f"指标计算failed {indicator_name}: {e}")
             return None
     
     def _add_to_cache(self, cache_key: str, result: IndicatorResult):
-        """添加到缓存"""
-        # 检查缓存大小限制
+        """添加to缓存"""
+        # check缓存大小限制
         if len(self._cache) >= self.max_cache_size:
             self._evict_oldest()
         
@@ -174,21 +174,21 @@ class IndicatorCache:
         self._access_time[cache_key] = time.time()
     
     def _remove_from_cache(self, cache_key: str):
-        """从缓存中移除"""
+        """from缓存in移除"""
         self._cache.pop(cache_key, None)
         self._access_count.pop(cache_key, None)
         self._access_time.pop(cache_key, None)
     
     def _evict_oldest(self):
-        """驱逐最老的缓存项"""
+        """驱逐最老缓存 items"""
         if not self._cache:
             return
         
-        # 按访问时间排序，移除最老的
+        # 按访问when间排序，移除最老
         oldest_key = min(self._access_time.keys(), key=lambda k: self._access_time[k])
         self._remove_from_cache(oldest_key)
         
-        self.logger.debug(f"驱逐缓存项: {oldest_key}")
+        self.logger.debug(f"驱逐缓存 items: {oldest_key}")
     
     # ==================== 指标计算函数 ====================
     
@@ -204,24 +204,24 @@ class IndicatorCache:
         if len(data) < period:
             return None
         
-        # 使用pandas计算EMA
+        # 使usepandas计算EMA
         series = pd.Series(data)
         ema = series.ewm(span=period).mean()
         return ema.iloc[-1]
     
     def _compute_rsi(self, data: List[float], period: int = 14, **kwargs) -> float:
-        """相对强弱指数"""
+        """相for强弱指数"""
         if len(data) < period + 1:
             return None
         
-        # 计算价格变化
+        # 计算price变化
         deltas = np.diff(data)
         
-        # 分离收益和损失
+        # 分离收益and损失
         gains = np.where(deltas > 0, deltas, 0)
         losses = np.where(deltas < 0, -deltas, 0)
         
-        # 计算平均收益和损失
+        # 计算平均收益and损失
         avg_gain = np.mean(gains[-period:])
         avg_loss = np.mean(losses[-period:])
         
@@ -314,8 +314,8 @@ class IndicatorCache:
         else:
             k_percent = ((current_close - lowest_low) / (highest_high - lowest_low)) * 100
         
-        # 计算%D（%K的移动平均）
-        # 简化版本，实际应该维护%K的历史
+        # 计算%D（%K移动平均）
+        # 简化版本，实际应该维护%K历史
         d_percent = k_percent  # 简化处理
         
         return {
@@ -351,10 +351,10 @@ class IndicatorCache:
             self._cache.clear()
             self._access_count.clear()
             self._access_time.clear()
-            self.logger.info("指标缓存已清空")
+            self.logger.info("指标缓存清空")
     
     def get_cache_stats(self) -> Dict[str, Any]:
-        """获取缓存统计信息"""
+        """retrieval缓存统计信息"""
         with self.lock:
             total_requests = self.cache_hits + self.cache_misses
             hit_rate = (self.cache_hits / total_requests * 100) if total_requests > 0 else 0
@@ -372,7 +372,7 @@ class IndicatorCache:
             }
     
     def optimize_cache(self):
-        """优化缓存（移除过期项）"""
+        """优化缓存（移除过期 items）"""
         with self.lock:
             current_time = time.time()
             expired_keys = []
@@ -385,45 +385,45 @@ class IndicatorCache:
                 self._remove_from_cache(key)
             
             if expired_keys:
-                self.logger.info(f"清理了 {len(expired_keys)} 个过期缓存项")
+                self.logger.info(f"清理了 {len(expired_keys)} 个过期缓存 items")
     
     def precompute_indicators(self, symbol: str, data: List[float], indicators: List[str]):
-        """预计算指标（提高后续访问速度）"""
+        """预计算指标（提高after续访问速度）"""
         with self.lock:
             for indicator in indicators:
                 if indicator in self._indicator_functions:
                     try:
                         self.get_indicator(indicator, symbol, data)
                     except Exception as e:
-                        self.logger.error(f"预计算指标失败 {indicator}: {e}")
+                        self.logger.error(f"预计算指标failed {indicator}: {e}")
 
 
 # 全局指标缓存实例
 _global_indicator_cache: Optional[IndicatorCache] = None
 
 def get_indicator_cache() -> IndicatorCache:
-    """获取全局指标缓存"""
+    """retrieval全局指标缓存"""
     global _global_indicator_cache
     if _global_indicator_cache is None:
         _global_indicator_cache = IndicatorCache()
     return _global_indicator_cache
 
 def cached_sma(symbol: str, data: List[float], period: int = 20) -> float:
-    """缓存的SMA计算"""
+    """缓存SMA计算"""
     cache = get_indicator_cache()
     return cache.get_indicator('sma', symbol, data, period)
 
 def cached_ema(symbol: str, data: List[float], period: int = 20) -> float:
-    """缓存的EMA计算"""
+    """缓存EMA计算"""
     cache = get_indicator_cache()
     return cache.get_indicator('ema', symbol, data, period)
 
 def cached_rsi(symbol: str, data: List[float], period: int = 14) -> float:
-    """缓存的RSI计算"""
+    """缓存RSI计算"""
     cache = get_indicator_cache()
     return cache.get_indicator('rsi', symbol, data, period)
 
 def cached_atr(symbol: str, highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-    """缓存的ATR计算"""
+    """缓存ATR计算"""
     cache = get_indicator_cache()
     return cache.get_indicator('atr', symbol, closes, period, highs=highs, lows=lows, closes=closes)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-交易审计器 v2 - 增强版，包含完整的合规检查功能
+交易审计器 v2 - 增强版，包含完整合规check功能
 """
 
 import os
@@ -13,7 +13,7 @@ from collections import deque
 
 
 class TradingAuditor:
-    """交易审计器 - 记录、监控和合规检查"""
+    """交易审计器 - 记录、监控and合规check"""
     
     def __init__(self, log_directory: str = "audit_logs", db_path: str = "trading_audit.db"):
         self.log_directory = log_directory
@@ -21,7 +21,7 @@ class TradingAuditor:
         self.db_path = db_path
         self.logger = logging.getLogger("TradingAuditor")
         
-        # 合规检查缓存
+        # 合规check缓存
         self._recent_orders = deque(maxlen=1000)  # 最近1000笔订单
         self._daily_stats = {}
         
@@ -75,10 +75,10 @@ class TradingAuditor:
                 """)
                 
                 conn.commit()
-                self.logger.info("审计数据库初始化完成")
+                self.logger.info("审计Database initialization completed")
                 
         except Exception as e:
-            self.logger.error(f"审计数据库初始化失败: {e}")
+            self.logger.error(f"审计Database initialization failed: {e}")
     
     def _init_compliance_rules(self):
         """初始化合规规则"""
@@ -92,7 +92,7 @@ class TradingAuditor:
             'max_orders_per_symbol_daily': 8,
             'max_orders_per_hour': 25,
             
-            # 集中度限制
+            # 集in度限制
             'max_single_position_pct': 0.2,  # 20%
             'max_sector_concentration': 0.3,  # 30%
             
@@ -101,12 +101,12 @@ class TradingAuditor:
             'max_leverage': 2.0,
             
             # 特殊标记
-            'watch_symbols': ['TSLA', 'GME', 'AMC'],  # 特别关注的股票
-            'restricted_hours': [],  # 限制交易时间段
+            'watch_symbols': ['TSLA', 'GME', 'AMC'],  # 特别关注股票
+            'restricted_hours': [],  # 限制交易when间段
         }
     
     def log_order(self, order_data: Dict[str, Any]):
-        """记录订单到数据库和日志文件"""
+        """记录订单to数据库and日志文件"""
         try:
             # 数据库记录
             with sqlite3.connect(self.db_path) as conn:
@@ -131,17 +131,17 @@ class TradingAuditor:
             }
             self.logger.info(json.dumps(log_entry, ensure_ascii=False, default=str))
             
-            # 执行合规检查
+            # 执行合规check
             self._perform_compliance_checks(order_data)
             
-            # 更新统计
+            # updates统计
             self._update_daily_stats(order_data)
             
         except Exception as e:
-            self.logger.error(f"审计日志记录失败: {e}")
+            self.logger.error(f"审计日志记录failed: {e}")
     
     def _perform_compliance_checks(self, order_data: Dict[str, Any]):
-        """执行合规检查"""
+        """执行合规check"""
         warnings = []
         severity = 'WARNING'
         
@@ -150,19 +150,19 @@ class TradingAuditor:
         order_value = order_data.get('quantity', 0) * order_data.get('price', 0)
         account_value = order_data.get('account_value', 0)
         
-        # 1. 大额订单检查
+        # 1. 大额订单check
         if order_value > self.compliance_rules['large_order_threshold']:
             warnings.append(f"大额订单: ${order_value:,.0f}")
             severity = 'HIGH'
         
-        # 2. 大比例订单检查
+        # 2. 大比例订单check
         if account_value > 0:
             order_pct = order_value / account_value
             if order_pct > self.compliance_rules['large_order_pct_threshold']:
                 warnings.append(f"大比例订单: {order_pct:.1%}")
                 severity = 'HIGH'
         
-        # 3. 高频交易检查
+        # 3. 高频交易check
         recent_5min = [
             order for order in self._recent_orders 
             if current_time - order.get('timestamp', 0) < 300
@@ -171,7 +171,7 @@ class TradingAuditor:
             warnings.append(f"高频交易: 5分钟内{len(recent_5min)}笔订单")
             severity = 'HIGH'
         
-        # 4. 单股票集中度检查
+        # 4. 单股票集in度check
         if symbol:
             symbol_orders_today = [
                 order for order in self._recent_orders 
@@ -179,26 +179,26 @@ class TradingAuditor:
                     current_time - order.get('timestamp', 0) < 86400)
             ]
             if len(symbol_orders_today) > self.compliance_rules['max_orders_per_symbol_daily']:
-                warnings.append(f"单股集中: {symbol} 今日{len(symbol_orders_today)}笔")
+                warnings.append(f"单股集in: {symbol} 今日{len(symbol_orders_today)}笔")
         
-        # 5. 特别关注股票检查
+        # 5. 特别关注股票check
         if symbol in self.compliance_rules['watch_symbols']:
             warnings.append(f"关注股票: {symbol}")
         
-        # 6. 手动风险参数检查
+        # 6. 手动风险参数check
         if order_data.get('risk_level') == 'MANUAL':
             warnings.append("手动风险参数")
         
-        # 7. 算法交易检查
+        # 7. 算法交易check
         if order_data.get('order_type', '').startswith('ALGO_'):
             algorithm = order_data.get('algorithm', 'UNKNOWN')
             warnings.append(f"算法交易: {algorithm}")
         
-        # 8. 时间段检查
+        # 8. when间段check
         import datetime
         current_hour = datetime.datetime.now().hour
         if current_hour in self.compliance_rules['restricted_hours']:
-            warnings.append(f"受限时段交易: {current_hour}时")
+            warnings.append(f"受限when段交易: {current_hour}when")
         
         # 记录合规结果
         if warnings:
@@ -245,15 +245,15 @@ class TradingAuditor:
             warning_msg = f"合规警告 [{alert_data['symbol']}]: {'; '.join(warnings)}"
             
             if severity == 'HIGH':
-                self.logger.critical(f"🚨 严重合规问题: {warning_msg}")
+                self.logger.critical(f" 严重合规问题: {warning_msg}")
             else:
-                self.logger.warning(f"⚠️ {warning_msg}")
+                self.logger.warning(f" {warning_msg}")
             
         except Exception as e:
-            self.logger.error(f"合规警告记录失败: {e}")
+            self.logger.error(f"合规警告记录failed: {e}")
     
     def _update_daily_stats(self, order_data: Dict[str, Any]):
-        """更新日常统计"""
+        """updates日常统计"""
         try:
             import datetime
             today = datetime.date.today().isoformat()
@@ -263,12 +263,12 @@ class TradingAuditor:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # 获取当日统计
+                # retrieval当日统计
                 cursor.execute("SELECT * FROM trading_stats WHERE date = ?", (today,))
                 row = cursor.fetchone()
                 
                 if row:
-                    # 更新现有记录
+                    # updates现has记录
                     cursor.execute("""
                         UPDATE trading_stats SET 
                         total_orders = total_orders + 1,
@@ -289,7 +289,7 @@ class TradingAuditor:
                 conn.commit()
                 
         except Exception as e:
-            self.logger.error(f"统计更新失败: {e}")
+            self.logger.error(f"统计updatesfailed: {e}")
     
     def get_compliance_report(self, days: int = 1) -> Dict[str, Any]:
         """生成合规报告"""
@@ -336,7 +336,7 @@ class TradingAuditor:
                 }
                 
         except Exception as e:
-            self.logger.error(f"合规报告生成失败: {e}")
+            self.logger.error(f"合规报告生成failed: {e}")
             return {'error': str(e)}
     
     def _calculate_compliance_score(self, alerts, stats) -> float:
@@ -362,7 +362,7 @@ class TradingAuditor:
             return max(0.0, min(100.0, score))
             
         except Exception:
-            return 50.0  # 默认中等评分
+            return 50.0  # 默认in等评分
     
     def log_risk_event(self, event_type: str, details: Dict[str, Any]):
         """记录风险事件"""
@@ -385,7 +385,7 @@ class TradingAuditor:
             self.logger.warning(f"风险事件: {event_type} - {details}")
             
         except Exception as e:
-            self.logger.error(f"风险事件记录失败: {e}")
+            self.logger.error(f"风险事件记录failed: {e}")
     
     def cleanup_old_records(self, days_to_keep: int = 30):
         """清理旧记录"""
@@ -395,20 +395,20 @@ class TradingAuditor:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # 清理旧的审计日志
+                # 清理旧审计日志
                 cursor.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff_time,))
                 audit_deleted = cursor.rowcount
                 
-                # 清理旧的合规警告
+                # 清理旧合规警告
                 cursor.execute("DELETE FROM compliance_alerts WHERE timestamp < ?", (cutoff_time,))
                 alert_deleted = cursor.rowcount
                 
                 conn.commit()
                 
-            self.logger.info(f"清理完成: 删除{audit_deleted}条审计记录, {alert_deleted}条合规警告")
+            self.logger.info(f"清理completed: 删除{audit_deleted} records审计记录, {alert_deleted} records合规警告")
             
         except Exception as e:
-            self.logger.error(f"记录清理失败: {e}")
+            self.logger.error(f"记录清理failed: {e}")
 
 
 # 兼容性：别名

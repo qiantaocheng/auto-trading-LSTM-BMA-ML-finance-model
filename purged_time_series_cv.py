@@ -22,7 +22,7 @@ class ValidationConfig:
     embargo: int = 2     # 额外的embargo期间
     min_train_size: int = 252  # 最小训练集大小
     group_freq: str = 'W'      # 分组频率
-
+    
 @dataclass
 class CVResults:
     """交叉验证结果（保留接口兼容性）"""
@@ -46,7 +46,7 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
     
     def __init__(self, config: ValidationConfig):
         self.config = config
-    
+        
     def split(self, X, y=None, groups=None):
         """
         生成训练/测试索引对
@@ -112,7 +112,7 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
             
             if len(train_indices) < self.config.min_train_size or len(test_indices) == 0:
                 continue
-            
+                
             logger.debug(f"第{i+1}折: 训练{len(train_indices)}样本, 测试{len(test_indices)}样本")
             logger.debug(f"训练期间: {train_groups[0]} to {train_groups[-1]}")
             logger.debug(f"测试期间: {test_groups[0]} to {test_groups[-1]}")
@@ -127,7 +127,7 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
                     logger.warning(f"第{i+1}折时间间隔不足: {time_gap_days}天 < {self.config.gap}天")
             
             yield train_indices, test_indices
-    
+
     def get_n_splits(self, X=None, y=None, groups=None):
         """返回分割数量"""
         return self.config.n_splits

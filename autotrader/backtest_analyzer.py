@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 AutoTrader 回测分析器
-提供专业级的绩效分析和可视化功能
+提供专业级绩效分析andcan视化功能
 """
 
 import pandas as pd
@@ -71,7 +71,7 @@ class BacktestAnalyzer:
             self.trades_df['timestamp'] = pd.to_datetime(self.trades_df['timestamp'])
     
     def calculate_comprehensive_metrics(self, benchmark_returns: Optional[pd.Series] = None) -> PerformanceMetrics:
-        """计算全面的绩效指标"""
+        """计算全面绩效指标"""
         if self.performance_df.empty:
             return PerformanceMetrics(0, 0, [], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         
@@ -91,7 +91,7 @@ class BacktestAnalyzer:
         var_95 = np.percentile(returns.dropna(), 5)
         var_99 = np.percentile(returns.dropna(), 1)
         
-        # 下行波动率（用于Sortino比率）
+        # 下行波动率（useatSortino比率）
         downside_returns = returns[returns < 0]
         downside_vol = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else 0
         
@@ -105,7 +105,7 @@ class BacktestAnalyzer:
         profit_factor, avg_win, avg_loss = self._calculate_profit_factor()
         max_consec_wins, max_consec_losses = self._calculate_consecutive_stats(returns)
         
-        # 相对基准的指标
+        # 相for基准指标
         beta, alpha, info_ratio, tracking_error = 0, 0, 0, 0
         if benchmark_returns is not None:
             beta, alpha, info_ratio, tracking_error = self._calculate_relative_metrics(
@@ -140,21 +140,21 @@ class BacktestAnalyzer:
         if self.trades_df.empty:
             return 0, 0, 0
         
-        # 计算每笔交易的盈亏
+        # 计算每笔交易盈亏
         buy_trades = self.trades_df[self.trades_df['action'] == 'BUY'].copy()
         sell_trades = self.trades_df[self.trades_df['action'] == 'SELL'].copy()
         
         if buy_trades.empty or sell_trades.empty:
             return 0, 0, 0
         
-        # 简化：假设按时间配对买卖交易
+        # 简化：假设按when间配for买卖交易
         trade_pnl = []
         for symbol in self.trades_df['symbol'].unique():
             symbol_buys = buy_trades[buy_trades['symbol'] == symbol].sort_values('timestamp')
             symbol_sells = sell_trades[sell_trades['symbol'] == symbol].sort_values('timestamp')
             
             for i, buy in symbol_buys.iterrows():
-                # 找到对应的卖出交易
+                # 找tofor应卖出交易
                 matching_sells = symbol_sells[symbol_sells['timestamp'] > buy['timestamp']]
                 if not matching_sells.empty:
                     sell = matching_sells.iloc[0]
@@ -178,7 +178,7 @@ class BacktestAnalyzer:
         if returns.empty:
             return 0, 0
         
-        # 将收益转换为涨跌标志
+        # will收益转换as涨跌标志
         signals = (returns > 0).astype(int)
         
         # 计算连续序列
@@ -201,9 +201,9 @@ class BacktestAnalyzer:
     
     def _calculate_relative_metrics(self, returns: pd.Series, 
                                   benchmark_returns: pd.Series) -> Tuple[float, float, float, float]:
-        """计算相对基准的指标"""
+        """计算相for基准指标"""
         try:
-            # 对齐数据
+            # for齐数据
             aligned_data = pd.concat([returns, benchmark_returns], axis=1).dropna()
             if aligned_data.empty:
                 return 0, 0, 0, 0
@@ -211,7 +211,7 @@ class BacktestAnalyzer:
             port_ret = aligned_data.iloc[:, 0]
             bench_ret = aligned_data.iloc[:, 1]
             
-            # Beta和Alpha
+            # BetaandAlpha
             covariance = np.cov(port_ret, bench_ret)[0, 1]
             benchmark_var = np.var(bench_ret)
             beta = covariance / benchmark_var if benchmark_var > 0 else 0
@@ -219,7 +219,7 @@ class BacktestAnalyzer:
             alpha = port_ret.mean() - beta * bench_ret.mean()
             alpha = alpha * 252  # 年化
             
-            # 信息比率和跟踪误差
+            # 信息比率and跟踪误差
             excess_returns = port_ret - bench_ret
             tracking_error = excess_returns.std() * np.sqrt(252)
             information_ratio = excess_returns.mean() * 252 / tracking_error if tracking_error > 0 else 0
@@ -227,12 +227,12 @@ class BacktestAnalyzer:
             return beta, alpha, information_ratio, tracking_error
             
         except Exception as e:
-            self.logger.warning(f"计算相对指标失败: {e}")
+            self.logger.warning(f"计算相for指标failed: {e}")
             return 0, 0, 0, 0
     
     def create_comprehensive_report(self, save_path: Optional[str] = None) -> None:
         """创建综合回测报告"""
-        # 设置绘图样式
+        # settings绘图样式
         plt.style.use('seaborn-v0_8')
         fig = plt.figure(figsize=(20, 24))
         
@@ -256,7 +256,7 @@ class BacktestAnalyzer:
         ax5 = plt.subplot(4, 2, 5)
         self._plot_rolling_sharpe(ax5)
         
-        # 6. 持仓权重变化
+        # 6. positions权重变化
         ax6 = plt.subplot(4, 2, 6)
         self._plot_position_weights(ax6)
         
@@ -272,7 +272,7 @@ class BacktestAnalyzer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            self.logger.info(f"报告已保存到: {save_path}")
+            self.logger.info(f"报告保存to: {save_path}")
         
         plt.show()
     
@@ -357,7 +357,7 @@ class BacktestAnalyzer:
         # 绘制热力图
         im = ax.imshow(heatmap_data, cmap='RdYlGn', aspect='auto', vmin=-0.1, vmax=0.1)
         
-        # 设置标签
+        # settings标签
         ax.set_xticks(range(12))
         ax.set_xticklabels(['1月', '2月', '3月', '4月', '5月', '6月',
                            '7月', '8月', '9月', '10月', '11月', '12月'])
@@ -373,7 +373,7 @@ class BacktestAnalyzer:
         
         ax.set_title('月度收益热力图', fontsize=14, fontweight='bold')
         
-        # 添加颜色条
+        # 添加颜色 records
         cbar = plt.colorbar(im, ax=ax, shrink=0.8)
         cbar.set_label('月度收益率', rotation=270, labelpad=15)
     
@@ -432,11 +432,11 @@ class BacktestAnalyzer:
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
     
     def _plot_position_weights(self, ax):
-        """绘制持仓权重变化"""
+        """绘制positions权重变化"""
         if self.performance_df.empty:
             return
         
-        # 提取持仓权重数据
+        # 提取positions权重数据
         dates = []
         position_data = {}
         
@@ -449,11 +449,11 @@ class BacktestAnalyzer:
                     position_data[symbol].append(weight)
         
         if not position_data:
-            ax.text(0.5, 0.5, '无持仓数据', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title('持仓权重变化', fontsize=14, fontweight='bold')
+            ax.text(0.5, 0.5, 'nopositions数据', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('positions权重变化', fontsize=14, fontweight='bold')
             return
         
-        # 选择权重最大的前10个股票
+        # 选择权重最大before10个股票
         avg_weights = {symbol: np.mean(weights) for symbol, weights in position_data.items()}
         top_symbols = sorted(avg_weights.keys(), key=lambda x: avg_weights[x], reverse=True)[:10]
         
@@ -465,7 +465,7 @@ class BacktestAnalyzer:
         
         ax.stackplot(dates, *weights_matrix.T, labels=top_symbols, alpha=0.8)
         
-        ax.set_title('主要持仓权重变化', fontsize=14, fontweight='bold')
+        ax.set_title('主要positions权重变化', fontsize=14, fontweight='bold')
         ax.set_ylabel('权重', fontsize=12)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
         ax.grid(True, alpha=0.3)
@@ -476,7 +476,7 @@ class BacktestAnalyzer:
     def _plot_trade_statistics(self, ax):
         """绘制交易统计"""
         if self.trades_df.empty:
-            ax.text(0.5, 0.5, '无交易数据', ha='center', va='center', transform=ax.transAxes)
+            ax.text(0.5, 0.5, 'no交易数据', ha='center', va='center', transform=ax.transAxes)
             ax.set_title('交易统计', fontsize=14, fontweight='bold')
             return
         
@@ -486,7 +486,7 @@ class BacktestAnalyzer:
         # 绘制柱状图
         ax.bar(range(len(trade_counts)), trade_counts.values, alpha=0.7, color='steelblue')
         
-        # 设置x轴标签
+        # settingsx轴标签
         ax.set_xticks(range(len(trade_counts)))
         ax.set_xticklabels([str(period) for period in trade_counts.index], rotation=45)
         
@@ -545,7 +545,7 @@ class BacktestAnalyzer:
         table.set_fontsize(10)
         table.scale(1, 2)
         
-        # 设置表格样式
+        # settings表格样式
         for i in range(len(table_data) + 1):
             for j in range(2):
                 cell = table[(i, j)]
@@ -558,7 +558,7 @@ class BacktestAnalyzer:
         ax.set_title('绩效指标汇总', fontsize=14, fontweight='bold', pad=20)
     
     def export_detailed_report(self, file_path: str) -> None:
-        """导出详细报告到Excel"""
+        """导出详细报告toExcel"""
         try:
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 # 基础信息
@@ -574,7 +574,7 @@ class BacktestAnalyzer:
                     '最大回撤': [f"{self.results['returns']['max_drawdown']:.2%}"],
                     '胜率': [f"{self.results['returns']['win_rate']:.2%}"]
                 }
-                pd.DataFrame(summary_data).to_excel(writer, sheet_name='回测摘要', index=False)
+                pd.DataFrame(summary_data).to_excel(writer, sheet_name='回测summary', index=False)
                 
                 # 每日绩效
                 self.performance_df.to_excel(writer, sheet_name='每日绩效')
@@ -595,15 +595,15 @@ class BacktestAnalyzer:
                 }
                 pd.DataFrame(metrics_data).to_excel(writer, sheet_name='详细指标', index=False)
             
-            self.logger.info(f"详细报告已导出到: {file_path}")
+            self.logger.info(f"详细报告导出to: {file_path}")
             
         except Exception as e:
-            self.logger.error(f"导出报告失败: {e}")
+            self.logger.error(f"导出报告failed: {e}")
 
 
-# 使用示例
+# 使use示例
 def analyze_backtest_results(results: Dict[str, Any], save_dir: str = "./backtest_reports"):
-    """分析回测结果的便捷函数"""
+    """分析回测结果便捷函数"""
     import os
     
     # 创建保存目录

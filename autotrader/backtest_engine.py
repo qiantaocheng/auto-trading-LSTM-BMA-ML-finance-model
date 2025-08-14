@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 AutoTrader 回测引擎
-集成现有的 BMA 模型、风险管理、数据库等组件
+集成现has BMA 模型、风险管理、数据库等组件
 支持周频策略回测，生成专业级报告
 """
 
@@ -19,7 +19,7 @@ from collections import defaultdict
 import sqlite3
 import json
 
-# 添加项目根目录到路径，以便导入量化模型
+# 添加 items目根目录to路径，以便导入量化模型
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -27,11 +27,11 @@ if project_root not in sys.path:
 try:
     from 量化模型_bma_enhanced import QuantitativeModel, make_target
 except ImportError as e:
-    logging.warning(f"无法导入量化模型: {e}")
+    logging.warning(f"no法导入量化模型: {e}")
     QuantitativeModel = None
 
 from .database import StockDatabase
-# 风险管理功能已集成到Engine中
+# 风险管理功能集成toEnginein
 # from .risk_manager import AdvancedRiskManager, RiskMetrics, PositionRisk
 from .factors import Bar, sma, rsi, bollinger, zscore, atr
 
@@ -39,11 +39,11 @@ from .factors import Bar, sma, rsi, bollinger, zscore, atr
 @dataclass
 class BacktestConfig:
     """回测配置"""
-    start_date: str  # 回测开始日期 YYYY-MM-DD
+    start_date: str  # 回测starting日期 YYYY-MM-DD
     end_date: str    # 回测结束日期 YYYY-MM-DD
     initial_capital: float = 100000.0  # 初始资金
     rebalance_freq: str = "weekly"     # 调仓频率: daily, weekly, monthly
-    max_positions: int = 20            # 最大持仓数量
+    max_positions: int = 20            # 最大positions数量
     commission_rate: float = 0.001     # 手续费率
     slippage_rate: float = 0.002       # 滑点率
     benchmark: str = "SPY"             # 基准指数
@@ -54,14 +54,14 @@ class BacktestConfig:
     prediction_horizon: int = 5        # 预测周期（天）
     
     # 风险控制参数
-    max_position_weight: float = 0.15  # 单个持仓最大权重
+    max_position_weight: float = 0.15  # 单个positions最大权重
     stop_loss_pct: float = 0.08        # 止损比例
     take_profit_pct: float = 0.20      # 止盈比例
 
 
 @dataclass 
 class Position:
-    """持仓信息"""
+    """positions信息"""
     symbol: str
     shares: int
     entry_price: float
@@ -77,8 +77,8 @@ class Position:
     
     @property
     def weight(self) -> float:
-        """在组合中的权重（需要总市值计算）"""
-        return 0.0  # 将在组合层面计算
+        """in组合in权重（需要总市值计算）"""
+        return 0.0  # willin组合层面计算
 
 
 @dataclass
@@ -119,7 +119,7 @@ class Portfolio:
         return sum(pos.market_value for pos in self.positions.values())
     
     def get_position_weights(self) -> Dict[str, float]:
-        """获取持仓权重"""
+        """retrievalpositions权重"""
         total = self.total_value
         if total <= 0:
             return {}
@@ -135,7 +135,7 @@ class BacktestDataManager:
         self.price_cache: Dict[str, pd.DataFrame] = {}
         
     def load_historical_prices(self, symbols: List[str], start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
-        """从数据库加载历史价格数据"""
+        """from数据库加载历史price数据"""
         try:
             with self.db._get_connection() as conn:
                 historical_data = {}
@@ -154,21 +154,21 @@ class BacktestDataManager:
                         df.set_index('date', inplace=True)
                         historical_data[symbol] = df
                     else:
-                        self.logger.warning(f"无历史数据: {symbol}")
+                        self.logger.warning(f"no历史数据: {symbol}")
                 
                 return historical_data
                 
         except Exception as e:
-            self.logger.error(f"加载历史数据失败: {e}")
+            self.logger.error(f"加载历史数据failed: {e}")
             return {}
     
     def get_stock_universe(self, date: str = None) -> List[str]:
-        """获取股票池"""
+        """retrieval股票池"""
         try:
             with self.db._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # 获取活跃的股票列表
+                # retrieval活跃股票列表
                 cursor.execute("""
                     SELECT DISTINCT symbol FROM stock_lists 
                     WHERE is_active = 1
@@ -179,7 +179,7 @@ class BacktestDataManager:
                 return symbols
                 
         except Exception as e:
-            self.logger.error(f"获取股票池失败: {e}")
+            self.logger.error(f"retrieval股票池failed: {e}")
             return []
     
     def calculate_technical_factors(self, symbol: str, price_data: pd.DataFrame) -> pd.DataFrame:
@@ -187,7 +187,7 @@ class BacktestDataManager:
         try:
             df = price_data.copy()
             
-            # 转换为 Bar 对象进行计算
+            # 转换as Bar for象进行计算
             bars = []
             for idx, row in df.iterrows():
                 bar = Bar(
@@ -208,12 +208,12 @@ class BacktestDataManager:
             df['zscore_20'] = zscore(bars, 20)
             df['atr_14'] = atr(bars, 14)
             
-            # 价格动量因子
+            # price动量因子
             df['ret_1d'] = df['close'].pct_change()
             df['ret_5d'] = df['close'].pct_change(5)
             df['ret_20d'] = df['close'].pct_change(20)
             
-            # 成交量因子
+            # execution量因子
             df['volume_sma_20'] = df['volume'].rolling(20).mean()
             df['volume_ratio'] = df['volume'] / df['volume_sma_20']
             
@@ -227,7 +227,7 @@ class BacktestDataManager:
             return df
             
         except Exception as e:
-            self.logger.error(f"计算技术因子失败 {symbol}: {e}")
+            self.logger.error(f"计算技术因子failed {symbol}: {e}")
             return pd.DataFrame()
 
 
@@ -241,7 +241,7 @@ class BMASignalGenerator:
         self.last_train_date: Optional[datetime] = None
         
     def should_retrain_model(self, current_date: datetime) -> bool:
-        """判断是否需要重新训练模型"""
+        """判断is否需要重新训练模型"""
         if self.model is None or self.last_train_date is None:
             return True
         
@@ -261,10 +261,10 @@ class BMASignalGenerator:
                 # 过滤训练期间数据
                 train_df = df[(df.index >= train_start) & (df.index < current_date)].copy()
                 
-                if len(train_df) < 60:  # 数据不足
+                if len(train_df) < 60:  # 数据not足
                     continue
                 
-                # 计算因子（复用现有因子计算逻辑）
+                # 计算因子（复use现has因子计算逻辑）
                 factor_df = self._calculate_ml_factors(train_df, symbol)
                 
                 if not factor_df.empty:
@@ -273,7 +273,7 @@ class BMASignalGenerator:
             if not all_features:
                 return pd.DataFrame(), pd.Series()
             
-            # 合并所有特征
+            # 合并所has特征
             combined_data = pd.concat(all_features, ignore_index=True)
             
             # 计算目标变量（未来5日收益）
@@ -285,13 +285,13 @@ class BMASignalGenerator:
                 # 简化目标变量计算
                 combined_data['target'] = combined_data.groupby('ticker')['close'].pct_change(5).shift(-5)
             
-            # 移除缺失目标值的行
+            # 移除缺失目标值行
             combined_data = combined_data.dropna(subset=['target'])
             
             if combined_data.empty:
                 return pd.DataFrame(), pd.Series()
             
-            # 分离特征和目标
+            # 分离特征and目标
             feature_cols = [col for col in combined_data.columns 
                           if col not in ['ticker', 'date', 'target', 'close']]
             
@@ -301,7 +301,7 @@ class BMASignalGenerator:
             return X, y
             
         except Exception as e:
-            self.logger.error(f"准备训练数据失败: {e}")
+            self.logger.error(f"准备训练数据failed: {e}")
             return pd.DataFrame(), pd.Series()
     
     def _calculate_ml_factors(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -309,7 +309,7 @@ class BMASignalGenerator:
         try:
             factor_df = df.copy()
             
-            # 价格因子
+            # price因子
             factor_df['momentum_5'] = factor_df['close'].pct_change(5)
             factor_df['momentum_20'] = factor_df['close'].pct_change(20)
             factor_df['mean_reversion_5'] = -factor_df['momentum_5']  # 反转因子
@@ -331,13 +331,13 @@ class BMASignalGenerator:
                         rsi_val = 100 - (100 / (1 + rs))
                     else:
                         rsi_val = 100
-                    rsi_values.append((rsi_val - 50) / 50)  # 标准化到[-1,1]
+                    rsi_values.append((rsi_val - 50) / 50)  # 标准化to[-1,1]
                 else:
                     rsi_values.append(0)
             
             factor_df['rsi_normalized'] = rsi_values
             
-            # 成交量因子
+            # execution量因子
             factor_df['volume_ratio'] = (factor_df['volume'] / 
                                        factor_df['volume'].rolling(20).mean()).fillna(1)
             
@@ -354,19 +354,19 @@ class BMASignalGenerator:
             return factor_df
             
         except Exception as e:
-            self.logger.error(f"计算ML因子失败: {e}")
+            self.logger.error(f"计算ML因子failed: {e}")
             return pd.DataFrame()
     
     def train_model(self, X: pd.DataFrame, y: pd.Series, current_date: datetime) -> bool:
         """训练BMA模型"""
         try:
             if QuantitativeModel is None:
-                self.logger.warning("BMA模型不可用，使用简化信号")
+                self.logger.warning("BMA模型notcanuse，使use简化信号")
                 return False
             
             self.model = QuantitativeModel()
             
-            # 提取日期和ticker信息
+            # 提取日期andticker信息
             dates = pd.to_datetime(X['date']) if 'date' in X.columns else None
             tickers = X['ticker'] if 'ticker' in X.columns else None
             
@@ -381,32 +381,32 @@ class BMASignalGenerator:
             
             if result and 'BMA' in result:
                 self.last_train_date = current_date
-                self.logger.info(f"BMA模型训练完成: {result['BMA']}")
+                self.logger.info(f"BMA模型训练completed: {result['BMA']}")
                 return True
             else:
-                self.logger.warning("BMA模型训练失败")
+                self.logger.warning("BMA模型训练failed")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"训练模型失败: {e}")
+            self.logger.error(f"训练模型failed: {e}")
             return False
     
     def generate_signals(self, current_data: Dict[str, pd.DataFrame], 
                         current_date: datetime) -> Dict[str, float]:
-        """生成交易信号"""
+        """生execution易信号"""
         try:
             if self.model is None:
                 return self._generate_simple_signals(current_data, current_date)
             
-            # 准备当前数据用于预测
+            # 准备当before数据useat预测
             prediction_features = []
             symbols = []
             
             for symbol, df in current_data.items():
-                if len(df) < 20:  # 数据不足
+                if len(df) < 20:  # 数据not足
                     continue
                 
-                # 获取最新数据
+                # retrieval最新数据
                 latest_data = df.tail(1).copy()
                 factor_df = self._calculate_ml_factors(df.tail(60), symbol)
                 
@@ -424,7 +424,7 @@ class BMASignalGenerator:
             # 生成预测
             predictions = self.model.predict_with_bma(pred_data)
             
-            # 转换为信号字典
+            # 转换as信号字典
             signals = {}
             for i, symbol in enumerate(symbols):
                 if i < len(predictions):
@@ -433,12 +433,12 @@ class BMASignalGenerator:
             return signals
             
         except Exception as e:
-            self.logger.error(f"生成信号失败: {e}")
+            self.logger.error(f"生成信号failed: {e}")
             return {}
     
     def _generate_simple_signals(self, current_data: Dict[str, pd.DataFrame], 
                                 current_date: datetime) -> Dict[str, float]:
-        """生成简化信号（当BMA不可用时）"""
+        """生成简化信号（当BMAnotcanusewhen）"""
         signals = {}
         
         for symbol, df in current_data.items():
@@ -446,13 +446,13 @@ class BMASignalGenerator:
                 continue
             
             try:
-                # 简单的动量+反转组合信号
+                # 简单动量+反转组合信号
                 latest = df.tail(20)
                 
                 # 短期动量（5日）
                 momentum_5 = latest['close'].iloc[-1] / latest['close'].iloc[-6] - 1
                 
-                # 中期均线位置
+                # in期均线位置
                 sma_20 = latest['close'].rolling(20).mean().iloc[-1]
                 price_vs_sma = latest['close'].iloc[-1] / sma_20 - 1
                 
@@ -478,7 +478,7 @@ class BMASignalGenerator:
                 signals[symbol] = signal
                 
             except Exception as e:
-                self.logger.warning(f"计算简化信号失败 {symbol}: {e}")
+                self.logger.warning(f"计算简化信号failed {symbol}: {e}")
                 continue
         
         return signals
@@ -502,7 +502,7 @@ class AutoTraderBacktestEngine:
         self.performance_history: List[Dict] = []
         self.daily_returns: List[float] = []
         
-        # 风险管理（简化版，不依赖IBKR连接）
+        # 风险管理（简化版，not依赖IBKRconnection）
         self.risk_limits = {
             'max_position_weight': config.max_position_weight,
             'stop_loss_pct': config.stop_loss_pct,
@@ -511,21 +511,21 @@ class AutoTraderBacktestEngine:
     
     def run_backtest(self) -> Dict[str, Any]:
         """运行完整回测"""
-        self.logger.info(f"开始回测: {self.config.start_date} -> {self.config.end_date}")
+        self.logger.info(f"starting回测: {self.config.start_date} -> {self.config.end_date}")
         
         # 1. 加载数据
         symbols = self.data_manager.get_stock_universe()
         if not symbols:
-            raise ValueError("无法获取股票池")
+            raise ValueError("no法retrieval股票池")
         
         self.historical_data = self.data_manager.load_historical_prices(
             symbols, self.config.start_date, self.config.end_date
         )
         
         if not self.historical_data:
-            raise ValueError("无法加载历史数据")
+            raise ValueError("no法加载历史数据")
         
-        # 2. 生成交易日历
+        # 2. 生execution易日历
         trading_dates = self._generate_trading_calendar()
         
         # 3. 主回测循环
@@ -536,11 +536,11 @@ class AutoTraderBacktestEngine:
         # 4. 生成回测报告
         results = self._generate_backtest_report()
         
-        self.logger.info("回测完成")
+        self.logger.info("回测completed")
         return results
     
     def _generate_trading_calendar(self) -> List[datetime]:
-        """生成交易日历"""
+        """生execution易日历"""
         start = datetime.strptime(self.config.start_date, '%Y-%m-%d')
         end = datetime.strptime(self.config.end_date, '%Y-%m-%d')
         
@@ -549,7 +549,7 @@ class AutoTraderBacktestEngine:
         
         if self.config.rebalance_freq == "daily":
             while current <= end:
-                if current.weekday() < 5:  # 周一到周五
+                if current.weekday() < 5:  # 周一to周五
                     dates.append(current)
                 current += timedelta(days=1)
         
@@ -565,10 +565,10 @@ class AutoTraderBacktestEngine:
     def _run_daily_step(self, date: datetime):
         """执行单日回测步骤"""
         try:
-            # 1. 更新持仓市价
+            # 1. updatespositionsmarket
             self._update_portfolio_prices(date)
             
-            # 2. 检查止损止盈
+            # 2. check止损止盈
             self._check_risk_exits(date)
             
             # 3. 生成新信号（根据调仓频率）
@@ -581,24 +581,24 @@ class AutoTraderBacktestEngine:
             self._record_daily_performance(date)
             
         except Exception as e:
-            self.logger.error(f"日步骤执行失败 {date}: {e}")
+            self.logger.error(f"日步骤执行failed {date}: {e}")
     
     def _update_portfolio_prices(self, date: datetime):
-        """更新持仓价格"""
+        """updatespositionsprice"""
         for symbol, position in self.portfolio.positions.items():
             if symbol in self.historical_data:
                 price_data = self.historical_data[symbol]
                 try:
-                    # 获取当日收盘价
+                    # retrieval当日收盘价
                     if date.strftime('%Y-%m-%d') in price_data.index.strftime('%Y-%m-%d'):
                         current_price = price_data.loc[price_data.index.date == date.date(), 'close'].iloc[0]
                         position.current_price = current_price
                         position.unrealized_pnl = (current_price - position.entry_price) * position.shares
                 except Exception as e:
-                    self.logger.warning(f"更新价格失败 {symbol}: {e}")
+                    self.logger.warning(f"updatespricefailed {symbol}: {e}")
     
     def _check_risk_exits(self, date: datetime):
-        """检查风险退出条件"""
+        """check风险退出 records件"""
         positions_to_close = []
         
         for symbol, position in self.portfolio.positions.items():
@@ -608,11 +608,11 @@ class AutoTraderBacktestEngine:
             # 计算收益率
             return_pct = (position.current_price - position.entry_price) / position.entry_price
             
-            # 检查止损
+            # check止损
             if return_pct <= -self.risk_limits['stop_loss_pct']:
                 positions_to_close.append((symbol, "STOP_LOSS"))
                 
-            # 检查止盈
+            # check止盈
             elif return_pct >= self.risk_limits['take_profit_pct']:
                 positions_to_close.append((symbol, "TAKE_PROFIT"))
         
@@ -621,7 +621,7 @@ class AutoTraderBacktestEngine:
             self._close_position(symbol, date, reason)
     
     def _should_rebalance(self, date: datetime) -> bool:
-        """判断是否应该调仓"""
+        """判断is否应该调仓"""
         if self.config.rebalance_freq == "daily":
             return True
         elif self.config.rebalance_freq == "weekly":
@@ -630,7 +630,7 @@ class AutoTraderBacktestEngine:
     
     def _generate_rebalance_signals(self, date: datetime) -> Dict[str, float]:
         """生成调仓信号"""
-        # 1. 检查是否需要重训模型
+        # 1. checkis否需要重训模型
         if self.signal_generator.should_retrain_model(date):
             self.logger.info(f"重新训练BMA模型: {date}")
             
@@ -640,12 +640,12 @@ class AutoTraderBacktestEngine:
             if not X.empty and not y.empty:
                 self.signal_generator.train_model(X, y, date)
         
-        # 2. 获取当前数据窗口
+        # 2. retrieval当before数据窗口
         current_data = {}
         for symbol, df in self.historical_data.items():
-            # 获取到当前日期为止的数据（避免前瞻偏差）
+            # retrievalto当before日期as止数据（避免before瞻偏差）
             available_data = df[df.index.date <= date.date()]
-            if len(available_data) >= 60:  # 确保有足够历史数据
+            if len(available_data) >= 60:  # 确保has足够历史数据
                 current_data[symbol] = available_data
         
         # 3. 生成信号
@@ -660,28 +660,28 @@ class AutoTraderBacktestEngine:
             sorted_signals = sorted(signals.items(), key=lambda x: x[1], reverse=True)
             top_signals = sorted_signals[:self.config.max_positions]
             
-            # 2. 确定目标持仓
+            # 2. 确定目标positions
             target_symbols = {symbol for symbol, _ in top_signals if signal > 0}
             current_symbols = set(self.portfolio.positions.keys())
             
-            # 3. 卖出不在目标列表的持仓
+            # 3. 卖出notin目标列表positions
             to_sell = current_symbols - target_symbols
             for symbol in to_sell:
                 self._close_position(symbol, date, "REBALANCE")
             
-            # 4. 计算新持仓权重（等权重）
+            # 4. 计算新positions权重（等权重）
             if target_symbols:
                 target_weight = 1.0 / len(target_symbols)
                 target_value_per_position = self.portfolio.total_value * target_weight
                 
-                # 5. 买入或调整持仓
+                # 5. 买入or调整positions
                 for symbol in target_symbols:
                     self._adjust_position(symbol, target_value_per_position, date)
             
-            self.logger.info(f"调仓完成: {len(target_symbols)} 个持仓")
+            self.logger.info(f"调仓completed: {len(target_symbols)} 个positions")
             
         except Exception as e:
-            self.logger.error(f"执行调仓失败: {e}")
+            self.logger.error(f"执行调仓failed: {e}")
     
     def _close_position(self, symbol: str, date: datetime, reason: str = ""):
         """平仓"""
@@ -691,10 +691,10 @@ class AutoTraderBacktestEngine:
         position = self.portfolio.positions[symbol]
         
         if position.current_price <= 0:
-            self.logger.warning(f"无效价格，无法平仓: {symbol}")
+            self.logger.warning(f"no效price，no法平仓: {symbol}")
             return
         
-        # 计算手续费和滑点
+        # 计算手续费and滑点
         gross_proceeds = position.shares * position.current_price
         commission = gross_proceeds * self.config.commission_rate
         slippage = gross_proceeds * self.config.slippage_rate
@@ -713,22 +713,22 @@ class AutoTraderBacktestEngine:
         self.portfolio.trades.append(trade)
         self.portfolio.cash += net_proceeds
         
-        # 移除持仓
+        # 移除positions
         del self.portfolio.positions[symbol]
         
         self.logger.debug(f"平仓 {symbol}: {position.shares}股 @ ${position.current_price:.2f} ({reason})")
     
     def _adjust_position(self, symbol: str, target_value: float, date: datetime):
-        """调整持仓到目标价值"""
+        """调整positionsto目标价值"""
         if symbol not in self.historical_data:
             return
         
-        # 获取当前价格
+        # retrieval当beforeprice
         price_data = self.historical_data[symbol]
         try:
             current_price = price_data.loc[price_data.index.date == date.date(), 'close'].iloc[0]
         except:
-            self.logger.warning(f"无法获取价格: {symbol}")
+            self.logger.warning(f"no法retrievalprice: {symbol}")
             return
         
         if current_price <= 0:
@@ -740,7 +740,7 @@ class AutoTraderBacktestEngine:
         if target_shares <= 0:
             return
         
-        # 检查是否已有持仓
+        # checkis否haspositions
         current_shares = 0
         if symbol in self.portfolio.positions:
             current_shares = self.portfolio.positions[symbol].shares
@@ -768,7 +768,7 @@ class AutoTraderBacktestEngine:
                 self.portfolio.trades.append(trade)
                 self.portfolio.cash -= total_cost
                 
-                # 更新持仓
+                # updatespositions
                 if symbol in self.portfolio.positions:
                     # 加仓
                     old_pos = self.portfolio.positions[symbol]
@@ -784,7 +784,7 @@ class AutoTraderBacktestEngine:
                         current_price=current_price
                     )
                 else:
-                    # 新建持仓
+                    # 新建positions
                     self.portfolio.positions[symbol] = Position(
                         symbol=symbol,
                         shares=shares_to_trade,
@@ -822,7 +822,7 @@ class AutoTraderBacktestEngine:
                     self.portfolio.trades.append(trade)
                     self.portfolio.cash += net_proceeds
                     
-                    # 更新持仓
+                    # updatespositions
                     position.shares -= shares_to_sell
                     position.current_price = current_price
                     
@@ -859,7 +859,7 @@ class AutoTraderBacktestEngine:
         if not self.performance_history:
             return {}
         
-        # 转换为DataFrame便于计算
+        # 转换asDataFrame便at计算
         df = pd.DataFrame(self.performance_history)
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
@@ -874,7 +874,7 @@ class AutoTraderBacktestEngine:
         years = days / 365.25
         annual_return = (final_value / initial_value) ** (1/years) - 1 if years > 0 else 0
         
-        # 波动率和夏普比率
+        # 波动率and夏普比率
         returns = pd.Series(self.daily_returns)
         annual_vol = returns.std() * np.sqrt(252)
         sharpe_ratio = annual_return / annual_vol if annual_vol > 0 else 0
@@ -955,16 +955,16 @@ if __name__ == "__main__":
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
     )
     
-    # 创建和运行回测
+    # 创建and运行回测
     config = create_sample_config()
     engine = AutoTraderBacktestEngine(config)
     
     try:
         results = engine.run_backtest()
         
-        # 打印结果摘要
+        # 打印结果summary
         print("\n" + "="*50)
-        print("回测结果摘要")
+        print("回测结果summary")
         print("="*50)
         print(f"回测期间: {results['period']['start_date']} -> {results['period']['end_date']}")
         print(f"总收益率: {results['returns']['total_return']:.2%}")
@@ -977,12 +977,12 @@ if __name__ == "__main__":
         print(f"最终资产: ${results['portfolio']['final_value']:,.2f}")
         
     except Exception as e:
-        logging.error(f"回测失败: {e}")
+        logging.error(f"回测failed: {e}")
         import traceback
         traceback.print_exc()
 
 
-# =================== 回测启动功能 (合并自run_backtest.py) ===================
+# =================== 回测start功能 (合并自run_backtest.py) ===================
 
 def setup_logging(level: str = "INFO") -> None:
     """配置日志系统"""
@@ -1012,7 +1012,7 @@ def setup_logging(level: str = "INFO") -> None:
         ]
     )
     
-    # 设置matplotlib日志级别（避免过多输出）
+    # settingsmatplotlib日志级别（避免过多输出）
     logging.getLogger('matplotlib').setLevel(logging.WARNING)
     logging.getLogger('PIL').setLevel(logging.WARNING)
 
@@ -1038,19 +1038,19 @@ def create_backtest_config_from_args(args) -> BacktestConfig:
 
 
 def run_backtest_with_config(config: BacktestConfig, db_path: str = None) -> Dict[str, Any]:
-    """使用指定配置运行回测"""
+    """使use指定配置运行回测"""
     from datetime import datetime
     
     logger = logging.getLogger("BacktestRunner")
     
     logger.info("="*60)
-    logger.info("AutoTrader 回测系统启动")
+    logger.info("AutoTrader 回测系统start")
     logger.info("="*60)
     logger.info(f"回测期间: {config.start_date} -> {config.end_date}")
     logger.info(f"初始资金: ${config.initial_capital:,.2f}")
     logger.info(f"调仓频率: {config.rebalance_freq}")
-    logger.info(f"最大持仓: {config.max_positions}")
-    logger.info(f"使用BMA模型: {config.use_bma_model}")
+    logger.info(f"最大positions: {config.max_positions}")
+    logger.info(f"使useBMA模型: {config.use_bma_model}")
     logger.info(f"手续费率: {config.commission_rate:.3%}")
     logger.info(f"滑点率: {config.slippage_rate:.3%}")
     logger.info("="*60)
@@ -1061,27 +1061,27 @@ def run_backtest_with_config(config: BacktestConfig, db_path: str = None) -> Dic
         
         # 运行回测
         start_time = datetime.now()
-        logger.info("开始执行回测...")
+        logger.info("starting执行回测...")
         
         results = engine.run_backtest()
         
         end_time = datetime.now()
         elapsed = end_time - start_time
         
-        logger.info(f"回测完成! 耗时: {elapsed}")
+        logger.info(f"回测completed! 耗when: {elapsed}")
         logger.info("="*60)
         
         return results
         
     except Exception as e:
-        logger.error(f"回测执行失败: {e}")
+        logger.error(f"回测执行failed: {e}")
         import traceback
         traceback.print_exc()
         return {}
 
 
 def run_preset_backtests():
-    """运行预设的回测配置"""
+    """运行预设回测配置"""
     logger = logging.getLogger("PresetBacktests")
     
     presets = [
@@ -1096,7 +1096,7 @@ def run_preset_backtests():
             )
         },
         {
-            "name": "中期回测 (2022-2023)",
+            "name": "in期回测 (2022-2023)",
             "config": BacktestConfig(
                 start_date="2022-01-01", 
                 end_date="2023-12-31",
@@ -1108,11 +1108,11 @@ def run_preset_backtests():
     ]
     
     for preset in presets:
-        logger.info(f"\n🚀 开始运行: {preset['name']}")
+        logger.info(f"\n starting运行: {preset['name']}")
         results = run_backtest_with_config(preset['config'])
         
         if results:
-            logger.info(f"✅ {preset['name']} 完成:")
+            logger.info(f" {preset['name']} completed:")
             logger.info(f"   最终净值: ${results.get('final_portfolio_value', 0):,.2f}")
             logger.info(f"   总收益率: {results.get('total_return', 0):.2%}")
             logger.info(f"   夏普比率: {results.get('sharpe_ratio', 'N/A')}")
@@ -1130,15 +1130,15 @@ def main_backtest():
     
     # 回测期间
     parser.add_argument("--start-date", type=str, default="2022-01-01",
-                       help="回测开始日期 (YYYY-MM-DD)")
+                       help="回测starting日期 (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=str, default="2023-12-31",
                        help="回测结束日期 (YYYY-MM-DD)")
     
-    # 资金和持仓
+    # 资金andpositions
     parser.add_argument("--initial-capital", type=float, default=100000.0,
                        help="初始资金")
     parser.add_argument("--max-positions", type=int, default=20,
-                       help="最大持仓数量")
+                       help="最大positions数量")
     parser.add_argument("--rebalance-freq", choices=["daily", "weekly"], default="weekly",
                        help="调仓频率")
     
@@ -1154,13 +1154,13 @@ def main_backtest():
     
     # BMA模型参数
     parser.add_argument("--use-bma-model", action="store_true", default=True,
-                       help="是否使用BMA模型")
+                       help="is否使useBMA模型")
     parser.add_argument("--model-retrain-freq", type=int, default=4,
                        help="模型重训频率（周）")
     parser.add_argument("--prediction-horizon", type=int, default=5,
                        help="预测周期（天）")
     parser.add_argument("--max-position-weight", type=float, default=0.15,
-                       help="单个持仓最大权重")
+                       help="单个positions最大权重")
     
     # 风险控制
     parser.add_argument("--stop-loss-pct", type=float, default=0.08,
@@ -1168,7 +1168,7 @@ def main_backtest():
     parser.add_argument("--take-profit-pct", type=float, default=0.20,
                        help="止盈百分比")
     
-    # 其他选项
+    # 其他选 items
     parser.add_argument("--db-path", type=str, default=None,
                        help="数据库路径")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -1197,15 +1197,15 @@ def main_backtest():
                 from .backtest_analyzer import analyze_backtest_results
                 analyze_backtest_results(results)
             except ImportError:
-                logging.warning("无法导入backtest_analyzer，跳过详细分析")
+                logging.warning("no法导入backtest_analyzer，跳过详细分析")
 
 
 if __name__ == "__main__":
-    # 可以直接运行回测
+    # can以直接运行回测
     try:
         main_backtest()
     except KeyboardInterrupt:
-        print("\n回测被用户中断")
+        print("\n回测beuse户in断")
     except Exception as e:
         print(f"回测执行出错: {e}")
         import traceback

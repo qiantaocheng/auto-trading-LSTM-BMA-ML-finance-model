@@ -1,4 +1,4 @@
-# 清理：移除未使用的导入
+# 清理：移除未使use导入
 # from __future__ import annotations
 # import asyncio
 # import logging
@@ -7,9 +7,9 @@
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Tuple
 
-# 已改用统一配置管理器
+# 改use统一配置管理器
 # from .config import HotConfig
-# 清理：只保留实际使用的因子函数
+# 清理：只保留实际使use因子函数
 from .factors import zscore, atr
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -34,16 +34,16 @@ class DataFeed:
             await self.broker.subscribe(s)
             
     async def unsubscribe_all(self) -> None:
-        """取消所有数据订阅"""
+        """取消所has数据subscription"""
         try:
-            # 获取所有已订阅的ticker并取消订阅
+            # retrieval所hassubscriptionticker并取消subscription
             if hasattr(self.broker, 'tickers'):
                 symbols_to_unsubscribe = list(self.broker.tickers.keys())
                 for symbol in symbols_to_unsubscribe:
                     self.broker.unsubscribe(symbol)
-                self.logger.info(f"已取消 {len(symbols_to_unsubscribe)} 个标的的数据订阅")
+                self.logger.info(f"取消 {len(symbols_to_unsubscribe)} 个标数据subscription")
         except Exception as e:
-            self.logger.error(f"取消数据订阅失败: {e}")
+            self.logger.error(f"取消数据subscriptionfailed: {e}")
 
     def best_quote(self, sym: str) -> Optional[Quote]:
         t = self.broker.tickers.get(sym)
@@ -58,7 +58,7 @@ class DataFeed:
         return Quote(bid, ask, t.bidSize or 0.0, t.askSize or 0.0)
 
     async def fetch_daily_bars(self, sym: str, lookback_days: int = 60):
-        """从 IB 拉取日线历史数据，用于真实的信号与ATR计算。"""
+        """from IB 拉取日线历史数据，useat真实信号andATR计算。"""
         try:
             contract = await self.broker.qualify_stock(sym)
             bars = await self.broker.ib.reqHistoricalDataAsync(
@@ -72,27 +72,27 @@ class DataFeed:
             )
             return list(bars or [])
         except Exception as e:
-            self.logger.warning(f"获取历史数据失败 {sym}: {e}")
+            self.logger.warning(f"retrieval历史数据failed {sym}: {e}")
             return []
 
 
 class RiskEngine:
-    """风险引擎 - 使用统一风险管理器"""
+    """风险引擎 - 使use统一风险管理器"""
     def __init__(self, config_manager, logger) -> None:
         self.config_manager = config_manager
         self.logger = logger
         
-        # 使用统一风险管理器
+        # 使use统一风险管理器
         from .unified_risk_manager import get_risk_manager
         self.risk_manager = get_risk_manager(config_manager)
         
         # 保持配置兼容性
         self.cfg = config_manager._get_merged_config()
         
-        self.logger.info("风险引擎已初始化，使用统一风险管理器")
+        self.logger.info("风险引擎初始化，使use统一风险管理器")
 
     def position_size(self, equity: float, entry_price: float, stop_price: float) -> int:
-        """增强的持仓计算逻辑（保持兼容性）"""
+        """增强positions计算逻辑（保持兼容性）"""
         sizing = self.cfg.get("sizing", {})
         
         # 验证输入
@@ -105,7 +105,7 @@ class RiskEngine:
             self.logger.warning(f"Invalid prices: entry={entry_price}, stop={stop_price}")
             return 0
         
-        # 基于风险的持仓计算
+        # 基at风险positions计算
         per_trade_risk_pct = sizing.get("per_trade_risk_pct", 0.02)
         risk_per_trade = effective_equity * per_trade_risk_pct
         stop_distance = abs(entry_price - stop_price)
@@ -114,10 +114,10 @@ class RiskEngine:
             self.logger.warning("Invalid stop distance, using minimum position")
             return 1
         
-        # 基于风险的股数
+        # 基at风险股数
         shares_by_risk = int(risk_per_trade // stop_distance)
         
-        # 基于权益比例的最大持仓
+        # 基at权益比例最大positions
         max_position_pct = sizing.get("max_position_pct_of_equity", 0.15)
         max_position_value = effective_equity * max_position_pct
         shares_by_equity = int(max_position_value // entry_price)
@@ -149,7 +149,7 @@ class RiskEngine:
             )
             
             if not result.is_valid:
-                self.logger.warning(f"订单风险验证失败 {symbol}: {result.violations}")
+                self.logger.warning(f"订单风险验证failed {symbol}: {result.violations}")
                 return False
             
             if result.warnings:
@@ -163,11 +163,11 @@ class RiskEngine:
     
     def update_position(self, symbol: str, quantity: int, current_price: float, 
                        entry_price: float = None):
-        """更新持仓信息（新增方法）"""
+        """updatespositions信息（新增方法）"""
         self.risk_manager.update_position(symbol, quantity, current_price, entry_price)
     
     def get_risk_summary(self) -> Dict[str, Any]:
-        """获取风险摘要（新增方法）"""
+        """retrieval风险summary（新增方法）"""
         return self.risk_manager.get_risk_summary()
 
     def validate_portfolio_exposure(self, equity: float, total_exposure: float) -> bool:
@@ -296,13 +296,13 @@ class SignalHub:
             return 0.0
 
     def multi_factor_signal(self, closes: List[float], highs: List[float], lows: List[float], vols: List[float]) -> float:
-        """迁移自 Trader 内置的多因子审批：趋势/动量/成交量/波动 四要素打分，输出[-1,1]。
-        返回正值倾向买入，负值倾向卖出，绝对值为强度。
+        """迁移自 Trader 内置多因子审批：趋势/动量/execution量/波动 四要素打分，输出[-1,1]。
+        返回正值倾to买入，负值倾to卖出，绝for值as强度。
         """
         try:
             if len(closes) < 50:
                 return 0.0
-            # 趋势：短中长均线
+            # 趋势：短in长均线
             sma5 = sum(closes[-5:]) / 5
             sma20 = sum(closes[-20:]) / 20
             sma50 = sum(closes[-50:]) / 50
@@ -325,12 +325,12 @@ class SignalHub:
             elif closes[-1] > sma5:
                 trend_score += 0.2
 
-            # 动量：基于连续收益
+            # 动量：基at连续收益
             momentum_score = self.calculate_momentum(closes, 20)
-            # 归一：约束在[-0.2,0.2]→映射到[-0.5,0.5]
+            # 归一：约束in[-0.2,0.2]→映射to[-0.5,0.5]
             momentum_score = max(-0.2, min(0.2, momentum_score)) * 2.5
 
-            # 成交量：20日均量对比、近5日相对提升
+            # execution量：20日均量for比、近5日相for提升
             volume_score = 0.0
             if len(vols) >= 20:
                 v20 = sum(vols[-20:]) / 20
@@ -349,7 +349,7 @@ class SignalHub:
                 elif recent5 > prev15:
                     volume_score += 0.1
 
-            # 波动：ATR占比处于适宜区间
+            # 波动：ATRratio处at适宜区间
             from .factors import atr as atr_func
             atr14 = atr_func(highs[-15:], lows[-15:], closes[-15:], 14)[-1] if len(highs) >= 15 else None
             volatility_score = 0.0
@@ -360,9 +360,9 @@ class SignalHub:
                 elif 1.0 <= atr_pct <= 6.0:
                     volatility_score += 0.2
 
-            # 汇总：权重与 Trader 中一致
+            # 汇总：权重and Trader in一致
             total = trend_score * 0.30 + momentum_score * 0.25 + volume_score * 0.20 + volatility_score * 0.15
-            # 简单映射：>0.6 买，<-0.6 卖，其余中性
+            # 简单映射：>0.6 买，<-0.6 卖，其余in性
             if total >= 0.6:
                 return +1.0
             if total <= -0.6:
@@ -379,34 +379,34 @@ class OrderRouter:
         self.logger = logger
 
     def build_prices(self, sym: str, side: str, q: Quote) -> dict:
-        """增强的价格构建逻辑，包括滑点处理和自适应价格偏移"""
+        """增强price构建逻辑，包括滑点处理and自适应price偏移"""
         cfg = self.cfg["orders"]
         mode = cfg["smart_price_mode"]
         
-        # 确保报价有效性
+        # 确保报价has效性
         if not q.bid or not q.ask or q.bid <= 0 or q.ask <= 0:
-            self.logger.warning(f"{sym} 报价无效 bid={q.bid} ask={q.ask}，使用市价单")
+            self.logger.warning(f"{sym} 报价no效 bid={q.bid} ask={q.ask}，使usemarket单")
             return {"type": "MKT"}
             
-        # 验证买卖价差的合理性
+        # 验证买卖价差合理性
         if q.bid >= q.ask:
-            self.logger.warning(f"{sym} 买卖价差异常 bid={q.bid} >= ask={q.ask}，使用市价单")
+            self.logger.warning(f"{sym} 买卖价差异常 bid={q.bid} >= ask={q.ask}，使usemarket单")
             return {"type": "MKT"}
             
         mid = (q.bid + q.ask) / 2
         spread = abs(q.ask - q.bid) / mid if mid > 0 else 0.0
         
-        # 异常价差检查：如果价差过大（>5%），使用市价单防止滑点
+        # 异常价差check：if果价差过大（>5%），使usemarket单防止滑点
         if spread > 0.05:
-            self.logger.warning(f"{sym} 价差过大 {spread:.2%}，使用市价单防止滑点")
+            self.logger.warning(f"{sym} 价差过大 {spread:.2%}，使usemarket单防止滑点")
             return {"type": "MKT"}
             
-        # 强制市价模式
+        # 强制market模式
         if mode == "market":
             return {"type": "MKT"}
             
-        # 自适应偏移：根据价差动态调整，避免过度激进或保守
-        # 价差越大，偏移越大，但限制在合理范围内
+        # 自适应偏移：根据价差动态调整，避免过度激进or保守
+        # 价差越大，偏移越大，但限制in合理范围内
         adaptive = max(min(0.0025, 0.3 * spread), 0.0001)  # 0.01%-0.25%范围
         
         if mode == "midpoint":
@@ -419,15 +419,15 @@ class OrderRouter:
             return {"type": "LMT", "limit": round(px, 2)}
         elif mode == "conservative":
             if side == "BUY":
-                px = (q.bid + mid) / 2  # bid 和 mid 的中间价
+                px = (q.bid + mid) / 2  # bid and mid in间价
             else:
-                px = (q.ask + mid) / 2  # ask 和 mid 的中间价
+                px = (q.ask + mid) / 2  # ask and mid in间价
             return {"type": "LMT", "limit": round(px, 2)}
         else:
             return {"type": "MKT"}
 
     def reprice_working_orders_if_needed(self) -> None:
-        # 预留：根据报价中点偏离智能改价/撤补
+        # 预留：根据报价in点偏离智能改价/撤补
         return
 
 
@@ -435,70 +435,70 @@ class Engine:
     def __init__(self, config_manager, broker: "IbkrAutoTrader") -> None:
         self.config_manager = config_manager
         self.broker = broker
-        # 使用事件系统的日志适配器
+        # 使use事件系统日志适配器
         from .engine_logger import create_engine_logger
         self.logger = create_engine_logger("Engine", "engine")
         self.data = DataFeed(broker, self.logger)
         
-        # 使用统一配置而不是HotConfig
+        # 使use统一配置而notisHotConfig
         config_dict = config_manager._get_merged_config()
         self.risk = RiskEngine(config_manager, self.logger)  # 传递config_manager
         self.router = OrderRouter(config_dict, self.logger)
         self.signal = SignalHub(self.logger)
         
-        # 获取统一持仓管理器的引用
+        # retrieval统一positions管理器引use
         from .unified_position_manager import get_position_manager
         self.position_manager = get_position_manager()
         
-        # 获取统一风险管理器（替代旧的risk_manager引用）
+        # retrieval统一风险管理器（替代旧risk_manager引use）
         from .unified_risk_manager import get_risk_manager
         self.risk_manager = get_risk_manager(config_manager)
 
     async def start(self) -> None:
-        # 连接 IB
+        # connection IB
         await self.broker.connect()
-        # 订阅观察列表
+        # subscription观察列表
         uni = self.config_manager.get_universe()
         await self.data.subscribe_quotes(uni)
         
     async def stop(self) -> None:
         """停止引擎，释放资源"""
         try:
-            self.logger.info("正在停止引擎...")
+            self.logger.info("正in停止引擎...")
             
-            # 停止数据订阅
+            # 停止数据subscription
             if hasattr(self.data, 'unsubscribe_all'):
                 await self.data.unsubscribe_all()
             
-            # 清理持仓管理器引用
+            # 清理positions管理器引use
             if hasattr(self, 'position_manager'):
                 self.position_manager = None
                 
-            # 清理风险管理器引用  
+            # 清理风险管理器引use  
             if hasattr(self, 'risk_manager'):
                 self.risk_manager = None
                 
-            self.logger.info("引擎已停止")
+            self.logger.info("引擎停止")
             
         except Exception as e:
-            self.logger.error(f"停止引擎时出错: {e}")
+            self.logger.error(f"停止引擎when出错: {e}")
         
     def _validate_account_ready(self, cfg: dict) -> bool:
-        """验证账户状态是否就绪"""
+        """验证account状态is否就绪"""
         try:
-            # 检查是否要求账户就绪
+            # checkis否要求account就绪
             if cfg["capital"].get("require_account_ready", True):
                 if self.broker.net_liq <= 0:
-                    self.logger.warning("账户净值为0，跳过交易信号处理")
+                    self.logger.warning("account净值as0，跳过交易信号处理")
                     return False
                     
                 if not hasattr(self.broker, 'account_values') or not self.broker.account_values:
-                    self.logger.warning("账户值未加载，跳过交易")
+                    self.logger.warning("account值未加载，跳过交易")
                     return False
                     
             return True
         except Exception as e:
-            self.logger.error(f"账户状态验证失败: {e}")
+            self.logger.error(f"account状态验证failed: {e}")
             return False
             
     def _validate_capital_requirements(self, cfg: dict) -> bool:
@@ -508,11 +508,11 @@ class Engine:
             min_cash_required = self.broker.net_liq * cash_reserve_pct
             
             available_cash = max(self.broker.cash_balance - min_cash_required, 0)
-            if available_cash < 1000:  # 最少保留$1000可用现金
-                self.logger.warning(f"可用现金不足: ${available_cash:,.2f} (需要保留{cash_reserve_pct:.1%})")
+            if available_cash < 1000:  # 最少保留$1000canuse现金
+                self.logger.warning(f"canuse现金not足: ${available_cash:,.2f} (需要保留{cash_reserve_pct:.1%})")
                 return False
                 
-            # 检查最大投资组合敞口
+            # check最大投资组合敞口
             total_positions_value = 0.0
             for sym, pos_obj in self.position_manager.get_all_positions().items():
                 pos = pos_obj.quantity
@@ -527,37 +527,37 @@ class Engine:
             
             max_exposure = self.broker.net_liq * cfg["capital"]["max_portfolio_exposure"]
             if total_positions_value >= max_exposure:
-                self.logger.warning(f"投资组合敞口已达上限: ${total_positions_value:,.2f} >= ${max_exposure:,.2f}")
+                self.logger.warning(f"投资组合敞口达上限: ${total_positions_value:,.2f} >= ${max_exposure:,.2f}")
                 return False
                 
             return True
         except Exception as e:
-            self.logger.error(f"资金需求验证失败: {e}")
+            self.logger.error(f"资金需求验证failed: {e}")
             return False
 
     async def on_signal_and_trade(self) -> None:
-        """增强的信号计算与交易执行：包含账户状态验证和净值检查"""
+        """增强信号计算and交易执行：包含account状态验证and净值check"""
         try:
             cfg = self.config_manager._get_merged_config()
             uni = cfg["scanner"]["universe"]
             
-            self.logger.info(f"运行信号计算和交易 - 标的数量: {len(uni)}")
+            self.logger.info(f"运行信号计算and交易 - 标数量: {len(uni)}")
             
-            # 强制刷新账户信息，确保数据最新
+            # 强制刷新account信息，确保数据最新
             try:
                 await self.broker.refresh_account_balances_and_positions()
-                self.logger.info(f"账户信息已刷新: 净值=${self.broker.net_liq:,.2f}, 现金=${self.broker.cash_balance:,.2f}")
+                self.logger.info(f"account信息刷新: 净值=${self.broker.net_liq:,.2f}, 现金=${self.broker.cash_balance:,.2f}")
             except Exception as e:
-                self.logger.error(f"刷新账户信息失败: {e}")
+                self.logger.error(f"刷新account信息failed: {e}")
                 return
             
-            # 账户状态验证
+            # account状态验证
             if not self._validate_account_ready(cfg):
                 return
                 
-            # 资金管理检查
+            # 资金管理check
             if not self._validate_capital_requirements(cfg):
-                self.logger.info("资金管理检查未通过，跳过本轮交易")
+                self.logger.info("资金管理check未通过，跳过本轮交易")
                 return
             
             orders_sent = 0
@@ -565,53 +565,53 @@ class Engine:
             
             for sym in uni:
                 if orders_sent >= max_new_orders:
-                    self.logger.info(f"已达到单日最大新订单数限制: {max_new_orders}")
+                    self.logger.info(f"达to单日最大新订单数限制: {max_new_orders}")
                     break
                     
                 q = self.data.best_quote(sym)
                 if not q:
-                    self.logger.debug(f"{sym} 无有效报价（无bid/ask/last/close），跳过")
+                    self.logger.debug(f"{sym} nohas效报价（nobid/ask/last/close），跳过")
                     continue
                     
-                # 使用真实历史数据（日线）计算信号与ATR
+                # 使use真实历史数据（日线）计算信号andATR
                 bars = await self.data.fetch_daily_bars(sym, lookback_days=60)
                 if len(bars) < 60:
-                    # 历史数据不足（信号需要至少50根K），跳过此标的
-                    self.logger.debug(f"{sym} 历史K线不足 {len(bars)} < 60，跳过")
+                    # 历史数据not足（信号需要至少50根K），跳过此标
+                    self.logger.debug(f"{sym} 历史K线not足 {len(bars)} < 60，跳过")
                     continue
                     
                 # 注意：信号需要50根收盘价
                 closes_all: List[float] = [float(getattr(b, "close", 0.0) or 0.0) for b in bars]
                 closes_50 = closes_all[-60:]
 
-                # 迁移的多因子打分（旧策略移植）
+                # 迁移多因子打分（旧策略移植）
                 highs = [float(getattr(b, "high", 0.0) or 0.0) for b in bars][-60:]
                 lows = [float(getattr(b, "low", 0.0) or 0.0) for b in bars][-60:]
                 vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in bars][-60:]
                 score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
                 thr = cfg["signals"]["acceptance_threshold"]
                 if abs(score) < thr:
-                    self.logger.debug(f"{sym} 信号强度不足 | score={score:.3f}, thr={thr:.3f}，跳过")
+                    self.logger.debug(f"{sym} 信号强度not足 | score={score:.3f}, thr={thr:.3f}，跳过")
                     continue
 
                 side = "BUY" if score > 0 else "SELL"
                 entry = q.ask if side == "BUY" else q.bid
                 if not entry or entry <= 0:
-                    self.logger.debug(f"{sym} 无法获取有效入场价（side={side}），跳过")
+                    self.logger.debug(f"{sym} no法retrievalhas效入场价（side={side}），跳过")
                     continue
                     
-                # 检查最大单个持仓限制
+                # check最大单个positions限制
                 max_single_position = self.broker.net_liq * cfg["capital"].get("max_single_position_pct", 0.15)
                 current_position_qty = self.position_manager.get_quantity(sym)
                 current_position_value = abs(current_position_qty) * entry
                 if current_position_value >= max_single_position:
-                    self.logger.info(f"{sym} 持仓已达单个标的上限 | 当前持仓市值=${current_position_value:,.2f}")
+                    self.logger.info(f"{sym} positions达单个标上限 | 当beforepositions市值=${current_position_value:,.2f}")
                     continue
                     
                 stop_pct = cfg["orders"]["default_stop_loss_pct"]
                 tp_pct = cfg["orders"]["default_take_profit_pct"]
                 
-                # 风险锚定：使用历史K的 ATR 作为最小止损距离
+                # 风险锚定：使use历史K ATR 作as最小止损距离
                 hi = [float(getattr(b, "high", entry) or entry) for b in bars][-15:]
                 lo = [float(getattr(b, "low", entry) or entry) for b in bars][-15:]
                 cl = [float(getattr(b, "close", entry) or entry) for b in bars][-15:]
@@ -620,7 +620,7 @@ class Engine:
                     atr14 = atr(hi, lo, cl, 14)[-1] if len(hi) >= 14 else None
                     atr14 = atr14 if atr14 and atr14 > 0 and not (isinstance(atr14, float) and atr14 != atr14) else None
                 except Exception as e:
-                    self.logger.warning(f"ATR计算失败 {sym}: {e}")
+                    self.logger.warning(f"ATR计算failed {sym}: {e}")
                     atr14 = None
                     
                 if side == "BUY":
@@ -628,22 +628,22 @@ class Engine:
                 else:
                     stop_px = max(entry * (1 + stop_pct), entry + (atr14 or entry * 0.02))
                     
-                # 使用增强的仓位计算
+                # 使use增强仓位计算
                 qty = self.risk.position_size(self.broker.net_liq, entry, stop_px)
                 
-                # 应用最小仓位要求
+                # 应use最小仓位要求
                 min_usd = cfg["sizing"].get("min_position_usd", 1000)
                 min_shares = cfg["sizing"].get("min_shares", 1)
                 min_qty_by_value = max(min_usd // entry, min_shares)
                 
                 if qty <= 0:
                     qty = min_qty_by_value
-                    self.logger.info(f"{sym} 风险计算仓位为0，使用最小仓位: {qty}")
+                    self.logger.info(f"{sym} 风险计算仓位as0，使use最小仓位: {qty}")
                 else:
                     qty = max(qty, min_qty_by_value)
 
                 price_plan = self.router.build_prices(sym, side, q)
-                self.logger.debug(f"{sym} 下单计划 | side={side} qty={qty} plan={price_plan}")
+                self.logger.debug(f"{sym} order placement计划 | side={side} qty={qty} plan={price_plan}")
                 
                 try:
                     if price_plan.get("type") == "MKT":
@@ -651,12 +651,12 @@ class Engine:
                     else:
                         await self.broker.place_limit_order(sym, side, qty, float(price_plan["limit"]))
                     orders_sent += 1
-                    self.logger.info(f"成功提交订单: {side} {qty} {sym} @ {entry}")
+                    self.logger.info(f"success提交订单: {side} {qty} {sym} @ {entry}")
                 except Exception as e:
-                    self.logger.error(f"订单提交失败 {sym}: {e}")
+                    self.logger.error(f"订单提交failed {sym}: {e}")
                     continue
             
-            self.logger.info(f"信号处理完成，共提交 {orders_sent} 个订单")
+            self.logger.info(f"信号处理completed，共提交 {orders_sent} 个订单")
             
         except Exception as e:
             self.logger.error(f"信号处理异常: {e}")
@@ -664,19 +664,19 @@ class Engine:
             traceback.print_exc()
 
     async def on_realtime_bar(self) -> None:
-        # 预留：可在此聚合 5s bar 并进行持仓市值标记与工作单调价
+        # 预留：canin此聚合 5s bar 并进行positions市值标记and工作单调价
         self.router.reprice_working_orders_if_needed()
 
     async def on_open_sync(self) -> None:
-        # 开盘后同步账户与持仓
+        # 开盘after同步accountandpositions
         await self.broker.refresh_account_balances_and_positions()
-        self.logger.info("开盘同步完成：已刷新账户与持仓")
+        self.logger.info("开盘同步completed：刷新accountandpositions")
 
     async def health_check(self) -> None:
         if not self.broker.ib.isConnected():
-            self.logger.warning("连接断开，尝试重连...")
+            self.logger.warning("connection断开，尝试重连...")
             await self.broker.connect()
-        # 热更新配置
+        # 热updates配置
         if self.cfg.maybe_reload():
-            self.logger.info("配置已热更新")
+            self.logger.info("配置热updates")
 

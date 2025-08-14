@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-统一持仓管理器 - 解决持仓数据分散管理的问题
-提供线程安全、数据一致性的统一持仓管理接口
+统一positions管理器 - 解决positions数据分散管理问题
+提供线程安全、数据一致性统一positions管理接口
 """
 
 import asyncio
@@ -16,14 +16,14 @@ from enum import Enum
 import json
 
 class PositionType(Enum):
-    """持仓类型"""
+    """positions类型"""
     LONG = "long"
     SHORT = "short"
     CLOSED = "closed"
 
 @dataclass
 class Position:
-    """持仓信息"""
+    """positions信息"""
     symbol: str
     quantity: int
     entry_price: float
@@ -37,7 +37,7 @@ class Position:
     unrealized_pnl_pct: float = field(init=False)
     position_type: PositionType = field(init=False)
     
-    # 可选字段
+    # can选字段
     sector: Optional[str] = None
     avg_cost: Optional[float] = None
     realized_pnl: float = 0.0
@@ -68,7 +68,7 @@ class Position:
 
 @dataclass 
 class PortfolioSummary:
-    """投资组合摘要"""
+    """投资组合summary"""
     total_positions: int
     total_market_value: float
     total_unrealized_pnl: float
@@ -78,15 +78,15 @@ class PortfolioSummary:
     largest_position: Optional[Position] = None
     largest_winner: Optional[Position] = None
     largest_loser: Optional[Position] = None
-    concentration_risk: float = 0.0  # 最大持仓占比
+    concentration_risk: float = 0.0  # 最大positionsratio
 
 class UnifiedPositionManager:
-    """统一持仓管理器"""
+    """统一positions管理器"""
     
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger("UnifiedPositionManager")
         
-        # 持仓数据
+        # positions数据
         self._positions: Dict[str, Position] = {}
         self._position_history: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
@@ -94,7 +94,7 @@ class UnifiedPositionManager:
         
         # 配置
         self.max_history_length = 1000
-        self.price_update_threshold = 0.001  # 价格变化阈值
+        self.price_update_threshold = 0.001  # price变化阈值
         
         # 统计
         self._stats = {
@@ -107,16 +107,16 @@ class UnifiedPositionManager:
         # 缓存
         self._portfolio_summary: Optional[PortfolioSummary] = None
         self._summary_cache_time = 0.0
-        self._summary_cache_ttl = 5.0  # 5秒缓存
+        self._summary_cache_ttl = 5.0  # 5 seconds缓存
     
     async def update_position(self, symbol: str, quantity: int, 
                             current_price: float, entry_price: Optional[float] = None,
                             sector: Optional[str] = None) -> Position:
-        """更新持仓信息"""
+        """updatespositions信息"""
         async with self._lock:
             current_time = time.time()
             
-            # 获取现有持仓
+            # retrieval现haspositions
             existing_position = self._positions.get(symbol)
             
             if quantity == 0:
@@ -125,7 +125,7 @@ class UnifiedPositionManager:
                     self._record_position_change(existing_position, None, "CLOSE")
                     del self._positions[symbol]
                     self.logger.info(f"平仓: {symbol}")
-                    # 返回空的持仓对象而不是None
+                    # 返回空positionsfor象而notisNone
                     return Position(
                         symbol=symbol,
                         quantity=0,
@@ -135,7 +135,7 @@ class UnifiedPositionManager:
                         last_updated=current_time
                     )
                 else:
-                    # 没有现有持仓，创建一个空持仓
+                    # 没has现haspositions，创建一个空positions
                     return Position(
                         symbol=symbol,
                         quantity=0,
@@ -145,17 +145,17 @@ class UnifiedPositionManager:
                         last_updated=current_time
                     )
             
-            # 确定入场价格
+            # 确定入场price
             if existing_position and entry_price is None:
-                # 使用现有入场价格
+                # 使use现has入场price
                 final_entry_price = existing_position.entry_price
                 final_entry_time = existing_position.entry_time
             else:
-                # 新仓位或指定了新的入场价格
+                # 新仓位or指定了新入场price
                 final_entry_price = entry_price or current_price
                 final_entry_time = current_time
             
-            # 创建或更新持仓
+            # 创建orupdatespositions
             position = Position(
                 symbol=symbol,
                 quantity=quantity,
@@ -178,24 +178,24 @@ class UnifiedPositionManager:
             self._positions[symbol] = position
             self._stats['position_updates'] += 1
             
-            # 清除摘要缓存
+            # 清除summary缓存
             self._portfolio_summary = None
             
             return position
     
     async def update_price(self, symbol: str, new_price: float) -> bool:
-        """更新持仓的当前价格"""
+        """updatespositions当beforeprice"""
         async with self._lock:
             position = self._positions.get(symbol)
             if not position:
                 return False
             
-            # 检查价格变化是否足够大
+            # checkprice变化is否足够大
             price_change_pct = abs(new_price / position.current_price - 1) if position.current_price > 0 else 1.0
             if price_change_pct < self.price_update_threshold:
                 return False
             
-            # 更新价格
+            # updatesprice
             old_position = position
             position.current_price = new_price
             position.last_updated = time.time()
@@ -205,46 +205,46 @@ class UnifiedPositionManager:
             
             self._stats['price_updates'] += 1
             
-            # 清除摘要缓存
+            # 清除summary缓存
             self._portfolio_summary = None
             
             return True
     
     def get_position(self, symbol: str) -> Optional[Position]:
-        """获取指定持仓"""
+        """retrieval指定positions"""
         with self._sync_lock:
             return self._positions.get(symbol)
     
     def get_all_positions(self) -> Dict[str, Position]:
-        """获取所有持仓"""
+        """retrieval所haspositions"""
         with self._sync_lock:
             return self._positions.copy()
     
     def get_quantity(self, symbol: str) -> int:
-        """获取持仓数量（兼容接口）"""
+        """retrievalpositions数量（兼容接口）"""
         with self._sync_lock:
             position = self._positions.get(symbol)
             return position.quantity if position else 0
     
     def get_market_value(self, symbol: str) -> float:
-        """获取持仓市值"""
+        """retrievalpositions市值"""
         with self._sync_lock:
             position = self._positions.get(symbol)
             return position.market_value if position else 0.0
     
     def get_unrealized_pnl(self, symbol: str) -> float:
-        """获取未实现损益"""
+        """retrieval未实现损益"""
         with self._sync_lock:
             position = self._positions.get(symbol)
             return position.unrealized_pnl if position else 0.0
     
     def get_symbols(self) -> List[str]:
-        """获取所有持仓标的"""
+        """retrieval所haspositions标"""
         with self._sync_lock:
             return list(self._positions.keys())
     
     def get_long_positions(self) -> Dict[str, Position]:
-        """获取多头持仓"""
+        """retrieval多头positions"""
         with self._sync_lock:
             return {
                 symbol: pos for symbol, pos in self._positions.items()
@@ -252,7 +252,7 @@ class UnifiedPositionManager:
             }
     
     def get_short_positions(self) -> Dict[str, Position]:
-        """获取空头持仓"""
+        """retrieval空头positions"""
         with self._sync_lock:
             return {
                 symbol: pos for symbol, pos in self._positions.items()
@@ -260,10 +260,10 @@ class UnifiedPositionManager:
             }
     
     def get_portfolio_summary(self, force_refresh: bool = False) -> PortfolioSummary:
-        """获取投资组合摘要"""
+        """retrieval投资组合summary"""
         current_time = time.time()
         
-        # 检查缓存
+        # check缓存
         if (not force_refresh and self._portfolio_summary and 
             current_time - self._summary_cache_time < self._summary_cache_ttl):
             return self._portfolio_summary
@@ -288,7 +288,7 @@ class UnifiedPositionManager:
         long_positions = [pos for pos in positions if pos.position_type == PositionType.LONG]
         short_positions = [pos for pos in positions if pos.position_type == PositionType.SHORT]
         
-        # 找出最大持仓、最大盈利、最大亏损
+        # 找出最大positions、最大盈利、最大亏损
         largest_position = max(positions, key=lambda p: p.market_value) if positions else None
         
         profitable_positions = [pos for pos in positions if pos.unrealized_pnl > 0]
@@ -297,7 +297,7 @@ class UnifiedPositionManager:
         largest_winner = max(profitable_positions, key=lambda p: p.unrealized_pnl) if profitable_positions else None
         largest_loser = min(losing_positions, key=lambda p: p.unrealized_pnl) if losing_positions else None
         
-        # 计算集中度风险
+        # 计算集in度风险
         concentration_risk = (largest_position.market_value / total_market_value) if largest_position and total_market_value > 0 else 0.0
         
         # 计算总体收益率
@@ -317,7 +317,7 @@ class UnifiedPositionManager:
             concentration_risk=concentration_risk
         )
         
-        # 更新缓存
+        # updates缓存
         self._portfolio_summary = summary
         self._summary_cache_time = current_time
         
@@ -325,7 +325,7 @@ class UnifiedPositionManager:
     
     def _record_position_change(self, old_position: Optional[Position], 
                               new_position: Optional[Position], action: str):
-        """记录持仓变化历史"""
+        """记录positions变化历史"""
         record = {
             'timestamp': time.time(),
             'action': action,
@@ -344,7 +344,7 @@ class UnifiedPositionManager:
     
     def get_position_history(self, symbol: Optional[str] = None, 
                            limit: int = 100) -> List[Dict[str, Any]]:
-        """获取持仓变化历史"""
+        """retrievalpositions变化历史"""
         with self._sync_lock:
             history = self._position_history
             
@@ -354,13 +354,13 @@ class UnifiedPositionManager:
             return history[-limit:] if limit > 0 else history
     
     def get_statistics(self) -> Dict[str, Any]:
-        """获取管理器统计信息"""
+        """retrieval管理器统计信息"""
         summary = self.get_portfolio_summary()
         
         with self._sync_lock:
             recent_trades = [
                 record for record in self._position_history 
-                if time.time() - record['timestamp'] < 86400  # 最近24小时
+                if time.time() - record['timestamp'] < 86400  # 最近24小when
             ]
         
         return {
@@ -387,7 +387,7 @@ class UnifiedPositionManager:
         }
     
     async def bulk_update_prices(self, price_updates: Dict[str, float]) -> int:
-        """批量更新价格"""
+        """批量updatesprice"""
         updated_count = 0
         
         async with self._lock:
@@ -399,7 +399,7 @@ class UnifiedPositionManager:
     
     async def sync_with_broker_positions(self, broker_positions: Dict[str, Any],
                                        price_source: Dict[str, float]) -> Dict[str, Any]:
-        """与经纪商持仓同步"""
+        """and经纪商positions同步"""
         sync_result = {
             'added': [],
             'updated': [],
@@ -411,7 +411,7 @@ class UnifiedPositionManager:
             current_symbols = set(self._positions.keys())
             broker_symbols = set(broker_positions.keys())
             
-            # 添加新持仓
+            # 添加新positions
             for symbol in broker_symbols - current_symbols:
                 broker_qty = broker_positions[symbol]
                 if broker_qty != 0:
@@ -420,7 +420,7 @@ class UnifiedPositionManager:
                         await self.update_position(symbol, broker_qty, current_price, current_price)
                         sync_result['added'].append(symbol)
             
-            # 更新现有持仓
+            # updates现haspositions
             for symbol in current_symbols & broker_symbols:
                 broker_qty = broker_positions[symbol]
                 current_position = self._positions[symbol]
@@ -430,35 +430,35 @@ class UnifiedPositionManager:
                     await self.update_position(symbol, broker_qty, current_price)
                     sync_result['updated'].append(symbol)
                 else:
-                    # 只更新价格
+                    # 只updatesprice
                     current_price = price_source.get(symbol)
                     if current_price and await self.update_price(symbol, current_price):
                         sync_result['price_updated'].append(symbol)
             
-            # 移除已平仓持仓
+            # 移除平仓positions
             for symbol in current_symbols - broker_symbols:
                 await self.update_position(symbol, 0, self._positions[symbol].current_price)
                 sync_result['removed'].append(symbol)
         
-        self.logger.info(f"持仓同步完成: +{len(sync_result['added'])} "
+        self.logger.info(f"positions同步completed: +{len(sync_result['added'])} "
                         f"~{len(sync_result['updated'])} -{len(sync_result['removed'])}")
         
         return sync_result
     
     def clear_all_positions(self):
-        """清空所有持仓（谨慎使用）"""
+        """清空所haspositions（谨慎使use）"""
         with self._sync_lock:
             symbols = list(self._positions.keys())
             self._positions.clear()
             self._portfolio_summary = None
             
-            self.logger.warning(f"已清空所有持仓: {len(symbols)} 个")
+            self.logger.warning(f"清空所haspositions: {len(symbols)} 个")
 
 # 全局实例
 _global_position_manager: Optional[UnifiedPositionManager] = None
 
 def get_position_manager() -> UnifiedPositionManager:
-    """获取全局持仓管理器实例"""
+    """retrieval全局positions管理器实例"""
     global _global_position_manager
     if _global_position_manager is None:
         _global_position_manager = UnifiedPositionManager()

@@ -88,6 +88,16 @@ from polygon_client import polygon_client, download, Ticker
 import time
 import scipy.stats as stats
 from scipy import signal
+import numpy as np
+import pandas as pd
+import logging
+from typing import Dict, List, Optional, Tuple, Any, Union
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+from polygon_client import polygon_client, download, Ticker
+import requests
+import time
+
 
 logger = logging.getLogger(__name__)
 
@@ -1262,15 +1272,8 @@ class PolygonCompleteFactors:
             'factor_list': list(self.factor_registry.keys()),
             'factor_descriptions': self.factor_registry
         }
-import numpy as np
-import pandas as pd
-import logging
-from typing import Dict, List, Optional, Tuple, Any, Union
-from datetime import datetime, timedelta
-from dataclasses import dataclass
-from polygon_client import polygon_client, download, Ticker
-import requests
-import time
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -2022,7 +2025,6 @@ class PolygonAdvancedFactors(PolygonEnhancedFactors):
                 'liquidity_risk_score', 'concentration_risk', 'drawdown_probability'
             ]
         }
-
     # ===============================
     # 1. 衍生品因子 (Derivatives)
     # ===============================
@@ -2990,7 +2992,6 @@ class PolygonFactorIntegrator:
             'recommendations': [],
             'data_quality': {}
         }
-
         # 按类别汇总
         category_data = {}
         for factor_name, result in factor_results.items():
@@ -4935,3 +4936,5 @@ class PolygonShortTermFactors:
             computation_time=time.time() - start_time,
             description="计算失败，数据不足"
         )
+
+

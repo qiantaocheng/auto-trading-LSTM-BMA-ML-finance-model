@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-增强的技术指标缓存系统
-提供更高效的缓存策略、内存管理和预热机制
+增强技术指标缓存系统
+提供更高效缓存策略、内存管理and预热机制
 """
 
 import numpy as np
@@ -21,9 +21,9 @@ from enum import Enum
 
 class CachePolicy(Enum):
     """缓存策略"""
-    LRU = "lru"          # 最近最少使用
-    LFU = "lfu"          # 最少频率使用  
-    TTL = "ttl"          # 时间过期
+    LRU = "lru"          # 最近最少使use
+    LFU = "lfu"          # 最少频率使use  
+    TTL = "ttl"          # when间过期
     ADAPTIVE = "adaptive" # 自适应
 
 @dataclass
@@ -38,12 +38,12 @@ class IndicatorResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def update_access(self):
-        """更新访问统计"""
+        """updates访问统计"""
         self.access_count += 1
         self.last_access = time.time()
 
 class EnhancedIndicatorCache:
-    """增强的技术指标缓存系统"""
+    """增强技术指标缓存系统"""
     
     def __init__(self, 
                  max_cache_size: int = 2000,
@@ -64,19 +64,19 @@ class EnhancedIndicatorCache:
         self._l2_cache: Dict[str, IndicatorResult] = {}  # 温数据
         self._cold_storage: Dict[str, bytes] = {}  # 冷数据（序列化）
         
-        # 缓存统计和管理
+        # 缓存统计and管理
         self._cache_stats = {
             'l1_hits': 0, 'l2_hits': 0, 'cold_hits': 0,
             'misses': 0, 'evictions': 0, 'prewarmed': 0
         }
         
-        # 访问频率统计（用于LFU）
+        # 访问频率统计（useatLFU）
         self._access_frequency: Dict[str, int] = defaultdict(int)
         self._frequency_buckets: Dict[int, set] = defaultdict(set)
         
         # 内存监控
         self._current_memory = 0
-        self._memory_threshold = 0.8  # 80%内存使用率触发清理
+        self._memory_threshold = 0.8  # 80%内存使use率触发清理
         
         # 哈希缓存（避免重复计算）
         self._hash_cache: Dict[tuple, str] = {}
@@ -87,7 +87,7 @@ class EnhancedIndicatorCache:
         # 线程锁
         self.lock = RLock()
         
-        # 预定义的指标函数
+        # 预定义指标函数
         self._indicator_functions = {
             'sma': self._compute_sma,
             'ema': self._compute_ema,
@@ -99,44 +99,44 @@ class EnhancedIndicatorCache:
             'williams_r': self._compute_williams_r
         }
         
-        self.logger.info(f"初始化增强缓存: 最大{max_cache_size}项, {max_memory_mb}MB, 策略={cache_policy.value}")
+        self.logger.info(f"初始化增强缓存: 最大{max_cache_size} items, {max_memory_mb}MB, 策略={cache_policy.value}")
     
     def get_indicator(self, indicator_name: str, symbol: str, data: List[float], 
                      period: int = 14, **kwargs) -> Any:
-        """获取技术指标值（多层缓存）"""
+        """retrieval技术指标值（多层缓存）"""
         with self.lock:
             # 生成缓存键（优化版）
             cache_key = self._generate_cache_key_optimized(indicator_name, symbol, data, period, **kwargs)
             
-            # L1 缓存检查（热数据）
+            # L1 缓存check（热数据）
             if cache_key in self._l1_cache:
                 result = self._l1_cache[cache_key]
                 if self._is_cache_valid(result):
                     self._cache_stats['l1_hits'] += 1
                     result.update_access()
                     self._update_frequency(cache_key)
-                    # 移动到最前面（LRU）
+                    # 移动to最before面（LRU）
                     self._l1_cache.move_to_end(cache_key)
-                    self.logger.debug(f"L1缓存命中: {indicator_name}({symbol}, {period})")
+                    self.logger.debug(f"L1缓存命in: {indicator_name}({symbol}, {period})")
                     return result.value
                 else:
                     del self._l1_cache[cache_key]
             
-            # L2 缓存检查（温数据）
+            # L2 缓存check（温数据）
             if cache_key in self._l2_cache:
                 result = self._l2_cache[cache_key]
                 if self._is_cache_valid(result):
                     self._cache_stats['l2_hits'] += 1
                     result.update_access()
                     self._update_frequency(cache_key)
-                    # 提升到L1缓存
+                    # 提升toL1缓存
                     self._promote_to_l1(cache_key, result)
-                    self.logger.debug(f"L2缓存命中: {indicator_name}({symbol}, {period})")
+                    self.logger.debug(f"L2缓存命in: {indicator_name}({symbol}, {period})")
                     return result.value
                 else:
                     del self._l2_cache[cache_key]
             
-            # 冷存储检查
+            # 冷存储check
             if cache_key in self._cold_storage:
                 try:
                     result = pickle.loads(self._cold_storage[cache_key])
@@ -144,29 +144,29 @@ class EnhancedIndicatorCache:
                         self._cache_stats['cold_hits'] += 1
                         result.update_access()
                         self._update_frequency(cache_key)
-                        # 提升到L2缓存
+                        # 提升toL2缓存
                         self._promote_to_l2(cache_key, result)
                         if cache_key in self._cold_storage:
                             del self._cold_storage[cache_key]
-                        self.logger.debug(f"冷存储命中: {indicator_name}({symbol}, {period})")
+                        self.logger.debug(f"冷存储命in: {indicator_name}({symbol}, {period})")
                         return result.value
                     else:
                         del self._cold_storage[cache_key]
                 except Exception as e:
-                    self.logger.warning(f"冷存储反序列化失败: {e}")
+                    self.logger.warning(f"冷存储反序列化failed: {e}")
                     del self._cold_storage[cache_key]
             
-            # 缓存未命中，计算指标
+            # 缓存未命in，计算指标
             self._cache_stats['misses'] += 1
             return self._compute_and_cache_enhanced(cache_key, indicator_name, symbol, data, period, **kwargs)
     
     def _generate_cache_key_optimized(self, indicator_name: str, symbol: str, data: List[float], 
                                     period: int, **kwargs) -> str:
-        """优化的缓存键生成（使用哈希缓存）"""
+        """优化缓存键生成（使use哈希缓存）"""
         # 创建键元组
         key_tuple = (indicator_name, symbol, period, tuple(sorted(kwargs.items())))
         
-        # 检查哈希缓存
+        # check哈希缓存
         if key_tuple in self._hash_cache:
             base_key = self._hash_cache[key_tuple]
         else:
@@ -176,9 +176,9 @@ class EnhancedIndicatorCache:
             base_key = hashlib.md5(base_str.encode()).hexdigest()[:16]
             self._hash_cache[key_tuple] = base_key
         
-        # 数据哈希（使用滑动窗口）
+        # 数据哈希（使use滑动窗口）
         if len(data) > period * 2:
-            # 只使用相关的数据窗口
+            # 只使use相关数据窗口
             relevant_data = data[-(period * 2):]
         else:
             relevant_data = data
@@ -191,9 +191,9 @@ class EnhancedIndicatorCache:
         """计算并缓存指标（增强版）"""
         start_time = time.time()
         
-        # 检查数据足够性
+        # check数据足够性
         if len(data) < period:
-            self.logger.warning(f"数据不足计算{indicator_name}: {len(data)} < {period}")
+            self.logger.warning(f"数据not足计算{indicator_name}: {len(data)} < {period}")
             return None
         
         # 计算指标
@@ -205,7 +205,7 @@ class EnhancedIndicatorCache:
             value = self._indicator_functions[indicator_name](data, period, **kwargs)
             computation_time = time.time() - start_time
             
-            # 创建结果对象
+            # 创建结果for象
             result = IndicatorResult(
                 value=value,
                 timestamp=time.time(),
@@ -217,7 +217,7 @@ class EnhancedIndicatorCache:
             # 智能缓存存储
             self._store_with_policy(cache_key, result)
             
-            # 更新统计
+            # updates统计
             self._update_frequency(cache_key)
             
             # 预热相关指标
@@ -228,21 +228,21 @@ class EnhancedIndicatorCache:
             return value
             
         except Exception as e:
-            self.logger.error(f"指标计算失败 {indicator_name}: {e}")
+            self.logger.error(f"指标计算failed {indicator_name}: {e}")
             return None
     
     def _store_with_policy(self, cache_key: str, result: IndicatorResult):
         """根据策略存储缓存"""
-        # 检查内存使用
+        # check内存使use
         self._check_memory_pressure()
         
         if self.cache_policy == CachePolicy.ADAPTIVE:
-            # 自适应策略：根据访问频率和计算成本决定存储层级
-            if result.computation_time > 0.01:  # 计算成本高的存L1
+            # 自适应策略：根据访问频率and计算成本决定存储层级
+            if result.computation_time > 0.01:  # 计算成本高存L1
                 self._store_in_l1(cache_key, result)
-            elif result.computation_time > 0.001:  # 中等成本存L2
+            elif result.computation_time > 0.001:  # in等成本存L2
                 self._store_in_l2(cache_key, result)
-            else:  # 低成本的可以冷存储
+            else:  # 低成本can以冷存储
                 self._store_in_cold(cache_key, result)
         elif self.cache_policy == CachePolicy.LRU:
             self._store_in_l1(cache_key, result)
@@ -259,8 +259,8 @@ class EnhancedIndicatorCache:
             self._store_in_l1(cache_key, result)
     
     def _store_in_l1(self, cache_key: str, result: IndicatorResult):
-        """存储到L1缓存"""
-        # 检查容量
+        """存储toL1缓存"""
+        # check容量
         if len(self._l1_cache) >= self.max_cache_size // 4:  # L1占总容量25%
             self._evict_from_l1()
         
@@ -268,7 +268,7 @@ class EnhancedIndicatorCache:
         self._update_memory_usage()
     
     def _store_in_l2(self, cache_key: str, result: IndicatorResult):
-        """存储到L2缓存"""
+        """存储toL2缓存"""
         if len(self._l2_cache) >= self.max_cache_size // 2:  # L2占总容量50%
             self._evict_from_l2()
         
@@ -276,7 +276,7 @@ class EnhancedIndicatorCache:
         self._update_memory_usage()
     
     def _store_in_cold(self, cache_key: str, result: IndicatorResult):
-        """存储到冷存储"""
+        """存储to冷存储"""
         try:
             serialized = pickle.dumps(result)
             if len(self._cold_storage) >= self.max_cache_size:  # 冷存储占剩余容量
@@ -285,31 +285,31 @@ class EnhancedIndicatorCache:
             self._cold_storage[cache_key] = serialized
             self._update_memory_usage()
         except Exception as e:
-            self.logger.warning(f"冷存储序列化失败: {e}")
+            self.logger.warning(f"冷存储序列化failed: {e}")
     
     def _evict_from_l1(self):
-        """从L1缓存淘汰"""
+        """fromL1缓存淘汰"""
         if not self._l1_cache:
             return
         
         if self.cache_policy == CachePolicy.LRU or self.cache_policy == CachePolicy.ADAPTIVE:
-            # 淘汰最旧的
+            # 淘汰最旧
             key, result = self._l1_cache.popitem(last=False)
         elif self.cache_policy == CachePolicy.LFU:
-            # 淘汰访问频率最低的
+            # 淘汰访问频率最低
             key = min(self._l1_cache.keys(), key=lambda k: self._access_frequency[k])
             result = self._l1_cache.pop(key)
         else:  # TTL
-            # 淘汰最早的
+            # 淘汰最早
             key = min(self._l1_cache.keys(), key=lambda k: self._l1_cache[k].timestamp)
             result = self._l1_cache.pop(key)
         
-        # 降级到L2
+        # 降级toL2
         self._store_in_l2(key, result)
         self._cache_stats['evictions'] += 1
     
     def _evict_from_l2(self):
-        """从L2缓存淘汰"""
+        """fromL2缓存淘汰"""
         if not self._l2_cache:
             return
         
@@ -321,59 +321,59 @@ class EnhancedIndicatorCache:
         
         result = self._l2_cache.pop(key)
         
-        # 如果访问频率还可以，降级到冷存储
+        # if果访问频率还can以，降级to冷存储
         if self._access_frequency[key] > 1:
             self._store_in_cold(key, result)
         
         self._cache_stats['evictions'] += 1
     
     def _evict_from_cold(self):
-        """从冷存储淘汰"""
+        """from冷存储淘汰"""
         if not self._cold_storage:
             return
         
-        # 随机淘汰或基于时间戳
+        # 随机淘汰or基atwhen间戳
         import random
         key = random.choice(list(self._cold_storage.keys()))
         del self._cold_storage[key]
         self._cache_stats['evictions'] += 1
     
     def _promote_to_l1(self, cache_key: str, result: IndicatorResult):
-        """提升到L1缓存"""
+        """提升toL1缓存"""
         if cache_key in self._l2_cache:
             del self._l2_cache[cache_key]
         self._store_in_l1(cache_key, result)
     
     def _promote_to_l2(self, cache_key: str, result: IndicatorResult):
-        """提升到L2缓存"""
-        # 不在这里删除冷存储，由调用方处理
+        """提升toL2缓存"""
+        # notin这里删除冷存储，by调use方处理
         self._store_in_l2(cache_key, result)
     
     def _update_frequency(self, cache_key: str):
-        """更新访问频率"""
+        """updates访问频率"""
         old_freq = self._access_frequency[cache_key]
         new_freq = old_freq + 1
         self._access_frequency[cache_key] = new_freq
         
-        # 更新频率桶
+        # updates频率桶
         if old_freq > 0:
             self._frequency_buckets[old_freq].discard(cache_key)
         self._frequency_buckets[new_freq].add(cache_key)
     
     def _is_cache_valid(self, result: IndicatorResult) -> bool:
-        """检查缓存是否有效"""
+        """check缓存is否has效"""
         if self.cache_policy == CachePolicy.TTL:
             return (time.time() - result.timestamp) < self.ttl_seconds
-        return True  # 其他策略不基于时间过期
+        return True  # 其他策略not基atwhen间过期
     
     def _check_memory_pressure(self):
-        """检查内存压力"""
+        """check内存压力"""
         if self._current_memory > self.max_memory_bytes * self._memory_threshold:
-            self.logger.info("内存压力大，开始清理缓存")
+            self.logger.info("内存压力大，starting清理缓存")
             self._cleanup_memory()
     
     def _update_memory_usage(self):
-        """更新内存使用统计"""
+        """updates内存使use统计"""
         try:
             import sys
             self._current_memory = (
@@ -382,11 +382,11 @@ class EnhancedIndicatorCache:
                 sum(len(v) for v in self._cold_storage.values())
             )
         except Exception:
-            pass  # 内存统计失败不影响功能
+            pass  # 内存统计failednot影响功能
     
     def _cleanup_memory(self):
         """内存清理"""
-        # 清理访问频率最低的一半缓存
+        # 清理访问频率最低一半缓存
         total_items = len(self._l1_cache) + len(self._l2_cache) + len(self._cold_storage)
         target_cleanup = total_items // 2
         
@@ -402,7 +402,7 @@ class EnhancedIndicatorCache:
             del self._l2_cache[key]
             cleaned += 1
         
-        self.logger.info(f"内存清理完成，清理了{cleaned}个缓存项")
+        self.logger.info(f"内存清理completed，清理了{cleaned}个缓存 items")
         self._update_memory_usage()
     
     def _schedule_prewarming(self, symbol: str, data: List[float], period: int):
@@ -410,7 +410,7 @@ class EnhancedIndicatorCache:
         if not self.enable_prewarming:
             return
         
-        # 预热相关周期的指标
+        # 预热相关周期指标
         for related_period in [period // 2, period * 2]:
             if related_period >= 5:  # 最小周期限制
                 self._prewarming_queue.append((symbol, data, related_period))
@@ -424,19 +424,19 @@ class EnhancedIndicatorCache:
         for symbol in symbols:
             for indicator in indicators:
                 for period in periods:
-                    # 模拟数据（实际应用中从数据源获取）
+                    # 模拟数据（实际应useinfrom数据源retrieval）
                     mock_data = [100 + i * 0.1 for i in range(period * 3)]
                     try:
                         self.get_indicator(indicator, symbol, mock_data, period)
                         prewarmed += 1
                     except Exception as e:
-                        self.logger.warning(f"预热失败 {indicator}({symbol}, {period}): {e}")
+                        self.logger.warning(f"预热failed {indicator}({symbol}, {period}): {e}")
         
         self._cache_stats['prewarmed'] = prewarmed
-        self.logger.info(f"预热完成: {prewarmed} 个指标")
+        self.logger.info(f"预热completed: {prewarmed} 个指标")
     
     def get_cache_stats(self) -> Dict[str, Any]:
-        """获取缓存统计"""
+        """retrieval缓存统计"""
         total_hits = self._cache_stats['l1_hits'] + self._cache_stats['l2_hits'] + self._cache_stats['cold_hits']
         total_requests = total_hits + self._cache_stats['misses']
         
@@ -453,7 +453,7 @@ class EnhancedIndicatorCache:
         }
     
     def _get_top_indicators(self) -> List[Tuple[str, int]]:
-        """获取最常用的指标"""
+        """retrieval最常use指标"""
         return sorted(self._access_frequency.items(), key=lambda x: x[1], reverse=True)[:10]
     
     # 指标计算函数（简化实现）
@@ -470,7 +470,7 @@ class EnhancedIndicatorCache:
         return ema
     
     def _compute_rsi(self, data: List[float], period: int, **kwargs) -> float:
-        """相对强弱指数"""
+        """相for强弱指数"""
         if len(data) < period + 1:
             return None
         
@@ -492,7 +492,7 @@ class EnhancedIndicatorCache:
         if len(data) < period + 1:
             return None
         
-        # 简化版ATR：使用价格变化的平均绝对值
+        # 简化版ATR：使useprice变化平均绝for值
         price_changes = np.abs(np.diff(data))
         return np.mean(price_changes[-period:])
     
@@ -526,7 +526,7 @@ class EnhancedIndicatorCache:
         macd_line = ema_fast - ema_slow
         
         # 简化信号线计算
-        signal_line = macd_line  # 实际应该是MACD线的EMA
+        signal_line = macd_line  # 实际应该isMACD线EMA
         
         return {
             'macd': macd_line,
@@ -574,7 +574,7 @@ class EnhancedIndicatorCache:
 _global_enhanced_cache: Optional[EnhancedIndicatorCache] = None
 
 def get_enhanced_indicator_cache() -> EnhancedIndicatorCache:
-    """获取全局增强指标缓存"""
+    """retrieval全局增强指标缓存"""
     global _global_enhanced_cache
     if _global_enhanced_cache is None:
         _global_enhanced_cache = EnhancedIndicatorCache()
@@ -582,6 +582,6 @@ def get_enhanced_indicator_cache() -> EnhancedIndicatorCache:
 
 def cached_indicator(indicator_name: str, symbol: str, data: List[float], 
                     period: int = 14, **kwargs) -> Any:
-    """便捷的缓存指标计算函数"""
+    """便捷缓存指标计算函数"""
     cache = get_enhanced_indicator_cache()
     return cache.get_indicator(indicator_name, symbol, data, period, **kwargs)

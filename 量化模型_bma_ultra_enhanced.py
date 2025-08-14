@@ -8,7 +8,8 @@ BMA Ultra Enhanced 量化分析模型 V4
 
 import pandas as pd
 import numpy as np
-from polygon_client import polygon_client, download, Ticker
+# 修复命名空间冲突：使用别名避免与其他库冲突
+from polygon_client import polygon_client as pc, download as polygon_download, Ticker as PolygonTicker
 import yaml
 import warnings
 import argparse
@@ -87,7 +88,23 @@ except ImportError:
 
 # 配置
 warnings.filterwarnings('ignore')
-plt.style.use('seaborn-v0_8')
+
+# 修复matplotlib版本兼容性问题
+try:
+    import matplotlib
+    if hasattr(matplotlib, '__version__') and matplotlib.__version__ >= '3.4.0':
+        try:
+            plt.style.use('seaborn-v0_8')
+        except OSError:
+            # 如果seaborn-v0_8不可用，使用默认样式
+            plt.style.use('default')
+            print("[WARN] seaborn-v0_8样式不可用，使用默认样式")
+    else:
+        plt.style.use('seaborn')
+except Exception as e:
+    print(f"[WARN] matplotlib样式设置失败: {e}，使用默认样式")
+    plt.style.use('default')
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -366,13 +383,13 @@ class UltraEnhancedQuantitativeModel:
                         # 重塑为[date, ticker]格式并对齐
                         features_pivot = features_df.set_index(['date', 'ticker'])['free_float_market_cap']
                         
-                        # 🔴 修复时间泄露：Size因子使用前期市值分组当期收益
+                        #  修复时间泄露：Size因子使用前期市值分组当期收益
                         size_factor = []
                         dates_list = list(returns_matrix.index)
                         
                         for i, date in enumerate(dates_list):
                             try:
-                                # 🔴 关键修复：使用T-1期的市值进行分组，计算T期收益
+                                #  关键修复：使用T-1期的市值进行分组，计算T期收益
                                 if i == 0:
                                     # 第一个日期没有前期数据，跳过
                                     size_factor.append(0.0)
@@ -417,23 +434,23 @@ class UltraEnhancedQuantitativeModel:
             # 回退方案：基于成交量估算规模
             try:
                 volume_data = {}
-        for ticker in returns_matrix.columns:
+                for ticker in returns_matrix.columns:
                     if ticker in self.raw_data and 'volume' in self.raw_data[ticker].columns:
                         # 使用最近60天平均成交量作为规模代理
                         recent_volume = self.raw_data[ticker]['volume'].tail(60).mean()
                         volume_data[ticker] = recent_volume
-                
+
                 if volume_data:
                     volume_series = pd.Series(volume_data)
                     volume_median = volume_series.median()
                     small_vol_mask = volume_series < volume_median
-                    
+
                     small_vol_returns = returns_matrix.loc[:, small_vol_mask].mean(axis=1)
                     large_vol_returns = returns_matrix.loc[:, ~small_vol_mask].mean(axis=1)
                     factors['size'] = small_vol_returns - large_vol_returns
                     logger.info("使用成交量代理构建Size因子（回退方案）")
                 else:
-                    # 最终回退：使用等权
+                    # 最终回退：使用零值
                     factors['size'] = 0.0
                     logger.warning("无法构建Size因子，使用零值")
             except Exception as fallback_error:
@@ -700,8 +717,8 @@ class UltraEnhancedQuantitativeModel:
                 common_index = base_predictions.index.intersection(weighted_alpha.index)
                 if len(common_index) > 0:
                     enhanced_predictions = (
-                        ml_weight * base_predictions.loc[common_index] +
-                        alpha_weight * weighted_alpha.loc[common_index]
+                        ml_weight * base_predictions.reindex(common_index).fillna(0) +
+                        alpha_weight * weighted_alpha.reindex(common_index).fillna(0)
                     )
                 else:
                     enhanced_predictions = base_predictions
@@ -738,9 +755,9 @@ class UltraEnhancedQuantitativeModel:
                     # 使用专业风险模型进行优化
                     try:
                         # 构建投资组合协方差矩阵: B * F * B' + S
-                        B = factor_loadings.loc[common_assets]  # 因子载荷
+                        B = factor_loadings.reindex(common_assets).dropna()  # 因子载荷 - 安全索引
                         F = factor_covariance                   # 因子协方差
-                        S = specific_risk.loc[common_assets]    # 特异风险
+                        S = specific_risk.reindex(common_assets).dropna()    # 特异风险 - 安全索引
                         
                         # 计算协方差矩阵
                         portfolio_cov = B @ F @ B.T + np.diag(S**2)
@@ -753,9 +770,23 @@ class UltraEnhancedQuantitativeModel:
                         # 使用统一的AdvancedPortfolioOptimizer而非重复实现
                         if self.portfolio_optimizer:
                             try:
-                                # 准备预期收益率
-                        expected_returns = predictions.loc[common_assets]
-                        
+                                # 准备预期收益率 - 使用安全的索引访问
+                                available_assets = predictions.index.intersection(common_assets)
+                                if len(available_assets) == 0:
+                                    raise ValueError("No common assets between predictions and risk model")
+                                expected_returns = predictions.reindex(available_assets).dropna()
+                                common_assets = list(expected_returns.index)  # 更新common_assets为实际可用的资产
+                                
+                                # 重新构建协方差矩阵以匹配可用资产
+                                B_updated = factor_loadings.reindex(common_assets).dropna()
+                                S_updated = specific_risk.reindex(common_assets).dropna()
+                                portfolio_cov = B_updated @ F @ B_updated.T + np.diag(S_updated**2)
+                                portfolio_cov = pd.DataFrame(
+                                    portfolio_cov, 
+                                    index=common_assets, 
+                                    columns=common_assets
+                                )
+                                
                                 # 准备股票池数据（用于约束）
                                 universe_data = pd.DataFrame(index=common_assets)
                                 # 添加模拟的行业/国家信息用于约束
@@ -774,7 +805,7 @@ class UltraEnhancedQuantitativeModel:
                                 if optimization_result.get('success', False):
                                     optimal_weights = optimization_result['optimal_weights']
                                     portfolio_metrics = optimization_result['portfolio_metrics']
-                                    
+
                                     # 风险归因
                                     risk_attribution = self.portfolio_optimizer.risk_attribution(
                                         optimal_weights, portfolio_cov
@@ -791,23 +822,34 @@ class UltraEnhancedQuantitativeModel:
                                 else:
                                     logger.warning("统一优化器优化失败，使用回退方案")
                                     raise ValueError("Unified optimizer failed")
-                                    
+                            
                             except (ValueError, RuntimeError, np.linalg.LinAlgError) as optimizer_error:
                                 logger.exception(f"统一优化器调用失败: {optimizer_error}, 使用简化优化")
                                 self.health_metrics['optimization_fallbacks'] += 1
-                                # 简化回退：等权组合
-                                n_assets = len(common_assets)
-                                equal_weights = pd.Series(1.0/n_assets, index=common_assets)
+                                # 简化回退：等权组合 - 使用安全的索引访问
+                                fallback_assets = predictions.index.intersection(common_assets)
+                                if len(fallback_assets) == 0:
+                                    # 如果没有交集，使用predictions的前几个资产
+                                    fallback_assets = predictions.index[:min(5, len(predictions.index))]
                                 
-                                expected_returns = predictions.loc[common_assets]
-                                portfolio_return = expected_returns @ equal_weights
-                                portfolio_risk = np.sqrt(equal_weights @ portfolio_cov @ equal_weights)
-                            sharpe_ratio = portfolio_return / portfolio_risk if portfolio_risk > 0 else 0
+                                n_assets = len(fallback_assets)
+                                equal_weights = pd.Series(1.0/n_assets, index=fallback_assets)
+                                
+                                expected_returns = predictions.reindex(fallback_assets).dropna()
+                                portfolio_return = expected_returns @ equal_weights.reindex(expected_returns.index)
+                                
+                                # 创建简化的协方差矩阵用于风险计算
+                                try:
+                                    portfolio_risk = np.sqrt(equal_weights.reindex(expected_returns.index) @ portfolio_cov.reindex(expected_returns.index, expected_returns.index).fillna(0.01) @ equal_weights.reindex(expected_returns.index))
+                                except (KeyError, ValueError):
+                                    # 如果协方差矩阵访问失败，使用估计风险
+                                    portfolio_risk = 0.15  # 假设15%的年化风险
+                                sharpe_ratio = portfolio_return / portfolio_risk if portfolio_risk > 0 else 0
                             
                             return {
                                 'success': True,
                                     'method': 'equal_weight_fallback_with_risk_model',
-                                    'weights': equal_weights.to_dict(),
+                                    'weights': equal_weights.reindex(expected_returns.index).to_dict(),
                                 'portfolio_metrics': {
                                     'expected_return': float(portfolio_return),
                                     'portfolio_risk': float(portfolio_risk),
@@ -838,7 +880,7 @@ class UltraEnhancedQuantitativeModel:
                 'method': 'equal_weight_fallback',
                 'weights': equal_weights.to_dict(),
                 'portfolio_metrics': {
-                    'expected_return': predictions.loc[top_assets].mean(),
+                    'expected_return': predictions.reindex(top_assets).dropna().mean(),
                     'portfolio_risk': 0.15,  # 假设风险
                     'sharpe_ratio': 1.0,
                     'diversification_ratio': len(top_assets)
@@ -931,17 +973,61 @@ class UltraEnhancedQuantitativeModel:
             股票数据字典
         """
         logger.info(f"下载{len(tickers)}只股票的数据，时间范围: {start_date} - {end_date}")
+
+        # 将训练结束时间限制为当天的前一天（T-1），避免使用未完全结算的数据
+        try:
+            yesterday = (datetime.now() - timedelta(days=1)).date()
+            end_dt = pd.to_datetime(end_date).date()
+            if end_dt > yesterday:
+                adjusted_end = yesterday.strftime('%Y-%m-%d')
+                logger.info(f"结束日期{end_date} 超过昨日，已调整为 {adjusted_end}")
+                end_date = adjusted_end
+        except Exception as _e:
+            logger.debug(f"结束日期调整跳过: {_e}")
+        
+        # 数据验证
+        if not tickers or len(tickers) == 0:
+            logger.error("股票代码列表为空")
+            return {}
+        
+        if not start_date or not end_date:
+            logger.error("开始日期或结束日期为空")
+            return {}
         
         all_data = {}
         failed_downloads = []
         
         for ticker in tickers:
             try:
-                stock = Ticker(ticker)
+                # 验证股票代码格式
+                if not ticker or not isinstance(ticker, str) or len(ticker.strip()) == 0:
+                    logger.warning(f"无效的股票代码: {ticker}")
+                    failed_downloads.append(ticker)
+                    continue
+                
+                ticker = ticker.strip().upper()  # 标准化股票代码
+                
+                stock = PolygonTicker(ticker)
                 # 使用复权数据，避免股利污染；固定日频，关闭actions列
                 hist = stock.history(start=start_date, end=end_date, interval='1d')
                 
-                if len(hist) == 0:
+                # 数据质量检查
+                if hist is None or len(hist) == 0:
+                    logger.warning(f"{ticker}: 无数据")
+                    failed_downloads.append(ticker)
+                    continue
+                
+                # 检查必要的列是否存在
+                required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                missing_cols = [col for col in required_cols if col not in hist.columns]
+                if missing_cols:
+                    logger.warning(f"{ticker}: 缺少必要列 {missing_cols}")
+                    failed_downloads.append(ticker)
+                    continue
+                
+                # 检查数据质量
+                if hist['Close'].isna().all():
+                    logger.warning(f"{ticker}: 所有收盘价都是NaN")
                     failed_downloads.append(ticker)
                     continue
                 

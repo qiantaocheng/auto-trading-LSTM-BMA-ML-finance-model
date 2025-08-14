@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-性能优化模块 - 替换subprocess调用和提升计算性能
-提供直接模块导入、异步计算和缓存机制
+性能优化模块 - 替换subprocess调useand提升计算性能
+提供直接模块导入、异步计算and缓存机制
 """
 
 import asyncio
@@ -46,57 +46,57 @@ class CacheManager:
         key_data = {
             'script': str(script_path),
             'params': sorted(params.items()),
-            'timestamp': int(time.time() / 3600)  # 按小时分组
+            'timestamp': int(time.time() / 3600)  # 按小when分组
         }
         key_str = json.dumps(key_data, sort_keys=True)
         return hashlib.md5(key_str.encode()).hexdigest()
     
     def get(self, cache_key: str) -> Optional[ModelResult]:
-        """获取缓存"""
-        # 先检查内存缓存
+        """retrieval缓存"""
+        # 先check内存缓存
         if cache_key in self.memory_cache:
-            self.logger.debug(f"内存缓存命中: {cache_key}")
+            self.logger.debug(f"内存缓存命in: {cache_key}")
             return self.memory_cache[cache_key]
         
-        # 检查磁盘缓存
+        # check磁盘缓存
         cache_file = self.cache_dir / f"{cache_key}.pkl"
         if cache_file.exists():
             try:
                 with open(cache_file, 'rb') as f:
                     result = pickle.load(f)
                 
-                # 加载到内存缓存
+                # 加载to内存缓存
                 self.memory_cache[cache_key] = result
-                self.logger.debug(f"磁盘缓存命中: {cache_key}")
+                self.logger.debug(f"磁盘缓存命in: {cache_key}")
                 return result
                 
             except Exception as e:
-                self.logger.warning(f"加载缓存失败 {cache_key}: {e}")
+                self.logger.warning(f"加载缓存failed {cache_key}: {e}")
         
         return None
     
     def set(self, cache_key: str, result: ModelResult):
-        """设置缓存"""
-        # 设置内存缓存
+        """settings缓存"""
+        # settings内存缓存
         self.memory_cache[cache_key] = result
         
-        # 设置磁盘缓存
+        # settings磁盘缓存
         cache_file = self.cache_dir / f"{cache_key}.pkl"
         try:
             with open(cache_file, 'wb') as f:
                 pickle.dump(result, f)
             
-            # 更新元数据
+            # updates元数据
             self.cache_metadata[cache_key] = {
                 'created': time.time(),
                 'size': cache_file.stat().st_size,
                 'execution_time': result.execution_time
             }
             
-            self.logger.debug(f"缓存已保存: {cache_key}")
+            self.logger.debug(f"缓存保存: {cache_key}")
             
         except Exception as e:
-            self.logger.warning(f"保存缓存失败 {cache_key}: {e}")
+            self.logger.warning(f"保存缓存failed {cache_key}: {e}")
         
         # 清理过期缓存
         self._cleanup_cache()
@@ -104,7 +104,7 @@ class CacheManager:
     def _cleanup_cache(self):
         """清理过期缓存"""
         if len(self.memory_cache) > self.max_size:
-            # 按创建时间排序，删除最老的
+            # 按创建when间排序，删除最老
             sorted_keys = sorted(
                 self.cache_metadata.keys(),
                 key=lambda k: self.cache_metadata[k]['created']
@@ -138,15 +138,15 @@ class DirectModuleExecutor:
             'progress_callback': progress_callback
         }
         
-        # 检查缓存
+        # check缓存
         cache_key = None
         if use_cache:
-            # 为缓存生成键时排除progress_callback（函数不能序列化）
+            # as缓存生成键when排除progress_callback（函数not能序列化）
             cache_params = {k: v for k, v in params.items() if k != 'progress_callback'}
             cache_key = self.cache_manager._generate_cache_key(script_path, cache_params)
             cached_result = self.cache_manager.get(cache_key)
             if cached_result:
-                self.logger.info(f"使用缓存结果: {cache_key}")
+                self.logger.info(f"使use缓存结果: {cache_key}")
                 return cached_result
         
         # 执行模型
@@ -154,7 +154,7 @@ class DirectModuleExecutor:
         
         try:
             if use_async:
-                # 异步执行（在线程池中）
+                # 异步执行（in线程池in）
                 result = await self._execute_model_async(script_path, params)
             else:
                 # 同步执行
@@ -162,7 +162,7 @@ class DirectModuleExecutor:
             
             execution_time = time.time() - start_time
             
-            # 创建结果对象
+            # 创建结果for象
             model_result = ModelResult(
                 success=result['success'],
                 execution_time=execution_time,
@@ -172,7 +172,7 @@ class DirectModuleExecutor:
                 cache_key=cache_key
             )
             
-            # 保存到缓存
+            # 保存to缓存
             if use_cache and model_result.success:
                 self.cache_manager.set(cache_key, model_result)
             
@@ -192,20 +192,20 @@ class DirectModuleExecutor:
     async def _execute_model_direct(self, script_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """直接模块导入执行"""
         try:
-            # 将脚本路径转换为模块路径
+            # will脚本路径转换as模块路径
             script_path_obj = Path(script_path)
             if not script_path_obj.exists():
-                raise FileNotFoundError(f"脚本文件不存在: {script_path}")
+                raise FileNotFoundError(f"脚本文件not存in: {script_path}")
             
             # 动态导入模块
             module_name = script_path_obj.stem
             spec = importlib.util.spec_from_file_location(module_name, script_path)
             if spec is None or spec.loader is None:
-                raise ImportError(f"无法加载模块: {script_path}")
+                raise ImportError(f"no法加载模块: {script_path}")
             
             module = importlib.util.module_from_spec(spec)
             
-            # 设置模块参数
+            # settings模块参数
             old_argv = sys.argv
             try:
                 # 模拟命令行参数
@@ -218,7 +218,7 @@ class DirectModuleExecutor:
                 # 捕获输出
                 output_lines = []
                 
-                # 重定向输出
+                # 重定to输出
                 import io
                 import contextlib
                 
@@ -229,12 +229,12 @@ class DirectModuleExecutor:
                         # 执行模块
                         spec.loader.exec_module(module)
                 
-                # 获取输出
+                # retrieval输出
                 output_content = output_buffer.getvalue()
                 if output_content:
                     output_lines = output_content.strip().split('\n')
                 
-                # 尝试获取结果数据
+                # 尝试retrieval结果数据
                 result_data = {}
                 if hasattr(module, 'get_results'):
                     result_data = module.get_results()
@@ -251,7 +251,7 @@ class DirectModuleExecutor:
                 sys.argv = old_argv
             
         except Exception as e:
-            self.logger.error(f"直接执行模块失败: {e}")
+            self.logger.error(f"直接执行模块failed: {e}")
             return {
                 'success': False,
                 'output': [],
@@ -262,7 +262,7 @@ class DirectModuleExecutor:
         """异步执行模型"""
         loop = asyncio.get_event_loop()
         
-        # 在线程池中执行，避免阻塞事件循环
+        # in线程池in执行，避免阻塞事件循环
         result = await loop.run_in_executor(
             self.thread_pool,
             self._execute_model_sync,
@@ -273,24 +273,24 @@ class DirectModuleExecutor:
         return result
     
     def _execute_model_sync(self, script_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """同步执行模型（在线程池中调用）"""
+        """同步执行模型（in线程池in调use）"""
         try:
-            # 使用更安全的方式导入和执行
+            # 使use更安全方式导入and执行
             import runpy
             
-            # 设置环境变量传递参数
+            # settings环境变量传递参数
             import os
             old_env = dict(os.environ)
             
             try:
                 extra_args = params.get('extra_args', [])
                 
-                # 如果有额外参数，使用subprocess执行；否则使用runpy（更快）
+                # if果has额外参数，使usesubprocess执行；否则使userunpy（更快）
                 if extra_args:
-                    # 使用subprocess执行脚本以支持命令行参数和实时输出
+                    # 使usesubprocess执行脚本以支持命令行参数andreal-time输出
                     import subprocess
                     
-                    # 构建命令（显式传递日期范围与额外参数）
+                    # 构建命令（显式传递日期范围and额外参数）
                     cmd = [
                         sys.executable,
                         script_path,
@@ -298,17 +298,17 @@ class DirectModuleExecutor:
                         '--end-date', params['end_date']
                     ] + extra_args
                     
-                    # 设置环境变量
+                    # settings环境变量
                     env = os.environ.copy()
                     env.update({
                         'BMA_START_DATE': params['start_date'],
                         'BMA_END_DATE': params['end_date']
                     })
                     
-                    # 获取进度回调
+                    # retrieval进度回调
                     progress_callback = params.get('progress_callback')
                     
-                    # 启动进程，实时读取输出
+                    # start进程，real-time读取输出
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
@@ -322,7 +322,7 @@ class DirectModuleExecutor:
                     output_lines = []
                     error_lines = []
                     
-                    # 实时读取输出
+                    # real-time读取输出
                     import select
                     import threading
                     
@@ -333,7 +333,7 @@ class DirectModuleExecutor:
                                     line = line.rstrip()
                                     lines_list.append(line)
                                     
-                                    # 调用进度回调
+                                    # 调use进度回调
                                     if progress_callback and line.strip():
                                         from dataclasses import dataclass
                                         from typing import List
@@ -352,17 +352,17 @@ class DirectModuleExecutor:
                         finally:
                             pipe.close()
                     
-                    # 启动输出读取线程
+                    # start输出读取线程
                     stdout_thread = threading.Thread(target=read_output, args=(process.stdout, output_lines, False))
                     stderr_thread = threading.Thread(target=read_output, args=(process.stderr, error_lines, True))
                     
                     stdout_thread.start()
                     stderr_thread.start()
                     
-                    # 等待进程完成
+                    # 等待进程completed
                     return_code = process.wait()
                     
-                    # 等待输出读取线程完成
+                    # 等待输出读取线程completed
                     stdout_thread.join(timeout=5)
                     stderr_thread.join(timeout=5)
                     
@@ -370,10 +370,10 @@ class DirectModuleExecutor:
                     error_content = '\n'.join(error_lines)
                     
                     if return_code != 0:
-                        raise RuntimeError(f"脚本执行失败 (返回码: {return_code}): {error_content}")
+                        raise RuntimeError(f"脚本执行failed (返回码: {return_code}): {error_content}")
                         
                 else:
-                    # 没有额外参数，使用runpy（更快）
+                    # 没has额外参数，使userunpy（更快）
                     os.environ['BMA_START_DATE'] = params['start_date']
                     os.environ['BMA_END_DATE'] = params['end_date']
                     
@@ -386,10 +386,10 @@ class DirectModuleExecutor:
                     
                     with contextlib.redirect_stdout(output_buffer):
                         with contextlib.redirect_stderr(error_buffer):
-                            # 使用runpy执行脚本
+                            # 使userunpy执行脚本
                             runpy.run_path(script_path, run_name='__main__')
                     
-                    # 获取输出
+                    # retrieval输出
                     output_content = output_buffer.getvalue()
                     error_content = error_buffer.getvalue()
                 
@@ -442,21 +442,21 @@ class PerformanceOptimizer:
         """优化BMA模型执行"""
         self.logger.info(f"优化执行BMA模型: {start_date} -> {end_date}")
         
-        # 记录替换subprocess调用
+        # 记录替换subprocess调use
         self.stats['subprocess_calls_replaced'] += 1
         
-        # 执行优化的模型
+        # 执行优化模型
         result = await self.executor.execute_bma_model(
             script_path, start_date, end_date, 
             use_cache=True, use_async=True, extra_args=extra_args,
             progress_callback=progress_callback
         )
         
-        # 更新统计
+        # updates统计
         if result.cache_key:
             self.stats['cache_hits'] += 1
         
-        # 估算节省的时间（相比subprocess）
+        # 估算节省when间（相比subprocess）
         estimated_subprocess_time = result.execution_time * 2.5  # 估算subprocess比直接执行慢2.5倍
         time_saved = estimated_subprocess_time - result.execution_time
         self.stats['total_execution_time_saved'] += time_saved
@@ -476,15 +476,15 @@ class PerformanceOptimizer:
                 else:
                     progress_callback(result)
             except Exception as e:
-                self.logger.warning(f"进度回调执行失败: {e}")
+                self.logger.warning(f"进度回调执行failed: {e}")
         
-        self.logger.info(f"模型执行完成: {'成功' if result.success else '失败'}, "
-                        f"耗时: {result.execution_time:.2f}s")
+        self.logger.info(f"模型执行completed: {'success' if result.success else 'failed'}, "
+                        f"耗when: {result.execution_time:.2f}s")
         
         return result
     
     def get_performance_stats(self) -> Dict[str, Any]:
-        """获取性能统计"""
+        """retrieval性能统计"""
         return {
             'optimization_stats': self.stats.copy(),
             'cache_stats': {
@@ -513,10 +513,10 @@ class PerformanceOptimizer:
             # 清理元数据
             self.executor.cache_manager.cache_metadata.clear()
             
-            self.logger.info("缓存已清理")
+            self.logger.info("缓存清理")
             
         except Exception as e:
-            self.logger.error(f"清理缓存失败: {e}")
+            self.logger.error(f"清理缓存failed: {e}")
     
     async def shutdown(self):
         """关闭优化器"""
@@ -526,7 +526,7 @@ class PerformanceOptimizer:
 _global_performance_optimizer: Optional[PerformanceOptimizer] = None
 
 def get_performance_optimizer() -> PerformanceOptimizer:
-    """获取全局性能优化器"""
+    """retrieval全局性能优化器"""
     global _global_performance_optimizer
     if _global_performance_optimizer is None:
         _global_performance_optimizer = PerformanceOptimizer()

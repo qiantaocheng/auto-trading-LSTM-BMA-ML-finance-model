@@ -21,7 +21,60 @@ class PolygonClient:
         
         # 付费订阅功能标识
         self.is_premium = True  # 29.99订阅
-        self.rate_limit_delay = 0.1  # 付费版更宽松的限制
+        self.rate_limit_delay = 0.15 # 温和提升，降低软节流概率
+
+    def _request_with_retry(self, url: str, params: Optional[Dict] = None, method: str = 'get', max_retries: int = 5):
+        """HTTP 请求封装：处理429/503、Retry-After和指数退避，并打全错误日志"""
+        attempt = 0
+        backoff_seconds = 0.5
+        while True:
+            try:
+                if method.lower() == 'get':
+                    response = self.session.get(url, params=params)
+                else:
+                    response = self.session.request(method.upper(), url, params=params)
+                # 快速通道：直接抛出HTTP错误
+                response.raise_for_status()
+                return response
+            except requests.exceptions.HTTPError as http_err:
+                status_code = getattr(http_err.response, 'status_code', 'NA')
+                response_text = ''
+                retry_after = None
+                try:
+                    if http_err.response is not None:
+                        response_text = http_err.response.text
+                        retry_after = http_err.response.headers.get('Retry-After')
+                except Exception:
+                    pass
+
+                # 429/503：退避重试
+                if status_code in (429, 503) and attempt < max_retries:
+                    sleep_seconds = backoff_seconds * (2 ** attempt)
+                    if retry_after:
+                        try:
+                            sleep_seconds = max(sleep_seconds, float(retry_after))
+                        except ValueError:
+                            pass
+                    logger.warning(f"HTTP {status_code} on {url}. Retry in {sleep_seconds:.2f}s (attempt {attempt+1}/{max_retries}). Retry-After={retry_after}")
+                    time.sleep(sleep_seconds)
+                    attempt += 1
+                    continue
+
+                logger.error(f"HTTP error {status_code} for {url}: {response_text}")
+                raise
+            except requests.exceptions.RequestException as req_err:
+                # 网络层错误：有限重试
+                if attempt < max_retries:
+                    sleep_seconds = backoff_seconds * (2 ** attempt)
+                    logger.warning(f"Network error on {url}: {req_err}. Retry in {sleep_seconds:.2f}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(sleep_seconds)
+                    attempt += 1
+                    continue
+                logger.error(f"Request failed for {url}: {req_err}")
+                raise
+            finally:
+                # 请求间隔，温和限速
+                time.sleep(self.rate_limit_delay)
         
     def get_ticker_details(self, symbol: str) -> Dict:
         """Get ticker details (replaces yf.Ticker().info)"""
@@ -218,7 +271,10 @@ class PolygonClient:
             response.raise_for_status()
             data = response.json()
             
-            if data.get('status') == 'OK' and data.get('results'):
+            status_flag = data.get('status')
+            if data.get('results'):
+                if status_flag and status_flag != 'OK':
+                    logger.info(f"Polygon last trade returned status={status_flag} for {symbol}; proceeding with results.")
                 result = data['results']
                 return {
                     'price': result.get('p', 0),
@@ -236,8 +292,8 @@ class PolygonClient:
         trade_data = self.get_last_trade(symbol)
         return trade_data.get('price', 0.0)
         
-    def get_historical_data(self, symbol: str, start_date: str, end_date: str, 
-                          timespan: str = "day", multiplier: int = 1) -> pd.DataFrame:
+    def get_historical_bars(self, symbol: str, start_date: str, end_date: str, 
+                           timespan: str = "day", multiplier: int = 1) -> pd.DataFrame:
         """
         Get historical data (replaces yf.download())
         timespan: minute, hour, day, week, month, quarter, year
@@ -251,18 +307,32 @@ class PolygonClient:
         }
         
         try:
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
+            response = self._request_with_retry(url, params=params)
             data = response.json()
-            
-            if data.get('status') == 'OK' and data.get('results'):
-                results = data['results']
+
+            status_flag = data.get('status')
+            if data.get('results') is not None:
+                if status_flag and status_flag != 'OK':
+                    logger.info(f"Polygon aggs returned status={status_flag} for {symbol}; proceeding with results.")
+                # 首包结果
+                results = list(data.get('results', []))
+                next_url = data.get('next_url')
+                # 游标翻页
+                while next_url:
+                    try:
+                        r2 = self._request_with_retry(next_url, params={'apiKey': self.api_key})
+                        d2 = r2.json()
+                        results.extend(d2.get('results', []))
+                        next_url = d2.get('next_url')
+                    except Exception as page_err:
+                        logger.warning(f"Pagination failed for {symbol}: {page_err}. Proceeding with collected results.")
+                        break
+
                 if not results:
                     logger.warning(f"Empty results for {symbol} from {start_date} to {end_date}")
                     return pd.DataFrame()
-                    
+
                 df_data = []
-                
                 for bar in results:
                     try:
                         df_data.append({
@@ -272,29 +342,40 @@ class PolygonClient:
                             'Low': float(bar.get('l', 0)),
                             'Close': float(bar.get('c', 0)),
                             'Volume': int(bar.get('v', 0)),
-                            'Adj Close': float(bar.get('c', 0))  # Polygon provides adjusted data
+                            'Adj Close': float(bar.get('c', 0))
                         })
                     except (ValueError, TypeError) as e:
                         logger.warning(f"Invalid data point for {symbol}: {e}")
                         continue
-                
+
                 if not df_data:
                     logger.warning(f"No valid data points for {symbol}")
                     return pd.DataFrame()
-                
+
                 df = pd.DataFrame(df_data)
                 df.set_index('Date', inplace=True)
                 df.index.name = 'Date'
-                
+
                 # Add symbol column for multi-symbol compatibility
                 df['Symbol'] = symbol
-                
+
                 return df
             else:
-                error_msg = data.get('error', 'Unknown error')
-                logger.warning(f"API error for {symbol}: {error_msg}")
+                error_msg = data.get('error') or data.get('message') or str(data)
+                status = data.get('status', 'NA')
+                req_id = data.get('request_id', 'NA')
+                logger.warning(f"API error for {symbol}: status={status} msg={error_msg} request_id={req_id} range=[{start_date},{end_date}]")
                 return pd.DataFrame()
-                
+
+        except requests.exceptions.HTTPError as http_err:
+            scode = getattr(http_err.response, 'status_code', 'NA')
+            rtext = ''
+            try:
+                rtext = http_err.response.text if http_err.response is not None else ''
+            except Exception:
+                pass
+            logger.error(f"HTTP error fetching historical data for {symbol}: status={scode} body={rtext}")
+            return pd.DataFrame()
         except Exception as e:
             logger.error(f"Error fetching historical data for {symbol}: {e}")
             return pd.DataFrame()
@@ -324,10 +405,11 @@ class PolygonClient:
         
         all_data = {}
         for symbol in symbols:
-            df = self.get_historical_data(symbol, start, end, timespan, multiplier)
+            df = self.get_historical_bars(symbol, start, end, timespan, multiplier)
             if not df.empty:
                 all_data[symbol] = df
-            time.sleep(0.1)  # Rate limiting
+            # 温和延时，配合 _request_with_retry 的 finally 通道
+            time.sleep(self.rate_limit_delay)
             
         if len(all_data) == 1:
             return list(all_data.values())[0]
@@ -348,7 +430,10 @@ class PolygonClient:
             response.raise_for_status()
             data = response.json()
             
-            if data.get('status') == 'OK' and data.get('results'):
+            status_flag = data.get('status')
+            if data.get('results'):
+                if status_flag and status_flag != 'OK':
+                    logger.info(f"Polygon nbbo returned status={status_flag} for {symbol}; proceeding with results.")
                 result = data['results']
                 return {
                     'bid': result.get('P', 0),
@@ -374,6 +459,50 @@ class PolygonClient:
         except Exception as e:
             logger.error(f"Error fetching market status: {e}")
             return {}
+            
+    def get_today_intraday(self, symbol: str, timespan: str = 'minute') -> pd.DataFrame:
+        """获取今日到上一分钟的盘中数据"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        return self.get_historical_bars(symbol, today, today, timespan, 1)
+    
+    def get_realtime_snapshot(self, symbol: str) -> Dict:
+        """获取实时快照 - 最新成交/报价/当日累计"""
+        try:
+            # 获取最新成交
+            trade = self.get_last_trade(symbol)
+            # 获取最新报价
+            quote = self.get_real_time_quote(symbol)
+            # 获取当日聚合数据
+            today = datetime.now().strftime('%Y-%m-%d')
+            daily_agg = self.get_historical_bars(symbol, today, today, 'day', 1)
+            
+            snapshot = {
+                'symbol': symbol,
+                'timestamp': datetime.now().isoformat(),
+                'last_trade': trade,
+                'last_quote': quote,
+                'daily_bar': {}
+            }
+            
+            if not daily_agg.empty:
+                latest_bar = daily_agg.iloc[-1]
+                snapshot['daily_bar'] = {
+                    'open': latest_bar.get('Open', 0),
+                    'high': latest_bar.get('High', 0),
+                    'low': latest_bar.get('Low', 0),
+                    'close': latest_bar.get('Close', 0),
+                    'volume': latest_bar.get('Volume', 0)
+                }
+            
+            return snapshot
+        except Exception as e:
+            logger.error(f"Error fetching realtime snapshot for {symbol}: {e}")
+            return {}
+    
+    def stream_realtime(self, symbols: List[str], on_trade=None, on_quote=None, on_bar=None):
+        """WebSocket实时数据流 (仅框架，需要WebSocket实现)"""
+        logger.warning("WebSocket streaming not implemented yet. Use get_realtime_snapshot for near real-time data")
+        return None
             
     def get_financials(self, symbol: str, limit: int = 4) -> Dict:
         """Get financial data for a symbol"""
