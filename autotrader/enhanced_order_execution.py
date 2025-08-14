@@ -118,11 +118,25 @@ class RiskRewardBalancer:
             return Decision('REJECT', 'liquidity_filters')
         if not self.passes_signal_thresholds(s, m):
             return Decision('REJECT', 'signal_thresholds')
-        # can扩展real-time spread/depth check；延迟场景保守降级
+        
+        # 延迟数据环境下的保守策略
         if q_rt is None:
-            if s.expected_alpha_bps < max(self.cfg.min_alpha_bps * 1.5, 75.0):
-                return Decision('DEGRADE', 'delayed_env', shrink_to_pct=0.5)
-        return Decision('APPROVE', 'ok')
+            # 提高alpha阈值，降低仓位规模
+            min_alpha_for_delayed = max(self.cfg.min_alpha_bps * 1.8, 100.0)  # 更保守的阈值
+            
+            if s.expected_alpha_bps < min_alpha_for_delayed:
+                return Decision('REJECT', f'delayed_env_low_alpha_{s.expected_alpha_bps:.0f}bps<{min_alpha_for_delayed:.0f}bps')
+            
+            # 对于延迟数据，额外检查信号强度
+            if hasattr(s, 'confidence') and s.confidence < 0.8:
+                return Decision('REJECT', f'delayed_env_low_confidence_{s.confidence:.2f}')
+            
+            # 延迟环境下降级处理：较小仓位
+            shrink_factor = 0.4  # 减少到40%
+            return Decision('DEGRADE', f'delayed_data_15min_lag', shrink_to_pct=shrink_factor)
+        
+        # 实时数据环境
+        return Decision('APPROVE', 'realtime_data')
 
     # ---------- Portfolio ----------
     def allocate_portfolio(self, signals: List[Signal]) -> Dict[str, float]:

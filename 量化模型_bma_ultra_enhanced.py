@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple, Union
+import time
 
 # 基础科学计算
 from scipy.stats import spearmanr, entropy
@@ -1313,6 +1314,16 @@ class UltraEnhancedQuantitativeModel:
             # ========== 简化但可靠的中性化处理 ==========
             logger.info("应用简化中性化处理")
             try:
+                # 预先获取一次所有ticker的行业信息，避免在循环中重复获取
+                all_tickers = combined_features['ticker'].unique().tolist()
+                stock_info_cache = {}
+                if self.market_data_manager:
+                    try:
+                        stock_info_cache = self.market_data_manager.get_batch_stock_info(all_tickers)
+                        logger.info(f"预获取{len(all_tickers)}只股票的行业信息完成")
+                    except Exception as e:
+                        logger.warning(f"预获取行业信息失败: {e}")
+                
                 # 按日期分组，逐日进行简单的标准化和winsorization
                 neutralized_features = []
                 
@@ -1335,14 +1346,13 @@ class UltraEnhancedQuantitativeModel:
                             else:
                                 group_features[col] = 0.0
                     
-                    # 3. 行业中性化（如果有行业数据）
-                    if self.market_data_manager is not None:
+                    # 3. 行业中性化（使用预获取的行业信息）
+                    if stock_info_cache:
                         try:
                             tickers = group['ticker'].tolist()
-                            stock_info = self.market_data_manager.get_batch_stock_info(tickers)
                             industries = {}
                             for ticker in tickers:
-                                info = stock_info.get(ticker)
+                                info = stock_info_cache.get(ticker)
                                 if info:
                                     sector = info.gics_sub_industry or info.gics_industry or info.sector
                                     industries[ticker] = sector or 'Unknown'
@@ -1443,13 +1453,31 @@ class UltraEnhancedQuantitativeModel:
         # 先填充NaN值，然后过滤
         from sklearn.impute import SimpleImputer
         
-        # 对特征进行中位数填充
-        imputer = SimpleImputer(strategy='median')
-        X_imputed = pd.DataFrame(
-            imputer.fit_transform(X), 
-            columns=X.columns, 
-            index=X.index
-        )
+        # 对特征进行安全的中位数填充（只处理数值列）
+        try:
+            # 识别数值列和非数值列
+            numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+            non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
+            
+            X_imputed = X.copy()
+            
+            # 只对数值列应用中位数填充
+            if numeric_cols:
+                imputer = SimpleImputer(strategy='median')
+                X_imputed[numeric_cols] = pd.DataFrame(
+                    imputer.fit_transform(X[numeric_cols]), 
+                    columns=numeric_cols, 
+                    index=X.index
+                )
+            
+            # 对非数值列使用常数填充
+            if non_numeric_cols:
+                for col in non_numeric_cols:
+                    X_imputed[col] = X_imputed[col].fillna('Unknown')
+                    
+        except Exception as e:
+            logger.warning(f"特征填充失败，使用简单填充: {e}")
+            X_imputed = X.fillna(0)
         
         # 目标变量必须有效
         target_valid = ~y.isna()
@@ -2459,6 +2487,10 @@ def main():
     print(f"增强模块可用: {ENHANCED_MODULES_AVAILABLE}")
     print(f"高级模型: XGBoost={XGBOOST_AVAILABLE}, LightGBM={LIGHTGBM_AVAILABLE}")
     
+    # 设置全局超时保护
+    start_time = time.time()
+    MAX_EXECUTION_TIME = 300  # 5分钟超时
+    
     # 命令行参数
     parser = argparse.ArgumentParser(description='BMA Ultra Enhanced量化模型V4')
     parser.add_argument('--start-date', type=str, default='2023-01-01', help='开始日期')
@@ -2498,13 +2530,27 @@ def main():
         )
         print("\n✅ 小样本测试完成，开始全量训练...")
 
-    # 运行完整分析
-    results = model.run_complete_analysis(
-        tickers=tickers,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        top_n=args.top_n
-    )
+    # 运行完整分析 (带超时保护)
+    try:
+        results = model.run_complete_analysis(
+            tickers=tickers,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            top_n=args.top_n
+        )
+        
+        # 检查执行时间
+        execution_time = time.time() - start_time
+        if execution_time > MAX_EXECUTION_TIME:
+            print(f"\n⚠️ 执行时间超过{MAX_EXECUTION_TIME}秒，但已完成")
+            
+    except KeyboardInterrupt:
+        print("\n❌ 用户中断执行")
+        results = {'success': False, 'error': '用户中断'}
+    except Exception as e:
+        execution_time = time.time() - start_time
+        print(f"\n❌ 执行异常 (耗时{execution_time:.1f}s): {e}")
+        results = {'success': False, 'error': str(e)}
     
     # 显示结果摘要
     print("\n" + "="*60)

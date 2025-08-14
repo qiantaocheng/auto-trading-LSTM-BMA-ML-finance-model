@@ -126,11 +126,18 @@ class UnifiedConfigManager:
     def load_all(self, force: bool = False):
         """加载所has配置源"""
         with self.lock:
-            self.logger.info("Starting to load all configuration sources...")
+            # 添加加载防抖机制，避免过频繁加载
+            current_time = time.time()
+            if not force and hasattr(self, '_last_load_attempt'):
+                if current_time - self._last_load_attempt < 5.0:  # 5秒内不重复加载
+                    return
+            self._last_load_attempt = current_time
             
-            # check文件修改when间
+            # check文件修改when间；仅在确实需要加载时打印日志
             if not force and not self._files_changed():
                 return
+            
+            self.logger.info("Starting to load all configuration sources...")
             
             # 1. 加载HotConfig
             if self.paths['hotconfig'].exists():
@@ -140,11 +147,11 @@ class UnifiedConfigManager:
                         if 'CONFIG' in hot_config:
                             self._configs['hotconfig'] = hot_config['CONFIG']
                             self.logger.info(f"加载HotConfig: {self.paths['hotconfig']}")
-                        
-                        # updates文件修改when间
-                        self._file_mtimes['hotconfig'] = self.paths['hotconfig'].stat().st_mtime
                 except Exception as e:
                     self.logger.error(f"加载HotConfigfailed: {e}")
+                finally:
+                    # 无论成功失败都更新文件修改时间，避免无限重试
+                    self._file_mtimes['hotconfig'] = self.paths['hotconfig'].stat().st_mtime
             
             # 2. 加载风险配置文件
             if self.paths['risk'].exists():
@@ -156,10 +163,11 @@ class UnifiedConfigManager:
                         else:
                             self._configs['file']['risk_management'] = risk_config
                         self.logger.info(f"Risk configuration loaded: {self.paths['risk']}")
-                        
-                        self._file_mtimes['risk'] = self.paths['risk'].stat().st_mtime
                 except Exception as e:
                     self.logger.error(f"加载风险配置failed: {e}")
+                finally:
+                    # 无论成功失败都更新文件修改时间，避免无限重试
+                    self._file_mtimes['risk'] = self.paths['risk'].stat().st_mtime
             
             # 3. 加载connection配置文件
             if self.paths['connection'].exists():
@@ -168,18 +176,21 @@ class UnifiedConfigManager:
                         connection_data = json.load(f)
                         self._configs['file']['connection'] = connection_data
                         self.logger.info(f"加载connection配置: {self.paths['connection']}")
-                        
-                        self._file_mtimes['connection'] = self.paths['connection'].stat().st_mtime
                 except Exception as e:
                     self.logger.error(f"加载connection配置failed: {e}")
+                finally:
+                    # 无论成功失败都更新文件修改时间，避免无限重试
+                    self._file_mtimes['connection'] = self.paths['connection'].stat().st_mtime
             
             # 4. 加载数据库配置
             if self.paths['database'].exists():
                 try:
                     self._load_database_config()
-                    self._file_mtimes['database'] = self.paths['database'].stat().st_mtime
                 except Exception as e:
                     self.logger.error(f"加载数据库配置failed: {e}")
+                finally:
+                    # 无论成功失败都更新文件修改时间，避免无限重试
+                    self._file_mtimes['database'] = self.paths['database'].stat().st_mtime
             
             # 标记缓存失效
             self._cache_valid = False
@@ -276,7 +287,9 @@ class UnifiedConfigManager:
         with self.lock:
             # 自动重加载check
             if time.time() - self._last_update > 60:  # 60 secondscheck一次
-                self.load_all()
+                # 仅在文件有变化时才触发加载并打印日志
+                if self._files_changed():
+                    self.load_all(force=True)
             
             config = self._get_merged_config()
             
@@ -392,6 +405,7 @@ class UnifiedConfigManager:
     def _get_merged_config(self) -> Dict[str, Any]:
         """retrieval合并after配置"""
         if self._cache_valid and self._merged_config:
+            # 缓存有效时不触发任何加载日志，直接返回
             return self._merged_config
         
         # 按优先级合并配置

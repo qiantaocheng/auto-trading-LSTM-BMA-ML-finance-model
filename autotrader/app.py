@@ -166,8 +166,33 @@ class AutoTraderGUI(tk.Tk):
         return True
 
     def _build_ui(self) -> None:
-        frm = tk.Frame(self)
-        frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # 顶层可滚动容器（Canvas + Scrollbar），使整个界面可往下滚动
+        container = tk.Frame(self)
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar_main = tk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar_main.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        canvas.configure(yscrollcommand=scrollbar_main.set)
+
+        frm = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=frm, anchor="nw")
+
+        def _on_frame_configure(event):
+            try:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            except Exception:
+                pass
+        frm.bind("<Configure>", _on_frame_configure)
+
+        # 鼠标滚轮支持（Windows）
+        def _on_mousewheel(event):
+            try:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # connection参数
         con = tk.LabelFrame(frm, text="connectionsettings")
@@ -266,11 +291,14 @@ class AutoTraderGUI(tk.Tk):
         status_frame.pack(fill=tk.X, pady=5)
         self._build_status_panel(status_frame)
         
-        # 日志
+        # 日志（添加可滚动）
         log_frame = tk.LabelFrame(frm, text="运行日志")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         self.txt = tk.Text(log_frame, height=8)
-        self.txt.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scroll_y = tk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.txt.yview)
+        self.txt.configure(yscrollcommand=scroll_y.set)
+        self.txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
         # will缓冲区in日志刷新to界面
         try:
             if getattr(self, "_log_buffer", None):
@@ -813,6 +841,57 @@ class AutoTraderGUI(tk.Tk):
                     # 让 Engine 统一负责 connect andsubscription，使use统一配置
                     self.engine = Engine(self.config_manager, self.trader)
                     await self.engine.start()
+                    
+                    # 检测并显示账户余额信息
+                    try:
+                        await self.trader.refresh_account_balances_and_positions()
+                        
+                        # 打印详细的账户信息到terminal
+                        print("=" * 60)
+                        print("📊 ACCOUNT BALANCE ANALYSIS 📊")
+                        print("=" * 60)
+                        print(f"💰 Cash Balance: ${self.trader.cash_balance:,.2f}")
+                        print(f"💎 Net Liquidation: ${self.trader.net_liq:,.2f}")
+                        print(f"💵 Buying Power: ${getattr(self.trader, 'buying_power', 0):,.2f}")
+                        print(f"🏦 Account Ready: {'✅ YES' if getattr(self.trader, 'account_ready', False) else '❌ NO'}")
+                        
+                        # 检查持仓信息
+                        positions = getattr(self.trader, 'positions', {})
+                        if positions:
+                            print(f"📈 Current Positions ({len(positions)} stocks):")
+                            for symbol, qty in positions.items():
+                                if qty != 0:
+                                    # 获取当前价格
+                                    current_price = self.trader.get_price(symbol)
+                                    market_value = qty * current_price if current_price else 0
+                                    print(f"   {symbol}: {qty:,} shares @ ${current_price:.2f} = ${market_value:,.2f}")
+                        else:
+                            print("📈 No current positions")
+                        
+                        # 检查是否满足下单条件
+                        print("\n🔍 ORDER PLACEMENT ANALYSIS:")
+                        min_cash_required = 1000  # 最低现金要求
+                        if self.trader.cash_balance < min_cash_required:
+                            print(f"❌ Insufficient cash: ${self.trader.cash_balance:,.2f} < ${min_cash_required:,.2f}")
+                        else:
+                            print(f"✅ Sufficient cash for trading: ${self.trader.cash_balance:,.2f}")
+                            
+                        if not getattr(self.trader, 'account_ready', False):
+                            print("❌ Account not ready for trading")
+                        else:
+                            print("✅ Account ready for trading")
+                            
+                        print("=" * 60)
+                        
+                        # 同时显示在GUI中
+                        self.after(0, lambda: self.log(f"💰 现金余额: ${self.trader.cash_balance:,.2f}"))
+                        self.after(0, lambda: self.log(f"💎 账户净值: ${self.trader.net_liq:,.2f}"))
+                        self.after(0, lambda: self.log(f"🏦 账户状态: {'就绪' if getattr(self.trader, 'account_ready', False) else '未就绪'}"))
+                        
+                    except Exception as balance_error:
+                        print(f"❌ Failed to get account balance: {balance_error}")
+                        self.after(0, lambda: self.log(f"获取账户余额失败: {balance_error}"))
+                    
                     try:
                         self.after(0, lambda: self.log("策略引擎start并completedsubscription"))
                         self.after(0, lambda: self._update_signal_status("引擎start", "green"))

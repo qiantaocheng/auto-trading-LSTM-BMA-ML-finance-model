@@ -550,16 +550,14 @@ class IbkrAutoTrader:
             
             self.logger.info(f"[OK] 通过connection管理器connection，ClientID={self.client_id}")
             
-            # settings市场数据类型
-            try:
-                # 优先尝试real-time；若报no权限错误，错误处理器会自动降级to延迟
-                self.ib.reqMarketDataType(1)
-                self.logger.info("市场数据类型settingsas: real-time数据")
-            except Exception as e:
-                self.logger.warning(f"settings市场数据类型failed: {e}")
+            # 纯交易模式：不设置市场数据类型，所有价格数据来自Polygon
+            self.logger.info("运行纯交易模式：IBKR只负责交易执行，价格数据来自Polygon (~15分钟延迟)")
             
             # 等待account数据就绪
             await self._wait_for_account_data()
+            
+            # 清理任何遗留的市场数据订阅（纯交易模式）
+            self.cleanup_unused_subscriptions()
             
             # startconnection监控and其他服务
             await self._post_connection_setup()
@@ -988,8 +986,19 @@ class IbkrAutoTrader:
                 if position_change > 10:  # positions数量变化超过10个
                     self.logger.warning(f"positions数量变化异常: {prev_positions_count} -> {new_positions_count}")
             
-            # updatespositions
-            self.positions = new_positions
+            # 更新positions（使用position_manager而非废弃属性）
+            # self.positions = new_positions  # 废弃用法
+            for symbol, quantity in new_positions.items():
+                try:
+                    # 获取当前价格用于position manager
+                    current_price = self.get_price(symbol)
+                    if current_price is None:
+                        current_price = 0.0  # 临时价格，position manager应该处理这种情况
+                    
+                    # 在async上下文中直接使用await
+                    await self.position_manager.update_position(symbol, quantity, current_price)
+                except Exception as e:
+                    self.logger.warning(f"更新position {symbol}失败: {e}")
             
             refresh_duration = time.time() - refresh_start
             self.logger.debug(f"positions刷新completed: {self.position_manager.get_portfolio_summary().total_positions}个标 (usewhen{refresh_duration:.2f} seconds)")
@@ -1041,71 +1050,128 @@ class IbkrAutoTrader:
                 raise last_err
             return contract
 
-    async def subscribe(self, symbol: str) -> None:
-        if symbol in self.tickers:
-            return
-        c = await self.qualify_stock(symbol)
-        # 强制非快照，subscription流式 L1；确保contract资格化primary exchange
+    async def prepare_symbol_for_trading(self, symbol: str) -> bool:
+        """为交易准备股票合约（纯交易模式：只验证合约，不订阅数据）"""
         try:
-            self.ib.reqMarketDataType(1)
-        except Exception:
-            pass
-        ticker = self.ib.reqMktData(c, '', False, False, [])
-        self.tickers[symbol] = ticker
-        # 优化：减少subscription延迟，提高性能
-        await self.ib.sleep(0.1)
-        price = await self.wait_for_price(symbol, timeout=5.0)  # 主动等待price
-        if price is not None:
-            self.logger.info(f"{symbol} subscriptionsuccess，初始price: {price:.4f}")
-        else:
-            self.logger.warning(f"{symbol} subscriptionafter未retrievaltoprice")
+            # 只验证合约有效性，不订阅市场数据
+            c = await self.qualify_stock(symbol)
+            self.logger.debug(f"{symbol} 合约验证成功，已准备交易: {c}")
+            
+            # 预加载Polygon价格数据
+            price = self.get_price(symbol)
+            if price is not None:
+                self.logger.info(f"📊 {symbol} Polygon价格已加载: ${price:.4f} (~15分钟延迟)")
+                return True
+            else:
+                self.logger.warning(f"⚠️ {symbol} Polygon价格获取失败，但合约验证成功")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"{symbol} 交易准备失败: {e}")
+            return False
 
-    def unsubscribe(self, symbol: str) -> None:
-        t = self.tickers.pop(symbol, None)
-        if t:
-            self.ib.cancelMktData(t)
+    def cleanup_unused_subscriptions(self) -> None:
+        """清理所有不需要的市场数据订阅（纯交易模式）"""
+        if hasattr(self, 'tickers') and self.tickers:
+            self.logger.info(f"清理 {len(self.tickers)} 个不需要的市场数据订阅")
+            for symbol, ticker in list(self.tickers.items()):
+                try:
+                    self.ib.cancelMktData(ticker)
+                except Exception:
+                    pass
+            self.tickers.clear()
+            self.logger.info("✅ 市场数据订阅已全部清理，运行纯交易模式")
 
     async def _validate_order_before_submission(self, symbol: str, side: str, qty: int, price: float) -> bool:
-        """统一风险验证 - 使use统一风险管理器"""
+        """统一风险验证 - 使use统一风险管理器 - 带详细调试信息"""
+        
+        # 🔍 详细调试输出
+        print(f"\n{'='*80}")
+        print(f"🛡️  ORDER VALIDATION DEBUG - {symbol}")
+        print(f"{'='*80}")
+        print(f"📊 订单信息: {symbol} {side.upper()} {qty}股 @ ${price:.4f}")
+        print(f"💰 订单价值: ${qty * price:,.2f}")
+        
+        # 📡 数据新鲜度检查
+        is_suitable, reason = self.is_data_suitable_for_trading(symbol)
+        data_price, data_source, data_age = self.get_data_freshness(symbol)
+        
+        print(f"📡 数据状态:")
+        print(f"   ├─ 数据源: {data_source}")
+        print(f"   ├─ 数据价格: ${data_price:.4f}" if data_price else "   ├─ 数据价格: 无")
+        print(f"   ├─ 数据年龄: {data_age}秒")
+        print(f"   ├─ 交易适用性: {'✅' if is_suitable else '❌'} {reason}")
+        
+        # 如果数据不适合交易，发出警告但不阻止（给用户选择权）
+        if not is_suitable:
+            print(f"   └─ ⚠️ 警告: 使用非实时数据进行交易，风险较高!")
+            self.logger.warning(f"{symbol} 使用非实时数据交易: {reason}")
+        
+        print(f"🏦 账户状态:")
+        print(f"   ├─ 净清算价值: ${self.net_liq:,.2f}")
+        print(f"   ├─ 现金余额: ${self.cash_balance:,.2f}")
+        print(f"   ├─ 账户就绪: {'✅' if self.account_ready else '❌'}")
+        
         try:
             # 使use统一风险管理器进行验证
             from .unified_risk_manager import get_risk_manager
             risk_manager = get_risk_manager(self.config_manager)
+            print(f"   └─ 风险管理器: {'✅ 已加载' if risk_manager else '❌ 加载失败'}")
             
             # retrievalaccount价值
             account_value = max(self.net_liq, 0.0)
+            print(f"🎯 验证参数:")
+            print(f"   ├─ 账户价值: ${account_value:,.2f}")
+            print(f"   └─ 验证股票: {symbol}")
             
             # 统一风险验证
+            print(f"🔄 开始统一风险验证...")
             result = await risk_manager.validate_order(symbol, side, qty, price, account_value)
             
+            print(f"📋 风险验证结果:")
+            print(f"   ├─ 验证结果: {'✅ 通过' if result.is_valid else '❌ 失败'}")
             if not result.is_valid:
+                print(f"   ├─ 违规原因: {', '.join(result.violations)}")
                 self.logger.warning(f"统一风险验证failed {symbol}: {result.violations}")
                 return False
 
             if result.warnings:
+                print(f"   ├─ 风险警告: {', '.join(result.warnings)}")
                 self.logger.info(f"风险警告 {symbol}: {result.warnings}")
             
+            print(f"🔒 开始交易层面验证...")
             async with self._account_lock:
                 # check待处理订单敞口（交易层面check）
                 active_orders = await self.order_manager.get_orders_by_symbol(symbol)
+                print(f"   ├─ 当前活跃订单数: {len(active_orders)}")
+                
                 pending_value = sum(
                     order.quantity * (order.price or price) 
                     for order in active_orders 
                     if order.side == side.upper() and order.is_active()
                 )
+                print(f"   ├─ 待处理订单价值: ${pending_value:,.2f}")
                 
                 if pending_value > 0:
                     order_value = qty * price
                     total_exposure = order_value + pending_value
                     max_exposure = self.net_liq * self.order_verify_cfg["max_single_position_pct"]
                     
+                    print(f"   ├─ 当前订单价值: ${order_value:,.2f}")
+                    print(f"   ├─ 总敞口: ${total_exposure:,.2f}")
+                    print(f"   ├─ 最大敞口限制: ${max_exposure:,.2f}")
+                    
                     if total_exposure > max_exposure:
+                        print(f"   └─ ❌ 总敞口超限!")
                         self.logger.warning(f"{symbol} 总敞口超限: ${total_exposure:.2f} > ${max_exposure:.2f} (含待处理订单${pending_value:.2f})")
                         return False
+                    else:
+                        print(f"   └─ ✅ 敞口检查通过")
+                else:
+                    print(f"   └─ ✅ 无待处理订单冲突")
 
-                # 使use统一风险管理器进行验证
-                from .unified_risk_manager import get_risk_manager
-                risk_manager = get_risk_manager(self.config_manager)
+                # 最终风险管理器验证
+                print(f"🔍 最终风险验证...")
                 validation_result = await risk_manager.validate_order(
                     symbol=symbol,
                     side=side,
@@ -1115,82 +1181,195 @@ class IbkrAutoTrader:
                 )
                 
                 # 处理验证结果
+                print(f"📊 最终验证结果:")
+                print(f"   ├─ 验证状态: {'✅ 通过' if validation_result.is_valid else '❌ 失败'}")
+                
                 if not validation_result.is_valid:
                     reasons = ', '.join(validation_result.violations)
+                    print(f"   ├─ 失败原因: {reasons}")
                     self.logger.warning(f"{symbol} 风险验证failed: {reasons}")
                     
                     # if果has建议仓位，记录信息
                     if validation_result.recommended_size and validation_result.recommended_size != qty and validation_result.recommended_size > 0:
+                        print(f"   ├─ 建议仓位: {validation_result.recommended_size}股 (当前:{qty}股)")
                         self.logger.info(f"{symbol} 建议调整仓位: {qty} -> {validation_result.recommended_size}股")
                     
+                    print(f"   └─ ❌ 订单被拒绝")
                     return False
                 
                 # 记录警告信息
                 if validation_result.warnings:
+                    print(f"   ├─ 警告信息:")
                     for warning in validation_result.warnings:
+                        print(f"   │  └─ ⚠️  {warning}")
                         self.logger.warning(f"{symbol} 风险警告: {warning}")
                 
                 # if果需要刷新account数据
                 if any('过期' in w for w in validation_result.warnings):
+                    print(f"   ├─ 🔄 需要刷新账户数据...")
                     self.logger.info("根据风险check建议，刷新account数据...")
                     await self.refresh_account_balances_and_positions()
                 
+                print(f"   └─ ✅ 所有验证通过!")
+                print(f"{'='*80}")
+                print(f"✅ 订单 {symbol} {side.upper()} {qty}股 验证通过，准备提交")
+                print(f"{'='*80}\n")
                 return True
                 
         except Exception as e:
+            print(f"   └─ ❌ 验证异常: {e}")
+            print(f"{'='*80}")
+            print(f"❌ 订单验证异常: {symbol} - {e}")
+            print(f"{'='*80}\n")
             self.logger.error(f"订单验证异常: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def get_price(self, symbol: str) -> Optional[float]:
-        t = self.tickers.get(symbol)
-        if not t:
-            # if果没hasticker，说明未subscription，返回None让调use方处理
-            self.logger.warning(f"retrievalpricefailed: {symbol} 未subscriptionmarket data")
-            return None
+        """纯Polygon数据模式：只从Polygon获取价格数据，IBKR只负责交易执行"""
         price_val: Optional[float] = None
-        try:
-            if t.last is not None and float(t.last) > 0:
-                price_val = float(t.last)
-            elif (t.bid is not None and float(t.bid) > 0) and (t.ask is not None and float(t.ask) > 0):
-                price_val = (float(t.bid) + float(t.ask)) / 2.0
-            elif t.close is not None and float(t.close) > 0:
-                price_val = float(t.close)
-            else:
-                mp = t.marketPrice()
-                price_val = float(mp) if mp is not None and float(mp) > 0 else None
-        except Exception:
-            price_val = None
-        ts = time.time()
-        if price_val is not None:
-            self.last_price[symbol] = (price_val, ts)
-        return price_val
-
-    async def get_price_with_subscription(self, symbol: str, wait_seconds: float = 2.0) -> Optional[float]:
-        """retrievalprice，确保先subscription并等待数据"""
-        # checkis否hashas效price
-        price = self.get_price(symbol)
-        if price is not None:
-            return price
+        data_source = None
         
-        # 确保subscription
-        await self.subscribe(symbol)
-        
-        # 等待price数据，最多等待指定when间
-        max_wait_time = wait_seconds
-        wait_interval = 0.1
-        total_waited = 0.0
-        
-        while total_waited < max_wait_time:
-            await asyncio.sleep(wait_interval)
-            total_waited += wait_interval
+        # 1. 首先检查缓存的新鲜度 (减少API调用)
+        if symbol in self.last_price:
+            cached_price, cached_time = self.last_price[symbol]
+            cache_age_seconds = time.time() - cached_time
             
-            price = self.get_price(symbol)
-            if price is not None:
-                self.logger.debug(f"retrievalto {symbol} price: {price} (等待 {total_waited:.1f}s)")
-                return price
+            # 如果缓存数据不超过5分钟，直接使用
+            if cache_age_seconds < 300:  # 5分钟
+                self.logger.debug(f"{symbol} 使用Polygon缓存: ${cached_price:.4f} ({int(cache_age_seconds/60)}分钟前)")
+                return cached_price
         
-        self.logger.warning(f"等待 {symbol} price超when ({wait_seconds}s)")
+        # 2. 从Polygon获取最新数据（15分钟延迟）
+        try:
+            from polygon_client import polygon_client
+            from datetime import datetime, timedelta
+            
+            # 获取最近5天数据，确保有交易日数据
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
+            
+            df = polygon_client.get_historical_bars(symbol, start_date, end_date)
+            if not df.empty and ('Close' in df.columns or 'close' in df.columns):
+                # 兼容不同的列名格式
+                close_col = 'Close' if 'Close' in df.columns else 'close'
+                latest_close = df[close_col].iloc[-1]
+                data_date = df.index[-1].date()
+                today = datetime.now().date()
+                data_age_days = (today - data_date).days
+                
+                if latest_close > 0:
+                    price_val = float(latest_close)
+                    
+                    if data_age_days == 0:
+                        data_source = "POLYGON_TODAY_DELAYED_15MIN"
+                        self.logger.info(f"📊 {symbol} Polygon当日延迟价格: ${price_val:.4f} (~15分钟延迟)")
+                    elif data_age_days == 1:
+                        data_source = "POLYGON_YESTERDAY_CLOSE"
+                        self.logger.info(f"📊 {symbol} Polygon昨日收盘: ${price_val:.4f}")
+                    else:
+                        data_source = f"POLYGON_{data_age_days}DAYS_OLD"
+                        self.logger.warning(f"⚠️ {symbol} Polygon {data_age_days}天前数据: ${price_val:.4f}")
+                    
+                    # 更新缓存
+                    ts = time.time()
+                    self.last_price[symbol] = (price_val, ts)
+                    return price_val
+            
+        except Exception as e:
+            self.logger.debug(f"Polygon历史数据获取失败 {symbol}: {e}")
+        
+        # 3. 最后fallback: 使用ticker详情估算价格
+        try:
+            from polygon_client import polygon_client
+            details = polygon_client.get_ticker_details(symbol)
+            if details and 'marketCap' in details and 'share_class_shares_outstanding' in details:
+                market_cap = details.get('marketCap', 0)
+                shares = details.get('share_class_shares_outstanding', 0)
+                if market_cap > 0 and shares > 0:
+                    estimated_price = market_cap / shares
+                    if estimated_price > 0:
+                        price_val = float(estimated_price)
+                        data_source = "POLYGON_MARKET_CAP_ESTIMATE"
+                        self.logger.warning(f"⚠️ {symbol} 市值估算价格(参考用): ${price_val:.4f}")
+                        
+                        # 更新缓存
+                        ts = time.time()
+                        self.last_price[symbol] = (price_val, ts)
+                        return price_val
+        except Exception as detail_error:
+            self.logger.debug(f"Polygon市值估算失败 {symbol}: {detail_error}")
+        
+        # 4. 使用稍旧的缓存作为最后手段
+        if symbol in self.last_price:
+            cached_price, cached_time = self.last_price[symbol]
+            cache_age_seconds = time.time() - cached_time
+            
+            # 最多使用1天的缓存
+            if cache_age_seconds < 86400:  # 24小时
+                cache_age_hours = int(cache_age_seconds / 3600)
+                self.logger.warning(f"⚠️ {symbol} 使用陈旧缓存: ${cached_price:.4f} ({cache_age_hours}小时前)")
+                return cached_price
+                
+        self.logger.error(f"❌ {symbol} Polygon价格获取完全失败，建议检查网络连接或API状态")
         return None
+
+    def get_data_freshness(self, symbol: str) -> tuple[Optional[float], str, int]:
+        """获取Polygon价格数据的新鲜度信息 (纯Polygon模式)
+        
+        Returns:
+            (price, data_source, age_seconds)
+        """
+        # 检查缓存数据的新鲜度
+        if symbol in self.last_price:
+            cached_price, cached_time = self.last_price[symbol]
+            age_seconds = int(time.time() - cached_time)
+            
+            if age_seconds < 300:  # 5分钟内 - 认为是新鲜的延迟数据
+                return cached_price, "POLYGON_FRESH_DELAYED", age_seconds
+            elif age_seconds < 1800:  # 30分钟内 - 可用的延迟数据
+                return cached_price, "POLYGON_USABLE_DELAYED", age_seconds
+            elif age_seconds < 3600:  # 1小时内 - 较旧的数据
+                return cached_price, "POLYGON_STALE", age_seconds
+            else:  # 超过1小时 - 过时数据
+                return cached_price, "POLYGON_EXPIRED", age_seconds
+        
+        return None, "NO_POLYGON_DATA", 0
+
+    def is_data_suitable_for_trading(self, symbol: str) -> tuple[bool, str]:
+        """检查Polygon数据是否适合交易决策 (纯Polygon模式)
+        
+        Returns:
+            (is_suitable, reason)
+        """
+        price, source, age = self.get_data_freshness(symbol)
+        
+        if price is None:
+            return False, "无Polygon价格数据"
+        
+        if source == "POLYGON_FRESH_DELAYED":
+            return True, f"Polygon延迟数据({age//60}分钟前，可交易)"
+        elif source == "POLYGON_USABLE_DELAYED":
+            return True, f"Polygon延迟数据({age//60}分钟前，谨慎交易)"
+        elif source == "POLYGON_STALE":
+            return False, f"Polygon数据过时({age//60}分钟前，不建议交易)"
+        elif source == "POLYGON_EXPIRED":
+            return False, f"Polygon数据严重过时({age//3600}小时前，拒绝交易)"
+        else:
+            return False, f"Polygon数据异常: {source}"
+
+    async def get_price_with_refresh(self, symbol: str, force_refresh: bool = False) -> Optional[float]:
+        """获取价格，可选择强制刷新Polygon数据"""
+        
+        # 如果强制刷新，清除缓存
+        if force_refresh and symbol in self.last_price:
+            del self.last_price[symbol]
+            self.logger.debug(f"{symbol} 强制清除价格缓存，重新从Polygon获取")
+        
+        # 获取价格（会自动从Polygon拉取或使用缓存）
+        price = self.get_price(symbol)
+        return price
 
     # ------------------------- 动态止损（ATR + when间加权） -------------------------
     async def _fetch_daily_bars(self, symbol: str, lookback_days: int) -> List:
@@ -1422,60 +1601,124 @@ class IbkrAutoTrader:
 
     # ------------------------- order placementand订单管理 -------------------------
     async def place_market_order(self, symbol: str, action: str, quantity: int, retries: int = 3) -> OrderRef:
-        """增强market单order placement，使useEnhancedOrderExecutor"""
+        """增强market单order placement，使useEnhancedOrderExecutor - 带详细调试信息"""
+        
+        # 🔍 详细调试输出 - 订单提交流程
+        print(f"\n{'='*80}")
+        print(f"📈 MARKET ORDER PLACEMENT DEBUG - {symbol}")
+        print(f"{'='*80}")
+        print(f"🎯 订单参数: {symbol} {action.upper()} {quantity}股 (市价单)")
+        print(f"🔄 重试次数: {retries}")
+        print(f"📅 日期检查: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
         # 日内计数重置
         try:
             today = datetime.now().date()
             if self._last_reset_day != today:
                 self._daily_order_count = 0
                 self._last_reset_day = today
-        except Exception:
-            pass
+                print(f"🔄 日内计数重置: {today}")
+            else:
+                print(f"📊 当日已下单: {self._daily_order_count}笔")
+        except Exception as e:
+            print(f"⚠️  日期重置异常: {e}")
 
         # order placementbefore验证
+        print(f"\n🔍 开始订单前置验证...")
         try:
+            print(f"💰 获取价格: {symbol}")
             price_now = self.get_price(symbol) or 0.0
+            print(f"   ├─ 首次价格获取: ${price_now:.4f}")
+            
             if price_now <= 0:
-                await self.subscribe(symbol)
-                price_now = self.get_price(symbol) or 0.0
+                print(f"   ├─ 价格无效，尝试刷新Polygon数据...")
+                await self.prepare_symbol_for_trading(symbol)
+                price_now = await self.get_price_with_refresh(symbol, force_refresh=True) or 0.0
+                print(f"   ├─ 刷新后价格: ${price_now:.4f}")
+                
             if price_now <= 0:
+                print(f"   └─ ❌ 价格获取失败!")
                 await self._notify_webhook("no_price", "priceretrievalfailed", f"{symbol} nohas效price，拒绝order placement", {"symbol": symbol})
                 raise RuntimeError(f"no法retrievalhas效price: {symbol}")
-            if not await self._validate_order_before_submission(symbol, action, quantity, price_now):
+            else:
+                print(f"   └─ ✅ 价格获取成功: ${price_now:.4f}")
+            
+            print(f"🛡️ 开始风险验证: {symbol} {action} {quantity}股 @ ${price_now:.4f}")
+            validation_passed = await self._validate_order_before_submission(symbol, action, quantity, price_now)
+            
+            if not validation_passed:
+                print(f"❌ 风险验证失败，订单被拒绝!")
                 await self._notify_webhook("risk_reject", "risk control拒单", f"{symbol} order placementbefore校验未通过", {"symbol": symbol, "action": action, "qty": quantity, "price": price_now})
                 raise RuntimeError("订单before置校验未通过")
+            else:
+                print(f"✅ 风险验证通过!")
+                
         except Exception as e:
+            print(f"❌ 订单前置验证失败: {e}")
             self.logger.warning(f"order placementbefore校验failed {symbol}: {e}")
+            print(f"{'='*80}")
+            print(f"❌ 订单提交终止: {symbol} {action} {quantity}股")
+            print(f"{'='*80}\n")
             raise
         
         # 纯路bytoEnhancedOrderExecutor执行订单
-        from .enhanced_order_execution import ExecutionConfig
-        exec_cfg = ExecutionConfig()
-        order_sm = await self.enhanced_executor.execute_market_order(
-            symbol=symbol,
-            action=action,
-            quantity=quantity,
-            config=exec_cfg,
-        )
+        print(f"\n🚀 开始执行市价单...")
+        try:
+            from .enhanced_order_execution import ExecutionConfig
+            exec_cfg = ExecutionConfig()
+            print(f"   ├─ 执行配置已加载")
+            print(f"   ├─ 调用增强订单执行器...")
+            
+            order_sm = await self.enhanced_executor.execute_market_order(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                config=exec_cfg,
+            )
+            
+            print(f"   ├─ 订单状态机创建成功: Order ID {order_sm.order_id}")
+            print(f"   └─ 当前订单状态: {order_sm.state.value}")
 
-        # 统一返回 OrderRef（and现has调use方兼容）
-        enhanced_ref = OrderRef(
-            order_id=order_sm.order_id,
-            symbol=symbol,
-            side=action,
-            qty=quantity,
-            order_type="MKT",
-        )
-        
-        # 审计记录通过OrderManager回调自动处理，no需重复记录
-        
-        # updates计数
-        self._daily_order_count += 1
-        
-        # 刷新account信息
-        await self.refresh_account_balances_and_positions()
-        
-        return enhanced_ref
+            # 统一返回 OrderRef（and现has调use方兼容）
+            enhanced_ref = OrderRef(
+                order_id=order_sm.order_id,
+                symbol=symbol,
+                side=action,
+                qty=quantity,
+                order_type="MKT",
+            )
+            
+            print(f"📋 订单引用创建: OrderRef(id={enhanced_ref.order_id})")
+            
+            # 审计记录通过OrderManager回调自动处理，no需重复记录
+            
+            # updates计数
+            self._daily_order_count += 1
+            print(f"📊 更新日内计数: {self._daily_order_count}笔")
+            
+            # 刷新account信息
+            print(f"🔄 刷新账户信息...")
+            await self.refresh_account_balances_and_positions()
+            print(f"✅ 账户信息刷新完成")
+            
+            print(f"{'='*80}")
+            print(f"✅ 市价单提交成功: {symbol} {action.upper()} {quantity}股")
+            print(f"   ├─ 订单ID: {enhanced_ref.order_id}")
+            print(f"   ├─ 订单类型: 市价单")
+            print(f"   └─ 订单价格: ${price_now:.4f} (参考)")
+            print(f"{'='*80}\n")
+            
+            return enhanced_ref
+            
+        except Exception as e:
+            print(f"❌ 订单执行失败: {e}")
+            print(f"{'='*80}")
+            print(f"❌ 市价单执行失败: {symbol} {action} {quantity}股")
+            print(f"   └─ 错误: {e}")
+            print(f"{'='*80}\n")
+            import traceback
+            traceback.print_exc()
+            raise
     
 
                 
@@ -1497,10 +1740,10 @@ class IbkrAutoTrader:
         """
         price_now = self.get_price(symbol) or 0.0
         if price_now <= 0:
-            await self.subscribe(symbol)
-            price_now = self.get_price(symbol) or 0.0
+            await self.prepare_symbol_for_trading(symbol)
+            price_now = await self.get_price_with_refresh(symbol, force_refresh=True) or 0.0
         if price_now <= 0:
-            raise RuntimeError(f"no法retrievalhas效price: {symbol}")
+            raise RuntimeError(f"无法从Polygon获取{symbol}有效价格")
 
         if not await self._validate_order_before_submission(symbol, action, quantity, price_now):
             raise RuntimeError("订单before置校验未通过")
@@ -1893,13 +2136,12 @@ class IbkrAutoTrader:
             except Exception as e:
                 self.logger.warning(f"取消订单when出错: {e}")
                 
-            # 3. 取消所hasmarket datasubscription
+            # 3. 清理市场数据订阅（纯交易模式下不需要）
             try:
-                for symbol in list(self.tickers.keys()):
-                    self.unsubscribe(symbol)
-                await asyncio.sleep(1)  # 给服务器when间处理
+                self.cleanup_unused_subscriptions()
+                await asyncio.sleep(1)  # 给服务器时间处理
             except Exception as e:
-                self.logger.warning(f"取消market datasubscriptionwhen出错: {e}")
+                self.logger.warning(f"清理市场数据订阅时出错: {e}")
                 
             # 4. 通过connection管理器断开connection
             try:
@@ -2770,8 +3012,8 @@ class IbkrAutoTrader:
                 async def process_symbol_for_trading(sym: str) -> Optional[Dict[str, Any]]:
                     """处理单个标，返回交易参数orNone"""
                     try:
-                        # subscriptionmarket data
-                        await self.subscribe(sym)
+                        # 准备交易合约（纯交易模式：不订阅数据）
+                        await self.prepare_symbol_for_trading(sym)
                         await asyncio.sleep(0.1)
 
                         # 重复positions跳过
@@ -2942,10 +3184,9 @@ class IbkrAutoTrader:
                 try:
                     if desired:
                         for sym in list(desired)[:50]:  # 限制每轮处理标数量
-                            # 确保subscription
-                            await self.subscribe(sym)
-                            t = self.tickers.get(sym)
-                            if not t:
+                            # 确保合约准备就绪（纯交易模式）
+                            if not await self.prepare_symbol_for_trading(sym):
+                                self.logger.warning(f"{sym} 交易准备失败，跳过")
                                 continue
                             tick = TickData(
                                 timestamp=time.time(),

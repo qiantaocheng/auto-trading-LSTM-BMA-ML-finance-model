@@ -524,11 +524,18 @@ class UnifiedMarketDataManager:
         result_df['log_market_cap'] = np.log(result_df['market_cap'].fillna(1e9))
         result_df['market_cap_percentile'] = result_df['market_cap'].rank(pct=True)
         
-        # 处理缺失值
+        # 处理缺失值 - 先确保数据类型正确
         numeric_columns = ['market_cap', 'float_market_cap', 'free_float_market_cap', 'log_market_cap']
         for col in numeric_columns:
             if col in result_df.columns:
-                result_df[col] = result_df[col].fillna(result_df[col].median())
+                # 强制转换为数值类型，无法转换的设为NaN
+                result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
+                # 只有当列中有有效数值时才计算median
+                if result_df[col].notna().sum() > 0:
+                    median_val = result_df[col].median()
+                    result_df[col] = result_df[col].fillna(median_val)
+                else:
+                    result_df[col] = result_df[col].fillna(0)
         
         categorical_columns = ['sector', 'industry', 'gics_sector', 'gics_industry', 'country']
         for col in categorical_columns:

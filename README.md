@@ -1,470 +1,311 @@
-# AutoTrader - Professional IBKR Automated Trading System
+## BMA Ultra Enhanced Quant Trading System
 
-A comprehensive automated trading system built for Interactive Brokers (IBKR) that provides real-time trading, backtesting, risk management, and portfolio optimization capabilities.
+### Overview
 
-## Project Overview
+This repository contains a production‑oriented equity research and auto‑trading stack for US stocks, centered on the BMA Ultra Enhanced model with Polygon.io market data and an IBKR (ib_insync) trading engine. It includes:
 
-AutoTrader is a professional-grade quantitative trading platform that integrates multiple components to create a complete trading ecosystem. The system is designed with modular architecture, ensuring scalability, maintainability, and robust error handling.
+- Enhanced alpha engine with strict time‑leakage controls
+- Risk model with T‑1 Size factor and robust portfolio optimization
+- Unified Polygon factor library integration
+- GUI for running models and operating auto‑trading
+- Robust Polygon client with pagination and rate‑limit handling
+- Unified configuration, event, and execution infrastructure
 
-## System Architecture
+### Key Features
 
-The project follows a layered architecture pattern with clear separation of concerns:
+- Time‑safe factor engineering (no look‑ahead) and purged CV
+- Regime‑aware model blending; fallback heuristics to avoid degenerate weights
+- Professional risk model artifacts (factor loadings/covariance/specific risk)
+- IBKR auto‑trader with SMART routing, bracket orders, dynamic stops (optional)
+- Unified config manager merging defaults, files, DB and runtime edits
+- Reliable Polygon API client with full error logging, next_url pagination, 429/503 backoff, and reasonable pacing
 
-### Core Infrastructure Layer
-- **Event Loop Management**: Thread-safe asyncio event loop handling
-- **Configuration Management**: Unified configuration system across all components
-- **Resource Monitoring**: System resource tracking and leak prevention
-- **Event System**: Decoupled communication between GUI and trading engine
-
-### Trading Engine Layer
-- **Signal Processing**: Real-time market data analysis and signal generation
-- **Risk Management**: Portfolio-level and position-level risk controls
-- **Order Management**: Professional order state machine and execution
-- **Market Data**: Real-time and historical data handling
-
-### Data Management Layer
-- **Database Operations**: SQLite-based data persistence
-- **Data Source Management**: Unified stock universe management
-- **Technical Indicators**: Cached indicator calculations for performance
-- **Backtesting Engine**: Historical strategy validation
-
-### User Interface Layer
-- **GUI Application**: Tkinter-based trading interface
-- **System Launcher**: Application startup and mode selection
-- **Logging System**: Comprehensive audit and debugging capabilities
-
-## Core Components
-
-### 1. Unified Configuration Manager (`unified_config.py`)
-**Purpose**: Centralized configuration management system that resolves conflicts between multiple configuration sources.
-
-**Key Features**:
-- Loads configurations from multiple sources (files, database, runtime)
-- Implements priority-based configuration merging
-- Provides thread-safe configuration access
-- Supports runtime configuration updates
-- Validates configuration consistency
-
-**Configuration Sources** (in priority order):
-1. Runtime configurations (highest priority)
-2. HotConfig files
-3. Database configurations
-4. File-based configurations
-5. Default configurations (lowest priority)
-
-### 2. Event Loop Manager (`event_loop_manager.py`)
-**Purpose**: Thread-safe asyncio event loop management for GUI applications.
-
-**Key Features**:
-- Manages dedicated event loop in separate thread
-- Provides thread-safe coroutine submission
-- Handles task lifecycle management
-- Implements proper cleanup and shutdown procedures
-- Prevents event loop conflicts in multi-threaded environments
-
-**Technical Implementation**:
-- Uses queue-based command system for thread communication
-- Implements timeout mechanisms for coroutine execution
-- Provides comprehensive error handling and recovery
-- Supports task cancellation and resource cleanup
-
-### 3. Event System (`event_system.py`)
-**Purpose**: Decoupled communication system between GUI and trading engine components.
-
-**Key Features**:
-- Implements publish-subscribe pattern
-- Supports both synchronous and asynchronous event handling
-- Provides priority-based event processing
-- Implements weak reference management for subscribers
-- Supports event filtering and routing
-
-**Event Types**:
-- Engine status updates
-- Trading signals and orders
-- Risk alerts and notifications
-- System health monitoring
-- User interface updates
-
-### 4. Resource Monitor (`resource_monitor.py`)
-**Purpose**: System-wide resource monitoring and leak prevention.
-
-**Key Features**:
-- Tracks memory usage and growth patterns
-- Monitors active tasks and connections
-- Detects file handle leaks
-- Implements automatic cleanup triggers
-- Provides resource usage statistics
-
-**Monitoring Capabilities**:
-- Memory consumption tracking with trend analysis
-- Thread count monitoring
-- File descriptor tracking
-- Task lifecycle monitoring
-- Automatic garbage collection triggers
-
-### 5. Trading Engine (`engine.py`)
-**Purpose**: Core trading logic and decision-making engine.
-
-**Key Components**:
-- **RiskEngine**: Portfolio and position-level risk management
-- **SignalHub**: Market signal processing and aggregation
-- **OrderRouter**: Order routing and execution management
-- **DataFeed**: Real-time market data handling
-
-**Risk Management Features**:
-- Position sizing based on volatility
-- Portfolio exposure limits
-- Correlation-based risk controls
-- Dynamic stop-loss management
-- Sector concentration limits
-
-### 6. IBKR Auto Trader (`ibkr_auto_trader.py`)
-**Purpose**: Interactive Brokers API integration and trading interface.
-
-**Key Features**:
-- Real-time market data subscription
-- Order placement and management
-- Account and position monitoring
-- Portfolio performance tracking
-- Connection management and recovery
-
-**Trading Capabilities**:
-- Market, limit, and bracket orders
-- Real-time portfolio updates
-- Dynamic stop-loss management
-- Multi-symbol trading support
-- Commission and slippage handling
-
-### 7. Order State Machine (`order_state_machine.py`)
-**Purpose**: Professional order lifecycle management.
-
-**Key Features**:
-- Complete order state tracking
-- Transition validation and enforcement
-- Fill management and partial execution handling
-- Order modification and cancellation
-- Audit trail maintenance
-
-**Order States**:
-- Pending submission
-- Submitted
-- Partially filled
-- Filled
-- Cancelled
-- Rejected
-- Error states
-
-### 8. Enhanced Order Execution (`enhanced_order_execution.py`)
-**Purpose**: Advanced order execution algorithms and optimization.
-
-**Key Features**:
-- Smart order routing
-- Liquidity estimation
-- Market impact minimization
-- Execution timing optimization
-- Cost analysis and reporting
-
-**Execution Algorithms**:
-- TWAP (Time-Weighted Average Price)
-- VWAP (Volume-Weighted Average Price)
-- Iceberg orders
-- Dynamic order splitting
-- Market timing optimization
-
-### 9. Data Source Manager (`data_source_manager.py`)
-**Purpose**: Unified management of stock universes and data sources.
-
-**Key Features**:
-- Multiple data source integration
-- Priority-based source selection
-- Data consistency validation
-- Automatic source synchronization
-- Cache management for performance
-
-**Data Sources**:
-- Database tickers
-- File-based stock lists
-- Runtime configurations
-- Manual input sources
-- External data feeds
-
-### 10. Database Operations (`database.py`)
-**Purpose**: SQLite-based data persistence and management.
-
-**Key Features**:
-- Stock list management
-- Trade history recording
-- Risk configuration storage
-- Performance data persistence
-- Data integrity maintenance
-
-**Database Schema**:
-- Tickers table for stock universe
-- Trade history for audit trails
-- Risk configurations for strategy settings
-- Performance metrics for analysis
-- User preferences and settings
-
-### 11. Technical Indicator Cache (`indicator_cache.py`)
-**Purpose**: Performance optimization for technical indicator calculations.
-
-**Key Features**:
-- Cached indicator results
-- Time-based cache invalidation
-- Memory-efficient storage
-- Computation time tracking
-- Cache hit/miss statistics
-
-**Supported Indicators**:
-- Moving averages (SMA, EMA)
-- RSI (Relative Strength Index)
-- Bollinger Bands
-- ATR (Average True Range)
-- MACD and other momentum indicators
-
-### 12. Factor Calculations (`factors.py`)
-**Purpose**: Technical analysis and factor computation.
-
-**Key Features**:
-- Pure computational functions
-- No side effects or state management
-- Optimized mathematical operations
-- Support for vectorized calculations
-- Extensible factor framework
-
-**Available Factors**:
-- Price-based indicators
-- Volume-based indicators
-- Volatility measures
-- Momentum indicators
-- Mean reversion signals
-
-### 13. GUI Application (`app.py`)
-**Purpose**: Main user interface for trading operations.
-
-**Key Features**:
-- Real-time market data display
-- Order entry and management interface
-- Portfolio monitoring dashboard
-- Risk management controls
-- System status and health monitoring
-
-**Interface Components**:
-- Market data panels
-- Order entry forms
-- Portfolio overview
-- Risk metrics display
-- System configuration panels
-- Log and audit viewers
-
-### 14. System Launcher (`launcher.py`)
-**Purpose**: Application startup and mode selection.
-
-**Key Features**:
-- Multiple launch modes (GUI, strategy, direct trading)
-- System health checks
-- Dependency validation
-- Configuration verification
-- Error handling and recovery
-
-**Launch Modes**:
-- GUI Mode: Full trading interface
-- Strategy Mode: Automated trading with engine
-- Direct Mode: Manual trading interface
-- Backtest Mode: Historical strategy testing
-
-### 15. Backtest Engine (`backtest_engine.py`)
-**Purpose**: Historical strategy validation and performance analysis.
-
-**Key Features**:
-- BMA (Bayesian Model Averaging) integration
-- Realistic transaction cost modeling
-- Risk-adjusted performance metrics
-- Multiple rebalancing frequencies
-- Comprehensive reporting capabilities
-
-**Backtesting Capabilities**:
-- Historical data simulation
-- Transaction cost analysis
-- Risk metric calculation
-- Performance attribution
-- Strategy comparison tools
-
-### 16. Backtest Analyzer (`backtest_analyzer.py`)
-**Purpose**: Professional backtest result analysis and visualization.
-
-**Key Features**:
-- Performance metric calculation
-- Risk-adjusted return analysis
-- Drawdown analysis
-- Sharpe ratio and other risk metrics
-- Visualization and reporting
-
-**Analysis Metrics**:
-- Total and annualized returns
-- Volatility and Sharpe ratios
-- Maximum drawdown analysis
-- Win rate and profit factor
-- Risk-adjusted performance measures
-
-### 17. Engine Logger (`engine_logger.py`)
-**Purpose**: Specialized logging system for trading engine components.
-
-**Key Features**:
-- Event-driven logging
-- Thread-safe log handling
-- Integration with GUI display
-- Log level management
-- Performance monitoring
-
-**Logging Capabilities**:
-- Real-time log streaming
-- Log level filtering
-- Performance metrics logging
-- Error tracking and reporting
-- Audit trail maintenance
-
-### 18. Trading Auditor (`trading_auditor_v2.py`)
-**Purpose**: Compliance and audit trail management.
-
-**Key Features**:
-- Trade compliance checking
-- Regulatory reporting
-- Audit trail maintenance
-- Risk event logging
-- Performance monitoring
-
-**Audit Capabilities**:
-- Trade execution verification
-- Compliance rule checking
-- Regulatory reporting
-- Risk limit monitoring
-- Performance attribution
-
-## Installation and Setup
+## Quick Start
 
 ### Prerequisites
-- Python 3.8 or higher
-- Interactive Brokers TWS or IB Gateway
-- Required Python packages (see requirements.txt)
 
-### Installation Steps
-1. Clone the repository
-2. Install dependencies: `pip install -r autotrader/requirements.txt`
-3. Configure IBKR connection settings
-4. Set up database and configuration files
-5. Launch the application: `python autotrader/launcher.py`
+- Windows 10+ (tested), Python 3.9–3.11 recommended
+- IBKR TWS or IB Gateway running, paper/live account ready
+- Polygon.io API key (Starter or above recommended)
 
-### Configuration
-The system uses a unified configuration approach:
-- Main configuration: `config.json`
-- Risk settings: `data/risk_config.json`
-- Database: `data/autotrader_stocks.db`
+### Install
 
-## Usage
-
-### Starting the System
 ```bash
-python autotrader/launcher.py
+python -m venv .venv
+.venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### Running Backtests
+If you do not have a requirements file yet, install the primary dependencies:
+
 ```bash
-python autotrader/backtest_engine.py --start-date 2023-01-01 --end-date 2023-12-31
+pip install pandas numpy requests matplotlib seaborn scipy statsmodels scikit-learn xgboost lightgbm ib-insync pyyaml psutil
 ```
 
-### Direct Trading Mode
-Launch the GUI and use the direct trading interface for manual trading operations.
+### Configure
 
-## System Requirements
+- IBKR connection: `autotrader/data/connection.json` (created automatically when saved) or use GUI fields
+- Risk config: `autotrader/data/risk_config.json` (also saved from GUI)
+- Stock list: `stocks.txt` (root) or DB watchlist
+- Polygon API key: edit `polygon_client.py` global instance near the bottom if needed (search for `polygon_client = PolygonClient("...")`)
 
-### Hardware
-- Minimum 4GB RAM
-- 2GB free disk space
-- Stable internet connection for market data
+### Run the GUI
 
-### Software
-- Windows 10/11, macOS, or Linux
-- Python 3.8+
-- Interactive Brokers TWS or IB Gateway
-- Required Python packages (numpy, pandas, ib_insync, etc.)
+```bash
+python -m autotrader.app
+```
 
-## Performance Characteristics
+In the app:
 
-### Optimization Features
-- Cached technical indicator calculations
-- Efficient database operations
-- Memory leak prevention
-- Resource usage monitoring
-- Asynchronous processing
+- Test connection → Start Auto Trading
+- “一键运行BMA模型” to run the BMA Ultra pipeline and save recommendations (Excel/CSV under `result/`)
+- Use tabs for Polygon, risk settings, database, engine status, logs
 
-### Scalability
-- Modular architecture supports component scaling
-- Configurable resource limits
-- Multi-threaded processing capabilities
-- Event-driven communication system
+### Run the BMA Model (CLI)
 
-## Security and Compliance
+```bash
+python 量化模型_bma_ultra_enhanced.py --start-date 2023-01-01 --end-date 2025-12-31 --top-n 200 --config alphas_config.yaml
+```
 
-### Data Security
-- Local data storage with encryption options
-- Secure API communication
-- Audit trail maintenance
-- Access control mechanisms
+Environment overrides (optional): `BMA_START_DATE`, `BMA_END_DATE`, `BMA_EXTRA_ARGS`. The model internally clamps end_date to T‑1.
 
-### Trading Compliance
-- Risk limit enforcement
-- Position monitoring
-- Regulatory reporting capabilities
-- Compliance rule checking
+## Architecture
 
-## Development and Maintenance
+### Data and Alphas
 
-### Code Organization
-- Modular architecture with clear separation of concerns
-- Comprehensive error handling
-- Extensive logging and debugging capabilities
-- Unit test framework support
+- Unified Polygon factor library: `polygon_factors.py`
+- Alpha engine: `enhanced_alpha_strategies.py`
+- Strict time alignment: feature lags, safety gaps, and T+1~T+5 targets
+- PurgedGroupTimeSeriesSplit with gaps and embargo
 
-### Maintenance Features
-- Resource monitoring and cleanup
-- Automatic error recovery
-- Performance optimization
-- Configuration management
+### BMA Ultra Enhanced Model
 
-## Support and Documentation
+- File: `量化模型_bma_ultra_enhanced.py`
+- Learning‑to‑rank models, traditional ML baselines, and regime‑aware fusion
+- Risk model: professional artifacts (factor loadings/covariance/specific risk)
+- Optimizer fallbacks to avoid flat/degenerate portfolios
+- Output: Excel/CSV recommendations and JSON short lists under `result/`
 
-### Documentation
-- Comprehensive code documentation
-- Configuration guides
-- API reference documentation
-- Troubleshooting guides
+## Algorithm Details
 
-### Error Handling
-- Comprehensive exception handling
-- Detailed error logging
-- Recovery mechanisms
-- User-friendly error messages
+### Data Pipeline and Leakage Controls
 
-## License and Legal
+- Quote/Bar data via Polygon; historical aggregation uses `next_url` pagination and adjusted prices.
+- Feature engineering enforces temporal isolation:
+  - Features lagged by at least T-4 (base lag + safety gap)
+  - Targets predict T+1 to T+5 windowed returns only from information available at or before T-4
+  - Validation uses PurgedGroupTimeSeriesSplit with gap and embargo; stacking meta‑learner uses even larger gap/embargo to prevent cross‑fold leakage
+- Explicit checks log alignment issues (warnings only) for shallow histories.
 
-This software is provided for educational and research purposes. Users are responsible for ensuring compliance with applicable laws and regulations in their jurisdiction.
+### Alpha Layer
+
+- Core technical features: moving averages/ratios, volatility windows, RSI, price position in rolling high‑low bands, momentum windows (5/10/20), volume trend (20D), and derived microstructure factors consolidated via `polygon_factors.py`.
+- Neutralization: within‑date cross‑section winsorization (1–99%), z‑scoring, and optional industry de‑meaning if metadata available.
+- Outlier handling: clip extreme values; NaNs imputed (median for numeric) before ML.
+
+### Learning‑to‑Rank and Traditional Models
+
+- Traditional baselines: Ridge, ElasticNet, RandomForest; optional XGBoost/LightGBM if installed.
+- OOF predictions using PGTS split; indices are re‑aligned to ensure strictly out‑of‑fold.
+- Stacking: meta‑learner trained on first‑layer OOF with larger gap/embargo; time sanity checks (train_max + gap + embargo < test_min) enforced.
+
+### Regime‑Aware Fusion
+
+- Market regime detection from composite market index:
+  - Rolling 21D volatility and trend; quantile thresholds define states (Bull/Bear, Low/High Vol, Normal)
+- Per‑regime alpha weights emphasize momentum in Bull, quality/reversion in Bear, reversion in Volatile, balanced in Normal.
+- Fusion combines ML predictions and weighted alpha signals; indices aligned before blending.
+
+### Risk Model
+
+- T‑1 Size factor: group by prior‑day free‑float market cap to form Small‑minus‑Big on T returns (no look‑ahead). Fallback: 60D average dollar volume proxy when cap unavailable.
+- Factor loadings: robust regression (HuberRegressor) of each asset’s returns on factor set.
+- Factor covariance: Ledoit‑Wolf shrinkage, projected to positive‑definite if needed.
+- Specific risk: residual variance square‑root from fitted factor model.
+
+### Portfolio Construction
+
+- Inputs: expected_returns (from fused signals), covariance matrix assembled as B·F·Bᵀ + diag(S²).
+- Constraints (configurable):
+  - Position caps (e.g., max 3%), country/sector exposure guards, cash reserve, daily order cap
+  - Optional liquidity rank (e.g., 20D volume) for soft constraints
+- Objective (conceptual): maximize expected return minus risk_aversion · variance and turnover_penalty.
+- Signal processing before optimization: cross‑section standardization, small amplification (e.g., ×0.02), micro‑jitter to avoid ties/flat solutions.
+- Fallbacks: stratified or equal‑weight if the solver fails or covariance ill‑conditioned; metrics still computed.
+
+### Risk‑Reward Controller (Execution Planning)
+
+- For delayed‑data environments, an optional planner screens orders based on:
+  - Liquidity (ADV USD), spreads (bps), volatility buckets (ATR), expected alpha bps
+  - Dynamic limit pricing around last/prev close with tickSize and confidence
+  - Throttling and per‑cycle order caps
+  - Outputs symbol, side, quantity, limit price for submission
+
+### Execution and Routing
+
+- IBKR SMART routing by default: `Stock(symbol, exchange="SMART")`; optional primaryExchange hint for contract qualification.
+- Orders: Market, Limit, and Bracket (parent market + take‑profit limit + stop). Optional local dynamic stops (ATR‑based, time‑decay) can replace server‑side stops if enabled.
+- Real‑time vs Delayed data: auto fallback to delayed if permissions missing; price retrieval attempts subscription first, then Polygon close fallback.
+
+### Monitoring and Health
+
+- Health metrics track initialization and failure counts (alpha computation failures, optimization fallbacks, risk model failures, etc.).
+- Unified config debounced reload avoids repeated noisy log lines.
+
+## Implementation Reference (deeper details)
+
+### Temporal Alignment (no look‑ahead)
+
+The system enforces strict temporal alignment to prevent look-ahead bias. Features are lagged by a minimum base lag plus an additional safety gap, ensuring that predictions at time T only use information available before T. The target variable represents a windowed forward return, calculated as the ratio of future prices minus one. All feature columns are shifted by the combined lag amount within each ticker group, and the system validates that training data ends before test data begins with sufficient gaps and embargo periods.
+
+### Purged CV and Stacking
+
+Cross-validation uses PurgedGroupTimeSeriesSplit with configurable gaps and embargo periods to prevent data leakage between training and validation sets. The stacking meta-learner employs even stricter temporal constraints with larger gaps and embargo periods to ensure the second-layer model doesn't see future information from the first-layer predictions. The system validates that maximum training dates plus gaps and embargo periods are strictly less than minimum test dates.
+
+### Industry/Date Cross‑Section Neutralization
+
+Within each trading date, the system applies winsorization to the 1st and 99th percentiles, followed by z-score standardization. When industry metadata is available, the system performs cross-sectional neutralization by demeaning factors within industry groups, removing industry-specific biases from the alpha signals.
+
+### Risk Model (T‑1 Size, Loadings, Covariance, Specific Risk)
+
+The risk model constructs a Size factor using market capitalization data from the previous period to predict current returns, implementing the small-minus-big (SMB) factor. Factor loadings are estimated using robust regression techniques that are less sensitive to outliers. The factor covariance matrix is estimated using Ledoit-Wolf shrinkage and ensures positive semi-definiteness through eigenvalue adjustment. Specific risk is calculated as the square root of the variance of residuals from the factor model fit.
+
+### Regime Detection and Fusion
+
+Market regime detection analyzes 21-day rolling volatility and trend characteristics of a market index, classifying regimes using 33rd and 67th percentile thresholds. The system maintains separate alpha weights for each regime and combines predictions through a weighted fusion mechanism that balances machine learning predictions with regime-adjusted alpha signals.
+
+### Portfolio Optimization
+
+The optimization process aligns all inputs to common assets and constructs the covariance matrix using factor loadings, factor covariance, and specific risk. The objective function maximizes expected returns while penalizing portfolio risk and turnover, subject to various constraints including position limits, sector exposure caps, and country concentration limits. The system includes signal preprocessing to prevent flat solutions and implements multiple fallback mechanisms when the primary optimizer fails.
+
+### Risk‑Reward Controller (optional)
+
+This optional module screens symbols based on liquidity metrics, average daily volume in USD, bid-ask spreads in basis points, and average true range buckets. It computes conservative limit prices near the last or previous close with proper tick size rounding, implements per-cycle and daily throttling mechanisms, and returns structured order specifications including symbol, side, quantity, and limit price.
+
+### Polygon Client: Pagination and Backoff
+
+The Polygon client implements robust error handling with exponential backoff for rate limit errors, processes Retry-After headers, and supports cursor-based pagination using next_url tokens to fetch complete historical datasets. The system logs detailed error information including status codes, error messages, and request identifiers for debugging purposes.
+
+### IBKR Contracts and Routing
+
+Contract qualification uses SMART routing by default, with fallback mechanisms to specific exchanges when qualification fails. The system attempts qualification with the primary exchange first, then falls back to a predefined list of major exchanges including NASDAQ, NYSE, ARCA, and AMEX.
+
+### Order Submission and Stops
+
+The system implements bracket orders with a market order parent and limit order take-profit and stop-loss children, using transmit chaining for atomic execution. An optional local dynamic stop manager can cancel and replace server-side stops based on ATR-based trailing mechanisms with time decay, allowing for more sophisticated risk management.
+
+### Unified Config Reload (debounced)
+
+The configuration system implements debounced reloading that only logs and reloads when configuration files actually change. The get method checks for updates every 60 seconds and only calls the full reload process when file modification times indicate actual changes, preventing excessive logging and redundant operations.
+
+### Polygon Client
+
+- File: `polygon_client.py`
+- Full error logging with status, message, request_id
+- `next_url` cursor pagination for aggs endpoints
+- 429/503 exponential backoff with Retry‑After support and inter‑request delay
+
+### Auto‑Trader (IBKR)
+
+- File: `autotrader/ibkr_auto_trader.py`
+- IB (ib_insync) connectivity, account/position sync, market data subscription
+- SMART routing via `Stock(symbol, exchange="SMART")`; optional `primaryExchange` hint
+- Market/limit/bracket orders; optional local dynamic stops
+- Unified risk check before order submission (exposure, caps, min notional)
+
+### GUI
+
+- File: `autotrader/app.py` (Tkinter)
+- Tabs for database, import, risk, Polygon, engine, backtest
+- Global scroll and log pane scroll
+- Performance optimizer routes model execution without subprocess overhead
+
+### Unified Configuration
+
+- File: `autotrader/unified_config.py`
+- Sources: defaults, files (risk/connection), database, hotconfig (`config.json`), runtime
+- Automatic file‑change detection with debounced reload
+- While reading (`get()`), only reloads if files actually changed
+
+## Configuration Details
+
+### Connection
+
+- `connection.host`, `connection.port`, `connection.client_id`, `connection.account_id`
+- `connection.use_delayed_if_no_realtime`: fallback to delayed quotes if real‑time unavailable
+
+### Capital and Orders
+
+- `capital.cash_reserve_pct`, `capital.max_single_position_pct`, `capital.max_portfolio_exposure`
+- `orders.min_order_value_usd`, `orders.daily_order_limit`
+
+### Signals and Sizing
+
+- `signals.acceptance_threshold` (e.g., 0.6)
+- `sizing.per_trade_risk_pct`, `sizing.max_position_pct_of_equity`, `sizing.notional_round_lots`
+
+### Risk Controls
+
+- `risk_controls.sector_exposure_limit`, `risk_controls.max_correlation`, dynamic stops toggle
+
+## Operating Notes
+
+### Trading Hours and Filters
+
+- Auto‑trader runs during US market hours 9:30–16:00 ET by default
+- Filters include price band [$2, $800], min order value, cash reserve, daily order caps
+
+### Routing
+
+- Default SMART routing; manual exchange is possible by passing `primary_exchange` to `qualify_stock()` or changing `exchange` (not recommended)
+
+### Data Quality and T‑1 Size Factor
+
+- Risk model Size factor uses T‑1 market cap for T returns (no look‑ahead)
+- Fallback to liquidity proxy if full market cap data unavailable
+
+## Troubleshooting
+
+- “Starting to load all configuration sources…” repeated: addressed via debounced file‑change reload
+- No orders placed:
+  - Not in trading hours; price not available; filters (min order value, price band) block; risk validation failed; hit daily/per‑cycle order caps
+  - Check GUI risk settings; try lowering `min_order_value_usd`, `cash_reserve_pct`, raising `max_single_position_pct`
+- Polygon errors: check logs for `status`, `request_id`, message; ensure API key; pagination enabled by default
+
+## Project Layout (selected)
+
+- `autotrader/app.py`: GUI
+- `autotrader/ibkr_auto_trader.py`: trading engine
+- `autotrader/unified_config.py`: config manager
+- `autotrader/unified_*`: connection/position/risk managers
+- `autotrader/enhanced_order_execution.py`, `order_state_machine.py`, `trading_auditor_v2.py`: execution & auditing
+- `autotrader/data_source_manager.py`, `autotrader/polygon_unified_factors.py`: data/factors integration
+- `polygon_client.py`: Polygon API client
+- `polygon_factors.py`: consolidated factor library
+- `量化模型_bma_ultra_enhanced.py`: BMA model
+
+### Legacy/Optional (not required for main flow)
+
+- `autotrader/backtest_engine.py`, `autotrader/backtest_analyzer.py`
+- `autotrader/database_pool.py`, `autotrader/engine_logger.py`
+- `autotrader/enhanced_config_cache.py`, `autotrader/indicator_cache.py`, `autotrader/enhanced_indicator_cache.py`
+- `autotrader/client_id_manager.py`
+- `autotrader/launcher.py` (needed only for CLI launching alternative to GUI)
+
+## Security & Disclaimers
+
+- Paper trade first. Real trading involves risk. Ensure market data permissions and exchange routing are correct.
+- Manage credentials securely. Avoid committing API keys.
 
 ## Contributing
 
-The project follows standard software development practices:
-- Code review process
-- Documentation requirements
-- Testing standards
-- Performance benchmarks
+- Use clear commit messages and keep edits scoped
+- Follow strict time‑leakage rules for any factor/label work
+- Keep logging informative but rate‑limited where needed
 
-## Future Enhancements
+## License
 
-Planned improvements include:
-- Additional broker integrations
-- Advanced machine learning models
-- Enhanced visualization capabilities
-- Mobile application support
-- Cloud deployment options
+Proprietary usage within your environment unless otherwise specified.
 
-This AutoTrader system represents a comprehensive solution for automated trading, combining professional-grade components with user-friendly interfaces to create a powerful trading platform suitable for both research and live trading applications.
+
