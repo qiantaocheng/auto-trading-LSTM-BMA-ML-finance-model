@@ -841,57 +841,6 @@ class AutoTraderGUI(tk.Tk):
                     # 让 Engine 统一负责 connect andsubscription，使use统一配置
                     self.engine = Engine(self.config_manager, self.trader)
                     await self.engine.start()
-                    
-                    # 检测并显示账户余额信息
-                    try:
-                        await self.trader.refresh_account_balances_and_positions()
-                        
-                        # 打印详细的账户信息到terminal
-                        print("=" * 60)
-                        print("📊 ACCOUNT BALANCE ANALYSIS 📊")
-                        print("=" * 60)
-                        print(f"💰 Cash Balance: ${self.trader.cash_balance:,.2f}")
-                        print(f"💎 Net Liquidation: ${self.trader.net_liq:,.2f}")
-                        print(f"💵 Buying Power: ${getattr(self.trader, 'buying_power', 0):,.2f}")
-                        print(f"🏦 Account Ready: {'✅ YES' if getattr(self.trader, 'account_ready', False) else '❌ NO'}")
-                        
-                        # 检查持仓信息
-                        positions = getattr(self.trader, 'positions', {})
-                        if positions:
-                            print(f"📈 Current Positions ({len(positions)} stocks):")
-                            for symbol, qty in positions.items():
-                                if qty != 0:
-                                    # 获取当前价格
-                                    current_price = self.trader.get_price(symbol)
-                                    market_value = qty * current_price if current_price else 0
-                                    print(f"   {symbol}: {qty:,} shares @ ${current_price:.2f} = ${market_value:,.2f}")
-                        else:
-                            print("📈 No current positions")
-                        
-                        # 检查是否满足下单条件
-                        print("\n🔍 ORDER PLACEMENT ANALYSIS:")
-                        min_cash_required = 1000  # 最低现金要求
-                        if self.trader.cash_balance < min_cash_required:
-                            print(f"❌ Insufficient cash: ${self.trader.cash_balance:,.2f} < ${min_cash_required:,.2f}")
-                        else:
-                            print(f"✅ Sufficient cash for trading: ${self.trader.cash_balance:,.2f}")
-                            
-                        if not getattr(self.trader, 'account_ready', False):
-                            print("❌ Account not ready for trading")
-                        else:
-                            print("✅ Account ready for trading")
-                            
-                        print("=" * 60)
-                        
-                        # 同时显示在GUI中
-                        self.after(0, lambda: self.log(f"💰 现金余额: ${self.trader.cash_balance:,.2f}"))
-                        self.after(0, lambda: self.log(f"💎 账户净值: ${self.trader.net_liq:,.2f}"))
-                        self.after(0, lambda: self.log(f"🏦 账户状态: {'就绪' if getattr(self.trader, 'account_ready', False) else '未就绪'}"))
-                        
-                    except Exception as balance_error:
-                        print(f"❌ Failed to get account balance: {balance_error}")
-                        self.after(0, lambda: self.log(f"获取账户余额失败: {balance_error}"))
-                    
                     try:
                         self.after(0, lambda: self.log("策略引擎start并completedsubscription"))
                         self.after(0, lambda: self._update_signal_status("引擎start", "green"))

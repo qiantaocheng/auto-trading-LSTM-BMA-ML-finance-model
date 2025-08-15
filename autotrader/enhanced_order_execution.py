@@ -13,7 +13,7 @@ innoreal-timemarket data（延迟环境）下，as模型信号提供保守但can
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 import math
 
 
@@ -855,3 +855,317 @@ class EnhancedOrderExecutor:
         except Exception as e:
             self.logger.error(f"VWAP执行异常: {symbol}: {e}")
             return executed_orders
+
+    # ===== Enhanced Order Execution Methods for LOO/MOO/LMT+RTH & EOD trailing =====
+    
+    # Contract cache to reduce qualify calls
+    _contract_cache: Dict[str, Any] = {}
+
+    def _side_to_action(self, side: str) -> str:
+        """Convert side to IB action"""
+        side = side.upper()
+        return "BUY" if side in ("BUY", "LONG") else "SELL"
+
+    async def _get_stock_contract(self, symbol: str):
+        """Get qualified stock contract with caching"""
+        if symbol in self._contract_cache:
+            return self._contract_cache[symbol]
+        
+        from ib_insync import Stock
+        contract = Stock(symbol, 'SMART', 'USD')
+        qualified = await self.ib.qualifyContractsAsync(contract)
+        if not qualified:
+            raise RuntimeError(f"Qualify contract failed: {symbol}")
+        self._contract_cache[symbol] = qualified[0]
+        return qualified[0]
+
+    async def _risk_validate_if_any(self, symbol: str, side: str, qty: int, price: float) -> bool:
+        """Optional risk validation if risk_engine available"""
+        try:
+            if hasattr(self, "risk_engine"):
+                account_value = getattr(self, "account_value", 0.0) or 0.0
+                ok = await self.risk_engine.validate_order(
+                    symbol=symbol, side=side, quantity=qty, price=price, account_value=account_value
+                )
+                return bool(getattr(ok, "is_valid", True))
+        except Exception as e:
+            self.logger.warning(f"[RISK] validate failed, fallback allow: {e}")
+        return True
+
+    def _audit_if_any(self, event: str, **kwargs):
+        """Optional auditing if auditor available"""
+        try:
+            if hasattr(self, "auditor") and hasattr(self.auditor, "emit"):
+                self.auditor.emit(event, **kwargs)
+        except Exception as e:
+            self.logger.debug(f"[AUDIT] emit failed: {e}")
+
+    # ---------- 1) Opening Orders: LOO / MOO ----------
+    async def place_open_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        limit_price: Optional[float] = None,
+        order_type: str = "LOO",
+    ) -> Trade:
+        """
+        Place opening order (LOO/MOO). LOO requires limit_price; MOO ignores limit_price.
+        - LOO: LMT + tif='OPG'
+        - MOO: MKT + tif='OPG'
+        """
+        from ib_insync import Order
+        
+        action = self._side_to_action(side)
+        contract = await self._get_stock_contract(symbol)
+
+        if order_type.upper() == "LOO":
+            if limit_price is None or limit_price <= 0:
+                raise ValueError("LOO requires a positive limit_price")
+            order = Order(
+                action=action,
+                orderType="LMT",
+                totalQuantity=int(quantity),
+                tif="OPG",
+                lmtPrice=float(limit_price),
+                transmit=True,
+            )
+        elif order_type.upper() == "MOO":
+            order = Order(
+                action=action,
+                orderType="MKT",
+                totalQuantity=int(quantity),
+                tif="OPG",
+                transmit=True,
+            )
+        else:
+            raise ValueError(f"Unsupported open order_type: {order_type}")
+
+        # Risk validation if available
+        price_for_risk = limit_price if limit_price else 0.0
+        if not await self._risk_validate_if_any(symbol, action, quantity, price_for_risk):
+            raise RuntimeError(f"[RISK] Rejected open {order_type} {symbol} {action} x{quantity}")
+
+        self.logger.info(f"[OPEN-{order_type}] {symbol} {action} x{quantity} "
+                         f"{'@'+str(limit_price) if limit_price else ''}")
+        trade = self.ib.placeOrder(contract, order)
+        self._contract_cache[symbol] = contract  # Ensure caching
+
+        self._audit_if_any("order_submitted",
+                          symbol=symbol, side=action, qty=quantity,
+                          order_type=order_type, limit_price=limit_price)
+        return trade
+
+    # ---------- 2) RTH Limit Orders with Auto-Cancel ----------
+    async def place_limit_rth(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        limit_price: float,
+        cancel_after_min: int = 30,
+    ) -> Trade:
+        """
+        Regular limit order, RTH only, auto-cancel if not filled within specified minutes.
+        """
+        from ib_insync import Order
+        
+        if limit_price is None or limit_price <= 0:
+            raise ValueError("place_limit_rth requires positive limit_price")
+
+        action = self._side_to_action(side)
+        contract = await self._get_stock_contract(symbol)
+
+        # Risk validation if available
+        if not await self._risk_validate_if_any(symbol, action, quantity, float(limit_price)):
+            raise RuntimeError(f"[RISK] Rejected LMT-RTH {symbol} {action} x{quantity} @ {limit_price}")
+
+        order = Order(
+            action=action,
+            orderType="LMT",
+            totalQuantity=int(quantity),
+            tif="DAY",
+            outsideRth=False,            # RTH only
+            lmtPrice=float(limit_price),
+            transmit=True,
+        )
+        self.logger.info(f"[LMT-RTH] {symbol} {action} x{quantity} @ {limit_price} "
+                         f"(cancel if not filled in {cancel_after_min}m)")
+        trade = self.ib.placeOrder(contract, order)
+
+        self._audit_if_any("order_submitted",
+                          symbol=symbol, side=action, qty=quantity,
+                          order_type="LMT_RTH", limit_price=limit_price)
+
+        # Start async monitoring for cancellation
+        import asyncio
+        asyncio.create_task(self._cancel_if_not_filled(trade, cancel_after_min))
+        return trade
+
+    async def _cancel_if_not_filled(self, trade: Trade, cancel_after_min: int):
+        """
+        Monitor order and cancel if not filled within timeout.
+        """
+        import asyncio
+        from datetime import datetime, timedelta
+        
+        deadline = datetime.now() + timedelta(minutes=cancel_after_min)
+        try:
+            while datetime.now() < deadline:
+                await asyncio.sleep(5.0)
+                st = (trade.orderStatus.status or "").upper()
+                if st in ("FILLED", "CANCELLED", "INACTIVE", "API CANCELLED"):
+                    self.logger.info(f"[CANCEL-WATCH] done status={st} orderId={trade.order.orderId}")
+                    return
+            # Timeout - cancel order
+            self.logger.warning(f"[CANCEL-WATCH] timeout cancel orderId={trade.order.orderId}")
+            self.ib.cancelOrder(trade.order)
+            self._audit_if_any("order_cancelled_timeout",
+                              symbol=trade.contract.symbol, orderId=trade.order.orderId)
+        except Exception as e:
+            self.logger.error(f"[CANCEL-WATCH] error: {e}")
+
+    # ---------- 3) Server-side Stop Order Management ----------
+    def _find_open_stop_trade_for_symbol(self, symbol: str) -> Optional[Trade]:
+        """
+        Find existing stop order for symbol in openTrades.
+        """
+        try:
+            for t in self.ib.openTrades():
+                if getattr(t.contract, "symbol", "") != symbol:
+                    continue
+                ot = (t.order.orderType or "").upper()
+                if ot in ("STP", "STP LMT", "STOP"):
+                    return t
+        except Exception as e:
+            self.logger.debug(f"[FIND-STOP] error: {e}")
+        return None
+
+    async def update_server_stop(self, symbol: str, new_stop: float, quantity: Optional[int] = None):
+        """
+        Update (or place new) server-side stop order:
+        - Find existing stop order and modify auxPrice;
+        - If not found, place new STOP order (quantity from position if not provided).
+        """
+        if new_stop is None or new_stop <= 0:
+            self.logger.warning(f"[STOP] invalid new_stop for {symbol}: {new_stop}")
+            return
+
+        try:
+            t = self._find_open_stop_trade_for_symbol(symbol)
+            if t:
+                # Modify existing STOP order
+                old = float(getattr(t.order, "auxPrice", 0.0) or 0.0)
+                if abs(old - new_stop) < 1e-6:
+                    self.logger.info(f"[STOP] {symbol} unchanged @ {new_stop}")
+                    return
+                t.order.auxPrice = float(new_stop)
+                self.ib.placeOrder(t.contract, t.order)    # Re-submit to modify
+                self.logger.info(f"[STOP] {symbol} modify: {old} -> {new_stop} (orderId={t.order.orderId})")
+                self._audit_if_any("stop_modified", symbol=symbol, old_stop=old, new_stop=new_stop,
+                                  orderId=t.order.orderId)
+                return
+
+            # No existing STOP: place new one (need to determine direction/quantity)
+            if quantity is None or quantity <= 0:
+                # Try to get quantity and direction from position
+                pos_qty = 0
+                try:
+                    for p in self.ib.positions():
+                        if p.contract.symbol == symbol:
+                            pos_qty += int(p.position)
+                except Exception:
+                    pass
+                qty_abs = abs(pos_qty)
+                if qty_abs == 0:
+                    self.logger.warning(f"[STOP] no position and no qty for {symbol}, skip")
+                    return
+                action = "SELL" if pos_qty > 0 else "BUY"
+                quantity = qty_abs
+            else:
+                # If quantity provided, need to determine action from position
+                pos_qty = 0
+                try:
+                    for p in self.ib.positions():
+                        if p.contract.symbol == symbol:
+                            pos_qty += int(p.position)
+                except Exception:
+                    pass
+                action = "SELL" if pos_qty >= 0 else "BUY"
+
+            from ib_insync import Order
+            contract = await self._get_stock_contract(symbol)
+            stop_order = Order(
+                action=action,
+                orderType="STP",
+                totalQuantity=int(quantity),
+                auxPrice=float(new_stop),  # STOP price
+                tif="DAY",
+                transmit=True,
+            )
+            trade = self.ib.placeOrder(contract, stop_order)
+            self.logger.info(f"[STOP] {symbol} place {action} {quantity} @ {new_stop} (orderId={trade.order.orderId})")
+            self._audit_if_any("stop_placed", symbol=symbol, side=action, qty=quantity,
+                              stop_price=new_stop, orderId=trade.order.orderId)
+        except Exception as e:
+            self.logger.error(f"[STOP] update failed for {symbol}: {e}")
+
+    # ---------- 4) EOD Trailing Stop Updates ----------
+    async def eod_update_trailing_stop(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        current_close: float,
+        atr_value: float,
+        initial_stop: float,
+        activate_after_R: float = 1.0,
+        atr_mult: float = 2.0,
+    ):
+        """
+        EOD version of ATR trailing stop:
+        - Only activate when P&L >= activate_after_R * R (R=|entry-initial_stop|)
+        - Long: new_stop = max(old_stop, close - atr_mult*ATR)
+          Short: new_stop = min(old_stop, close + atr_mult*ATR)
+        - Look for existing STOP price (if none, use initial_stop as baseline)
+        """
+        try:
+            if atr_value is None or atr_value <= 0:
+                return
+            R = abs(entry_price - initial_stop)
+            if R <= 0:
+                return
+
+            # P&L check
+            side = self._side_to_action(side)
+            pnl = (current_close - entry_price) if side == "BUY" else (entry_price - current_close)
+            if pnl < activate_after_R * R:
+                # Not enough profit to activate trailing
+                return
+
+            # Get current stop (if any, otherwise use initial_stop as baseline)
+            cur_stop = initial_stop
+            t = self._find_open_stop_trade_for_symbol(symbol)
+            if t:
+                cur_stop = float(getattr(t.order, "auxPrice", cur_stop) or cur_stop)
+
+            if side == "BUY":
+                candidate = float(current_close - atr_mult * atr_value)
+                new_stop = max(cur_stop, candidate)
+                # Protective cap: don't set stop too close to current price
+                new_stop = min(new_stop, current_close * 0.999)
+            else:
+                candidate = float(current_close + atr_mult * atr_value)
+                new_stop = min(cur_stop, candidate)
+                new_stop = max(new_stop, current_close * 1.001)
+
+            # Only update if tighter
+            if (side == "BUY" and new_stop > cur_stop + 1e-6) or (side == "SELL" and new_stop < cur_stop - 1e-6):
+                await self.update_server_stop(symbol, new_stop)
+                self.logger.info(f"[EOD-TRAIL] {symbol} {side} stop {cur_stop} -> {new_stop} "
+                                 f"(close={current_close}, ATR={atr_value}, mult={atr_mult})")
+                self._audit_if_any("trailing_stop_eod",
+                                  symbol=symbol, side=side, old_stop=cur_stop, new_stop=new_stop,
+                                  close=current_close, atr=atr_value, mult=atr_mult)
+        except Exception as e:
+            self.logger.error(f"[EOD-TRAIL] {symbol} failed: {e}")
