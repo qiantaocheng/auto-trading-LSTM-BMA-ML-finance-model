@@ -4,13 +4,14 @@
 # import logging
 # from typing import Dict
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Tuple
 
 # 改use统一配置管理器
 # from .config import HotConfig
-# 清理：只保留实际使use因子函数
-from .factors import zscore, atr
+# 使用统一Polygon因子库，替代原有因子函数
+from .unified_polygon_factors import get_unified_polygon_factors, zscore, atr, get_trading_signal_for_autotrader
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .ibkr_auto_trader import IbkrAutoTrader
@@ -350,8 +351,8 @@ class SignalHub:
                     volume_score += 0.1
 
             # 波动：ATRratio处at适宜区间
-            from .factors import atr as atr_func
-            atr14 = atr_func(highs[-15:], lows[-15:], closes[-15:], 14)[-1] if len(highs) >= 15 else None
+            # 使用统一Polygon因子库替代原有因子函数
+            atr14 = atr(highs[-15:], lows[-15:], closes[-15:], 14)[-1] if len(highs) >= 15 else None
             volatility_score = 0.0
             if atr14 and atr14 > 0 and closes[-1] > 0:
                 atr_pct = (atr14 / closes[-1]) * 100
@@ -453,6 +454,10 @@ class Engine:
         # retrieval统一风险管理器（替代旧risk_manager引use）
         from .unified_risk_manager import get_risk_manager
         self.risk_manager = get_risk_manager(config_manager)
+        
+        # 初始化统一Polygon因子库
+        self.unified_factors = get_unified_polygon_factors()
+        self.logger.info("统一Polygon因子库初始化完成")
 
     async def start(self) -> None:
         # connection IB
@@ -573,26 +578,48 @@ class Engine:
                     self.logger.debug(f"{sym} nohas效报价（nobid/ask/last/close），跳过")
                     continue
                     
-                # 使use真实历史数据（日线）计算信号andATR
-                bars = await self.data.fetch_daily_bars(sym, lookback_days=60)
-                if len(bars) < 60:
-                    # 历史数据not足（信号需要至少50根K），跳过此标
-                    self.logger.debug(f"{sym} 历史K线not足 {len(bars)} < 60，跳过")
-                    continue
+                # 使用统一Polygon因子库计算信号（替代IBKR历史数据）
+                try:
+                    polygon_signal = self.unified_factors.get_trading_signal(sym, threshold=cfg["signals"]["acceptance_threshold"])
                     
-                # 注意：信号需要50根收盘价
-                closes_all: List[float] = [float(getattr(b, "close", 0.0) or 0.0) for b in bars]
-                closes_50 = closes_all[-60:]
-
-                # 迁移多因子打分（旧策略移植）
-                highs = [float(getattr(b, "high", 0.0) or 0.0) for b in bars][-60:]
-                lows = [float(getattr(b, "low", 0.0) or 0.0) for b in bars][-60:]
-                vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in bars][-60:]
-                score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
-                thr = cfg["signals"]["acceptance_threshold"]
-                if abs(score) < thr:
-                    self.logger.debug(f"{sym} 信号强度not足 | score={score:.3f}, thr={thr:.3f}，跳过")
-                    continue
+                    # 检查信号质量和可交易性
+                    if not polygon_signal.get('can_trade', False):
+                        reason = polygon_signal.get('delay_reason') or '信号不满足交易条件'
+                        self.logger.debug(f"{sym} Polygon信号不可交易: {reason}")
+                        continue
+                    
+                    score = polygon_signal['signal_value']
+                    signal_strength = polygon_signal['signal_strength']
+                    confidence = polygon_signal['confidence']
+                    
+                    self.logger.debug(f"{sym} Polygon信号 | 值={score:.3f}, 强度={signal_strength:.3f}, 置信度={confidence:.3f}")
+                    
+                    # 使用信号强度检查阈值
+                    thr = cfg["signals"]["acceptance_threshold"]
+                    if signal_strength < thr:
+                        self.logger.debug(f"{sym} Polygon信号强度不足 | {signal_strength:.3f} < {thr:.3f}")
+                        continue
+                    
+                except Exception as e:
+                    self.logger.warning(f"{sym} Polygon因子计算失败，回退到IBKR数据: {e}")
+                    
+                    # 回退到原有逻辑
+                    bars = await self.data.fetch_daily_bars(sym, lookback_days=60)
+                    if len(bars) < 60:
+                        self.logger.debug(f"{sym} 历史K线不足 {len(bars)} < 60，跳过")
+                        continue
+                        
+                    closes_all: List[float] = [float(getattr(b, "close", 0.0) or 0.0) for b in bars]
+                    closes_50 = closes_all[-60:]
+                    highs = [float(getattr(b, "high", 0.0) or 0.0) for b in bars][-60:]
+                    lows = [float(getattr(b, "low", 0.0) or 0.0) for b in bars][-60:]
+                    vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in bars][-60:]
+                    score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
+                    
+                    thr = cfg["signals"]["acceptance_threshold"]
+                    if abs(score) < thr:
+                        self.logger.debug(f"{sym} 回退信号强度不足 | score={score:.3f}, thr={thr:.3f}，跳过")
+                        continue
 
                 side = "BUY" if score > 0 else "SELL"
                 entry = q.ask if side == "BUY" else q.bid
@@ -611,16 +638,33 @@ class Engine:
                 stop_pct = cfg["orders"]["default_stop_loss_pct"]
                 tp_pct = cfg["orders"]["default_take_profit_pct"]
                 
-                # 风险锚定：使use历史K ATR 作as最小止损距离
-                hi = [float(getattr(b, "high", entry) or entry) for b in bars][-15:]
-                lo = [float(getattr(b, "low", entry) or entry) for b in bars][-15:]
-                cl = [float(getattr(b, "close", entry) or entry) for b in bars][-15:]
-                
+                # 风险锚定：使用Polygon数据计算ATR作为最小止损距离
                 try:
-                    atr14 = atr(hi, lo, cl, 14)[-1] if len(hi) >= 14 else None
-                    atr14 = atr14 if atr14 and atr14 > 0 and not (isinstance(atr14, float) and atr14 != atr14) else None
+                    # 优先使用Polygon数据计算ATR
+                    market_data = self.unified_factors.get_market_data(sym, days=30)
+                    if not market_data.empty and len(market_data) >= 14:
+                        highs = market_data['High'].tolist()[-15:]
+                        lows = market_data['Low'].tolist()[-15:]
+                        closes = market_data['Close'].tolist()[-15:]
+                        atr_values = atr(highs, lows, closes, 14)
+                        atr14 = atr_values[-1] if atr_values and not math.isnan(atr_values[-1]) else None
+                        
+                        self.logger.debug(f"{sym} 使用Polygon数据计算ATR: {atr14}")
+                    else:
+                        # 回退到IBKR数据
+                        if 'bars' in locals() and len(bars) >= 14:
+                            hi = [float(getattr(b, "high", entry) or entry) for b in bars][-15:]
+                            lo = [float(getattr(b, "low", entry) or entry) for b in bars][-15:]
+                            cl = [float(getattr(b, "close", entry) or entry) for b in bars][-15:]
+                            atr_values = atr(hi, lo, cl, 14)
+                            atr14 = atr_values[-1] if atr_values and not math.isnan(atr_values[-1]) else None
+                            self.logger.debug(f"{sym} 回退到IBKR数据计算ATR: {atr14}")
+                        else:
+                            atr14 = None
+                    
+                    atr14 = atr14 if atr14 and atr14 > 0 else None
                 except Exception as e:
-                    self.logger.warning(f"ATR计算failed {sym}: {e}")
+                    self.logger.warning(f"ATR计算失败 {sym}: {e}")
                     atr14 = None
                     
                 if side == "BUY":

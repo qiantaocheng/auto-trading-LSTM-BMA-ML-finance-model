@@ -71,6 +71,14 @@ try:
 except ImportError:
     ISOTONIC_AVAILABLE = False
 
+# 自适应加树优化器
+try:
+    from adaptive_tree_optimizer import AdaptiveTreeOptimizer
+    ADAPTIVE_OPTIMIZER_AVAILABLE = True
+except ImportError:
+    ADAPTIVE_OPTIMIZER_AVAILABLE = False
+    logging.warning("自适应加树优化器不可用，将使用标准模型训练")
+
 # 高级模型
 try:
     import xgboost as xgb
@@ -1425,12 +1433,13 @@ class UltraEnhancedQuantitativeModel:
             logger.warning(f"时间对齐验证异常: {e}")
             return False
 
-    def train_enhanced_models(self, feature_data: pd.DataFrame) -> Dict[str, Any]:
+    def train_enhanced_models(self, feature_data: pd.DataFrame, current_ticker: str = None) -> Dict[str, Any]:
         """
         训练增强模型（Alpha策略 + Learning-to-Rank + 传统ML）
         
         Args:
             feature_data: 特征数据
+            current_ticker: 当前处理的股票代码（用于自适应优化）
             
         Returns:
             训练结果
@@ -1573,7 +1582,14 @@ class UltraEnhancedQuantitativeModel:
         # 3. 训练传统ML模型（作为基准）
         logger.info("训练传统ML模型")
         try:
-            traditional_results = self._train_traditional_models(X_clean, y_clean, dates_clean)
+            # 尝试从特征数据中提取股票代码
+            if current_ticker is None and 'ticker' in feature_data.columns:
+                tickers = feature_data['ticker'].unique()
+                current_ticker = tickers[0] if len(tickers) > 0 else "MULTI_STOCK"
+            elif current_ticker is None:
+                current_ticker = "UNKNOWN"
+            
+            traditional_results = self._train_traditional_models(X_clean, y_clean, dates_clean, current_ticker)
             training_results['traditional_models'] = traditional_results
             
         except Exception as e:
@@ -1584,23 +1600,161 @@ class UltraEnhancedQuantitativeModel:
         return training_results
     
     def _train_traditional_models(self, X: pd.DataFrame, y: pd.Series, 
-                                 dates: pd.Series) -> Dict[str, Any]:
-        """训练传统ML模型"""
+                                 dates: pd.Series, stock_symbol: str = "UNKNOWN") -> Dict[str, Any]:
+        """训练传统ML模型 - 支持自适应加树优化"""
+        
+        # 🚀 第二层优化：自适应加树
+        if ADAPTIVE_OPTIMIZER_AVAILABLE:
+            logger.info(f"使用自适应加树优化器训练{stock_symbol}")
+            return self._train_with_adaptive_optimizer(X, y, stock_symbol)
+        else:
+            logger.info(f"使用标准模型训练{stock_symbol}")
+            return self._train_standard_models(X, y, dates)
+    
+    def _train_with_adaptive_optimizer(self, X: pd.DataFrame, y: pd.Series, 
+                                     stock_symbol: str) -> Dict[str, Any]:
+        """使用自适应加树优化器训练模型"""
+        # 创建自适应优化器
+        optimizer = AdaptiveTreeOptimizer(
+            slope_threshold_ic=0.002,    # IC提升斜率阈值
+            slope_threshold_mse=0.01,    # MSE下降斜率阈值(1%)
+            tree_increment=20,           # 每次增加20棵树
+            top_percentile=0.2,          # 选择前20%的股票
+            max_trees_xgb=150,           # XGB最大150棵树
+            max_trees_lgb=150,           # LightGBM最大150棵树
+            max_trees_rf=200             # RandomForest最大200棵树
+        )
+        
+        model_results = {}
+        oof_predictions = {}
+        
+        # 1. 训练线性模型（不需要自适应优化）
+        linear_models = {
+            'ridge': Ridge(alpha=1.0),
+            'elastic': ElasticNet(alpha=0.05, l1_ratio=0.2, max_iter=5000)
+        }
+        
+        for model_name, model in linear_models.items():
+            try:
+                model.fit(X, y)
+                predictions = model.predict(X)
+                score = r2_score(y, predictions)
+                
+                model_results[model_name] = {
+                    'model': model,
+                    'cv_score': score,
+                    'feature_importance': getattr(model, 'coef_', None)
+                }
+                oof_predictions[model_name] = predictions
+                
+                logger.info(f"{stock_symbol} {model_name}: R2={score:.4f}")
+            except Exception as e:
+                logger.warning(f"{stock_symbol} {model_name}训练失败: {e}")
+        
+        # 2. 自适应训练RandomForest
+        try:
+            rf_model, rf_perf = optimizer.adaptive_train_random_forest(X, y, stock_symbol)
+            if rf_model:
+                predictions = rf_model.predict(X)
+                model_results['rf'] = {
+                    'model': rf_model,
+                    'cv_score': rf_perf.get('oob_score', 0.0),
+                    'feature_importance': rf_model.feature_importances_,
+                    'adaptive_performance': rf_perf
+                }
+                oof_predictions['rf'] = predictions
+                logger.info(f"{stock_symbol} RandomForest自适应训练完成: {rf_perf}")
+        except Exception as e:
+            logger.warning(f"{stock_symbol} RandomForest自适应训练失败: {e}")
+        
+        # 3. 自适应训练XGBoost
+        if XGBOOST_AVAILABLE:
+            try:
+                xgb_model, xgb_perf = optimizer.adaptive_train_xgboost(X, y, stock_symbol)
+                if xgb_model:
+                    predictions = xgb_model.predict(X)
+                    model_results['xgboost'] = {
+                        'model': xgb_model,
+                        'cv_score': xgb_perf.get('ic', 0.0),
+                        'feature_importance': xgb_model.feature_importances_,
+                        'adaptive_performance': xgb_perf
+                    }
+                    oof_predictions['xgboost'] = predictions
+                    logger.info(f"{stock_symbol} XGBoost自适应训练完成: {xgb_perf}")
+            except Exception as e:
+                logger.warning(f"{stock_symbol} XGBoost自适应训练失败: {e}")
+        
+        # 4. 自适应训练LightGBM
+        if LIGHTGBM_AVAILABLE:
+            try:
+                lgb_model, lgb_perf = optimizer.adaptive_train_lightgbm(X, y, stock_symbol)
+                if lgb_model:
+                    predictions = lgb_model.predict(X)
+                    model_results['lightgbm'] = {
+                        'model': lgb_model,
+                        'cv_score': lgb_perf.get('ic', 0.0),
+                        'feature_importance': lgb_model.feature_importances_,
+                        'adaptive_performance': lgb_perf
+                    }
+                    oof_predictions['lightgbm'] = predictions
+                    logger.info(f"{stock_symbol} LightGBM自适应训练完成: {lgb_perf}")
+            except Exception as e:
+                logger.warning(f"{stock_symbol} LightGBM自适应训练失败: {e}")
+        
+        return {
+            'models': model_results,
+            'oof_predictions': oof_predictions,
+            'optimizer_summary': optimizer.get_optimization_summary()
+        }
+    
+    def _train_standard_models(self, X: pd.DataFrame, y: pd.Series, 
+                             dates: pd.Series) -> Dict[str, Any]:
+        """标准模型训练（原有逻辑）"""
         models = {
             'ridge': Ridge(alpha=1.0),
             'elastic': ElasticNet(alpha=0.05, l1_ratio=0.2, max_iter=5000),
-            'rf': RandomForestRegressor(n_estimators=200, random_state=42)
+            'rf': RandomForestRegressor(
+                n_estimators=100,        # 从200减到100 (BMA优化)
+                max_depth=10,            # 新增深度限制
+                max_features=0.8,        # 特征采样80%
+                min_samples_leaf=10,     # 增加叶子最小样本
+                max_samples=0.8,         # 样本采样80%
+                n_jobs=1,                # 限制并行度
+                random_state=42
+            )
         }
         
         # 添加高级模型
         if XGBOOST_AVAILABLE:
             models['xgboost'] = xgb.XGBRegressor(
-                n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42
+                n_estimators=70,         # 从100减到70 (BMA优化)
+                max_depth=4,             # 从6减到4 (BMA优化)
+                learning_rate=0.2,       # 从0.1增到0.2 (BMA优化)
+                subsample=0.8,           # 样本采样
+                colsample_bytree=0.8,    # 特征采样
+                reg_alpha=0.1,           # L1正则化
+                reg_lambda=1.0,          # L2正则化
+                tree_method='hist',      # 高效算法
+                early_stopping_rounds=15, # 早停机制 (BMA优化)
+                random_state=42,
+                n_jobs=1                 # 限制并行度
             )
         
         if LIGHTGBM_AVAILABLE:
             models['lightgbm'] = lgb.LGBMRegressor(
-                n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42, verbose=-1
+                n_estimators=80,         # 从100减到80 (BMA优化)
+                max_depth=5,             # 从6减到5 (BMA优化)
+                num_leaves=31,           # 严格控制叶子数
+                learning_rate=0.2,       # 从0.1增到0.2 (BMA优化)
+                feature_fraction=0.8,    # 特征采样
+                bagging_fraction=0.8,    # 样本采样
+                bagging_freq=1,
+                min_data_in_leaf=50,     # 增加叶子最小数据
+                force_row_wise=True,     # 内存优化 (BMA优化)
+                early_stopping_rounds=15, # 早停机制 (BMA优化)
+                random_state=42,
+                verbose=-1,
+                n_jobs=1                 # 限制并行度
             )
         
         # CatBoost removed due to compatibility issues

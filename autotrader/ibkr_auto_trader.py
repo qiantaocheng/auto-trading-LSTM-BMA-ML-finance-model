@@ -46,7 +46,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from polygon_client import polygon_client, download, Ticker
     from data_source_manager import get_data_source_manager
-    from polygon_unified_factors import (
+    from .unified_polygon_factors import (
         get_polygon_unified_factors,
         enable_polygon_factors,
         enable_polygon_risk_balancer,

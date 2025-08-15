@@ -33,7 +33,21 @@ except ImportError as e:
 from .database import StockDatabase
 # 风险管理功能集成toEnginein
 # from .risk_manager import AdvancedRiskManager, RiskMetrics, PositionRisk
-from .factors import Bar, sma, rsi, bollinger, zscore, atr
+from .unified_polygon_factors import sma, rsi, bollinger, zscore, atr
+# Bar类需要保留原有定义或从其他模块导入
+try:
+    from .factors import Bar
+except ImportError:
+    # 如果无法导入，创建简化的Bar类
+    from dataclasses import dataclass
+    @dataclass
+    class Bar:
+        ts: int
+        open: float
+        high: float
+        low: float
+        close: float
+        volume: float
 
 
 @dataclass
