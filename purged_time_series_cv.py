@@ -90,11 +90,11 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
             # 应用gap和embargo
             train_end_idx = max(0, test_start_idx - self.config.gap - self.config.embargo)
             
-            # 确保最小训练集大小 - 降低要求以适应小数据集
-            min_train_groups = max(3, self.config.min_train_size // 50)  # 降低要求
+            # 确保最小训练集大小 - 进一步降低要求以适应小数据集
+            min_train_groups = max(2, min(3, n_groups // 3))  # 最少2组，最多总组数的1/3
             if train_end_idx < min_train_groups:
-                logger.warning(f"第{i+1}折训练数据不足，跳过")
-                continue
+                logger.warning(f"第{i+1}折训练数据不足({train_end_idx}<{min_train_groups})，调整为使用{min_train_groups}组")
+                train_end_idx = min_train_groups  # 强制使用最小组数而不是跳过
             
             # 选择训练和测试组
             train_groups = unique_groups[:train_end_idx]
@@ -110,7 +110,10 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
             train_indices = data_index[train_mask].tolist()
             test_indices = data_index[test_mask].tolist()
             
-            if len(train_indices) < self.config.min_train_size or len(test_indices) == 0:
+            # 放宽训练样本数量要求
+            min_samples = min(self.config.min_train_size, len(data_index) // 3)  # 最多要求1/3的数据
+            if len(train_indices) < min_samples or len(test_indices) == 0:
+                logger.debug(f"第{i+1}折样本不足: 训练{len(train_indices)}<{min_samples} 或 测试{len(test_indices)}=0")
                 continue
                 
             logger.debug(f"第{i+1}折: 训练{len(train_indices)}样本, 测试{len(test_indices)}样本")

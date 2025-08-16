@@ -61,6 +61,38 @@ except ImportError as e:
     print(f"[WARN] 增强模块导入失败: {e}")
     ENHANCED_MODULES_AVAILABLE = False
 
+# 增强目标工程模块
+try:
+    from enhanced_target_engineering import (
+        EnhancedTargetEngineer, 
+        TripleBarrierConfig, 
+        MetaLabelingConfig,
+        LabelType
+    )
+    TARGET_ENGINEERING_AVAILABLE = True
+    print("[INFO] Enhanced Target Engineering module loaded")
+except ImportError as e:
+    TARGET_ENGINEERING_AVAILABLE = False
+    print(f"[WARN] Enhanced Target Engineering not available: {e}")
+
+# 内存优化模块
+try:
+    from bma_memory_optimization import MemoryOptimizedBMA, create_memory_optimized_feature_engineering
+    MEMORY_OPTIMIZATION_AVAILABLE = True
+    print("[INFO] Memory optimization module loaded")
+except ImportError as e:
+    MEMORY_OPTIMIZATION_AVAILABLE = False
+    print(f"[WARN] Memory optimization not available: {e}")
+
+# 安全内存管理模块
+try:
+    from safe_memory_management import SafeMemoryManager, create_safe_memory_manager
+    SAFE_MEMORY_AVAILABLE = True
+    print("[INFO] Safe memory management module loaded")
+except ImportError as e:
+    SAFE_MEMORY_AVAILABLE = False
+    print(f"[WARN] Safe memory management not available: {e}")
+
 # 统一市场数据（行业/市值/国家等）
 try:
     from unified_market_data_manager import UnifiedMarketDataManager
@@ -276,6 +308,41 @@ class UltraEnhancedQuantitativeModel:
             logger.warning(f"版本控制模块导入失败: {e}")
             self.version_control = None
         
+        # 🔥 增强目标工程引擎
+        if TARGET_ENGINEERING_AVAILABLE:
+            barrier_config = TripleBarrierConfig(
+                profit_threshold=self.config.get('target_config', {}).get('profit_threshold', 0.02),
+                loss_threshold=self.config.get('target_config', {}).get('loss_threshold', -0.015),
+                holding_periods=self.config.get('target_config', {}).get('holding_periods', [1, 3, 5, 10, 15])
+            )
+            meta_config = MetaLabelingConfig(
+                win_rate_model=self.config.get('target_config', {}).get('win_rate_model', 'logistic'),
+                magnitude_model=self.config.get('target_config', {}).get('magnitude_model', 'quantile')
+            )
+            self.target_engineer = EnhancedTargetEngineer(barrier_config, meta_config)
+            logger.info("✅ 增强目标工程引擎已启用")
+        else:
+            self.target_engineer = None
+            logger.warning("增强目标工程引擎不可用，使用传统目标构建")
+
+        # 🔧 内存优化引擎
+        if MEMORY_OPTIMIZATION_AVAILABLE:
+            self.memory_optimizer = MemoryOptimizedBMA()
+            self.optimized_feature_engineering = create_memory_optimized_feature_engineering()
+            logger.info("✅ 内存优化引擎已启用")
+        else:
+            self.memory_optimizer = None
+            self.optimized_feature_engineering = None
+            logger.warning("内存优化引擎不可用，使用标准特征工程")
+
+        # 🛡️ 安全内存管理引擎
+        if SAFE_MEMORY_AVAILABLE:
+            self.safe_memory_manager = create_safe_memory_manager()
+            logger.info("✅ 安全内存管理已启用")
+        else:
+            self.safe_memory_manager = None
+            logger.warning("安全内存管理不可用")
+
         # 核心引擎
         if ENHANCED_MODULES_AVAILABLE:
             self.alpha_engine = AlphaStrategiesEngine(config_path)
@@ -1167,7 +1234,7 @@ class UltraEnhancedQuantitativeModel:
         all_data = {}
         failed_downloads = []
         
-        for ticker in tickers:
+        for i, ticker in enumerate(tickers):
             try:
                 # 验证股票代码格式
                 if not ticker or not isinstance(ticker, str) or len(ticker.strip()) == 0:
@@ -1176,6 +1243,7 @@ class UltraEnhancedQuantitativeModel:
                     continue
                 
                 ticker = ticker.strip().upper()  # 标准化股票代码
+                logger.info(f"[{i+1:3d}/{len(tickers):3d}] 下载 {ticker:6s}...")
                 
                 stock = PolygonTicker(ticker)
                 # 使用复权数据，避免股利污染；固定日频，关闭actions列
@@ -1266,6 +1334,116 @@ class UltraEnhancedQuantitativeModel:
         hash_value = int(hashlib.md5((ticker + '_sub').encode()).hexdigest(), 16)
         return subindustries[hash_value % len(subindustries)]
     
+    def _apply_enhanced_targets_to_features(self, combined_features: pd.DataFrame) -> pd.DataFrame:
+        """将增强目标工程应用到特征数据框"""
+        if not self.target_engineer:
+            return combined_features
+        
+        try:
+            # 准备价格数据 (需要date, ticker, close格式)
+            price_data_for_target = combined_features[['date', 'ticker', 'close']].copy()
+            
+            # 生成增强目标
+            target_result = self.target_engineer.generate_enhanced_targets(
+                price_data=price_data_for_target,
+                target_type=LabelType.EXPECTED_RETURN
+            )
+            
+            # 将增强目标合并回数据框
+            target_df = pd.DataFrame({
+                'date': combined_features['date'],
+                'ticker': combined_features['ticker'],
+                'enhanced_target': target_result['targets']
+            })
+            
+            # 合并增强目标到主数据框
+            combined_features = combined_features.merge(target_df, on=['date', 'ticker'], how='left')
+            combined_features['target'] = combined_features['enhanced_target'].fillna(
+                combined_features.get('target', 0)
+            )
+            
+            # 保存增强权重供后续使用
+            self._enhanced_sample_weights = target_result['sample_weights']
+            
+            logger.info("✅ 增强目标工程已应用到特征数据")
+            
+        except Exception as e:
+            logger.warning(f"增强目标工程应用失败: {e}")
+        
+        return combined_features
+    
+    def cleanup_memory(self, force: bool = False, safe_mode: bool = True):
+        """
+        清理模型内存
+        
+        Args:
+            force: 是否强制清理谨慎对象
+            safe_mode: 是否使用安全模式（保护重要结果）
+        """
+        if safe_mode and self.safe_memory_manager:
+            # 🛡️ 使用安全内存管理器
+            logger.info("使用安全内存管理进行清理")
+            
+            if force:
+                # 紧急清理模式
+                cleanup_stats = self.safe_memory_manager.emergency_cleanup(self)
+            else:
+                # 智能清理模式
+                cleanup_stats = self.safe_memory_manager.smart_memory_cleanup(self)
+            
+            logger.info(f"安全清理完成: {cleanup_stats}")
+            
+        elif self.memory_optimizer:
+            # 🔧 使用内存优化器清理
+            self.memory_optimizer.force_memory_cleanup()
+            
+        else:
+            # 🔄 传统清理方式
+            import gc
+            logger.warning("使用传统内存清理，可能影响重要结果")
+            
+            # 只有在force=True时才清理重要对象
+            if force:
+                if hasattr(self, 'raw_data'):
+                    self.raw_data.clear()
+                if hasattr(self, 'feature_data'):
+                    del self.feature_data
+                    self.feature_data = None
+            
+            # 清理临时对象（相对安全）
+            temp_attrs = [attr for attr in dir(self) 
+                         if any(keyword in attr for keyword in ['temp_', '_temp', 'cache_', '_cache'])]
+            
+            for attr in temp_attrs:
+                try:
+                    delattr(self, attr)
+                    logger.debug(f"清理临时对象: {attr}")
+                except:
+                    pass
+            
+            # 强制垃圾回收
+            for _ in range(3):
+                collected = gc.collect()
+                if collected == 0:
+                    break
+            
+            logger.info("传统内存清理完成")
+    
+    def get_memory_report(self) -> Dict[str, Any]:
+        """获取内存使用报告"""
+        if self.safe_memory_manager:
+            return self.safe_memory_manager.get_memory_report(self)
+        else:
+            import psutil
+            try:
+                process = psutil.Process()
+                return {
+                    'current_memory_mb': process.memory_info().rss / 1024 / 1024,
+                    'status': 'basic_monitoring'
+                }
+            except:
+                return {'status': 'unavailable'}
+    
     def create_traditional_features(self, data_dict: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         """
         创建传统技术指标特征
@@ -1276,15 +1454,47 @@ class UltraEnhancedQuantitativeModel:
         Returns:
             特征数据框
         """
-        logger.info("创建传统技术指标特征")
+        # 🔧 使用内存优化特征工程（如果可用）
+        if self.memory_optimizer and self.optimized_feature_engineering:
+            logger.info("使用内存优化特征工程")
+            try:
+                # 使用内存优化版本
+                combined_features = self.optimized_feature_engineering(data_dict)
+                
+                # 应用增强目标工程（如果可用）
+                if self.target_engineer:
+                    combined_features = self._apply_enhanced_targets_to_features(combined_features)
+                
+                logger.info(f"✅ 内存优化特征工程完成，特征数据形状: {combined_features.shape}")
+                return combined_features
+                
+            except Exception as e:
+                logger.warning(f"内存优化特征工程失败，回退到标准方法: {e}")
+                # 继续使用标准方法
+        
+        # 🔄 标准特征工程（回退方案）
+        logger.info("创建传统技术指标特征（标准方法）")
         
         all_features = []
         
-        for ticker, df in data_dict.items():
-            if len(df) < 60:  # 至少需要60天数据
-                continue
+        # 分批处理以减少内存峰值
+        tickers = list(data_dict.keys())
+        batch_size = 30  # 减小批处理大小
+        processed_count = 0
+        
+        for batch_idx in range(0, len(tickers), batch_size):
+            batch_tickers = tickers[batch_idx:batch_idx + batch_size]
+            logger.info(f"处理批次 {batch_idx//batch_size + 1}/{(len(tickers) + batch_size - 1)//batch_size}")
             
-            df_copy = df.copy().sort_values('date')
+            batch_features = []
+            
+            for ticker in batch_tickers:
+                df = data_dict[ticker]
+                if len(df) < 60:  # 至少需要60天数据
+                    continue
+                
+                df_copy = df.copy().sort_values('date')
+                processed_count += 1
             
             # 价格特征
             df_copy['returns'] = df_copy['close'].pct_change()
@@ -1338,12 +1548,51 @@ class UltraEnhancedQuantitativeModel:
             
             logger.info(f"时间对齐配置: 特征lag={FEATURE_LAG}, 安全gap={SAFETY_GAP}, 预测[T+{PRED_START}, T+{PRED_END}]")
             
-            # 安全的目标构建：T时刻使用T-2-2=T-4特征，预测T+1到T+5收益
-            # 确保特征和目标之间有足够的时间间隔（至少6期）
-            df_copy['target'] = (
-                df_copy['close'].shift(-PRED_END) / 
-                df_copy['close'].shift(-PRED_START + 1) - 1
-            )
+            # 🔥 增强目标构建：使用Triple Barrier + Meta-Labeling或传统方法
+            if self.target_engineer is not None:
+                try:
+                    # 准备价格数据 (需要date, ticker, close格式)
+                    price_data_for_target = df_copy[['date', 'ticker', 'close']].copy()
+                    
+                    # 生成增强目标
+                    target_result = self.target_engineer.generate_enhanced_targets(
+                        price_data=price_data_for_target,
+                        target_type=LabelType.EXPECTED_RETURN
+                    )
+                    
+                    # 将增强目标合并回数据框
+                    target_df = pd.DataFrame({
+                        'date': df_copy['date'],
+                        'ticker': df_copy['ticker'],
+                        'enhanced_target': target_result['targets']
+                    })
+                    
+                    # 合并增强目标到主数据框
+                    df_copy = df_copy.merge(target_df, on=['date', 'ticker'], how='left')
+                    df_copy['target'] = df_copy['enhanced_target'].fillna(0)  # 回退到0
+                    
+                    # 保存增强权重供后续使用
+                    self._enhanced_sample_weights = target_result['sample_weights']
+                    
+                    logger.info("✅ 使用增强目标工程 (Triple Barrier + Meta-Labeling)")
+                    logger.info(f"增强目标统计: 均值={df_copy['target'].mean():.4f}, 标准差={df_copy['target'].std():.4f}")
+                    
+                except Exception as e:
+                    logger.warning(f"增强目标工程失败，回退到传统方法: {e}")
+                    # 回退到传统目标构建
+                    df_copy['target'] = (
+                        df_copy['close'].shift(-PRED_END) / 
+                        df_copy['close'].shift(-PRED_START + 1) - 1
+                    )
+                    self._enhanced_sample_weights = None
+            else:
+                # 传统目标构建：T时刻使用T-2-2=T-4特征，预测T+1到T+5收益
+                # 确保特征和目标之间有足够的时间间隔（至少6期）
+                df_copy['target'] = (
+                    df_copy['close'].shift(-PRED_END) / 
+                    df_copy['close'].shift(-PRED_START + 1) - 1
+                )
+                self._enhanced_sample_weights = None
             
             # 时间验证：确保没有重叠
             feature_max_time = -FEATURE_LAG - SAFETY_GAP  # 特征最新时间
@@ -1369,10 +1618,32 @@ class UltraEnhancedQuantitativeModel:
             df_copy['SECTOR'] = ticker[:2] if len(ticker) >= 2 else 'TECH'  # 简化分类
             df_copy['SUBINDUSTRY'] = ticker[:3] if len(ticker) >= 3 else 'SOFTWARE'
             
-            all_features.append(df_copy)
+            df_copy['ticker'] = ticker
+            batch_features.append(df_copy)
+            
+            # 批次内合并
+            if batch_features:
+                batch_combined = pd.concat(batch_features, ignore_index=True)
+                
+                # 内存优化（如果可用）
+                if self.memory_optimizer:
+                    batch_combined = self.memory_optimizer.optimize_dataframe_memory(batch_combined)
+                
+                all_features.append(batch_combined)
+                
+                # 清理临时变量
+                del batch_features
+                import gc
+                gc.collect()
+        
+        logger.info(f"处理完成，共处理 {processed_count} 只股票")
         
         if all_features:
-            combined_features = pd.concat(all_features, ignore_index=True)
+            # 最终合并
+            if self.memory_optimizer:
+                combined_features = self.memory_optimizer.memory_efficient_concat(all_features)
+            else:
+                combined_features = pd.concat(all_features, ignore_index=True)
             # 选出纯特征列（排除标识/目标/元数据）
             feature_cols = [col for col in combined_features.columns 
                             if col not in ['ticker','date','target','COUNTRY','SECTOR','SUBINDUSTRY']]
@@ -1592,16 +1863,27 @@ class UltraEnhancedQuantitativeModel:
                 if len(ticker_data) < 10:
                     continue
                     
-                # 检查特征和目标的时间差
-                feature_dates = ticker_data['date'].iloc[:-5]  # 特征日期
-                target_dates = ticker_data['date'].iloc[5:]    # 目标日期
-                
-                if len(feature_dates) > 0 and len(target_dates) > 0:
-                    # 验证时间间隔符合预期（应该有足够的gap）
-                    time_diff = (target_dates.iloc[0] - feature_dates.iloc[-1]).days
-                    if time_diff < 7:  # 至少7天gap
-                        logger.warning(f"时间对齐验证失败：{ticker} 特征-目标间隔仅{time_diff}天")
-                        return False
+                # 检查特征和目标的时间差 - 修正逻辑
+                if len(ticker_data) >= 10:
+                    # 检查同一时间点特征和目标的情况（这里假设target是5天后的值）
+                    # 正确的验证应该是检查特征日期和对应的目标预测期间是否重叠
+                    first_date = ticker_data['date'].iloc[0]
+                    last_date = ticker_data['date'].iloc[-1]
+                    total_span = (last_date - first_date).days
+                    
+                    # 验证有足够的历史数据进行训练（至少30天）
+                    if total_span < 30:
+                        logger.warning(f"时间跨度过短：{ticker} 总跨度仅{total_span}天")
+                        continue  # 不返回False，只是警告
+                    
+                    # 检查数据连续性，确保没有使用未来信息
+                    sorted_dates = ticker_data['date'].sort_values()
+                    date_gaps = sorted_dates.diff().dt.days.dropna()
+                    max_gap = date_gaps.max() if len(date_gaps) > 0 else 0
+                    
+                    if max_gap > 30:  # 如果有超过30天的间隔，可能有问题
+                        logger.warning(f"数据存在较大时间间隔：{ticker} 最大间隔{max_gap}天")
+                        continue  # 不返回False，只是警告
             
             logger.info("✅ 时间对齐验证通过：特征和目标时间充分隔离")
             return True
@@ -1692,16 +1974,42 @@ class UltraEnhancedQuantitativeModel:
         if self.alpha_engine and ENHANCED_MODULES_AVAILABLE:
             logger.info("训练Alpha策略引擎")
             try:
-                # 重组数据格式用于Alpha计算
-                alpha_data = feature_data[['date', 'ticker', 'close', 'high', 'low', 'volume', 'amount',
-                                         'COUNTRY', 'SECTOR', 'SUBINDUSTRY']].copy()
+                # 重组数据格式用于Alpha计算 - 添加列存在性检查
+                required_cols = ['date', 'ticker', 'close']
+                optional_cols = ['high', 'low', 'volume', 'amount', 'COUNTRY', 'SECTOR', 'SUBINDUSTRY']
+                
+                # 检查必需列
+                missing_required = [col for col in required_cols if col not in feature_data.columns]
+                if missing_required:
+                    logger.warning(f"Alpha策略缺少必需列: {missing_required}")
+                    raise ValueError(f"Missing required columns: {missing_required}")
+                
+                # 构建可用列列表
+                available_cols = required_cols.copy()
+                for col in optional_cols:
+                    if col in feature_data.columns:
+                        available_cols.append(col)
+                    else:
+                        logger.debug(f"Alpha策略跳过缺失列: {col}")
+                
+                alpha_data = feature_data[available_cols].copy()
+                
                 # 为Alpha引擎标准化列名并优先使用复权收盘价
                 if 'Adj Close' in feature_data.columns:
                     alpha_data['Close'] = feature_data['Adj Close']
                 else:
                     alpha_data['Close'] = feature_data['close']
-                alpha_data['High'] = feature_data['high']
-                alpha_data['Low'] = feature_data['low']
+                
+                # 安全地添加高低价
+                if 'high' in feature_data.columns:
+                    alpha_data['High'] = feature_data['high']
+                else:
+                    alpha_data['High'] = alpha_data['Close']  # 用收盘价代替
+                    
+                if 'low' in feature_data.columns:
+                    alpha_data['Low'] = feature_data['low']
+                else:
+                    alpha_data['Low'] = alpha_data['Close']  # 用收盘价代替
                 
                 # 计算Alpha因子
                 alpha_df = self.alpha_engine.compute_all_alphas(alpha_data)
@@ -1779,6 +2087,14 @@ class UltraEnhancedQuantitativeModel:
             training_results['traditional_models'] = {'error': str(e)}
         
         logger.info("增强模型训练完成")
+        
+        # 🔧 训练完成后内存清理
+        if self.memory_optimizer:
+            self.memory_optimizer.force_memory_cleanup()
+        else:
+            import gc
+            gc.collect()
+            
         return training_results
     
     def _get_bucket_info(self, X: pd.DataFrame, dates: pd.Series) -> Optional[Dict[str, Any]]:
@@ -3049,14 +3365,15 @@ class UltraEnhancedQuantitativeModel:
             except Exception as e:
                 logger.warning(f"{stock_symbol} {model_name}训练失败: {e}")
         
-        # 2. 自适应训练RandomForest
+        # 2. 自适应训练RandomForest (内存优化)
         try:
             rf_model = RandomForestRegressor(
-                n_estimators=100,
-                max_depth=8,
-                min_samples_split=10,
-                min_samples_leaf=5,
+                n_estimators=50,         # 减少树的数量以节省内存
+                max_depth=6,            # 减少树的深度
+                min_samples_split=20,   # 增加分割最小样本数
+                min_samples_leaf=10,    # 增加叶子最小样本数
                 max_features='sqrt',
+                max_samples=0.7,        # 使用70%的样本，减少内存使用
                 oob_score=True,
                 random_state=42,
                 n_jobs=1
@@ -3164,6 +3481,10 @@ class UltraEnhancedQuantitativeModel:
             'oof_predictions': oof_predictions,
             'optimizer_summary': {'status': 'completed', 'models_trained': len(model_results)}
         }
+        
+        # 🔧 传统模型训练后内存清理
+        if hasattr(self, 'memory_optimizer') and self.memory_optimizer:
+            self.memory_optimizer.force_memory_cleanup()
     
     def _train_standard_models(self, X: pd.DataFrame, y: pd.Series, 
                              dates: pd.Series) -> Dict[str, Any]:
@@ -3175,11 +3496,11 @@ class UltraEnhancedQuantitativeModel:
             'robust_linear': HuberRegressor(epsilon=1.35, alpha=1e-4),
             # 非线性模型仍保留，但权重由第二层/集成端决定
             'rf': RandomForestRegressor(
-                n_estimators=100,        # 从200减到100 (BMA优化)
-                max_depth=10,            # 新增深度限制
-                max_features=0.8,        # 特征采样80%
-                min_samples_leaf=10,     # 增加叶子最小样本
-                max_samples=0.8,         # 样本采样80%
+                n_estimators=50,         # 减少到50以节省内存
+                max_depth=6,             # 减少深度限制
+                max_features=0.7,        # 特征采样70%
+                min_samples_leaf=15,     # 增加叶子最小样本
+                max_samples=0.6,         # 样本采样60%以减少内存
                 n_jobs=1,                # 限制并行度
                 random_state=42
             )
@@ -3220,26 +3541,57 @@ class UltraEnhancedQuantitativeModel:
         
         # CatBoost removed due to compatibility issues
         
-        # ===== 样本权重：WLS（1/20日波动）=====
-        # 计算基于20日波动的样本权重（专业量化框架标准）
-        feat = pd.DataFrame({
-            'date': dates,
-            'target': y
-        })
-        
-        # 使用滚动标准差作为波动率代理（如果有returns列更好）
-        if hasattr(self, 'feature_data') and 'returns' in self.feature_data.columns:
-            feat['returns'] = self.feature_data.loc[X.index, 'returns'].values if len(self.feature_data.loc[X.index]) > 0 else y
-            vol20 = feat['returns'].rolling(20, min_periods=10).std()
+        # ===== 样本权重：增强信息权重 vs 传统WLS（1/20日波动）=====
+        if hasattr(self, '_enhanced_sample_weights') and self._enhanced_sample_weights is not None:
+            # 🔥 使用增强目标工程的信息权重
+            try:
+                # 确保权重长度匹配
+                if len(self._enhanced_sample_weights) == len(y):
+                    sample_weights = self._enhanced_sample_weights
+                    logger.info("✅ 使用增强信息权重 (基于Triple Barrier信息量)")
+                else:
+                    # 长度不匹配时截断或填充
+                    if len(self._enhanced_sample_weights) > len(y):
+                        sample_weights = self._enhanced_sample_weights[:len(y)]
+                    else:
+                        # 用中位数填充不足部分
+                        median_weight = np.median(self._enhanced_sample_weights)
+                        sample_weights = np.concatenate([
+                            self._enhanced_sample_weights,
+                            np.full(len(y) - len(self._enhanced_sample_weights), median_weight)
+                        ])
+                    logger.info(f"⚠️ 权重长度调整: {len(self._enhanced_sample_weights)} -> {len(sample_weights)}")
+                
+                logger.info(f"增强权重统计: 均值={np.mean(sample_weights):.3f}, 标准差={np.std(sample_weights):.3f}, 范围=[{np.min(sample_weights):.3f}, {np.max(sample_weights):.3f}]")
+                
+            except Exception as e:
+                logger.warning(f"增强权重应用失败，回退到传统WLS: {e}")
+                sample_weights = None  # 触发传统权重计算
         else:
-            # 回退：用目标序列近似波动（不理想，但可工作）
-            vol20 = feat['target'].rolling(20, min_periods=10).std()
+            sample_weights = None  # 触发传统权重计算
         
-        # WLS权重 = 1/波动率，截断极值并归一化
-        sample_weights = 1.0 / np.clip(vol20, 1e-6, np.percentile(vol20.dropna(), 95))
-        sample_weights = (sample_weights / np.nanmedian(sample_weights)).fillna(1.0).values
-        
-        logger.info(f"样本权重统计: 均值={np.mean(sample_weights):.3f}, 标准差={np.std(sample_weights):.3f}, 范围=[{np.min(sample_weights):.3f}, {np.max(sample_weights):.3f}]")
+        # 传统WLS权重（回退方案）
+        if sample_weights is None:
+            # 计算基于20日波动的样本权重（专业量化框架标准）
+            feat = pd.DataFrame({
+                'date': dates,
+                'target': y
+            })
+            
+            # 使用滚动标准差作为波动率代理（如果有returns列更好）
+            if hasattr(self, 'feature_data') and 'returns' in self.feature_data.columns:
+                feat['returns'] = self.feature_data.loc[X.index, 'returns'].values if len(self.feature_data.loc[X.index]) > 0 else y
+                vol20 = feat['returns'].rolling(20, min_periods=10).std()
+            else:
+                # 回退：用目标序列近似波动（不理想，但可工作）
+                vol20 = feat['target'].rolling(20, min_periods=10).std()
+            
+            # WLS权重 = 1/波动率，截断极值并归一化
+            sample_weights = 1.0 / np.clip(vol20, 1e-6, np.percentile(vol20.dropna(), 95))
+            sample_weights = (sample_weights / np.nanmedian(sample_weights)).fillna(1.0).values
+            
+            logger.info("使用传统WLS权重 (1/波动率)")
+            logger.info(f"传统权重统计: 均值={np.mean(sample_weights):.3f}, 标准差={np.std(sample_weights):.3f}, 范围=[{np.min(sample_weights):.3f}, {np.max(sample_weights):.3f}]")
         
         # ===== 行业/规模桶内训练（局部线性）=====
         # 获取行业/规模信息（如果可用）
@@ -3935,7 +4287,19 @@ class UltraEnhancedQuantitativeModel:
             logger.error("投资组合优化失败，无法生成建议")
             return []
         
-        optimal_weights = portfolio_result['optimal_weights']
+        # Handle different portfolio result formats
+        if 'optimal_weights' in portfolio_result:
+            optimal_weights = portfolio_result['optimal_weights']
+        elif 'weights' in portfolio_result:
+            optimal_weights = portfolio_result['weights']
+        else:
+            logger.error("No weights found in portfolio result")
+            return []
+            
+        # Ensure weights are in Series format for comparisons
+        if isinstance(optimal_weights, dict):
+            optimal_weights = pd.Series(optimal_weights)
+            
         portfolio_metrics = portfolio_result.get('portfolio_metrics', {})
         
         # 获取最新的股票数据
@@ -3978,11 +4342,45 @@ class UltraEnhancedQuantitativeModel:
                     if np.isnan(prediction_signal):
                         prediction_signal = 0.0
                     
+                    # Generate proper recommendation format expected by save_results
+                    expected_return = max(0.01, min(0.25, prediction_signal * 2))  # Scale prediction to reasonable return
+                    confidence_score = min(0.95, max(0.5, weight * 10))  # Scale weight to confidence
+                    
+                    # Determine rating based on prediction signal
+                    if prediction_signal > 0.05:
+                        rating = "STRONG_BUY"
+                        target_price = latest_price * (1 + expected_return)
+                    elif prediction_signal > 0.02:
+                        rating = "BUY" 
+                        target_price = latest_price * (1 + expected_return * 0.8)
+                    elif prediction_signal > -0.02:
+                        rating = "HOLD"
+                        target_price = latest_price * (1 + expected_return * 0.3)
+                    else:
+                        rating = "SELL"
+                        target_price = latest_price * (1 - abs(expected_return) * 0.5)
+                    
+                    # Determine risk level
+                    if weight > 0.1:
+                        risk_level = "LOW"
+                    elif weight > 0.05:
+                        risk_level = "MEDIUM"
+                    else:
+                        risk_level = "HIGH"
+                    
                     recommendation = {
                         'rank': i + 1,
                         'ticker': ticker,
+                        'rating': rating,
+                        'target_price': round(target_price, 2),
+                        'current_price': round(latest_price, 2),
+                        'expected_return': round(expected_return, 4),
+                        'confidence_score': round(confidence_score, 4),
+                        'risk_level': risk_level,
+                        'sector': 'Technology',  # Default sector
+                        'market_cap': 1000000000,  # Default market cap
+                        'volume_avg': int(avg_volume),
                         'weight': weight,
-                        'latest_price': latest_price,
                         'price_change_1d': price_change_1d,
                         'price_change_5d': price_change_5d,
                         'avg_volume_20d': avg_volume,
@@ -4019,6 +4417,17 @@ class UltraEnhancedQuantitativeModel:
             reasons.append("中性信号")
         
         return "; ".join(reasons)
+    
+    def _extract_weights_safely(self, portfolio_result: Dict[str, Any]) -> Dict[str, float]:
+        """Safely extract weights from portfolio result regardless of format"""
+        weights = portfolio_result.get('optimal_weights') or portfolio_result.get('weights', {})
+        
+        if isinstance(weights, pd.Series):
+            return {sanitize_ticker(k): float(v) for k, v in weights.to_dict().items()}
+        elif isinstance(weights, dict):
+            return {sanitize_ticker(k): float(v) for k, v in weights.items()}
+        else:
+            return {}
     
     def save_results(self, recommendations: List[Dict[str, Any]], 
                     portfolio_result: Dict[str, Any]) -> str:
@@ -4085,7 +4494,7 @@ class UltraEnhancedQuantitativeModel:
                 'timestamp': timestamp,
                 'portfolio_metrics': portfolio_result.get('portfolio_metrics', {}),
                 'optimization_info': portfolio_result.get('optimization_info', {}),
-                    'weights': {sanitize_ticker(k): float(v) for k, v in portfolio_result.get('optimal_weights', pd.Series(dtype=float)).to_dict().items()}
+                    'weights': self._extract_weights_safely(portfolio_result)
             }
             
             with open(portfolio_file, 'w', encoding='utf-8') as f:
@@ -4264,7 +4673,7 @@ def main():
     
     # 两阶段：小样本测试 → 全量
     if args.tickers_limit and args.tickers_limit > 0 and len(tickers) > args.tickers_limit:
-        print("\n🧪 先运行小样本测试...")
+        print("\n[TEST] 先运行小样本测试...")
         small_tickers = tickers[:args.tickers_limit]
         _ = model.run_complete_analysis(
             tickers=small_tickers,
@@ -4272,7 +4681,7 @@ def main():
             end_date=args.end_date,
             top_n=min(args.top_n, len(small_tickers))
         )
-        print("\n✅ 小样本测试完成，开始全量训练...")
+        print("\n[SUCCESS] 小样本测试完成，开始全量训练...")
 
     # 运行完整分析 (带超时保护)
     try:

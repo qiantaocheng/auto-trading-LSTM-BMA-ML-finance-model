@@ -1,1 +1,0 @@
-'UPST', 'TRV', 'VRTX', 'CAG', 'BILL', 'SEDG', 'ICE'

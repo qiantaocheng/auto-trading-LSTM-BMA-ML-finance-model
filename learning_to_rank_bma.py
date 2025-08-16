@@ -549,9 +549,31 @@ class LearningToRankBMA:
             X_train, y_train = X[train_mask], y[train_mask]
             X_test = X[test_mask]
             
-            # 计算组大小
+            # 计算组大小，并处理LightGBM的10000行限制
             train_group_ids = group_ids[train_mask]
-            train_group_sizes = [np.sum(train_group_ids == g) for g in train_groups]
+            original_group_sizes = [np.sum(train_group_ids == g) for g in train_groups]
+            
+            # 如果有组超过10000行，需要分割
+            MAX_GROUP_SIZE = 9999  # LightGBM的上限是10000
+            train_group_sizes = []
+            
+            for size in original_group_sizes:
+                if size > MAX_GROUP_SIZE:
+                    # 将大组分割成多个小组
+                    num_splits = (size + MAX_GROUP_SIZE - 1) // MAX_GROUP_SIZE
+                    split_size = size // num_splits
+                    remaining = size % num_splits
+                    
+                    for i in range(num_splits):
+                        if i < remaining:
+                            train_group_sizes.append(split_size + 1)
+                        else:
+                            train_group_sizes.append(split_size)
+                else:
+                    train_group_sizes.append(size)
+            
+            logger.info(f"LightGBM组大小调整: {len(original_group_sizes)}组 -> {len(train_group_sizes)}组")
+            logger.info(f"最大组大小: {max(train_group_sizes)}")
             
             # LightGBM排序参数
             if optimize_hyperparams:
@@ -705,7 +727,7 @@ class LearningToRankBMA:
         """训练基准回归模型"""
         baseline_models = {
             'linear': LinearRegression(),
-            'rf': RandomForestRegressor(n_estimators=100, random_state=42)
+            'rf': RandomForestRegressor(n_estimators=30, max_depth=5, max_samples=0.5, random_state=42)  # 大幅减少内存使用
         }
         
         results = {}

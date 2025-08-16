@@ -1,1 +1,0 @@
-'NVDA', 'GOOGL', 'TSLA', 'AMZN', 'META'

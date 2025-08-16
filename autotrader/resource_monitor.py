@@ -56,6 +56,12 @@ class ResourceMonitor:
         self._last_gc_time = 0
         self._gc_threshold = 300  # 5分钟
         
+        # 内存增长阈值优化
+        self._memory_growth_warning_threshold = 0.5  # 50%增长才警告
+        self._memory_growth_cleanup_threshold = 1.0  # 100%增长才清理
+        self._min_memory_for_warning_mb = 512  # 内存少于512MB不警告增长
+        self._memory_analysis_window = 20  # 分析20个数据点(10分钟)
+        
         # 性能监控
         self._cpu_history: deque = deque(maxlen=30)
         self._performance_alerts = []
@@ -67,6 +73,12 @@ class ResourceMonitor:
         
         # 警告回调
         self._warning_callbacks: List[Callable[[str, Dict], None]] = []
+        
+        # 警告抑制机制
+        self._warning_suppression = {
+            'memory_growth': False,  # 是否抑制内存增长警告
+            'last_warning_time': {}  # 上次警告时间，避免重复警告
+        }
         
         # 清理策略
         self._cleanup_strategies = {
@@ -107,6 +119,27 @@ class ResourceMonitor:
     def add_warning_callback(self, callback: Callable[[str, Dict], None]):
         """添加警告回调函数"""
         self._warning_callbacks.append(callback)
+    
+    def suppress_warning(self, warning_type: str, suppress: bool = True):
+        """抑制特定类型的警告"""
+        self._warning_suppression[warning_type] = suppress
+        self.logger.info(f"警告抑制设置: {warning_type} = {suppress}")
+    
+    def adjust_memory_thresholds(self, 
+                               warning_threshold: float = None,
+                               cleanup_threshold: float = None,
+                               min_memory_mb: int = None):
+        """调整内存监控阈值"""
+        if warning_threshold is not None:
+            self._memory_growth_warning_threshold = warning_threshold
+        if cleanup_threshold is not None:
+            self._memory_growth_cleanup_threshold = cleanup_threshold  
+        if min_memory_mb is not None:
+            self._min_memory_for_warning_mb = min_memory_mb
+        
+        self.logger.info(f"内存阈值调整: 警告={self._memory_growth_warning_threshold:.1%}, "
+                        f"清理={self._memory_growth_cleanup_threshold:.1%}, "
+                        f"最小内存={self._min_memory_for_warning_mb}MB")
     
     def _monitor_loop(self):
         """监控循环"""
@@ -158,24 +191,39 @@ class ResourceMonitor:
                 'percent': self._process.memory_percent()
             })
             
-            # check内存增长趋势
-            if len(self._memory_history) >= 10:
-                recent = list(self._memory_history)[-10:]
+            # check内存增长趋势（优化算法）
+            if len(self._memory_history) >= self._memory_analysis_window:
+                recent = list(self._memory_history)[-self._memory_analysis_window:]
                 oldest = recent[0]['rss_mb']
                 newest = recent[-1]['rss_mb']
                 
-                if oldest > 0:
+                # 只有当内存足够大且增长显著时才警告
+                if oldest > 0 and newest > self._min_memory_for_warning_mb:
                     growth_rate = (newest - oldest) / oldest
+                    absolute_growth_mb = newest - oldest
                     
-                    if growth_rate > 0.2:  # 20%增长
+                    # 增强的内存增长检测
+                    should_warn = (
+                        growth_rate > self._memory_growth_warning_threshold and  # 相对增长大
+                        absolute_growth_mb > 100  # 绝对增长超过100MB
+                    )
+                    
+                    if should_warn:
+                        # 计算趋势稳定性
+                        memory_values = [item['rss_mb'] for item in recent]
+                        trend_stability = self._calculate_trend_stability(memory_values)
+                        
                         self._trigger_warning("memory_growth", {
                             'growth_rate': growth_rate,
                             'current_mb': memory_mb,
-                            'trend': 'increasing'
+                            'absolute_growth_mb': absolute_growth_mb,
+                            'trend': 'increasing',
+                            'trend_stability': trend_stability,
+                            'analysis_window_minutes': self._memory_analysis_window * self._monitor_interval / 60
                         })
                         
-                        # 触发内存清理
-                        if growth_rate > 0.5:  # 50%增长触发强制清理
+                        # 触发内存清理（更高阈值）
+                        if growth_rate > self._memory_growth_cleanup_threshold and absolute_growth_mb > 200:
                             self._trigger_cleanup('memory')
             
             # check内存限制
@@ -194,6 +242,23 @@ class ResourceMonitor:
         
         except Exception as e:
             self.logger.error(f"内存checkfailed: {e}")
+    
+    def _calculate_trend_stability(self, values: List[float]) -> float:
+        """计算趋势稳定性 (0-1, 1表示稳定增长)"""
+        if len(values) < 3:
+            return 0.0
+        
+        try:
+            # 计算一阶差分 (变化率)
+            differences = [values[i+1] - values[i] for i in range(len(values)-1)]
+            
+            # 计算正增长的比例
+            positive_changes = sum(1 for d in differences if d > 0)
+            stability = positive_changes / len(differences) if differences else 0.0
+            
+            return stability
+        except Exception:
+            return 0.0
     
     def _check_cpu(self):
         """checkCPU使use"""
@@ -342,11 +407,18 @@ class ResourceMonitor:
             self.logger.error(f"磁盘空间checkfailed: {e}")
     
     def _trigger_warning(self, warning_type: str, data: Dict[str, Any]):
-        """触发警告"""
+        """触发警告（带重复警告抑制）"""
+        # check是否应该抑制此警告
+        if self._should_suppress_warning(warning_type, data):
+            return
+        
         self._total_warnings += 1
         warning_msg = f"资源警告 [{warning_type}]: {data}"
         
         self.logger.warning(warning_msg)
+        
+        # 更新最后警告时间
+        self._warning_suppression['last_warning_time'][warning_type] = time.time()
         
         # 调use回调函数
         for callback in self._warning_callbacks:
@@ -365,6 +437,26 @@ class ResourceMonitor:
         # 保持警告历史大小
         if len(self._performance_alerts) > 100:
             self._performance_alerts.pop(0)
+    
+    def _should_suppress_warning(self, warning_type: str, data: Dict[str, Any]) -> bool:
+        """判断是否应该抑制警告"""
+        # check全局抑制设置
+        if self._warning_suppression.get(warning_type, False):
+            return True
+        
+        # check重复警告时间间隔（避免短时间内重复警告）
+        current_time = time.time()
+        last_warning_time = self._warning_suppression['last_warning_time'].get(warning_type, 0)
+        
+        # 内存增长警告：5分钟内不重复
+        if warning_type == 'memory_growth' and (current_time - last_warning_time) < 300:
+            return True
+        
+        # 其他警告：1分钟内不重复
+        if (current_time - last_warning_time) < 60:
+            return True
+        
+        return False
     
     def _trigger_cleanup(self, resource_type: str):
         """触发清理"""
