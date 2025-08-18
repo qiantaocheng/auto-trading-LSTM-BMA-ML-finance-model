@@ -1,9 +1,9 @@
 {
   "connection": {
-    "host": "127.0.0.1",
-    "port": 7497,
-    "client_id": 3130,
-    "account_id": "c2dvdongg",
+    "host": "${IBKR_HOST:-127.0.0.1}",
+    "port": "${IBKR_PORT:-7497}",
+    "client_id": "${CLIENT_ID:-3130}",
+    "account_id": "${TRADING_ACCOUNT_ID}",
     "use_delayed_if_no_realtime": true,
     "timeout": 20.0,
     "max_reconnect_attempts": 10
@@ -17,11 +17,11 @@
   },
   "orders": {
     "smart_price_mode": "midpoint",
-    "default_stop_loss_pct": 0.02,
-    "default_take_profit_pct": 0.05,
+    "default_stop_loss_pct": "${DEFAULT_STOP_LOSS:-0.02}",
+    "default_take_profit_pct": "${DEFAULT_TAKE_PROFIT:-0.05}",
     "min_order_value_usd": 500.0,
     "verify_tolerance_usd": 100.0,
-    "daily_order_limit": 20
+    "daily_order_limit": "${MAX_DAILY_ORDERS:-20}"
   },
   "scanner": {
     "universe": [
@@ -38,8 +38,8 @@
     "min_signal_strength": 0.3
   },
   "sizing": {
-    "per_trade_risk_pct": 0.02,
-    "max_position_pct_of_equity": 0.15,
+    "per_trade_risk_pct": "${PER_TRADE_RISK_PCT:-0.02}",
+    "max_position_pct_of_equity": "${MAX_POSITION_PCT:-0.15}",
     "min_position_usd": 1000.0,
     "min_shares": 1,
     "notional_round_lots": true
@@ -80,5 +80,6 @@
         "target_pct": 0.15
       }
     }
-  }
+  },
+  "_SECURITY_WARNING": "Hardcoded credentials removed. Set environment variables."
 }

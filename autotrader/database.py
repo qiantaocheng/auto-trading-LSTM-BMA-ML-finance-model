@@ -5,7 +5,7 @@ SQLite database module - Manages stock lists and trading configurations
 
 import sqlite3
 import os
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import logging
 
@@ -27,6 +27,7 @@ class StockDatabase:
             self.db_path = db_path
         self.logger = logging.getLogger("StockDatabase")
         self._connection = None
+        self._connection_count = 0  # 跟踪连接数量
         self._init_database()
     
     def __enter__(self):
@@ -36,24 +37,58 @@ class StockDatabase:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - ensure connection is closed"""
         self.close()
+        # Check for and report connection leaks
+        if self.check_connection_leaks():
+            self.logger.warning("Connection leaks detected during exit")
+            self._force_cleanup()
     
     def _get_connection(self):
         """Get database connection with proper timeout and concurrency settings"""
         try:
+            self._connection_count += 1
+            self.logger.debug(f"Creating database connection #{self._connection_count}")
+            
             conn = sqlite3.connect(
                 self.db_path, 
                 timeout=30.0,  # 30 second timeout
                 isolation_level="DEFERRED",  # Allow concurrent reads
                 check_same_thread=False  # Allow cross-thread usage
             )
-            # Configure SQLite for better concurrency
+            
+            # Configure SQLite for better concurrency and performance
             conn.execute("PRAGMA journal_mode=WAL;")  # Write-Ahead Logging for concurrent reads/writes
             conn.execute("PRAGMA synchronous=NORMAL;")  # Balance between safety and speed
             conn.execute("PRAGMA temp_store=MEMORY;")  # Use memory for temp tables
             conn.execute("PRAGMA cache_size=10000;")  # Larger cache for better performance
             conn.execute("PRAGMA busy_timeout=30000;")  # 30 second busy timeout
+            conn.execute("PRAGMA foreign_keys=ON;")  # Enable foreign key constraints
+            
+            # 使用装饰器模式跟踪连接关闭
+            class TrackedConnection:
+                def __init__(self, conn, tracker):
+                    self._conn = conn
+                    self._tracker = tracker
+                    
+                def __getattr__(self, name):
+                    return getattr(self._conn, name)
+                    
+                def __enter__(self):
+                    return self
+                    
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    self.close()
+                    return False
+                    
+                def close(self):
+                    self._tracker._connection_count -= 1
+                    self._tracker.logger.debug(f"Closing database connection, remaining: {self._tracker._connection_count}")
+                    return self._conn.close()
+                    
+            conn = TrackedConnection(conn, self)
+            
             return conn
         except sqlite3.Error as e:
+            self._connection_count -= 1  # 回滚计数
             self.logger.error(f"Database connection failed: {e}")
             raise
     
@@ -66,6 +101,82 @@ class StockDatabase:
             except Exception as e:
                 self.logger.warning(f"Error closing database connection: {e}")
     
+    def get_connection_info(self) -> Dict[str, Any]:
+        """获取数据库连接信息"""
+        return {
+            'db_path': self.db_path,
+            'active_connections': self._connection_count,
+            'connection_exists': self._connection is not None
+        }
+    
+    def check_connection_leaks(self) -> bool:
+        """检查连接泄漏"""
+        if self._connection_count > 0:
+            self.logger.warning(f"Potential connection leak detected: {self._connection_count} connections still active")
+            return True
+        return False
+    
+    def _force_cleanup(self):
+        """强制清理所有连接"""
+        try:
+            # Reset connection count
+            self._connection_count = 0
+            if hasattr(self, '_connection') and self._connection:
+                self._connection.close()
+                self._connection = None
+            self.logger.info("Forced database connection cleanup completed")
+        except Exception as e:
+            self.logger.error(f"Error during forced cleanup: {e}")
+    
+    def _validate_query_safety(self, query: str, params: tuple = ()) -> bool:
+        """
+        验证SQL查询安全性，防止SQL注入
+        
+        Args:
+            query: SQL查询字符串
+            params: 查询参数
+            
+        Returns:
+            bool: 如果查询安全返回True，否则返回False
+        """
+        # 检查查询是否使用参数化查询
+        if params is None:
+            params = ()
+        
+        # 统计查询中的参数占位符数量
+        placeholder_count = query.count('?')
+        param_count = len(params)
+        
+        # 参数数量不匹配是潜在的安全问题
+        if placeholder_count != param_count:
+            self.logger.warning(f"参数数量不匹配: 查询需要{placeholder_count}个参数，提供了{param_count}个")
+            return False
+        
+        # 检查是否有潜在的SQL注入模式（仅在没有使用参数化查询时）
+        if placeholder_count == 0 and param_count == 0:
+            dangerous_patterns = [
+                '; DROP ',
+                '; DELETE ',
+                '; UPDATE ',
+                '; INSERT ',
+                '-- ',
+                '/*',
+                '*/',
+                'UNION SELECT',
+                'OR 1=1',
+                'OR TRUE',
+                "' OR '",
+                '" OR "',
+            ]
+            
+            query_upper = query.upper()
+            for pattern in dangerous_patterns:
+                if pattern in query_upper:
+                    self.logger.error(f"检测到潜在SQL注入模式: {pattern}")
+                    return False
+        
+        return True
+    
     def _execute_with_retry(self, query: str, params: tuple = (), max_retries: int = 3, fetch_result: bool = True):
         """Execute query with retry mechanism for handling database locks
         
@@ -76,6 +187,11 @@ class StockDatabase:
             fetch_result: Whether to fetch and return results (SELECT) or just execute (INSERT/UPDATE/DELETE)
         """
         import time
+        
+        # 安全验证：检查SQL注入风险
+        if not self._validate_query_safety(query, params):
+            raise ValueError("检测到不安全的SQL查询，可能存在SQL注入风险")
+        
         for attempt in range(max_retries):
             try:
                 with self._get_connection() as conn:
@@ -99,6 +215,10 @@ class StockDatabase:
                 self.logger.error(f"Database operation failed: {e}")
                 raise
 
+    def create_tables(self):
+        """Public method to create database tables"""
+        return self._init_database()
+    
     def _init_database(self):
         """Initialize database table structure（using retry mechanism）"""
         try:
@@ -199,7 +319,7 @@ class StockDatabase:
     def _create_default_data(self):
         """Create default data"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Check if data already exists

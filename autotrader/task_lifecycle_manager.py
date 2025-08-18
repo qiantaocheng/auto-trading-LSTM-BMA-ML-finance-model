@@ -1,339 +1,202 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-任务生命周期管理器 - 防止内存泄漏
-统一管理所hasasyncio任务创建、监控and清理
+Task Lifecycle Manager Compatibility Module
+Provides basic task management functionality
 """
 
+import logging
 import asyncio
 import time
-import logging
-import weakref
-from typing import Dict, Set, Optional, Callable, Any, List
-from dataclasses import dataclass
-from threading import Lock
-from collections import defaultdict
-import traceback
+from typing import Dict, Any, Optional, Callable, List
+from dataclasses import dataclass, field
+from enum import Enum
+
+logger = logging.getLogger(__name__)
+
+class TaskState(Enum):
+    """Task execution states"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 @dataclass
 class TaskInfo:
-    """任务信息"""
+    """Task information and metadata"""
     task_id: str
-    task: asyncio.Task
-    created_at: float
-    creator: str
-    description: str
-    cleanup_callback: Optional[Callable] = None
-    max_lifetime: Optional[float] = None  # 最大生存when间（ seconds）
+    name: str
+    state: TaskState = TaskState.PENDING
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    error: Optional[str] = None
+    result: Any = None
 
 class TaskLifecycleManager:
-    """任务生命周期管理器"""
+    """
+    Basic task lifecycle management
+    Provides task tracking and execution monitoring
+    """
     
-    def __init__(self, logger: Optional[logging.Logger] = None):
-        self.logger = logger or logging.getLogger("TaskLifecycleManager")
+    def __init__(self):
+        self.tasks: Dict[str, TaskInfo] = {}
+        self.active_tasks: Dict[str, asyncio.Task] = {}
+        self.logger = logger
         
-        # 任务跟踪
-        self._tasks: Dict[str, TaskInfo] = {}
-        self._task_groups: Dict[str, Set[str]] = defaultdict(set)
-        self._lock = Lock()
-        
-        # 统计
-        self._stats = {
-            'created': 0,
-            'completed': 0,
-            'cancelled': 0,
-            'leaked': 0,
-            'cleanup_errors': 0
+        # Statistics
+        self.stats = {
+            'total_tasks': 0,
+            'completed_tasks': 0,
+            'failed_tasks': 0,
+            'cancelled_tasks': 0,
+            'average_execution_time': 0.0
         }
         
-        # 配置
-        self.max_task_lifetime = 3600.0  # 默认1小when最大生存when间
-        self.cleanup_interval = 300.0   # 5分钟清理间隔
-        self.warn_threshold = 100       # 任务数量警告阈值
-        
-        # 清理任务
-        self._cleanup_task: Optional[asyncio.Task] = None
-        self._start_cleanup_monitor()
+        logger.info("TaskLifecycleManager initialized")
     
-    def create_task(self, coro, task_id: Optional[str] = None, 
-                   creator: str = "unknown", description: str = "",
-                   group: Optional[str] = None, max_lifetime: Optional[float] = None,
-                   cleanup_callback: Optional[Callable] = None) -> asyncio.Task:
-        """创建并注册任务"""
-        if task_id is None:
-            task_id = f"task_{int(time.time() * 1000)}_{id(coro)}"
-        
-        # 创建任务
-        task = asyncio.create_task(coro)
-        
-        # 注册任务信息
-        task_info = TaskInfo(
-            task_id=task_id,
-            task=task,
-            created_at=time.time(),
-            creator=creator,
-            description=description,
-            cleanup_callback=cleanup_callback,
-            max_lifetime=max_lifetime or self.max_task_lifetime
-        )
-        
-        with self._lock:
-            # check重复ID
-            if task_id in self._tasks:
-                self.logger.warning(f"任务ID重复: {task_id}，will覆盖")
-                old_task = self._tasks[task_id].task
-                if not old_task.done():
-                    old_task.cancel()
-            
-            self._tasks[task_id] = task_info
-            
-            # 添加to组
-            if group:
-                self._task_groups[group].add(task_id)
-            
-            self._stats['created'] += 1
-        
-        # 添加completed回调
-        task.add_done_callback(lambda t: self._on_task_done(task_id, t))
-        
-        self.logger.debug(f"创建任务: {task_id} ({creator}) - {description}")
-        
-        # check任务数量
-        if len(self._tasks) > self.warn_threshold:
-            self.logger.warning(f"活跃任务数量过多: {len(self._tasks)}")
-        
-        return task
+    def create_task_id(self, name: str) -> str:
+        """Generate a unique task ID"""
+        timestamp = int(time.time() * 1000)
+        return f"{name}_{timestamp}_{len(self.tasks)}"
     
-    def _on_task_done(self, task_id: str, task: asyncio.Task):
-        """任务completed回调"""
-        with self._lock:
-            task_info = self._tasks.pop(task_id, None)
-            if not task_info:
-                return
-            
-            # from组in移除
-            for group_tasks in self._task_groups.values():
-                group_tasks.discard(task_id)
-            
-            # updates统计
-            if task.cancelled():
-                self._stats['cancelled'] += 1
-            elif task.exception():
-                self._stats['completed'] += 1
-                exception = task.exception()
-                if not isinstance(exception, asyncio.CancelledError):
-                    self.logger.warning(f"任务异常completed {task_id}: {exception}")
-            else:
-                self._stats['completed'] += 1
-            
-            # 执行清理回调
-            if task_info.cleanup_callback:
-                try:
-                    if asyncio.iscoroutinefunction(task_info.cleanup_callback):
-                        # 异步回调需要in事件循环in执行
-                        asyncio.create_task(task_info.cleanup_callback())
-                    else:
-                        task_info.cleanup_callback()
-                except Exception as e:
-                    self.logger.error(f"任务清理回调failed {task_id}: {e}")
-                    self._stats['cleanup_errors'] += 1
+    def register_task(self, name: str, task_id: str = None) -> str:
+        """Register a new task"""
+        if not task_id:
+            task_id = self.create_task_id(name)
         
-        self.logger.debug(f"任务completed: {task_id}")
+        task_info = TaskInfo(task_id=task_id, name=name)
+        self.tasks[task_id] = task_info
+        self.stats['total_tasks'] += 1
+        
+        logger.debug(f"Registered task: {task_id} ({name})")
+        return task_id
     
-    def cancel_task(self, task_id: str, reason: str = "") -> bool:
-        """取消指定任务"""
-        with self._lock:
-            task_info = self._tasks.get(task_id)
-            if not task_info or task_info.task.done():
-                return False
-            
-            task_info.task.cancel()
-            self.logger.info(f"取消任务: {task_id} - {reason}")
+    def start_task(self, task_id: str) -> bool:
+        """Mark a task as started"""
+        if task_id in self.tasks:
+            self.tasks[task_id].state = TaskState.RUNNING
+            self.tasks[task_id].started_at = time.time()
+            logger.debug(f"Started task: {task_id}")
             return True
+        return False
     
-    def cancel_group(self, group: str, reason: str = "") -> int:
-        """取消整个组任务"""
-        cancelled_count = 0
-        with self._lock:
-            task_ids = list(self._task_groups.get(group, set()))
-        
-        for task_id in task_ids:
-            if self.cancel_task(task_id, f"{reason} (group: {group})"):
-                cancelled_count += 1
-        
-        self.logger.info(f"取消任务组 {group}: {cancelled_count} 个任务")
-        return cancelled_count
-    
-    def get_task(self, task_id: str) -> Optional[asyncio.Task]:
-        """retrieval任务"""
-        with self._lock:
-            task_info = self._tasks.get(task_id)
-            return task_info.task if task_info else None
-    
-    def list_tasks(self, group: Optional[str] = None, 
-                  creator: Optional[str] = None) -> List[TaskInfo]:
-        """列出任务"""
-        with self._lock:
-            tasks = []
-            for task_info in self._tasks.values():
-                if group and task_info.task_id not in self._task_groups.get(group, set()):
-                    continue
-                if creator and task_info.creator != creator:
-                    continue
-                tasks.append(task_info)
-            return tasks.copy()
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """retrieval统计信息"""
-        with self._lock:
-            active_tasks = len(self._tasks)
-            active_groups = {k: len(v) for k, v in self._task_groups.items() if v}
+    def complete_task(self, task_id: str, result: Any = None) -> bool:
+        """Mark a task as completed"""
+        if task_id in self.tasks:
+            task_info = self.tasks[task_id]
+            task_info.state = TaskState.COMPLETED
+            task_info.completed_at = time.time()
+            task_info.result = result
             
-            # 计算任务年龄分布
-            current_time = time.time()
-            age_distribution = {'<1min': 0, '1-5min': 0, '5-30min': 0, '>30min': 0}
+            # Update statistics
+            self.stats['completed_tasks'] += 1
+            if task_info.started_at:
+                execution_time = task_info.completed_at - task_info.started_at
+                self._update_average_execution_time(execution_time)
             
-            for task_info in self._tasks.values():
-                age = current_time - task_info.created_at
-                if age < 60:
-                    age_distribution['<1min'] += 1
-                elif age < 300:
-                    age_distribution['1-5min'] += 1
-                elif age < 1800:
-                    age_distribution['5-30min'] += 1
-                else:
-                    age_distribution['>30min'] += 1
-            
-            return {
-                'active_tasks': active_tasks,
-                'active_groups': active_groups,
-                'age_distribution': age_distribution,
-                'lifecycle_stats': self._stats.copy(),
-                'memory_usage_estimate': active_tasks * 1024  # 粗略估算
-            }
-    
-    def _start_cleanup_monitor(self):
-        """start清理监控任务"""
-        async def cleanup_monitor():
-            while True:
-                try:
-                    await asyncio.sleep(self.cleanup_interval)
-                    await self._periodic_cleanup()
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    self.logger.error(f"清理监控异常: {e}")
-        
-        try:
-            self._cleanup_task = asyncio.create_task(cleanup_monitor())
-        except RuntimeError:
-            # 没has运行事件循环，稍after再start
-            self.logger.debug("暂no事件循环，清理监控will稍afterstart")
-    
-    async def _periodic_cleanup(self):
-        """定期清理过期and异常任务"""
-        current_time = time.time()
-        expired_tasks = []
-        leaked_tasks = []
-        
-        with self._lock:
-            for task_id, task_info in list(self._tasks.items()):
-                # check过期任务
-                if current_time - task_info.created_at > task_info.max_lifetime:
-                    expired_tasks.append(task_id)
+            # Clean up active task reference
+            if task_id in self.active_tasks:
+                del self.active_tasks[task_id]
                 
-                # check泄漏任务（completed但未清理）
-                if task_info.task.done() and task_id in self._tasks:
-                    leaked_tasks.append(task_id)
-        
-        # 清理过期任务
-        for task_id in expired_tasks:
-            self.cancel_task(task_id, "任务超when")
-        
-        # 清理泄漏任务
-        for task_id in leaked_tasks:
-            with self._lock:
-                self._tasks.pop(task_id, None)
-            self._stats['leaked'] += 1
-        
-        if expired_tasks or leaked_tasks:
-            self.logger.info(f"定期清理: 过期任务 {len(expired_tasks)} 个, 泄漏任务 {len(leaked_tasks)} 个")
+            logger.debug(f"Completed task: {task_id}")
+            return True
+        return False
     
-    async def shutdown(self):
-        """关闭管理器"""
-        self.logger.info("starting关闭任务生命周期管理器...")
-        
-        # 停止清理监控
-        if self._cleanup_task:
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
-        
-        # 取消所has活跃任务
-        active_tasks = []
-        with self._lock:
-            for task_info in self._tasks.values():
-                if not task_info.task.done():
-                    task_info.task.cancel()
-                    active_tasks.append(task_info.task)
-        
-        # 等待任务completed
-        if active_tasks:
-            self.logger.info(f"等待 {len(active_tasks)} 个任务completed...")
-            await asyncio.gather(*active_tasks, return_exceptions=True)
-        
-        # 清理状态
-        with self._lock:
-            self._tasks.clear()
-            self._task_groups.clear()
-        
-        self.logger.info("任务生命周期管理器关闭")
-    
-    def force_cleanup(self):
-        """强制清理（同步方法）"""
-        with self._lock:
-            # 取消所has任务
-            for task_info in self._tasks.values():
-                if not task_info.task.done():
-                    task_info.task.cancel()
+    def fail_task(self, task_id: str, error: str) -> bool:
+        """Mark a task as failed"""
+        if task_id in self.tasks:
+            task_info = self.tasks[task_id]
+            task_info.state = TaskState.FAILED
+            task_info.completed_at = time.time()
+            task_info.error = error
             
-            # 清理状态
-            cancelled_count = len(self._tasks)
-            self._tasks.clear()
-            self._task_groups.clear()
-            self._stats['cancelled'] += cancelled_count
+            # Update statistics
+            self.stats['failed_tasks'] += 1
+            
+            # Clean up active task reference
+            if task_id in self.active_tasks:
+                del self.active_tasks[task_id]
+                
+            logger.warning(f"Failed task: {task_id} - {error}")
+            return True
+        return False
+    
+    def cancel_task(self, task_id: str) -> bool:
+        """Cancel a task"""
+        if task_id in self.tasks:
+            task_info = self.tasks[task_id]
+            task_info.state = TaskState.CANCELLED
+            task_info.completed_at = time.time()
+            
+            # Cancel active asyncio task if it exists
+            if task_id in self.active_tasks:
+                asyncio_task = self.active_tasks[task_id]
+                if not asyncio_task.done():
+                    asyncio_task.cancel()
+                del self.active_tasks[task_id]
+            
+            # Update statistics
+            self.stats['cancelled_tasks'] += 1
+            
+            logger.info(f"Cancelled task: {task_id}")
+            return True
+        return False
+    
+    def get_task_info(self, task_id: str) -> Optional[TaskInfo]:
+        """Get task information"""
+        return self.tasks.get(task_id)
+    
+    def get_active_tasks(self) -> List[TaskInfo]:
+        """Get all active (running) tasks"""
+        return [task for task in self.tasks.values() if task.state == TaskState.RUNNING]
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get task execution statistics"""
+        return self.stats.copy()
+    
+    def cleanup_completed_tasks(self, max_age_seconds: float = 3600) -> int:
+        """Clean up old completed tasks"""
+        now = time.time()
+        to_remove = []
         
-        self.logger.warning(f"强制清理了 {cancelled_count} 个任务")
+        for task_id, task_info in self.tasks.items():
+            if (task_info.state in [TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED] and
+                task_info.completed_at and 
+                now - task_info.completed_at > max_age_seconds):
+                to_remove.append(task_id)
+        
+        for task_id in to_remove:
+            del self.tasks[task_id]
+        
+        if to_remove:
+            logger.info(f"Cleaned up {len(to_remove)} old tasks")
+        
+        return len(to_remove)
+    
+    def _update_average_execution_time(self, execution_time: float):
+        """Update average execution time statistics"""
+        current_avg = self.stats['average_execution_time']
+        completed_count = self.stats['completed_tasks']
+        
+        if completed_count == 1:
+            self.stats['average_execution_time'] = execution_time
+        else:
+            # Weighted average
+            self.stats['average_execution_time'] = (
+                (current_avg * (completed_count - 1) + execution_time) / completed_count
+            )
 
-# 全局实例
-_global_task_manager: Optional[TaskLifecycleManager] = None
+# Global task manager instance
+_task_manager = None
 
 def get_task_manager() -> TaskLifecycleManager:
-    """retrieval全局任务生命周期管理器实例（兼容接口）"""
-    global _global_task_manager
-    if _global_task_manager is None:
-        _global_task_manager = TaskLifecycleManager()
-    return _global_task_manager
+    """Get the global task manager instance"""
+    global _task_manager
+    if _task_manager is None:
+        _task_manager = TaskLifecycleManager()
+    return _task_manager
 
-def create_managed_task(coro, task_id: Optional[str] = None, 
-                       creator: str = "unknown", description: str = "",
-                       group: Optional[str] = None, 
-                       cleanup_callback: Optional[Callable] = None) -> asyncio.Task:
-    """便捷函数：创建受管理任务"""
-    # 自动retrieval调use者信息
-    if creator == "unknown":
-        import inspect
-        frame = inspect.currentframe().f_back
-        creator = f"{frame.f_code.co_filename}:{frame.f_lineno}"
-    
-    manager = get_task_manager()
-    return manager.create_task(coro, task_id, creator, description, group, cleanup_callback=cleanup_callback)
-
-async def shutdown_task_manager():
-    """关闭全局任务管理器"""
-    global _global_task_manager
-    if _global_task_manager:
-        await _global_task_manager.shutdown()
-        _global_task_manager = None
+def create_task_manager() -> TaskLifecycleManager:
+    """Create a new task manager instance"""
+    return TaskLifecycleManager()

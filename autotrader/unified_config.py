@@ -7,14 +7,21 @@
 import json
 import sqlite3
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 # 清理：移除未使use导入
 # import os
 # from typing import Union
 from pathlib import Path
-from threading import RLock
+from threading import RLock, current_thread
 from copy import deepcopy
 import time
+
+# Import enhanced prediction config
+try:
+    from .enhanced_prediction_config import get_enhanced_prediction_config
+    ENHANCED_CONFIG_AVAILABLE = True
+except ImportError:
+    ENHANCED_CONFIG_AVAILABLE = False
 
 class UnifiedConfigManager:
     """统一配置管理器，解决配置冲突"""
@@ -58,11 +65,39 @@ class UnifiedConfigManager:
         # 监控配置变化
         self._file_mtimes: Dict[str, float] = {}
         
+        # 配置变更监听器
+        self._change_listeners: List[Callable[[str, Any, Any], None]] = []
+        
         # 初始化默认配置
         self._init_defaults()
         
         # 自动加载
         self.load_all()
+    
+    def _invalidate_cache(self):
+        """简化的缓存失效方法 - 线程安全"""
+        # 简化锁逻辑，避免死锁
+        self._cache_valid = False
+        self._last_update = time.time()
+        self.logger.debug("配置缓存已失效")
+    
+    def add_change_listener(self, listener: Callable[[str, Any, Any], None]):
+        """添加配置变更监听器"""
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
+    
+    def remove_change_listener(self, listener: Callable[[str, Any, Any], None]):
+        """移除配置变更监听器"""
+        if listener in self._change_listeners:
+            self._change_listeners.remove(listener)
+    
+    def _notify_change_listeners(self, key_path: str, old_value: Any, new_value: Any):
+        """通知配置变更监听器"""
+        for listener in self._change_listeners:
+            try:
+                listener(key_path, old_value, new_value)
+            except Exception as e:
+                self.logger.error(f"配置变更监听器失败: {e}")
     
     def _init_defaults(self):
         """初始化默认配置"""
@@ -193,19 +228,24 @@ class UnifiedConfigManager:
                     self._file_mtimes['database'] = self.paths['database'].stat().st_mtime
             
             # 标记缓存失效
-            self._cache_valid = False
-            self._last_update = time.time()
+            self._invalidate_cache()
             
             self.logger.info("Configuration loading completed")
     
     def _files_changed(self) -> bool:
         """check配置文件is否修改"""
-        for file_key, path in self.paths.items():
-            if path.exists():
-                current_mtime = path.stat().st_mtime
-                if file_key not in self._file_mtimes or current_mtime > self._file_mtimes[file_key]:
-                    return True
-        return False
+        # 使用锁保护文件修改时间字典的访问
+        with self.lock:
+            for file_key, path in self.paths.items():
+                if path.exists():
+                    try:
+                        current_mtime = path.stat().st_mtime
+                        if file_key not in self._file_mtimes or current_mtime > self._file_mtimes[file_key]:
+                            return True
+                    except (OSError, IOError):
+                        # 文件访问错误，假定未改变
+                        continue
+            return False
     
     def _load_database_config(self):
         """from数据库加载配置"""
@@ -320,15 +360,29 @@ class UnifiedConfigManager:
                 config = config[key]
             
             config[keys[-1]] = value
-            self._cache_valid = False
+            self._invalidate_cache()
             
             self.logger.debug(f"settings运行when配置: {key_path} = {value}")
     
     def update_runtime_config(self, updates: Dict[str, Any]):
         """批量updates运行when配置"""
         with self.lock:
+            # 批量更新，只失效一次缓存
             for key_path, value in updates.items():
-                self.set_runtime(key_path, value)
+                keys = key_path.split('.')
+                config = self._configs['runtime']
+                
+                # 创建嵌套结构
+                for key in keys[:-1]:
+                    if key not in config:
+                        config[key] = {}
+                    config = config[key]
+                
+                config[keys[-1]] = value
+                self.logger.debug(f"批量设置运行时配置: {key_path} = {value}")
+            
+            # 只失效一次缓存
+            self._invalidate_cache()
                 
     def save_to_file(self, config_type: str = 'hotconfig') -> bool:
         """保存配置to文件（持久化）"""
@@ -393,7 +447,7 @@ class UnifiedConfigManager:
                     # updatesfile配置并清空runtime
                     self._configs['file'] = file_config
                     self._configs['runtime'] = {}
-                    self._cache_valid = False
+                    self._invalidate_cache()
                     
                     self.logger.info("运行when配置持久化")
                     return True
@@ -404,22 +458,38 @@ class UnifiedConfigManager:
     
     def _get_merged_config(self) -> Dict[str, Any]:
         """retrieval合并after配置"""
-        if self._cache_valid and self._merged_config:
-            # 缓存有效时不触发任何加载日志，直接返回
-            return self._merged_config
-        
-        # 按优先级合并配置
-        merged = {}
-        for source in ['default', 'file', 'database', 'hotconfig', 'runtime']:
-            if self._configs[source]:
-                self._deep_merge(merged, self._configs[source])
-                self.logger.debug(f"合并配置源: {source}")
-        
-        # 原子性settings缓存
-        self._merged_config = merged
-        self._cache_valid = True
-        
-        return merged
+        # 使用锁确保线程安全的配置合并
+        with self.lock:
+            # 检查缓存有效性和超时
+            cache_timeout = 300  # 5分钟缓存超时
+            current_time = time.time()
+            cache_expired = current_time - self._last_update > cache_timeout
+            
+            # 原子性检查和返回缓存
+            if self._cache_valid and self._merged_config and not cache_expired:
+                # 缓存有效且未超时，直接返回副本（避免外部修改影响缓存）
+                return deepcopy(self._merged_config)
+            
+            if cache_expired:
+                self.logger.debug("配置缓存已超时，重新构建")
+                # 在锁内安全地失效缓存
+                self._cache_valid = False
+                self._last_update = current_time
+            
+            # 按优先级合并配置（在锁内进行，确保原子性）
+            merged = {}
+            for source in ['default', 'file', 'database', 'hotconfig', 'runtime']:
+                if self._configs[source]:
+                    self._deep_merge(merged, self._configs[source])
+                    self.logger.debug(f"合并配置源: {source}")
+            
+            # 原子性设置缓存
+            self._merged_config = merged
+            self._cache_valid = True
+            self._last_update = current_time
+            
+            # 返回副本，防止外部修改影响缓存
+            return deepcopy(merged)
     
     def _deep_merge(self, target: Dict, source: Dict):
         """depth合并字典"""
@@ -455,30 +525,37 @@ class UnifiedConfigManager:
         return sorted(list(set(universe)))
     
     def get_connection_params(self, auto_allocate_client_id: bool = True) -> Dict[str, Any]:
-        """retrievalconnection参数"""
-        host = self.get('connection.host')
-        port = self.get('connection.port')
+        """Get connection parameters with environment variable fallbacks"""
+        # Try environment first, then config files
+        from .environment_config import get_environment_manager
+        env_manager = get_environment_manager()
+        env_conn_params = env_manager.get_connection_params()
+        
+        # Use environment if available, otherwise fallback to config
+        host = env_conn_params.get('host') or self.get('connection.host')
+        port = env_conn_params.get('port') or self.get('connection.port')
+        account_id = env_conn_params.get('account_id') or self.get('connection.account_id')
         
         if auto_allocate_client_id:
             # 使use动态ClientID分配
             try:
                 from .client_id_manager import allocate_dynamic_client_id
-                preferred_id = self.get('connection.client_id')
+                preferred_id = env_conn_params.get('client_id') or self.get('connection.client_id')
                 client_id = allocate_dynamic_client_id(host, port, preferred_id)
                 self.logger.info(f"Assigned dynamic ClientID: {client_id}")
             except Exception as e:
                 self.logger.warning(f"动态ClientID分配failed，使use配置值: {e}")
-                client_id = self.get('connection.client_id')
+                client_id = env_conn_params.get('client_id') or self.get('connection.client_id')
         else:
-            client_id = self.get('connection.client_id')
+            client_id = env_conn_params.get('client_id') or self.get('connection.client_id')
         
         return {
             'host': host,
             'port': port,
             'client_id': client_id,
-            'account_id': self.get('connection.account_id'),
+            'account_id': account_id,
             'use_delayed_if_no_realtime': self.get('connection.use_delayed_if_no_realtime'),
-            'timeout': self.get('connection.timeout')
+            'timeout': env_conn_params.get('timeout') or self.get('connection.timeout')
         }
     
     def save_to_file(self, filepath: Optional[str] = None):
@@ -632,8 +709,36 @@ class UnifiedConfigManager:
         """清空运行when配置"""
         with self.lock:
             self._configs['runtime'].clear()
-            self._cache_valid = False
+            self._invalidate_cache()
             self.logger.info("清空运行when配置")
+    
+    def get_enhanced_prediction_config(self) -> Dict[str, Any]:
+        """Get enhanced prediction configuration"""
+        if not ENHANCED_CONFIG_AVAILABLE:
+            self.logger.warning("Enhanced prediction config not available")
+            return {}
+        
+        try:
+            enhanced_config = get_enhanced_prediction_config()
+            return enhanced_config.get_full_config()
+        except Exception as e:
+            self.logger.error(f"Failed to get enhanced prediction config: {e}")
+            return {}
+    
+    def update_enhanced_prediction_config(self, updates: Dict[str, Any]):
+        """Update enhanced prediction configuration"""
+        if not ENHANCED_CONFIG_AVAILABLE:
+            self.logger.warning("Enhanced prediction config not available")
+            return
+        
+        try:
+            enhanced_config = get_enhanced_prediction_config()
+            for key, value in updates.items():
+                enhanced_config.set(key, value)
+            enhanced_config.save_config()
+            self.logger.info("Enhanced prediction config updated")
+        except Exception as e:
+            self.logger.error(f"Failed to update enhanced prediction config: {e}")
 
 
 # 全局配置管理器实例

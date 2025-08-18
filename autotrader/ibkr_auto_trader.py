@@ -29,7 +29,7 @@ import signal
 import time
 from dataclasses import dataclass
 # from dataclasses import field  # 未使use
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Deque, Any
 from collections import deque
 from enum import Enum
@@ -41,11 +41,18 @@ import sys
 # import urllib.error
 from time import time as _now
 
-# 添加Polygon数据源集成andrisk control收益平衡器
+# 统一交易核心集成
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from polygon_client import polygon_client, download, Ticker
-    from data_source_manager import get_data_source_manager
+    from almgren_chriss import (
+        AlmgrenChrissOptimizer, ACParams, ExecutionBounds, MarketSnapshot,
+        create_ac_plan, ac_optimizer
+    )
+    from .unified_trading_core import UnifiedTradingCore, create_unified_trading_core
+    from .position_size_calculator import PositionSizeCalculator, PositionSizeConfig, PositionSizeMethod, create_position_calculator
+    from .volatility_adaptive_gating import VolatilityAdaptiveGating, create_volatility_gating
+    from .data_freshness_scoring import DataFreshnessScoring, create_freshness_scoring
     from .unified_polygon_factors import (
         get_polygon_unified_factors,
         enable_polygon_factors,
@@ -54,10 +61,72 @@ try:
         check_polygon_trading_conditions,
         process_signals_with_polygon
     )
+    from .unified_quant_core import UnifiedQuantCore, create_unified_quant_core
+    from .unified_factor_manager import UnifiedFactorManager, get_unified_factor_manager
+    from .unified_market_data_manager import UnifiedMarketDataManager
+    from .unified_risk_model import RiskModelEngine, RiskModelConfig
+    from .neutralization_pipeline import DailyNeutralizationTransformer, create_neutralization_pipeline_step
+    from .purged_time_series_cv import PurgedGroupTimeSeriesSplit
+    from .polygon_complete_factors import PolygonCompleteFactors
+    
+    # 🚀 微结构信号系统集成
+    from .microstructure_signals import get_microstructure_engine
+    from .impact_model import get_impact_model  
+    from .realtime_alpha_engine import get_realtime_alpha_engine
+    from .oof_calibration import get_oof_calibrator
+    from .oof_auto_trainer import get_oof_auto_trainer, startup_oof_training
+    MICROSTRUCTURE_ENABLED = True
     POLYGON_INTEGRATED = True
 except ImportError as e:
-    logging.warning(f"Polygon集成failed: {e}")
+    logging.warning(f"Polygon/微结构集成failed: {e}")
     POLYGON_INTEGRATED = False
+    MICROSTRUCTURE_ENABLED = False
+    
+    # 提供fallback类定义当导入失败时
+    from dataclasses import dataclass
+    from typing import Optional
+    
+    @dataclass
+    class MarketSnapshot:
+        """市场快照数据 - fallback定义"""
+        symbol: str = ""
+        price: float = 0.0
+        bid: float = 0.0
+        ask: float = 0.0
+        volume: int = 0
+        timestamp: Optional[float] = None
+        volatility: Optional[float] = None
+        mid: float = 0.0
+        spread: float = 0.0
+        adv_shares: float = 0.0
+        bar_vol_est: float = 0.0
+        px_vol_per_sqrt_s: float = 0.0
+        
+        @property
+        def spread_prop(self) -> float:
+            return self.ask - self.bid
+        
+        @property
+        def mid_price(self) -> float:
+            return (self.bid + self.ask) / 2
+    
+    # 提供fallback函数
+    class DummyACOptimizer:
+        def optimize(self, *args, **kwargs):
+            return {"trade_rates": [], "total_cost": 0.0}
+    
+    AlmgrenChrissOptimizer = DummyACOptimizer
+    ACParams = type('ACParams', (), {})
+    ExecutionBounds = type('ExecutionBounds', (), {})
+    
+    def create_ac_plan(*args, **kwargs):
+        return {"trade_rates": [], "total_cost": 0.0}
+    
+    class DummyACOptimizerInstance:
+        def save_execution_record(self, *args, **kwargs):
+            pass
+    
+    ac_optimizer = DummyACOptimizerInstance()
 
 from ib_insync import (
     IB,
@@ -161,7 +230,8 @@ class RealtimeSignalEngine:
         deviation = (price - ma20) / ma20 if ma20 > 0 else 0.0
         rsi = self._rsi(prices, 14)
 
-        # 简单信号：均值回归 + RSI
+        # 【已弃用】简单信号：均值回归 + RSI (优先使用微结构感知决策)
+        # 注意: 此简单策略已被微结构感知的α>成本决策替代
         if deviation < -0.02 and rsi < 35:
             entry = tick.ask if tick.ask > 0 else price * 1.001
             stop = entry * 0.98
@@ -182,12 +252,13 @@ class RealtimeSignalEngine:
             return 50.0
         gains = 0.0
         losses = 0.0
-        for i in range(-period, 0):
-            ch = prices[i] - prices[i - 1]
-            if ch >= 0:
-                gains += ch
-            else:
-                losses -= ch
+        for i in range(len(prices) - period, len(prices)):
+            if i > 0:  # Ensure we don't access negative index
+                ch = prices[i] - prices[i - 1]
+                if ch >= 0:
+                    gains += ch
+                else:
+                    losses -= ch
         avg_gain = gains / period
         avg_loss = losses / period
         if avg_loss == 0:
@@ -288,6 +359,58 @@ class IbkrAutoTrader:
         self.order_manager = OrderManager(auditor=self.auditor)  # 传入审计器
         self.enhanced_executor = EnhancedOrderExecutor(self.ib, self.order_manager)
         
+        # 🚀 动态头寸规模计算器
+        self.position_calculator = create_position_calculator(
+            target_percentage=0.05,  # 5%目标
+            min_percentage=0.04,     # 4%最小  
+            max_percentage=0.10,     # 10%最大
+            method="fixed_percentage"  # 默认固定百分比方法
+        )
+        self.logger.info("✅ 动态头寸计算器已启用")
+        
+        # 🎯 波动率自适应门控系统 - 替代硬编码阈值
+        self.volatility_gating = create_volatility_gating(
+            base_k=0.5,              # 基础门槛系数
+            volatility_lookback=60,  # 60天波动率回望期
+            use_atr=True,           # 使用ATR计算波动率
+            enable_liquidity_filter=True  # 启用流动性过滤
+        )
+        self.logger.info("✅ 波动率自适应门控系统已启用")
+        
+        # ⏰ 数据新鲜度评分系统 - 动态信号质量调整
+        self.freshness_scoring = create_freshness_scoring(
+            tau_minutes=15.0,        # 15分钟衰减常数
+            max_age_minutes=60.0,    # 最大1小时数据年龄
+            base_threshold=0.005,    # 基础阈值0.5%
+            freshness_threshold_add=0.010  # 新鲜度惩罚1%
+        )
+        self.logger.info("✅ 数据新鲜度评分系统已启用")
+        
+        # 🎯 Almgren-Chriss最优执行系统
+        try:
+            self.ac_optimizer = ac_optimizer  # 使用全局优化器实例
+            self.ac_execution_plans: Dict[str, dict] = {}  # symbol -> AC计划
+            self.ac_execution_tasks: Dict[str, asyncio.Task] = {}  # 执行任务
+            
+            # 事件处理器追踪（初始化为空）
+            self._bound_event_handlers = []
+            
+            # 异步任务管理
+            self._background_tasks: Dict[str, asyncio.Task] = {}
+            self.ac_default_config = {
+                "horizon_minutes": 30,      # 默认30分钟执行窗口
+                "slices": 6,               # 默认6个切片
+                "risk_lambda": 1.0,        # 默认风险厌恶参数
+                "max_participation": 0.05,  # 默认5%参与率上限
+                "enable_delayed_limits": True,  # 延迟行情强制限价
+                "max_bps_delayed": 20,     # 延迟行情最大20bps
+                "max_bps_realtime": 50     # 实时行情最大50bps
+            }
+            self.logger.info("✅ Almgren-Chriss最优执行系统已启用")
+        except Exception as e:
+            self.logger.warning(f"Almgren-Chriss初始化失败: {e}, 使用传统执行方式")
+            self.ac_optimizer = None
+        
         # 简化connection恢复管理，inibkr_auto_trader内部处理重连逻辑
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 10
@@ -323,6 +446,57 @@ class IbkrAutoTrader:
         self._daily_order_count: int = 0
         self._last_reset_day: Optional[datetime.date] = None
         
+        # 统一交易核心集成
+        try:
+            core_config = config_manager.get('unified_trading_core', {})
+            # Merge enhanced prediction config
+            if hasattr(config_manager, 'get_enhanced_prediction_config'):
+                enhanced_config = config_manager.get_enhanced_prediction_config()
+                core_config.update(enhanced_config)
+            
+            self.unified_core = create_unified_trading_core(core_config)
+            self.logger.info("✅ 统一交易核心已初始化")
+        except Exception as e:
+            self.logger.error(f"统一交易核心初始化失败: {e}")
+            self.unified_core = None
+        
+        # 🚀 Additional unified components initialization
+        if POLYGON_INTEGRATED:
+            try:
+                # Unified quant core for advanced quantitative operations
+                self.quant_core = create_unified_quant_core(config_manager.get('quant_core', {}))
+                
+                # Unified factor manager for factor processing
+                self.factor_manager = get_unified_factor_manager()
+                
+                # Unified market data manager for data handling
+                self.market_data_manager = UnifiedMarketDataManager()
+                
+                # Unified risk model for risk assessment
+                risk_config = RiskModelConfig()
+                self.risk_model = RiskModelEngine(risk_config)
+                
+                # Neutralization pipeline for factor processing
+                self.neutralization_pipeline = create_neutralization_pipeline_step()
+                
+                # Purged time series CV for model validation
+                self.purged_cv = PurgedGroupTimeSeriesSplit()
+                
+                # Complete factor calculator
+                self.complete_factors = PolygonCompleteFactors()
+                
+                self.logger.info("✅ 所有统一组件已初始化")
+            except Exception as e:
+                self.logger.warning(f"统一组件初始化部分失败: {e}")
+                # Set fallback None values
+                self.quant_core = None
+                self.factor_manager = None
+                self.market_data_manager = None
+                self.risk_model = None
+                self.neutralization_pipeline = None
+                self.purged_cv = None
+                self.complete_factors = None
+        
         # Polygon统一因子集成
         self.polygon_enabled = False
         self.polygon_risk_balancer_enabled = False
@@ -334,6 +508,43 @@ class IbkrAutoTrader:
             except Exception as e:
                 self.logger.error(f"Polygon统一因子初始化failed: {e}")
                 self.polygon_unified = None
+        
+        # 🚀 微结构信号系统初始化 - 专业微结构感知交易
+        self.microstructure_enabled = False
+        if MICROSTRUCTURE_ENABLED:
+            try:
+                # 初始化微结构信号引擎
+                self.microstructure_engine = get_microstructure_engine()
+                
+                # 初始化冲击成本模型
+                self.impact_model = get_impact_model()
+                
+                # 初始化实时Alpha决策引擎
+                self.realtime_alpha_engine = get_realtime_alpha_engine()
+                
+                # 初始化OOF校准器
+                self.oof_calibrator = get_oof_calibrator()
+                
+                # 初始化OOF自动训练器
+                self.oof_auto_trainer = get_oof_auto_trainer()
+                
+                self.microstructure_enabled = True
+                self.logger.info("🚀 微结构信号系统初始化成功: OFI/QI/微价/TSI/VPIN + α>成本决策")
+                
+                # 标记使用高级微结构策略，禁用简单策略
+                self.use_simple_signals = False
+                
+                # 微结构数据状态追踪
+                self.microstructure_callbacks_registered = False
+                
+            except Exception as e:
+                self.logger.error(f"微结构信号系统初始化失败: {e}")
+                self.microstructure_enabled = False
+                self.use_simple_signals = True  # 回退到简单策略
+        else:
+            self.use_simple_signals = True
+            self.logger.warning("微结构信号系统未启用，使用传统简单策略")
+        
         self._notify_throttle: Dict[str, float] = {}
 
         # 止损/止盈配置（canfrom data/risk_config.json 读取覆盖）
@@ -500,32 +711,152 @@ class IbkrAutoTrader:
         """绑定事件处理器"""
         ib = self.ib
         try:
+            # 记录绑定的事件处理器以便后续清理
+            self._bound_event_handlers = []
+            
+            # 核心事件
             ib.errorEvent += self._on_error
+            self._bound_event_handlers.append(('errorEvent', self._on_error))
+            
             ib.orderStatusEvent += self._on_order_status
+            self._bound_event_handlers.append(('orderStatusEvent', self._on_order_status))
+            
             ib.execDetailsEvent += self._on_exec_details
+            self._bound_event_handlers.append(('execDetailsEvent', self._on_exec_details))
+            
             ib.commissionReportEvent += self._on_commission
+            self._bound_event_handlers.append(('commissionReportEvent', self._on_commission))
+            
             ib.accountSummaryEvent += self._on_account_summary
+            self._bound_event_handlers.append(('accountSummaryEvent', self._on_account_summary))
             
             # check并绑定canuse事件
             if hasattr(ib, 'updateAccountValueEvent'):
                 ib.updateAccountValueEvent += self._on_update_account_value
+                self._bound_event_handlers.append(('updateAccountValueEvent', self._on_update_account_value))
             if hasattr(ib, 'accountValueEvent'):
                 ib.accountValueEvent += self._on_update_account_value
+                self._bound_event_handlers.append(('accountValueEvent', self._on_update_account_value))
                 
             if hasattr(ib, 'updatePortfolioEvent'):
                 ib.updatePortfolioEvent += self._on_update_portfolio
+                self._bound_event_handlers.append(('updatePortfolioEvent', self._on_update_portfolio))
             if hasattr(ib, 'portfolioEvent'):
                 ib.portfolioEvent += self._on_update_portfolio
+                self._bound_event_handlers.append(('portfolioEvent', self._on_update_portfolio))
                 
             if hasattr(ib, 'positionEvent'):
                 ib.positionEvent += self._on_position
+                self._bound_event_handlers.append(('positionEvent', self._on_position))
             if hasattr(ib, 'currentTimeEvent'):
                 ib.currentTimeEvent += self._on_current_time
+                self._bound_event_handlers.append(('currentTimeEvent', self._on_current_time))
 
-            self.logger.info(" 事件处理器绑定completed")
+            self.logger.info(f"事件处理器绑定completed，已绑定 {len(self._bound_event_handlers)} 个处理器")
         except Exception as e:
-            self.logger.warning(f" 事件绑定部分failed: {e}")
+            self.logger.warning(f"事件绑定部分failed: {e}")
             # 继续运行，not因事件绑定failed而in断
+    
+    def _unbind_events(self) -> None:
+        """清理事件处理器绑定"""
+        if not hasattr(self, '_bound_event_handlers') or not self.ib:
+            return
+            
+        try:
+            unbind_count = 0
+            for event_name, handler in self._bound_event_handlers:
+                try:
+                    if hasattr(self.ib, event_name):
+                        event_obj = getattr(self.ib, event_name)
+                        if hasattr(event_obj, '__isub__'):  # 支持 -= 操作
+                            event_obj -= handler
+                            unbind_count += 1
+                        else:
+                            # 尝试其他清理方法
+                            if hasattr(event_obj, 'remove'):
+                                event_obj.remove(handler)
+                                unbind_count += 1
+                except Exception as e:
+                    self.logger.debug(f"清理事件处理器 {event_name} 失败: {e}")
+            
+            self.logger.info(f"清理了 {unbind_count}/{len(self._bound_event_handlers)} 个事件处理器")
+            self._bound_event_handlers.clear()
+            
+        except Exception as e:
+            self.logger.warning(f"清理事件处理器失败: {e}")
+    
+    def disconnect(self) -> None:
+        """断开连接并清理资源"""
+        try:
+            # 清理事件处理器
+            self._unbind_events()
+            
+            # 清理订阅
+            if hasattr(self, 'cleanup_unused_subscriptions'):
+                self.cleanup_unused_subscriptions()
+            
+            # 断开IB连接
+            if self.ib and self.ib.isConnected():
+                self.ib.disconnect()
+                self.logger.info("IBKR连接已断开")
+            
+            # 清理所有异步任务
+            self._cancel_all_background_tasks()
+            
+            # 清理其他资源
+            if hasattr(self, 'ac_execution_tasks'):
+                for task_name, task in self.ac_execution_tasks.items():
+                    if not task.done():
+                        task.cancel()
+                        self.logger.debug(f"取消执行任务: {task_name}")
+                self.ac_execution_tasks.clear()
+            
+        except Exception as e:
+            self.logger.error(f"断开连接时出错: {e}")
+    
+    def _create_managed_task(self, name: str, coro) -> asyncio.Task:
+        """创建受管理的异步任务"""
+        task = asyncio.create_task(coro)
+        self._background_tasks[name] = task
+        
+        # 添加完成回调清理任务
+        def cleanup_task(finished_task):
+            if name in self._background_tasks:
+                del self._background_tasks[name]
+            if finished_task.exception():
+                self.logger.error(f"Background task {name} failed: {finished_task.exception()}")
+            else:
+                self.logger.debug(f"Background task {name} completed successfully")
+        
+        task.add_done_callback(cleanup_task)
+        self.logger.debug(f"Created managed task: {name}")
+        return task
+    
+    def _cancel_all_background_tasks(self):
+        """取消所有后台任务"""
+        if not self._background_tasks:
+            return
+            
+        cancelled_count = 0
+        for name, task in list(self._background_tasks.items()):
+            if not task.done():
+                task.cancel()
+                cancelled_count += 1
+                self.logger.debug(f"Cancelled background task: {name}")
+        
+        if cancelled_count > 0:
+            self.logger.info(f"取消了 {cancelled_count} 个后台任务")
+        
+        self._background_tasks.clear()
+    
+    def get_task_status(self) -> Dict[str, Any]:
+        """获取任务状态"""
+        return {
+            'background_tasks': len(self._background_tasks),
+            'ac_execution_tasks': len(self.ac_execution_tasks),
+            'stop_tasks': len(getattr(self, '_stop_tasks', {})),
+            'task_names': list(self._background_tasks.keys())
+        }
 
     async def connect(self, retries: int = None, retry_delay: float = None) -> None:
         """统一connection逻辑，使use配置管理器"""
@@ -561,6 +892,16 @@ class IbkrAutoTrader:
             
             # startconnection监控and其他服务
             await self._post_connection_setup()
+            
+            # 🚀 注册微结构数据回调
+            if self.microstructure_enabled:
+                self._register_microstructure_callbacks()
+                
+                # 🎯 启动时自动执行OOF训练
+                self._oof_training_task = self._create_managed_task(
+                    "oof_training", 
+                    self._startup_oof_training()
+                )
             
         except Exception as e:
             self.logger.error(f"connectionfailed: {e}")
@@ -1070,6 +1411,77 @@ class IbkrAutoTrader:
             self.logger.error(f"{symbol} 交易准备失败: {e}")
             return False
 
+    def _register_microstructure_callbacks(self):
+        """注册微结构数据回调处理"""
+        try:
+            if self.microstructure_callbacks_registered:
+                return
+            
+            # 绑定回调到IB实例
+            self.ib.tickerUpdateEvent += self._on_ticker_update
+            
+            self.microstructure_callbacks_registered = True
+            self.logger.info("🚀 微结构数据回调已注册: 盘口/成交数据将实时处理")
+            
+        except Exception as e:
+            self.logger.error(f"注册微结构回调失败: {e}")
+    
+    def _on_ticker_update(self, ticker):
+        """统一Ticker更新处理 - 微结构信号处理"""
+        if not self.microstructure_enabled or not ticker.contract.symbol:
+            return
+        
+        try:
+            symbol = ticker.contract.symbol
+            
+            # 处理买卖盘更新
+            if hasattr(ticker, 'bid') and hasattr(ticker, 'bidSize') and ticker.bid > 0:
+                self.microstructure_engine.on_quote_update(symbol, "bid", ticker.bid, ticker.bidSize or 0)
+            
+            if hasattr(ticker, 'ask') and hasattr(ticker, 'askSize') and ticker.ask > 0:
+                self.microstructure_engine.on_quote_update(symbol, "ask", ticker.ask, ticker.askSize or 0)
+            
+            # 处理成交价更新（简化）
+            if hasattr(ticker, 'last') and ticker.last > 0:
+                prev_price = getattr(ticker, '_prev_last', ticker.last)
+                if prev_price != ticker.last:
+                    # 简单的买卖方向判断
+                    is_buy_aggressor = ticker.last >= prev_price
+                    volume = getattr(ticker, 'lastSize', 100) or 100  # 使用成交量或默认100
+                    
+                    self.microstructure_engine.on_trade(symbol, ticker.last, volume, is_buy_aggressor)
+                    ticker._prev_last = ticker.last
+                    
+        except Exception as e:
+            self.logger.error(f"处理Ticker更新失败 {ticker.contract.symbol}: {e}")
+    
+    async def _startup_oof_training(self):
+        """启动时执行OOF自动训练"""
+        try:
+            self.logger.info("🎯 开始启动时OOF训练...")
+            
+            # 延迟执行，等待系统稳定
+            await asyncio.sleep(5)
+            
+            # 执行OOF训练
+            success = await startup_oof_training()
+            
+            if success:
+                self.logger.info("✅ OOF启动训练完成，校准器已就绪")
+                
+                # 获取训练状态
+                status = self.oof_auto_trainer.get_training_status()
+                self.logger.info(f"📊 OOF训练状态: "
+                               f"覆盖率{status['training_coverage']:.1%}, "
+                               f"股票池{status['universe_size']}只, "
+                               f"已训练{status['trained_symbols']}只")
+            else:
+                self.logger.warning("⚠️ OOF启动训练失败，使用默认校准")
+                
+        except Exception as e:
+            self.logger.error(f"OOF启动训练异常: {e}")
+            # 不影响主程序运行
+
     def cleanup_unused_subscriptions(self) -> None:
         """清理所有不需要的市场数据订阅（纯交易模式）"""
         if hasattr(self, 'tickers') and self.tickers:
@@ -1085,11 +1497,9 @@ class IbkrAutoTrader:
     async def _validate_order_before_submission(self, symbol: str, side: str, qty: int, price: float) -> bool:
         """统一风险验证 - 使use统一风险管理器 - 带详细调试信息"""
         
-        # 🔍 详细调试输出
-        print(f"\n{'='*80}")
-        print(f"🛡️  ORDER VALIDATION DEBUG - {symbol}")
-        print(f"{'='*80}")
-        print(f"📊 订单信息: {symbol} {side.upper()} {qty}股 @ ${price:.4f}")
+        # Order validation debug info
+        self.logger.debug(f"ORDER VALIDATION DEBUG - {symbol}")
+        self.logger.debug(f"Order info: {symbol} {side.upper()} {qty} shares @ ${price:.4f}")
         print(f"💰 订单价值: ${qty * price:,.2f}")
         
         # 📡 数据新鲜度检查
@@ -1243,6 +1653,9 @@ class IbkrAutoTrader:
         
         # 2. 从Polygon获取最新数据（15分钟延迟）
         try:
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             from polygon_client import polygon_client
             from datetime import datetime, timedelta
             
@@ -1282,6 +1695,9 @@ class IbkrAutoTrader:
         
         # 3. 最后fallback: 使用ticker详情估算价格
         try:
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             from polygon_client import polygon_client
             details = polygon_client.get_ticker_details(symbol)
             if details and 'marketCap' in details and 'share_class_shares_outstanding' in details:
@@ -1370,6 +1786,129 @@ class IbkrAutoTrader:
         # 获取价格（会自动从Polygon拉取或使用缓存）
         price = self.get_price(symbol)
         return price
+    
+    def _get_current_price(self, symbol: str) -> float:
+        """获取股票当前价格 - 为头寸计算器提供价格数据"""
+        try:
+            price = self.get_price(symbol)
+            if price and price > 0:
+                return float(price)
+            else:
+                self.logger.warning(f"{symbol} 获取价格失败或价格无效: {price}")
+                return 0.0
+        except Exception as e:
+            self.logger.error(f"获取{symbol}价格出错: {e}")
+            return 0.0
+    
+    def _get_historical_prices(self, symbol: str, days: int = 90) -> List[float]:
+        """
+        获取历史价格数据用于波动率计算
+        
+        Args:
+            symbol: 股票代码
+            days: 历史数据天数
+            
+        Returns:
+            价格数据列表 (最新在前)
+        """
+        try:
+            # 尝试从ticker缓存获取历史数据
+            if symbol in self.tickers:
+                ticker = self.tickers[symbol]
+                if hasattr(ticker, 'price_history') and len(ticker.price_history) > 10:
+                    # 返回最近的价格数据，最新在前
+                    return list(ticker.price_history)[-days:][::-1]
+            
+            # 尝试通过polygon获取历史数据
+            if hasattr(self, 'polygon_factors') and self.polygon_factors:
+                try:
+                    end_date = datetime.now().strftime('%Y-%m-%d')
+                    start_date = (datetime.now() - timedelta(days=days+10)).strftime('%Y-%m-%d')
+                    
+                    df = polygon_client.get_historical_bars(symbol, start_date, end_date)
+                    if not df.empty and ('Close' in df.columns or 'close' in df.columns):
+                        close_col = 'Close' if 'Close' in df.columns else 'close'
+                        prices = df[close_col].dropna().tolist()
+                        if len(prices) > 10:
+                            # 返回最新在前的价格序列
+                            return prices[::-1]
+                except Exception as e:
+                    self.logger.debug(f"Polygon历史数据获取失败 {symbol}: {e}")
+            
+            # 尝试通过IBKR获取历史数据
+            try:
+                from ib_insync import Stock
+                contract = Stock(symbol, 'SMART', 'USD')
+                
+                # 获取历史数据
+                bars = self.ib.reqHistoricalData(
+                    contract,
+                    endDateTime='',
+                    durationStr=f'{days} D',
+                    barSizeSetting='1 day',
+                    whatToShow='MIDPOINT',
+                    useRTH=True,
+                    formatDate=1
+                )
+                
+                if bars:
+                    prices = [float(bar.close) for bar in bars if bar.close > 0]
+                    if len(prices) > 10:
+                        # 返回最新在前的价格序列
+                        return prices[::-1]
+                        
+            except Exception as e:
+                self.logger.debug(f"IBKR历史数据获取失败 {symbol}: {e}")
+            
+            # 如果所有方法都失败，返回模拟数据（基于当前价格）
+            current_price = self._get_current_price(symbol)
+            if current_price > 0:
+                # 生成模拟的历史价格（用于紧急情况）
+                prices = []
+                base_price = current_price
+                for i in range(min(days, 60)):
+                    # 模拟小幅随机波动
+                    variation = 1.0 + (i * 0.001) * (1 if i % 2 == 0 else -1)
+                    prices.append(base_price * variation)
+                return prices
+            
+            return []
+            
+        except Exception as e:
+            self.logger.error(f"获取{symbol}历史价格失败: {e}")
+            return []
+    
+    def get_available_cash(self) -> float:
+        """获取可用现金 - 为头寸计算器提供资金信息"""
+        try:
+            # 使用缓存的现金余额
+            if hasattr(self, 'cash_balance') and self.cash_balance is not None:
+                available = float(self.cash_balance)
+                if available > 0:
+                    self.logger.debug(f"可用现金: ${available:,.2f}")
+                    return available
+            
+            # 如果缓存无效，尝试从账户摘要获取
+            if hasattr(self, 'account_summary') and self.account_summary:
+                for item in self.account_summary:
+                    if item.tag == 'AvailableFunds':
+                        available = float(item.value)
+                        self.logger.debug(f"从账户摘要获取可用资金: ${available:,.2f}")
+                        return available
+            
+            # 备用方案：使用净清算价值的80%
+            if hasattr(self, 'net_liq') and self.net_liq is not None and self.net_liq > 0:
+                conservative_cash = float(self.net_liq) * 0.8
+                self.logger.warning(f"使用净清算价值的80%作为可用资金: ${conservative_cash:,.2f}")
+                return conservative_cash
+            
+            # 如果所有方法都失败，返回0
+            self.logger.error("无法获取可用现金信息")
+            return 0.0
+            
+        except Exception as e:
+            self.logger.error(f"获取可用现金出错: {e}")
+            return 0.0
 
     # ------------------------- 动态止损（ATR + when间加权） -------------------------
     async def _fetch_daily_bars(self, symbol: str, lookback_days: int) -> List:
@@ -1605,7 +2144,7 @@ class IbkrAutoTrader:
         
         # 🔍 详细调试输出 - 订单提交流程
         print(f"\n{'='*80}")
-        print(f"📈 MARKET ORDER PLACEMENT DEBUG - {symbol}")
+        self.logger.debug(f"MARKET ORDER PLACEMENT DEBUG - {symbol}")
         print(f"{'='*80}")
         print(f"🎯 订单参数: {symbol} {action.upper()} {quantity}股 (市价单)")
         print(f"🔄 重试次数: {retries}")
@@ -1643,7 +2182,7 @@ class IbkrAutoTrader:
             else:
                 print(f"   └─ ✅ 价格获取成功: ${price_now:.4f}")
             
-            print(f"🛡️ 开始风险验证: {symbol} {action} {quantity}股 @ ${price_now:.4f}")
+            self.logger.debug(f"Starting risk validation: {symbol} {action} {quantity} shares @ ${price_now:.4f}")
             validation_passed = await self._validate_order_before_submission(symbol, action, quantity, price_now)
             
             if not validation_passed:
@@ -1927,6 +2466,448 @@ class IbkrAutoTrader:
         except Exception as e:
             self.logger.error(f"大订单执行failed {symbol}: {e}")
             raise
+    
+    # ================== Almgren-Chriss最优执行方法 ==================
+    
+    def _is_data_delayed(self, symbol: str) -> bool:
+        """检查数据是否延迟"""
+        ticker = self.tickers.get(symbol)
+        if not ticker:
+            return True
+        
+        # 检查数据新鲜度
+        freshness_score = self.freshness_scoring.calculate_freshness_score(ticker)
+        if freshness_score.data_age_minutes > 30:
+            return True
+        
+        # 检查是否为延迟行情
+        if hasattr(ticker, 'marketDataType') and ticker.marketDataType in [3, 4]:  # 延迟数据类型
+            return True
+        
+        return False
+    
+    def _get_market_snapshot(self, symbol: str) -> Optional[MarketSnapshot]:
+        """获取市场快照数据"""
+        ticker = self.tickers.get(symbol)
+        if not ticker:
+            return None
+        
+        try:
+            mid = ticker.midpoint() if hasattr(ticker, 'midpoint') else (
+                (ticker.bid + ticker.ask) / 2 if ticker.bid and ticker.ask else ticker.last
+            )
+            spread = abs(ticker.ask - ticker.bid) if ticker.bid and ticker.ask else mid * 0.002
+            
+            # 估算ADV和bar成交量(使用默认值，后续可集成真实数据)
+            adv_shares = 1e6  # 默认100万股日均成交量
+            bar_vol_est = adv_shares / 390  # 每分钟估算成交量(假设390个交易分钟)
+            
+            # 波动率估算
+            volatility = self.volatility_gating.get_current_volatility(symbol)
+            if volatility <= 0:
+                volatility = 0.01  # 1%默认波动率(每日)
+            # 转换为每秒波动率
+            px_vol_per_sqrt_s = volatility * mid / (252 ** 0.5 * (24*3600) ** 0.5)
+            
+            return MarketSnapshot(
+                mid=mid,
+                spread=spread,
+                adv_shares=adv_shares,
+                bar_vol_est=bar_vol_est,
+                px_vol_per_sqrt_s=px_vol_per_sqrt_s
+            )
+        except Exception as e:
+            self.logger.warning(f"获取市场快照失败 {symbol}: {e}")
+            return None
+    
+    def _guard_limit_price(self, symbol: str, side: str, ref_price: float, 
+                          max_bps: int = 50) -> float:
+        """生成带护栏的限价"""
+        side_multiplier = 1.01 if side.upper() == "BUY" else 0.99
+        max_deviation = max_bps / 10000.0  # bps转换为小数
+        
+        if side.upper() == "BUY":
+            # 买单：不超过参考价 + max_bps
+            limit_price = min(ref_price * (1 + max_deviation), ref_price * side_multiplier)
+        else:
+            # 卖单：不低于参考价 - max_bps
+            limit_price = max(ref_price * (1 - max_deviation), ref_price * side_multiplier)
+        
+        return round(limit_price, 2)
+    
+    async def create_ac_execution_plan(self, symbol: str, delta_shares: float, 
+                                     config: Optional[dict] = None) -> Optional[dict]:
+        """
+        创建Almgren-Chriss执行计划
+        
+        Args:
+            symbol: 股票代码
+            delta_shares: 需要交易的股数(正数买入，负数卖出)
+            config: 执行配置(可选)
+            
+        Returns:
+            dict: AC执行计划或None
+        """
+        if not self.ac_optimizer or abs(delta_shares) < 1:
+            return None
+        
+        # 合并配置
+        effective_config = {**self.ac_default_config}
+        if config:
+            effective_config.update(config)
+        
+        # 获取市场数据
+        mkt = self._get_market_snapshot(symbol)
+        if not mkt:
+            self.logger.warning(f"无法获取{symbol}市场数据，跳过AC执行")
+            return None
+        
+        # 检查数据延迟状态
+        is_delayed = self._is_data_delayed(symbol)
+        
+        # 根据延迟状态调整参与率和护栏
+        bounds = ExecutionBounds(
+            max_participation=0.03 if is_delayed else effective_config["max_participation"],
+            child_min_shares=1,
+            cap_fraction_of_adv=0.03 if is_delayed else 0.05
+        )
+        
+        # 创建AC计划
+        try:
+            ac_plan = create_ac_plan(
+                symbol=symbol,
+                delta_shares=delta_shares,
+                horizon_min=effective_config["horizon_minutes"],
+                slices=effective_config["slices"],
+                market_data={
+                    "mid": mkt.mid,
+                    "spread": mkt.spread,
+                    "adv_shares": mkt.adv_shares,
+                    "bar_vol_est": mkt.bar_vol_est,
+                    "volatility": mkt.px_vol_per_sqrt_s
+                },
+                risk_lambda=effective_config["risk_lambda"],
+                bounds=bounds
+            )
+            
+            if ac_plan:
+                ac_plan["is_delayed"] = is_delayed
+                ac_plan["config"] = effective_config
+                ac_plan["bounds"] = bounds
+                self.logger.info(f"AC执行计划创建成功 {symbol}: {len(ac_plan['q_slices'])}个切片, "
+                               f"预期成本${ac_plan['exp_cost']:.2f}, 延迟={is_delayed}")
+            
+            return ac_plan
+            
+        except Exception as e:
+            self.logger.error(f"AC计划创建失败 {symbol}: {e}")
+            return None
+    
+    async def execute_ac_schedule(self, plan: dict) -> dict:
+        """
+        执行AC计划
+        
+        Args:
+            plan: AC执行计划
+            
+        Returns:
+            dict: 执行结果
+        """
+        symbol = plan["symbol"]
+        side = plan["side"]
+        q_slices = plan["q_slices"]
+        dt = plan["dt"]
+        is_delayed = plan.get("is_delayed", True)
+        config = plan.get("config", {})
+        
+        execution_results = []
+        total_filled = 0
+        total_cost = 0.0
+        
+        self.logger.info(f"开始执行AC计划 {symbol} {side}: {len(q_slices)}个切片")
+        
+        try:
+            for k, q in enumerate(q_slices):
+                if abs(q) < 1:
+                    await asyncio.sleep(dt)
+                    continue
+                
+                slice_start_time = time.time()
+                
+                # 获取当前市场价格
+                ticker = self.tickers.get(symbol)
+                if not ticker:
+                    self.logger.warning(f"无法获取{symbol}行情，跳过切片{k}")
+                    await asyncio.sleep(dt)
+                    continue
+                
+                ref_price = ticker.last or plan["mid"]
+                if ref_price <= 0:
+                    self.logger.warning(f"{symbol}价格无效，跳过切片{k}")
+                    await asyncio.sleep(dt)
+                    continue
+                
+                # 确定限价(延迟行情必须使用限价)
+                max_bps = config.get("max_bps_delayed", 20) if is_delayed else config.get("max_bps_realtime", 50)
+                limit_price = self._guard_limit_price(symbol, side, ref_price, max_bps)
+                
+                # 执行子订单
+                try:
+                    order_ref = await self.place_limit_order(
+                        symbol=symbol,
+                        action=side,
+                        quantity=int(abs(q)),
+                        limit_price=limit_price
+                    )
+                    
+                    # 记录切片执行(简化版，实际应等待订单完成)
+                    slice_result = {
+                        "slice": k,
+                        "planned_qty": q,
+                        "order_id": order_ref.order_id,
+                        "limit_price": limit_price,
+                        "ref_price": ref_price,
+                        "timestamp": slice_start_time,
+                        "filled_qty": 0,  # 后续更新
+                        "avg_price": 0.0   # 后续更新
+                    }
+                    execution_results.append(slice_result)
+                    
+                    # 记录AC执行到审计器
+                    try:
+                        if self.ac_optimizer:
+                            self.ac_optimizer.save_execution_record(
+                                symbol=symbol,
+                                side=side,
+                                q_executed=abs(q),
+                                mid_before=ref_price,
+                                mid_after=ref_price,  # 简化，实际应获取执行后价格
+                                vwap=limit_price,     # 简化，实际应等待成交
+                                spread=ticker.ask - ticker.bid if ticker.bid and ticker.ask else ref_price * 0.002,
+                                participation=abs(q) / plan.get("bounds", ExecutionBounds()).max_participation,
+                                timestamp=datetime.fromtimestamp(slice_start_time)
+                            )
+                    except Exception as audit_error:
+                        self.logger.warning(f"AC审计记录失败: {audit_error}")
+                    
+                    self.logger.info(f"AC切片{k+1}/{len(q_slices)} {symbol}: {q:.0f}股 @ ${limit_price:.2f}")
+                    
+                except Exception as slice_error:
+                    self.logger.error(f"AC切片{k}执行失败 {symbol}: {slice_error}")
+                    continue
+                
+                # 等待到下一个切片时间
+                elapsed = time.time() - slice_start_time
+                sleep_time = max(0, dt - elapsed)
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+            
+            # 记录AC执行完成
+            self.logger.info(f"AC执行计划完成 {symbol}: {len(execution_results)}个切片已发送")
+            
+            return {
+                "success": True,
+                "symbol": symbol,
+                "side": side,
+                "plan": plan,
+                "execution_results": execution_results,
+                "slices_executed": len(execution_results),
+                "total_planned": sum(abs(q) for q in q_slices),
+                "completion_time": time.time()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"AC执行计划失败 {symbol}: {e}")
+            return {
+                "success": False,
+                "symbol": symbol,
+                "error": str(e),
+                "execution_results": execution_results
+            }
+    
+    async def execute_order_with_ac(self, symbol: str, action: str, quantity: int, 
+                                  config: Optional[dict] = None) -> dict:
+        """
+        使用AC算法执行订单的主入口
+        
+        Args:
+            symbol: 股票代码
+            action: BUY/SELL
+            quantity: 股数
+            config: AC配置
+            
+        Returns:
+            dict: 执行结果
+        """
+        if not self.ac_optimizer:
+            # 回退到传统执行
+            self.logger.info(f"AC不可用，使用传统执行 {symbol}")
+            result = await self.execute_large_order(symbol, action, quantity)
+            return {"success": True, "method": "traditional", "result": result}
+        
+        # 转换为有符号股数
+        delta_shares = quantity if action.upper() == "BUY" else -quantity
+        
+        # 小订单直接执行
+        if abs(quantity) < 500:
+            result = await self.place_market_order(symbol, action, quantity)
+            return {"success": True, "method": "direct", "result": result}
+        
+        # 创建AC计划
+        plan = await self.create_ac_execution_plan(symbol, delta_shares, config)
+        if not plan:
+            # 回退到传统执行
+            self.logger.warning(f"AC计划创建失败，回退到传统执行 {symbol}")
+            result = await self.execute_large_order(symbol, action, quantity, algorithm="TWAP")
+            return {"success": True, "method": "fallback", "result": result}
+        
+        # 保存并执行AC计划
+        self.ac_execution_plans[symbol] = plan
+        
+        # 启动异步执行任务
+        task = asyncio.create_task(self.execute_ac_schedule(plan))
+        self.ac_execution_tasks[symbol] = task
+        
+        # 可以选择等待完成或立即返回
+        if config and config.get("wait_completion", False):
+            result = await task
+            return {"success": result["success"], "method": "ac_sync", "result": result}
+        else:
+            return {"success": True, "method": "ac_async", "task_id": id(task), "plan": plan}
+    
+    async def calibrate_ac_parameters(self, symbols: Optional[List[str]] = None, 
+                                    lookback_days: int = 30) -> dict:
+        """
+        校准AC参数
+        
+        Args:
+            symbols: 要校准的股票列表，None表示全部
+            lookback_days: 回看天数
+            
+        Returns:
+            dict: 校准结果
+        """
+        if not self.ac_optimizer:
+            return {"success": False, "error": "AC优化器不可用"}
+        
+        calibration_results = {}
+        
+        try:
+            # 如果没有指定symbols，使用最近有执行记录的symbols
+            if symbols is None:
+                symbols = list(set([
+                    record["symbol"] for record in self.ac_optimizer.execution_history[-1000:]
+                    if datetime.fromisoformat(record["timestamp"]) > datetime.now() - timedelta(days=lookback_days)
+                ]))
+            
+            if not symbols:
+                return {"success": False, "error": "没有找到可校准的股票"}
+            
+            for symbol in symbols:
+                try:
+                    # 获取市场快照
+                    mkt = self._get_market_snapshot(symbol)
+                    if not mkt:
+                        continue
+                    
+                    # 获取自适应参数
+                    eta, gamma = self.ac_optimizer.get_adaptive_params(symbol, mkt, lookback_days)
+                    
+                    calibration_results[symbol] = {
+                        "eta": eta,
+                        "gamma": gamma,
+                        "market_data": {
+                            "mid": mkt.mid,
+                            "spread": mkt.spread,
+                            "volatility": mkt.px_vol_per_sqrt_s
+                        }
+                    }
+                    
+                except Exception as e:
+                    self.logger.warning(f"校准{symbol}参数失败: {e}")
+                    calibration_results[symbol] = {"error": str(e)}
+            
+            # 导出校准报告
+            report_path = f"result/ac_calibration_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            self.ac_optimizer.export_calibration_report(report_path)
+            
+            self.logger.info(f"AC参数校准完成，{len(calibration_results)}个股票，报告: {report_path}")
+            
+            return {
+                "success": True,
+                "calibrated_symbols": len(calibration_results),
+                "results": calibration_results,
+                "report_path": report_path
+            }
+            
+        except Exception as e:
+            self.logger.error(f"AC参数校准失败: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_ac_execution_status(self, symbol: Optional[str] = None) -> dict:
+        """
+        获取AC执行状态
+        
+        Args:
+            symbol: 股票代码，None表示全部
+            
+        Returns:
+            dict: 执行状态信息
+        """
+        if not self.ac_optimizer:
+            return {"ac_available": False}
+        
+        status = {
+            "ac_available": True,
+            "total_execution_records": len(self.ac_optimizer.execution_history),
+            "active_plans": len(self.ac_execution_plans),
+            "active_tasks": len(self.ac_execution_tasks)
+        }
+        
+        if symbol:
+            # 单个股票状态
+            status["symbol"] = symbol
+            status["has_plan"] = symbol in self.ac_execution_plans
+            status["has_task"] = symbol in self.ac_execution_tasks
+            
+            if symbol in self.ac_execution_plans:
+                plan = self.ac_execution_plans[symbol]
+                status["plan_info"] = {
+                    "side": plan["side"],
+                    "total_shares": plan["total_shares"],
+                    "slices": len(plan["q_slices"]),
+                    "horizon_sec": plan["horizon_sec"],
+                    "exp_cost": plan["exp_cost"]
+                }
+            
+            if symbol in self.ac_execution_tasks:
+                task = self.ac_execution_tasks[symbol]
+                status["task_info"] = {
+                    "done": task.done(),
+                    "cancelled": task.cancelled()
+                }
+                if task.done() and not task.cancelled():
+                    try:
+                        result = task.result()
+                        status["task_result"] = {
+                            "success": result.get("success", False),
+                            "slices_executed": result.get("slices_executed", 0)
+                        }
+                    except Exception as e:
+                        status["task_result"] = {"error": str(e)}
+        else:
+            # 全部状态概览
+            active_symbols = list(self.ac_execution_plans.keys())
+            status["active_symbols"] = active_symbols
+            
+            # 统计最近执行记录
+            recent_records = [
+                r for r in self.ac_optimizer.execution_history
+                if datetime.fromisoformat(r["timestamp"]) > datetime.now() - timedelta(hours=24)
+            ]
+            status["recent_24h_records"] = len(recent_records)
+        
+        return status
 
     async def place_limit_order(self, symbol: str, action: str, quantity: int, limit_price: float) -> OrderRef:
         # before置校验
@@ -1981,10 +2962,47 @@ class IbkrAutoTrader:
         if not hasattr(self, 'rr_controller') or not hasattr(self, 'rr_cfg') or not self.rr_cfg or not self.rr_cfg.enabled:
             self.logger.info("RiskRewardController 未启use，跳过规划")
             return refs
+        
+        # 🚀 Enhanced prediction with calibrated signals
+        calibrated_signals = model_signals
+        if hasattr(self, 'unified_core') and self.unified_core and self.unified_core.enhanced_modules_available:
+            try:
+                # Convert model signals to format for calibration
+                signal_data = []
+                for s in model_signals:
+                    symbol = s.get('symbol')
+                    if not symbol:
+                        continue
+                    
+                    # Extract raw prediction and confidence from existing signal
+                    raw_pred = s.get('expected_alpha_bps', 0) / 10000.0  # Convert bps to decimal
+                    raw_conf = s.get('confidence', 0.5)
+                    ref_price = s.get('model_price') or polygon_quotes.get(symbol, {}).get('last', 0)
+                    
+                    if ref_price > 0:
+                        signal_data.append({
+                            'symbol': symbol,
+                            'raw_prediction': raw_pred,
+                            'raw_confidence': raw_conf,
+                            'reference_price': ref_price,
+                            'features': None  # Would be populated with actual features in full implementation
+                        })
+                
+                # Generate calibrated signals using unified core
+                if signal_data:
+                    calibrated_signals = self.unified_core.batch_generate_signals(signal_data)
+                    self.logger.info(f"Generated {len(calibrated_signals)} calibrated signals")
+                else:
+                    self.logger.warning("No valid signal data for calibration")
+                    
+            except Exception as e:
+                self.logger.warning(f"Signal calibration failed, using original signals: {e}")
+                calibrated_signals = model_signals
+        
         try:
             from .enhanced_order_execution import Signal, Metrics, Quote
             signals: List[Signal] = []
-            for s in model_signals:
+            for s in calibrated_signals:
                 sym = s.get('symbol')
                 if not sym:
                     continue
@@ -2736,8 +3754,38 @@ class IbkrAutoTrader:
                     return []
 
         async def _approve_buy(sym: str) -> bool:
-            """专业级多因子信号系统：综合技术面、基本面and市场情绪"""
+            """
+            🚀 微结构感知交易决策引擎
+            
+            如果微结构系统可用，使用专业的α>成本门槛决策
+            否则回退到传统多因子信号系统
+            """
             try:
+                # 🚀 优先使用微结构感知决策
+                if self.microstructure_enabled and hasattr(self, 'realtime_alpha_engine'):
+                    try:
+                        # 生成微结构感知交易决策
+                        decision = self.realtime_alpha_engine.make_trading_decision(sym)
+                        
+                        # 记录决策详情
+                        self.logger.info(f"📊 {sym} 微结构决策: {decision.recommended_side}, "
+                                       f"α={decision.calibrated_alpha_bps:.1f}bps, "
+                                       f"成本={decision.total_cost_bps:.1f}bps, "
+                                       f"可交易={decision.is_tradable}")
+                        
+                        # 只有在α>成本且推荐BUY时才返回True
+                        return (decision.is_tradable and 
+                               decision.recommended_side == "BUY" and
+                               decision.calibrated_alpha_bps > decision.total_cost_bps)
+                        
+                    except Exception as e:
+                        self.logger.warning(f"{sym} 微结构决策失败，回退传统策略: {e}")
+                        # 继续执行传统策略
+                
+                # 传统多因子信号系统（回退方案）
+                # 注意: 此方案仅在微结构系统失效时使用，优先级低于微结构感知决策
+                self.logger.debug(f"{sym} 使用传统多因子信号分析（简单策略回退）")
+                
                 # retrieval足够历史数据
                 contract = await self.qualify_stock(sym)
                 bars = await self.ib.reqHistoricalDataAsync(
@@ -2782,7 +3830,8 @@ class IbkrAutoTrader:
                     trend_score += 0.1
                 
                 # 均线斜率 (均线to上as正面)
-                sma20_slope = (sma_20 - sum(closes[-25:-5])/20) / sum(closes[-25:-5])/20
+                prev_sma20 = sum(closes[-25:-5])/20 if len(closes) >= 25 else sma_20
+                sma20_slope = (sma_20 - prev_sma20) / prev_sma20 if prev_sma20 > 0 else 0
                 if sma20_slope > 0.01:  # 1%以上上升
                     trend_score += 0.3
                 elif sma20_slope > 0:
@@ -2800,14 +3849,15 @@ class IbkrAutoTrader:
                 # RSI (14日)
                 gains = []
                 losses = []
-                for i in range(-14, 0):
-                    change = closes[i] - closes[i-1]
-                    if change > 0:
-                        gains.append(change)
-                        losses.append(0)
-                    else:
-                        gains.append(0)
-                        losses.append(abs(change))
+                for i in range(max(1, len(closes) - 14), len(closes)):
+                    if i > 0 and i < len(closes):  # Bounds check
+                        change = closes[i] - closes[i-1]
+                        if change > 0:
+                            gains.append(change)
+                            losses.append(0)
+                        else:
+                            gains.append(0)
+                            losses.append(abs(change))
                 
                 avg_gain = sum(gains) / 14
                 avg_loss = sum(losses) / 14
@@ -3300,7 +4350,7 @@ class IbkrAutoTrader:
             return self._process_signals_basic(signals)
     
     def _process_signals_basic(self, signals) -> List[Dict]:
-        """基础信号处理(fallback)"""
+        """基础信号处理(fallback) - 现已支持动态头寸计算"""
         orders = []
         
         try:
@@ -3311,28 +4361,155 @@ class IbkrAutoTrader:
             else:
                 return orders
             
+            # 获取可用资金
+            available_cash = self.get_available_cash()
+            if available_cash <= 0:
+                self.logger.warning("可用资金不足，无法生成订单")
+                return orders
+            
+            self.logger.info(f"开始处理{len(signal_data)}个信号，可用资金: ${available_cash:,.2f}")
+            
             for signal in signal_data:
                 symbol = signal.get('symbol', '')
                 prediction = signal.get('weighted_prediction', 0)
+                confidence = signal.get('confidence', 0.8)
                 
-                # 简单阈值过滤
-                if abs(prediction) < 0.005:  # 0.5%
+                # 🎯 波动率自适应门控 - 替代硬编码0.5%阈值
+                historical_prices = self._get_historical_prices(symbol, days=90)
+                can_trade, gating_details = self.volatility_gating.should_trade(
+                    symbol=symbol,
+                    prediction=prediction,
+                    price_data=historical_prices
+                )
+                
+                if not can_trade:
+                    self.logger.debug(f"{symbol} 未通过波动率门控: {gating_details.get('reason', 'unknown')}")
+                    continue
+                
+                # ⏰ 数据新鲜度评分和信号质量调整
+                signal_timestamp = signal.get('timestamp')
+                data_source = signal.get('data_source', 'unknown')
+                
+                # 如果有时间戳信息，计算新鲜度评分
+                if signal_timestamp:
+                    if isinstance(signal_timestamp, str):
+                        try:
+                            signal_timestamp = datetime.fromisoformat(signal_timestamp.replace('Z', '+00:00'))
+                        except:
+                            signal_timestamp = datetime.now()  # 解析失败使用当前时间
+                    elif not isinstance(signal_timestamp, datetime):
+                        signal_timestamp = datetime.now()
+                    
+                    freshness_result = self.freshness_scoring.calculate_freshness_score(
+                        symbol=symbol,
+                        data_timestamp=signal_timestamp,
+                        data_source=data_source,
+                        missing_ratio=signal.get('missing_ratio', 0.0),
+                        data_gaps=signal.get('data_gaps', [])
+                    )
+                    
+                    # 应用新鲜度到信号
+                    adjusted_prediction, freshness_info = self.freshness_scoring.apply_freshness_to_signal(
+                        symbol, prediction, freshness_result['freshness_score']
+                    )
+                    
+                    # 检查调整后的信号是否通过动态阈值
+                    if not freshness_info.get('passes_threshold', False):
+                        self.logger.debug(f"{symbol} 信号未通过新鲜度阈值: "
+                                        f"{prediction:.4f} → {adjusted_prediction:.4f} "
+                                        f"(阈值={freshness_info.get('dynamic_threshold', 0):.4f})")
+                        continue
+                    
+                    # 使用调整后的信号
+                    original_prediction = prediction
+                    prediction = adjusted_prediction
+                    
+                    self.logger.debug(f"{symbol} 新鲜度调整: {original_prediction:.4f} → {prediction:.4f} "
+                                    f"(F={freshness_result['freshness_score']:.3f})")
+                else:
+                    # 没有时间戳信息，跳过新鲜度调整
+                    self.logger.debug(f"{symbol} 无时间戳信息，跳过新鲜度评分")
+                
+                # 获取股票价格
+                current_price = self._get_current_price(symbol)
+                if current_price <= 0:
+                    self.logger.warning(f"{symbol} 无法获取有效价格，跳过")
+                    continue
+                
+                # 🚀 使用增强动态头寸计算器 (含风险管理)
+                # 获取历史成交量数据 (用于流动性约束)
+                volume_data = []
+                if symbol in self.tickers:
+                    ticker = self.tickers[symbol] 
+                    if hasattr(ticker, 'volume_history') and len(ticker.volume_history) > 0:
+                        volume_data = list(ticker.volume_history)[-30:]  # 最近30天成交量
+                
+                position_result = self.position_calculator.calculate_position_size(
+                    symbol=symbol,
+                    current_price=current_price,
+                    signal_strength=prediction,
+                    available_cash=available_cash,
+                    signal_confidence=confidence,
+                    price_history=historical_prices,  # 传入历史价格用于波动率和ATR计算
+                    volume_history=volume_data        # 传入成交量数据用于流动性约束
+                )
+                
+                # 验证头寸计算结果
+                if not position_result.get('valid', False):
+                    self.logger.debug(f"{symbol} 头寸计算无效: {position_result.get('reason', 'Unknown')}")
+                    continue
+                
+                quantity = position_result.get('shares', 0)
+                if quantity <= 0:
                     continue
                 
                 side = "BUY" if prediction > 0 else "SELL"
                 
-                orders.append({
+                order = {
                     'symbol': symbol,
                     'side': side,
-                    'quantity': 100,  # 固定数量
+                    'quantity': quantity,  # 🚀 动态计算的数量
                     'order_type': 'MKT',
-                    'source': 'basic_processing'
-                })
+                    'source': 'dynamic_sizing',
+                    # 添加头寸信息用于审计
+                    'position_info': {
+                        'target_percentage': position_result.get('target_percentage', 0),
+                        'actual_percentage': position_result.get('actual_percentage', 0),
+                        'actual_value': position_result.get('actual_value', 0),
+                        'price': current_price,
+                        'signal_strength': prediction,
+                        'confidence': confidence,
+                        'method': position_result.get('method', 'unknown'),
+                        'reason': position_result.get('reason', '')
+                    }
+                }
+                
+                orders.append(order)
+                
+                # 记录头寸详情
+                self.logger.info(f"{symbol}: {quantity}股 ${position_result['actual_value']:,.2f} "
+                               f"({position_result['actual_percentage']:.1%}) - {position_result['reason']}")
+                
+                # 更新可用资金 (简化估算)
+                available_cash -= position_result.get('actual_value', 0)
+                if available_cash <= 0:
+                    self.logger.warning("可用资金已用完，停止处理更多信号")
+                    break
             
-            self.logger.info(f"基础处理生成{len(orders)}个订单")
+            # 汇总信息
+            if orders:
+                total_value = sum(order['position_info']['actual_value'] for order in orders)
+                total_percentage = sum(order['position_info']['actual_percentage'] for order in orders)
+                
+                self.logger.info(f"动态头寸处理完成: {len(orders)}个订单, "
+                               f"总投资${total_value:,.2f} ({total_percentage:.1%})")
+            else:
+                self.logger.info("未生成任何有效订单")
             
         except Exception as e:
-            self.logger.error(f"基础信号处理failed: {e}")
+            self.logger.error(f"动态头寸信号处理失败: {e}")
+            import traceback
+            traceback.print_exc()
         
         return orders
     

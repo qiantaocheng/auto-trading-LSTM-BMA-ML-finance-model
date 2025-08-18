@@ -18,6 +18,9 @@ import scipy.stats as stats
 
 # Polygon客户端导入
 try:
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from polygon_client import polygon_client, download, Ticker
 except ImportError as e:
     logging.warning(f"Polygon client import failed: {e}")
@@ -62,15 +65,22 @@ class UnifiedPolygonFactors:
         self.cache = {}
         self.cache_ttl = 300  # 5分钟缓存
         
-        # 因子权重配置 - 基于autotrader引擎的多因子模型
+        # 因子权重配置 - 基于autotrader引擎的多因子模型（权重总和=1.0）
         self.factor_weights = {
-            'momentum': 0.25,        # 动量因子
+            'momentum': 0.20,        # 动量因子
             'mean_reversion': 0.30,  # 均值回归（主要信号）
-            'trend': 0.30,           # 趋势因子
+            'trend': 0.25,           # 趋势因子
             'volatility': 0.15,      # 波动率因子
-            'volume': 0.20,          # 成交量因子
-            'microstructure': 0.10   # 微观结构
+            'volume': 0.10,          # 成交量因子
+            'microstructure': 0.00   # 微观结构（暂时禁用）
         }
+        
+        # 验证权重总和
+        total_weight = sum(self.factor_weights.values())
+        if abs(total_weight - 1.0) > 1e-6:
+            logger.warning(f"Factor weights sum to {total_weight:.6f}, normalizing to 1.0")
+            # 归一化权重
+            self.factor_weights = {k: v/total_weight for k, v in self.factor_weights.items()}
         
         # 统计信息
         self.stats = {
@@ -78,8 +88,14 @@ class UnifiedPolygonFactors:
             'successful_calculations': 0,
             'failed_calculations': 0,
             'cache_hits': 0,
+            'cache_misses': 0,
+            'cache_evictions': 0,
             'last_update': datetime.now()
         }
+        
+        # 缓存管理
+        self.max_cache_size = 1000  # 最大缓存条目数
+        self.cache_timestamps = {}  # 跟踪缓存时间戳
         
         logger.info(f"UnifiedPolygonFactors initialized with {self.config.data_delay_minutes}min delay")
     
@@ -91,8 +107,24 @@ class UnifiedPolygonFactors:
         return True
     
     def _get_cache_key(self, symbol: str, factor_name: str, lookback_days: int = 60) -> str:
-        """生成缓存键"""
-        return f"{symbol}_{factor_name}_{lookback_days}_{int(time.time() // self.cache_ttl)}"
+        """生成安全的缓存键，避免冲突"""
+        import hashlib
+        
+        # 清理输入参数，避免特殊字符
+        clean_symbol = symbol.replace('_', '').replace('-', '').upper()
+        clean_factor = factor_name.replace('_', '').replace('-', '').lower()
+        
+        # 时间窗口（防止边界情况的键冲突）
+        time_window = int(time.time() // self.cache_ttl)
+        
+        # 创建复合键
+        key_components = f"{clean_symbol}|{clean_factor}|{lookback_days}|{time_window}"
+        
+        # 生成哈希避免过长的键名和潜在冲突
+        key_hash = hashlib.md5(key_components.encode('utf-8')).hexdigest()[:16]
+        
+        # 返回可读性好的缓存键
+        return f"factors_{clean_symbol}_{clean_factor}_{key_hash}"
     
     def _get_cached_result(self, cache_key: str) -> Optional[Any]:
         """获取缓存结果"""
@@ -100,12 +132,65 @@ class UnifiedPolygonFactors:
             cached_time, cached_data = self.cache[cache_key]
             if time.time() - cached_time < self.cache_ttl:
                 self.stats['cache_hits'] += 1
+                # 更新访问时间
+                self.cache_timestamps[cache_key] = time.time()
                 return cached_data
+            else:
+                # 过期缓存清理
+                del self.cache[cache_key]
+                if cache_key in self.cache_timestamps:
+                    del self.cache_timestamps[cache_key]
+        
+        self.stats['cache_misses'] += 1
         return None
     
     def _set_cache(self, cache_key: str, data: Any):
-        """设置缓存"""
-        self.cache[cache_key] = (time.time(), data)
+        """设置缓存，包含大小管理"""
+        current_time = time.time()
+        
+        # 检查缓存大小限制
+        if len(self.cache) >= self.max_cache_size:
+            self._evict_old_cache_entries()
+        
+        # 设置新缓存
+        self.cache[cache_key] = (current_time, data)
+        self.cache_timestamps[cache_key] = current_time
+        
+    def _evict_old_cache_entries(self):
+        """清理老旧缓存条目"""
+        if not self.cache_timestamps:
+            return
+            
+        # 按访问时间排序，移除最老的条目
+        sorted_entries = sorted(self.cache_timestamps.items(), key=lambda x: x[1])
+        
+        # 移除最老的25%条目
+        evict_count = max(1, len(sorted_entries) // 4)
+        
+        for cache_key, _ in sorted_entries[:evict_count]:
+            if cache_key in self.cache:
+                del self.cache[cache_key]
+            if cache_key in self.cache_timestamps:
+                del self.cache_timestamps[cache_key]
+            self.stats['cache_evictions'] += 1
+        
+        logger.debug(f"缓存清理：移除了 {evict_count} 个老旧条目")
+    
+    def clear_cache(self):
+        """清空所有缓存"""
+        cache_size = len(self.cache)
+        self.cache.clear()
+        self.cache_timestamps.clear()
+        logger.info(f"缓存已清空，移除了 {cache_size} 个条目")
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """获取缓存统计信息"""
+        return {
+            'cache_size': len(self.cache),
+            'max_cache_size': self.max_cache_size,
+            'cache_hit_rate': self.stats['cache_hits'] / max(1, self.stats['cache_hits'] + self.stats['cache_misses']),
+            'total_evictions': self.stats['cache_evictions']
+        }
     
     def get_market_data(self, symbol: str, days: int = 60) -> pd.DataFrame:
         """

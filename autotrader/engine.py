@@ -106,8 +106,12 @@ class RiskEngine:
             self.logger.warning(f"Invalid prices: entry={entry_price}, stop={stop_price}")
             return 0
         
-        # 基at风险positions计算
-        per_trade_risk_pct = sizing.get("per_trade_risk_pct", 0.02)
+        # 基at风险positions计算 - Use environment config first
+        from .environment_config import get_environment_manager
+        env_manager = get_environment_manager()
+        risk_params = env_manager.get_risk_params()
+        
+        per_trade_risk_pct = sizing.get("per_trade_risk_pct") or risk_params.get("per_trade_risk_pct", 0.02)
         risk_per_trade = effective_equity * per_trade_risk_pct
         stop_distance = abs(entry_price - stop_price)
         
@@ -118,8 +122,8 @@ class RiskEngine:
         # 基at风险股数
         shares_by_risk = int(risk_per_trade // stop_distance)
         
-        # 基at权益比例最大positions
-        max_position_pct = sizing.get("max_position_pct_of_equity", 0.15)
+        # 基at权益比例最大positions - Use environment config first
+        max_position_pct = sizing.get("max_position_pct_of_equity") or risk_params.get("max_position_pct", 0.15)
         max_position_value = effective_equity * max_position_pct
         shares_by_equity = int(max_position_value // entry_price)
         
@@ -213,7 +217,7 @@ class SignalHub:
             if not z or len(z) == 0:
                 return 0.0
                 
-            z_now = z[-1]
+            z_now = z[-1] if len(z) > 0 else 0.0
             if z_now != z_now:  # Check for NaN
                 return 0.0
                 
@@ -316,7 +320,7 @@ class SignalHub:
                 trend_score += 0.1
             sma20_prev = sum(closes[-25:-5]) / 20 if len(closes) >= 25 else sma20
             if sma20_prev != 0:
-                slope = (sma20 - sma20_prev) / abs(sma20_prev)
+                slope = (sma20 - sma20_prev) / sma20_prev
                 if slope > 0.01:
                     trend_score += 0.3
                 elif slope > 0:

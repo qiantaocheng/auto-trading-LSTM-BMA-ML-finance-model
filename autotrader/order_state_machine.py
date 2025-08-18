@@ -16,7 +16,7 @@ import asyncio
 class OrderState(Enum):
     """订单状态枚举"""
     PENDING = "PENDING"           # 待提交
-    SUBMITTED = "SUBMITTED"       # 提交
+    SUBMITTED = "SUBMITTED"       # 提交释放
     ACKNOWLEDGED = "ACKNOWLEDGED" # 确认
     PARTIAL = "PARTIAL"          # 部分execution
     FILLED = "FILLED"            # 完全execution
