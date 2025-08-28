@@ -219,6 +219,10 @@ class StockDatabase:
         """Public method to create database tables"""
         return self._init_database()
     
+    def init_database(self):
+        """向后兼容的数据库初始化方法"""
+        return self._init_database()
+    
     def _init_database(self):
         """Initialize database table structure（using retry mechanism）"""
         try:
@@ -641,17 +645,48 @@ class StockDatabase:
         stocks = self.get_stocks_in_list(list_id)
         return ",".join([stock["symbol"] for stock in stocks])
     
-    def create_stock_list(self, name: str, description: str = "") -> int:
-        """创建新股票列表"""
+    def create_stock_list(self, name: str, symbols_or_description=None, description: str = "") -> int:
+        """创建新股票列表
+        
+        Args:
+            name: 列表名称
+            symbols_or_description: 可以是符号列表(list)或描述(str)
+            description: 描述(当symbols_or_description是list时使用)
+        """
+        # 处理参数兼容性
+        if isinstance(symbols_or_description, str):
+            # 旧的调用方式: create_stock_list(name, description)
+            actual_description = symbols_or_description
+            symbols = None
+        elif isinstance(symbols_or_description, list):
+            # 新的调用方式: create_stock_list(name, symbols, description)
+            symbols = symbols_or_description
+            actual_description = description
+        else:
+            # 只有name参数
+            symbols = None
+            actual_description = description
+            
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO stock_lists (name, description) 
                     VALUES (?, ?)
-                """, (name, description))
+                """, (name, actual_description))
+                
+                list_id = cursor.lastrowid
+                
+                # 如果提供了symbols，添加到列表中
+                if symbols:
+                    for symbol in symbols:
+                        cursor.execute("""
+                            INSERT INTO stocks (list_id, symbol, name) 
+                            VALUES (?, ?, ?)
+                        """, (list_id, symbol.upper(), ""))
+                
                 conn.commit()
-                return cursor.lastrowid
+                return list_id
                 
         except sqlite3.IntegrityError:
             raise ValueError(f"股票列表 '{name}' 存in")

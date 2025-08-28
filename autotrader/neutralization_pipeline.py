@@ -7,6 +7,7 @@
 
 import pandas as pd
 import numpy as np
+import logging
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -88,7 +89,8 @@ class DailyNeutralizationTransformer(BaseEstimator, TransformerMixin):
 
         # 2) 截面Z-score（向量化）
         means = df.groupby(self.date_col)[feature_cols].transform('mean')
-        stds = df.groupby(self.date_col)[feature_cols].transform(lambda g: g.std(ddof=0).replace(0, np.nan))
+        stds = df.groupby(self.date_col)[feature_cols].transform(lambda g: g.std(ddof=0))
+        stds = stds.replace(0, np.nan)
         df[feature_cols] = (df[feature_cols] - means) / (stds + 1e-12)
 
         # 3) 行业/β中性化（如启用）
@@ -104,8 +106,10 @@ class DailyNeutralizationTransformer(BaseEstimator, TransformerMixin):
                 lambda g: self._orthogonalize_group(g, feature_cols, g[self.date_col].iloc[0])
             )
 
-        # 返回特征矩阵
-        return df[feature_cols]
+        # 返回特征矩阵 - 处理PCA后可能的列名变化
+        final_feature_cols = [c for c in df.columns 
+                             if c not in [self.date_col, self.ticker_col]]
+        return df[final_feature_cols]
             
     def _simple_standardize(self, X):
         """简单标准化（无日期信息时的回退）"""
@@ -217,8 +221,11 @@ class DailyNeutralizationTransformer(BaseEstimator, TransformerMixin):
             pc_cols = [f'PC{i+1}' for i in range(X_pca.shape[1])]
             pc_df = pd.DataFrame(X_pca, columns=pc_cols, index=group.index)
             
-            # 保留原有的日期/股票列并添加主成分
-            result = group[[self.date_col, self.ticker_col]].copy()
+            # 替换原因子列为主成分
+            result = group.copy()
+            # 移除原因子列
+            result = result.drop(columns=feature_cols)
+            # 添加主成分
             result = pd.concat([result, pc_df], axis=1)
             
             return result

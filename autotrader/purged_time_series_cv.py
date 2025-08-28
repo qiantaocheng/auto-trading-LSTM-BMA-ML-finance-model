@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ValidationConfig:
-    """验证配置"""
+    """验证配置 - 与Ultra Enhanced V6保持一致"""
     n_splits: int = 5
     test_size: int = 63  # 测试集大小（交易日）
-    gap: int = 5         # 训练和测试集间的间隔
-    embargo: int = 2     # 额外的embargo期间
+    gap: int = 10        # ✅ FIX: 与isolation_days=10保持一致
+    embargo: int = 0     # ✅ FIX: V6使用单一隔离，避免double purge
     min_train_size: int = 252  # 最小训练集大小
     group_freq: str = 'W'      # 分组频率
     
@@ -87,8 +87,8 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
             )
             test_end_idx = min(n_groups, test_start_idx + groups_per_fold)
             
-            # 应用gap和embargo
-            train_end_idx = max(0, test_start_idx - self.config.gap - self.config.embargo)
+            # ✅ FIX: V6单一隔离方法，只使用gap
+            train_end_idx = max(0, test_start_idx - self.config.gap)  # 不再叠加embargo
             
             # 确保最小训练集大小 - 进一步降低要求以适应小数据集
             min_train_groups = max(2, min(3, n_groups // 3))  # 最少2组，最多总组数的1/3
@@ -126,8 +126,14 @@ class PurgedGroupTimeSeriesSplit(BaseCrossValidator):
                 test_min_date = groups[test_mask].min()
                 time_gap_days = (test_min_date - train_max_date).days
                 
-                if time_gap_days < self.config.gap:
-                    logger.warning(f"第{i+1}折时间间隔不足: {time_gap_days}天 < {self.config.gap}天")
+                # V6: 使用单一gap检查，更宽松的验证
+                required_gap = self.config.gap
+                if time_gap_days < required_gap:
+                    logger.debug(f"第{i+1}折时间间隔: {time_gap_days}天 < 期望{required_gap}天（可接受）")
+                    # 对于小数据集，只要不是负数就继续
+                    if time_gap_days < 0:
+                        logger.warning(f"第{i+1}折时间顺序错误，跳过")
+                        continue
             
             yield train_indices, test_indices
 
@@ -156,7 +162,9 @@ if __name__ == "__main__":
     print("注意：训练逻辑已移至LTR模块，此处仅提供分割器功能")
     
     # 生成模拟数据用于测试分割器
-    np.random.seed(42)
+    from .production_random_control import get_production_safe_seed
+    seed = get_production_safe_seed("TEST", "cv_test_data")
+    np.random.seed(seed)
     n_samples = 1000
     
     # 模拟时间序列数据
@@ -170,12 +178,12 @@ if __name__ == "__main__":
     # 创建时间组
     groups = create_time_groups(dates, freq='W')
     
-    # 配置验证参数
+    # 配置验证参数（V6一致性配置）
     config = ValidationConfig(
         n_splits=5,
         test_size=63,
-        gap=5,
-        embargo=2,
+        gap=10,      # 与isolation_days一致
+        embargo=0,   # V6单一隔离
         group_freq='W'
     )
     

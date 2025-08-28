@@ -46,9 +46,18 @@ class DynamicClientIDManager:
         self.lock = Lock()
         
         # ClientID范围配置
-        self.min_client_id = 1000
-        self.max_client_id = 9999
-        self.reserved_ids = {7496, 7497}  # TWS默认使useID
+        try:
+            from .config_manager import get_config_manager
+            config = get_config_manager()
+            self.min_client_id = config.get('ibkr.min_client_id', 1000)
+            self.max_client_id = config.get('ibkr.max_client_id', 9999)
+            reserved_ports = config.get('ibkr.reserved_ports', [7496, 7497])
+            self.reserved_ids = set(reserved_ports)
+        except:
+            # Fallback to defaults
+            self.min_client_id = 1000
+            self.max_client_id = 9999
+            self.reserved_ids = {7496, 7497}
         
         # 当before分配ID
         self.current_client_id: Optional[int] = None
@@ -60,11 +69,21 @@ class DynamicClientIDManager:
         # 清理过期注册
         self._cleanup_expired_registrations()
     
-    def allocate_client_id(self, host: str = "127.0.0.1", port: int = 7497, 
+    def allocate_client_id(self, host: Optional[str] = None, port: Optional[int] = None, 
                           preferred_id: Optional[int] = None) -> int:
         """分配一个canuseClientID"""
         with self.lock:
             try:
+                # Use defaults from config if not provided
+                try:
+                    from .config_manager import get_config_manager
+                    config = get_config_manager()
+                    host = host or config.get('ibkr.host', '127.0.0.1')
+                    port = port or config.get('ibkr.port', 7497)
+                except:
+                    host = host or '127.0.0.1'
+                    port = port or 7497
+                
                 # if果指定了首选ID且canuse，优先使use
                 if preferred_id and self._is_client_id_available(preferred_id, host, port):
                     client_id = preferred_id
@@ -81,8 +100,8 @@ class DynamicClientIDManager:
                 
             except Exception as e:
                 self.logger.error(f"ClientID分配failed: {e}")
-                # 回退to随机ID
-                fallback_id = self._generate_fallback_id()
+                # 增强的回退逻辑：多次尝试避免冲突
+                fallback_id = self._generate_safe_fallback_id(host, port)
                 self.logger.warning(f"使use回退ClientID: {fallback_id}")
                 return fallback_id
     
@@ -275,7 +294,84 @@ class DynamicClientIDManager:
     
     def _generate_fallback_id(self) -> int:
         """生成回退ClientID"""
-        return random.randint(5000, 8999)
+        from .production_random_control import get_random_control
+        control = get_random_control()
+        return int(control.controlled_random_call('random_uniform', low=5000, high=8999))
+    
+    def _generate_safe_fallback_id(self, host: str, port: int, max_attempts: int = 10) -> int:
+        """
+        生成安全的回退ClientID，避免冲突
+        
+        Args:
+            host: 主机地址
+            port: 端口
+            max_attempts: 最大尝试次数
+            
+        Returns:
+            int: 安全的ClientID
+        """
+        active_registrations = self._load_active_registrations()
+        used_ids = set()
+        
+        # 收集已使用的ID
+        for reg in active_registrations.values():
+            if reg.host == host and reg.port == port:
+                used_ids.add(reg.client_id)
+        used_ids.update(self.reserved_ids)
+        
+        # 尝试生成不冲突的ID
+        for attempt in range(max_attempts):
+            try:
+                candidate_id = self._generate_fallback_id()
+                
+                # 检查是否与现有ID冲突
+                if candidate_id not in used_ids:
+                    # 额外验证：检查进程是否还活着
+                    conflict_found = False
+                    for reg in active_registrations.values():
+                        if (reg.client_id == candidate_id and 
+                            reg.host == host and 
+                            reg.port == port and
+                            self._is_process_alive(reg.process_id)):
+                            conflict_found = True
+                            break
+                    
+                    if not conflict_found:
+                        self.logger.info(f"安全回退ID生成成功: {candidate_id} (尝试 {attempt + 1}/{max_attempts})")
+                        return candidate_id
+                
+                # 添加到已使用列表，避免重复尝试
+                used_ids.add(candidate_id)
+                
+            except Exception as e:
+                self.logger.warning(f"回退ID生成尝试 {attempt + 1} failed: {e}")
+        
+        # 如果所有尝试都失败，使用进程ID基础的确定性ID
+        deterministic_id = self._generate_deterministic_fallback_id()
+        self.logger.warning(f"所有回退尝试failed，使用确定性ID: {deterministic_id}")
+        return deterministic_id
+    
+    def _generate_deterministic_fallback_id(self) -> int:
+        """
+        生成基于进程ID的确定性回退ID
+        这个方法确保不同进程获得不同的ID
+        """
+        import os
+        import time
+        
+        # 基于进程ID和当前时间生成确定性ID
+        pid = os.getpid()
+        timestamp = int(time.time())
+        
+        # 使用进程ID和时间戳的组合，确保唯一性
+        # 取进程ID的后4位和时间戳的后2位
+        base_id = 6000 + (pid % 1000) + ((timestamp % 100) * 10)
+        
+        # 确保在有效范围内
+        if base_id > self.max_client_id:
+            base_id = self.min_client_id + (base_id % (self.max_client_id - self.min_client_id))
+        
+        return base_id
     
     def get_registry_status(self) -> Dict:
         """retrieval注册状态信息"""
@@ -307,7 +403,7 @@ def get_client_id_manager() -> DynamicClientIDManager:
         _global_client_id_manager = DynamicClientIDManager()
     return _global_client_id_manager
 
-def allocate_dynamic_client_id(host: str = "127.0.0.1", port: int = 7497, 
+def allocate_dynamic_client_id(host: Optional[str] = None, port: Optional[int] = None, 
                               preferred_id: Optional[int] = None) -> int:
     """便捷函数：Assigned dynamic ClientID"""
     manager = get_client_id_manager()

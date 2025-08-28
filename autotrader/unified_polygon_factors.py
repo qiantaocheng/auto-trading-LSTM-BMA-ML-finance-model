@@ -37,8 +37,26 @@ except ImportError:
         data_delay_minutes: int = 15
         min_confidence_threshold: float = 0.8
         position_size_reduction: float = 0.4
+        min_alpha_multiplier: float = 1.0  # 添加缺失字段
     
     DEFAULT_DELAYED_CONFIG = DelayedDataConfig()
+    
+    def should_trade_with_delayed_data(config: DelayedDataConfig) -> Tuple[bool, str]:
+        """简化的延迟数据交易检查"""
+        if not config.enabled:
+            return False, "Delayed data trading disabled"
+        return True, "Delayed data trading allowed"
+
+# 导入自适应权重系统
+try:
+    from .adaptive_factor_weights import get_current_factor_weights, AdaptiveFactorWeights
+    from .adaptive_weights_adapter import get_bma_enhanced_weights
+    ADAPTIVE_WEIGHTS_AVAILABLE = True
+    BMA_ENHANCED_WEIGHTS_AVAILABLE = True
+except ImportError:
+    ADAPTIVE_WEIGHTS_AVAILABLE = False
+    BMA_ENHANCED_WEIGHTS_AVAILABLE = False
+    logging.warning("Adaptive weights system not available, using fallback weights")
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +83,8 @@ class UnifiedPolygonFactors:
         self.cache = {}
         self.cache_ttl = 300  # 5分钟缓存
         
-        # 因子权重配置 - 基于autotrader引擎的多因子模型（权重总和=1.0）
-        self.factor_weights = {
+        # 因子权重配置 - 现在支持动态权重学习
+        self.fallback_weights = {
             'momentum': 0.20,        # 动量因子
             'mean_reversion': 0.30,  # 均值回归（主要信号）
             'trend': 0.25,           # 趋势因子
@@ -75,12 +93,19 @@ class UnifiedPolygonFactors:
             'microstructure': 0.00   # 微观结构（暂时禁用）
         }
         
-        # 验证权重总和
-        total_weight = sum(self.factor_weights.values())
-        if abs(total_weight - 1.0) > 1e-6:
-            logger.warning(f"Factor weights sum to {total_weight:.6f}, normalizing to 1.0")
-            # 归一化权重
-            self.factor_weights = {k: v/total_weight for k, v in self.factor_weights.items()}
+        # 初始化自适应权重系统
+        self.adaptive_weights = None
+        if ADAPTIVE_WEIGHTS_AVAILABLE:
+            try:
+                self.adaptive_weights = AdaptiveFactorWeights()
+                logger.info("自适应权重系统初始化成功")
+            except Exception as e:
+                logger.error(f"自适应权重系统初始化失败: {e}")
+                self.adaptive_weights = None
+        
+        # 🔥 延迟权重获取：仅在实际需要时才获取权重
+        self.factor_weights = None
+        self._weights_initialized = False
         
         # 统计信息
         self.stats = {
@@ -98,6 +123,146 @@ class UnifiedPolygonFactors:
         self.cache_timestamps = {}  # 跟踪缓存时间戳
         
         logger.info(f"UnifiedPolygonFactors initialized with {self.config.data_delay_minutes}min delay")
+    
+    def _ensure_weights_initialized(self):
+        """确保权重已初始化（轻量级延迟初始化）"""
+        if not self._weights_initialized:
+            logger.info("⚡ 轻量级权重初始化（避免训练前触发ML）")
+            
+            # 🔥 启动时仅使用轻量级权重，不触发ML学习
+            if self.adaptive_weights is not None:
+                # 尝试加载现有权重，不触发新的学习
+                latest_result = self.adaptive_weights.load_latest_weights()
+                if latest_result is not None and latest_result.confidence >= 0.5:
+                    logger.info(f"📂 加载历史ML权重，置信度: {latest_result.confidence:.3f}")
+                    self.factor_weights = latest_result.weights
+                else:
+                    logger.info("📋 使用优化回退权重，等待训练完成")
+                    self.factor_weights = self.fallback_weights.copy()
+            else:
+                self.factor_weights = self.fallback_weights.copy()
+            
+            # 验证权重总和
+            total_weight = sum(self.factor_weights.values())
+            if abs(total_weight - 1.0) > 1e-6:
+                self.factor_weights = {k: v/total_weight for k, v in self.factor_weights.items()}
+            
+            self._weights_initialized = True
+            logger.info(f"✅ 轻量级权重初始化完成，等待训练后更新")
+
+    def get_bma_enhanced_weights(self) -> Dict[str, float]:
+        """
+        专为BMA Enhanced系统获取ML权重
+        只有在BMA训练完成后才应该调用此方法
+        """
+        try:
+            if BMA_ENHANCED_WEIGHTS_AVAILABLE:
+                logger.info("🎯 BMA Enhanced训练后获取ML权重")
+                ml_weights = get_bma_enhanced_weights()
+                
+                # 更新内部权重缓存
+                self.factor_weights = ml_weights
+                self._weights_initialized = True
+                
+                return ml_weights
+            else:
+                logger.warning("BMA Enhanced权重适配器不可用，回退到标准方法")
+                return self._get_current_weights(force_ml_learning=True)
+        except Exception as e:
+            logger.error(f"BMA Enhanced权重获取失败: {e}")
+            return self._get_current_weights()
+    
+    def update_weights_post_training(self, training_context: str = "BMA_ENHANCED"):
+        """
+        训练完成后更新权重
+        
+        Args:
+            training_context: 训练上下文 ("BMA_ENHANCED", "MANUAL", etc.)
+        """
+        try:
+            logger.info(f"📊 {training_context} 训练完成，更新因子权重")
+            
+            if training_context == "BMA_ENHANCED":
+                # BMA训练完成后，获取ML权重
+                updated_weights = self.get_bma_enhanced_weights()
+            else:
+                # 其他训练模式，强制更新权重
+                updated_weights = self._get_current_weights(force_ml_learning=True)
+            
+            # 验证并应用新权重
+            total_weight = sum(updated_weights.values())
+            if abs(total_weight - 1.0) > 1e-6:
+                updated_weights = {k: v/total_weight for k, v in updated_weights.items()}
+            
+            self.factor_weights = updated_weights
+            self._weights_initialized = True
+            
+            logger.info(f"✅ 权重更新完成: {updated_weights}")
+            return updated_weights
+            
+        except Exception as e:
+            logger.error(f"训练后权重更新失败: {e}")
+            # 保持现有权重或使用回退权重
+            if not self._weights_initialized:
+                self._ensure_weights_initialized()
+            return self.factor_weights
+
+    def _get_current_weights(self, force_ml_learning: bool = False) -> Dict[str, float]:
+        """获取当前因子权重（优先ML学习权重）"""
+        try:
+            if self.adaptive_weights is not None:
+                # 🔥 优先使用主动学习权重，避免硬编码回退
+                if force_ml_learning:
+                    logger.info("🚀 BMA Enhanced模式：主动获取或学习ML权重")
+                    adaptive_weights = self.adaptive_weights.get_or_learn_weights()
+                else:
+                    adaptive_weights = self.adaptive_weights.get_current_weights()
+                
+                # 检查是否为硬编码回退权重
+                is_fallback = self._is_fallback_weights(adaptive_weights)
+                if is_fallback:
+                    logger.warning("⚠️ 检测到硬编码权重，尝试主动学习ML权重")
+                    try:
+                        ml_weights = self.adaptive_weights.get_or_learn_weights()
+                        if not self._is_fallback_weights(ml_weights):
+                            logger.info("✅ 成功获取ML权重，替换硬编码权重")
+                            adaptive_weights = ml_weights
+                    except Exception as ml_error:
+                        logger.error(f"ML权重获取失败: {ml_error}")
+                
+                weight_type = "ML学习权重" if not self._is_fallback_weights(adaptive_weights) else "硬编码回退权重"
+                logger.info(f"使用{weight_type}: {adaptive_weights}")
+                return adaptive_weights
+            else:
+                # 使用回退权重
+                logger.info(f"使用回退权重: {self.fallback_weights}")
+                return self.fallback_weights.copy()
+        except Exception as e:
+            logger.error(f"获取权重失败: {e}")
+            return self.fallback_weights.copy()
+    
+    def _is_fallback_weights(self, weights: Dict[str, float]) -> bool:
+        """检测权重是否为硬编码回退权重"""
+        try:
+            # 检查权重分布特征
+            values = list(weights.values())
+            
+            # 检查是否为等权重分布 (0.2, 0.2, 0.2, 0.2, 0.2)
+            if len(set(values)) == 1 and abs(values[0] - 0.2) < 0.001:
+                return True
+                
+            # 检查是否匹配预设的回退权重模式
+            fallback_signature = [0.30, 0.30, 0.25, 0.20, 0.15]  # 典型回退权重
+            sorted_weights = sorted(values, reverse=True)
+            if len(sorted_weights) >= 3:
+                if (abs(sorted_weights[0] - 0.3) < 0.05 and 
+                    abs(sorted_weights[1] - 0.3) < 0.05):
+                    return True
+            
+            return False
+            
+        except Exception:
+            return False
     
     def _validate_client(self) -> bool:
         """验证Polygon客户端可用性"""

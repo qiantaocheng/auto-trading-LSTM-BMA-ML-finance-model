@@ -1,0 +1,15 @@
+{
+  "predictions": {},
+  "model_performance": {
+    "mse": 0.0,
+    "r2": 0.0
+  },
+  "feature_importance": {},
+  "batch_metadata": {
+    "batch_idx": 2,
+    "tickers_count": 0,
+    "training_time_seconds": 0.0,
+    "status": "placeholder"
+  },
+  "timestamp": "2025-08-21T14:39:48.417904"
+}

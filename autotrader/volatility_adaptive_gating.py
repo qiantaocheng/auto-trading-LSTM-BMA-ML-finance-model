@@ -347,6 +347,44 @@ class VolatilityAdaptiveGating:
         else:
             return 'approved'
     
+    def should_gate_signal(self, 
+                          symbol: str, 
+                          signal_strength: float, 
+                          price_data: List[float],
+                          volume_data: Optional[List[float]] = None) -> bool:
+        """
+        判断是否应该门控（阻止）该信号
+        
+        Args:
+            symbol: 股票代码
+            signal_strength: 信号强度
+            price_data: 价格数据
+            volume_data: 成交量数据（可选）
+            
+        Returns:
+            True = 应该门控（阻止交易）
+            False = 不门控（允许交易）
+        """
+        try:
+            # 调用主要的门控判断函数
+            can_trade, info = self.should_trade(symbol, signal_strength, price_data, volume_data)
+            
+            # 返回相反的结果：can_trade=True时不门控(False)，can_trade=False时门控(True)
+            should_gate = not can_trade
+            
+            if should_gate:
+                reason = info.get('reason', 'unknown')
+                self.logger.debug(f"🚫 门控信号 {symbol}: {reason} (强度={signal_strength:.4f})")
+            else:
+                self.logger.debug(f"✅ 信号通过 {symbol}: 强度={signal_strength:.4f}")
+            
+            return should_gate
+            
+        except Exception as e:
+            self.logger.error(f"门控检查失败 {symbol}: {e}")
+            # 发生错误时采用保守策略：门控
+            return True
+    
     def get_cached_volatility(self, symbol: str) -> Optional[float]:
         """获取缓存的波动率"""
         return self.volatility_cache.get(symbol)

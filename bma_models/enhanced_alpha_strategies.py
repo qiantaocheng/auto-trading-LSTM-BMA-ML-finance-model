@@ -50,6 +50,40 @@ class AlphaStrategiesEngine:
         
         logger.info(f"Alpha Strategy Engine initialized, loaded {len(self.config['alphas'])} factors")
     
+    def decay_linear(self, series: pd.Series, decay: int) -> pd.Series:
+        """
+        应用线性时间衰减权重
+        
+        Args:
+            series: 需要衰减的序列
+            decay: 衰减期数
+            
+        Returns:
+            应用衰减权重后的序列
+        """
+        if decay <= 1:
+            return series
+        
+        try:
+            # 创建线性衰减权重：最近的权重最大，历史权重递减
+            weights = np.linspace(1, 1/decay, decay)
+            weights = weights / weights.sum()  # 归一化
+            
+            # 对序列应用衰减权重
+            result = series.copy().astype(float)  # 确保数据类型为float
+            if len(series) >= decay:
+                # 使用滚动窗口应用衰减权重
+                for i in range(decay-1, len(series)):
+                    window_data = series.iloc[i-decay+1:i+1]
+                    if len(window_data) == decay:
+                        result.iloc[i] = float((window_data.values * weights).sum())
+            
+            return result.fillna(0.0)
+            
+        except Exception as e:
+            logger.warning(f"线性衰减计算失败: {e}")
+            return series.fillna(0)
+    
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration file"""
         try:
@@ -126,6 +160,16 @@ class AlphaStrategiesEngine:
             'altman_score': self._compute_altman_score,
             'qmj_score': self._compute_qmj_score,
             'earnings_stability': self._compute_earnings_stability,
+            
+            # Sentiment factors (独立的机器学习特征，无硬编码权重)
+            'news_sentiment': self._compute_news_sentiment,
+            'market_sentiment': self._compute_market_sentiment,
+            'fear_greed_sentiment': self._compute_fear_greed_sentiment,
+            'sentiment_momentum': self._compute_sentiment_momentum,
+            # REMOVED: Low-performance factors
+            # 'sentiment_volatility': self._compute_sentiment_volatility,  # 数据质量差
+            # 'retail_herding_effect': self._compute_retail_herding_effect,  # 计算成本高
+            # 'apm_momentum_reversal': self._compute_apm_momentum_reversal,  # 过度工程化
             
             'hump': None,  # Special handling
         }
@@ -483,17 +527,26 @@ class AlphaStrategiesEngine:
         """PEAD（财报后漂移）event-driven proxy"""
         try:
             window = windows[0] if windows else 21
-            returns_21d = df.groupby('ticker')['Close'].pct_change(periods=window)
+            returns_21d = df.groupby('ticker')['Close'].pct_change(periods=window).reset_index(level=0, drop=True)
             if 'volume' in df.columns:
-                vol_ma = df.groupby('ticker')['volume'].rolling(window*2).mean()
-                vol_ratio = df['volume'] / vol_ma
+                vol_ma = df.groupby('ticker')['volume'].rolling(window*2).mean().reset_index(level=0, drop=True)
+                # Ensure proper index alignment for division
+                vol_ratio = pd.Series(df['volume'].values / vol_ma.values, index=df.index)
                 vol_anomaly = vol_ratio.groupby(df['ticker']).transform(lambda x: (x - x.rolling(window).mean()) / (x.rolling(window).std() + 1e-8))
             else:
                 vol_anomaly = pd.Series(0.0, index=df.index)
-            pead_signal = returns_21d * (1 + vol_anomaly * 0.3)
+            
+            # Ensure index alignment
+            returns_aligned = pd.Series(returns_21d.values, index=df.index)
+            pead_signal = returns_aligned * (1 + vol_anomaly * 0.3)
+            
+            # Fix threshold calculation with proper index handling
             threshold = pead_signal.groupby(df['ticker']).rolling(252).quantile(0.8).reset_index(level=0, drop=True)
-            pead_filtered = pead_signal.where(pead_signal.abs() > threshold.abs(), 0)
-            return pead_filtered.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).fillna(0)
+            threshold_aligned = pd.Series(threshold.values, index=df.index)
+            pead_filtered = pead_signal.where(pead_signal.abs() > threshold_aligned.abs(), 0)
+            
+            result = pead_filtered.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return pd.Series(result.values, index=df.index, name='pead').fillna(0)
         except Exception as e:
             logger.warning(f"PEAD computation failed: {e}")
             return pd.Series(0.0, index=df.index)
@@ -516,10 +569,14 @@ class AlphaStrategiesEngine:
         try:
             window = 252  # 52周 ≈ 252个交易日
             g = df.groupby('ticker')['Close']
-            max_52w = g.rolling(window=window, min_periods=min(window//2, 60)).max()
+            max_52w = g.rolling(window=window, min_periods=min(window//2, 60)).max().reset_index(level=0, drop=True)
             current_price = df['Close']
-            proximity = current_price / max_52w
-            return proximity.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).fillna(0)
+            # Ensure index alignment
+            max_52w_aligned = pd.Series(max_52w.values, index=df.index)
+            proximity = current_price / max_52w_aligned
+            # Apply decay with proper index handling
+            result = proximity.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return pd.Series(result.values, index=df.index, name='new_high_proximity').fillna(0)
         except Exception as e:
             logger.warning(f"52周新高接近度 computation failed: {e}")
             return pd.Series(0.0, index=df.index)
@@ -785,9 +842,13 @@ class AlphaStrategiesEngine:
     def _compute_investment_factor(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """Investment factor（简化implementation）"""
         try:
-            price_vol = df.groupby('ticker')['Close'].rolling(22).std()
-            return -price_vol.fillna(0)  # Take negative
-        except:
+            # Fix index alignment issue
+            price_vol = df.groupby('ticker')['Close'].rolling(22).std().reset_index(level=0, drop=True)
+            result = -price_vol.fillna(0)  # Take negative
+            # Ensure proper index alignment
+            return pd.Series(result.values, index=df.index, name='investment_factor').fillna(0)
+        except Exception as e:
+            logger.warning(f"Investment factor computation failed: {e}")
             return pd.Series(0.0, index=df.index)
     
     # Quality score factors
@@ -803,7 +864,9 @@ class AlphaStrategiesEngine:
     def _compute_ohlson_score(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """OhlsonScore（简化implementation）"""
         try:
-            price_vol = df.groupby('ticker')['Close'].rolling(126).std() / df['Close']
+            # ✅ FIX: 兼容'Close'和'close'列名
+            close_col = 'Close' if 'Close' in df.columns else 'close'
+            price_vol = df.groupby('ticker')[close_col].rolling(126).std() / df[close_col]
             return -price_vol.fillna(0)  # Take negative，lower risk is better
         except:
             return pd.Series(0.0, index=df.index)
@@ -811,7 +874,9 @@ class AlphaStrategiesEngine:
     def _compute_altman_score(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """AltmanScore（简化implementation）"""
         try:
-            returns = df.groupby('ticker')['Close'].pct_change()
+            # ✅ FIX: 兼容'Close'和'close'列名
+            close_col = 'Close' if 'Close' in df.columns else 'close'
+            returns = df.groupby('ticker')[close_col].pct_change()
             stability = -returns.rolling(126).std()  # Stability
             return stability.fillna(0)
         except:
@@ -820,7 +885,9 @@ class AlphaStrategiesEngine:
     def _compute_qmj_score(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """QMJ质量Score（简化implementation）"""
         try:
-            returns = df.groupby('ticker')['Close'].pct_change()
+            # ✅ FIX: 兼容'Close'和'close'列名
+            close_col = 'Close' if 'Close' in df.columns else 'close'
+            returns = df.groupby('ticker')[close_col].pct_change()
             quality = returns.rolling(252).mean() / (returns.rolling(252).std() + 1e-8)
             return quality.fillna(0)
         except:
@@ -829,7 +896,9 @@ class AlphaStrategiesEngine:
     def _compute_earnings_stability(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """盈利Stability（简化implementation）"""
         try:
-            returns = df.groupby('ticker')['Close'].pct_change()
+            # ✅ FIX: 兼容'Close'和'close'列名
+            close_col = 'Close' if 'Close' in df.columns else 'close'
+            returns = df.groupby('ticker')[close_col].pct_change()
             stability = -returns.rolling(252).std()  # lower volatility is better
             return stability.fillna(0)
         except:
@@ -837,28 +906,46 @@ class AlphaStrategiesEngine:
  
     # ========== Main Computation Pipeline ==========
     
-    def compute_all_alphas(self, df: pd.DataFrame) -> pd.DataFrame:
+    def compute_all_alphas(self, df) -> pd.DataFrame:
         """
         Compute all Alpha factors
         
         Args:
-            df: DataFrame containing price data, must have columns: ['date', 'ticker', 'Close', 'amount', ...]
+            df: DataFrame or dict containing price data, must have columns: ['date', 'ticker', 'Close', 'amount', ...]
             
         Returns:
             DataFrame containing all Alpha factors
         """
         logger.info(f"Starting computation of{len(self.config['alphas'])} Alpha factors")
         
+        # 🔧 修复数据格式问题：确保输入是DataFrame
+        if isinstance(df, dict):
+            # 如果输入是dict，尝试转换为DataFrame
+            try:
+                if 'data' in df and isinstance(df['data'], pd.DataFrame):
+                    df_work = df['data'].copy()
+                else:
+                    # 尝试直接从dict构建DataFrame
+                    df_work = pd.DataFrame(df)
+                logger.debug(f"Successfully converted dict input to DataFrame: {df_work.shape}")
+            except Exception as e:
+                logger.error(f"Failed to convert dict to DataFrame: {e}")
+                raise ValueError(f"Cannot convert input dict to DataFrame: {e}")
+        elif isinstance(df, pd.DataFrame):
+            df_work = df.copy()
+        else:
+            raise ValueError(f"Input must be DataFrame or dict, got {type(df)}")
+        
         # Ensure required columns exist
         required_cols = ['date', 'ticker', 'Close']
-        missing_cols = [col for col in required_cols if col not in df.columns]
+        missing_cols = [col for col in required_cols if col not in df_work.columns]
         if missing_cols:
             raise ValueError(f"Missing required columns: {missing_cols}")
         
-        # Add metadata columns (if not exist)
+        # Add metadata columns (if not exist) - Use copy to avoid modifying original data
         for col in ['COUNTRY', 'SECTOR', 'SUBINDUSTRY']:
-            if col not in df.columns:
-                df[col] = 'Unknown'
+            if col not in df_work.columns:
+                df_work[col] = 'Unknown'
         
         alpha_results = {}
         computation_times = {}
@@ -892,14 +979,14 @@ class AlphaStrategiesEngine:
                     
                     alpha_func = self.alpha_functions[alpha_kind]
                     alpha_factor = alpha_func(
-                        df=df,
+                        df=df_work,
                         windows=windows,
                         decay=decay
                     )
                 
                 # Data processing pipeline
                 alpha_factor = self._process_alpha_pipeline(
-                    df=df,
+                    df=df_work,
                     alpha_factor=alpha_factor,
                     alpha_config=alpha_config,
                     alpha_name=alpha_name
@@ -912,7 +999,7 @@ class AlphaStrategiesEngine:
                 except Exception:
                     global_lag = 2
                 if global_lag and global_lag > 0:
-                    alpha_factor = alpha_factor.groupby(df['ticker']).shift(global_lag)
+                    alpha_factor = alpha_factor.groupby(df_work['ticker']).shift(global_lag)
                 
                 alpha_results[alpha_name] = alpha_factor
                 computation_times[alpha_name] = (pd.Timestamp.now() - start_time).total_seconds()
@@ -927,7 +1014,7 @@ class AlphaStrategiesEngine:
         self.stats['computation_times'].update(computation_times)
         
         # Build result DataFrame, preserve original columns
-        result_df = df.copy()
+        result_df = df_work.copy()
         for alpha_name, alpha_series in alpha_results.items():
             result_df[alpha_name] = alpha_series
         
@@ -1217,11 +1304,165 @@ class AlphaStrategiesEngine:
         
         logger.info(f"Trading filter completed, non-zero signal ratio: {(filtered_signal != 0).mean():.2%}")
         
-        return filtered_signal    
-    def get_stats(self) -> Dict:
-        """GetcomputationStatistics"""
-        return self.stats.copy()
-
-
-if __name__ == "__main__":
-    pass
+        return filtered_signal
+    
+    # ========== Sentiment Factor Functions ==========
+    # 将情绪数据作为独立的机器学习特征，无硬编码权重
+    
+    def _compute_news_sentiment(self, df: pd.DataFrame, windows: List[int] = [5, 22], 
+                               decay: int = 6) -> pd.Series:
+        """计算新闻情绪Alpha因子"""
+        try:
+            # 查找新闻情绪相关列
+            news_cols = [col for col in df.columns if col.startswith('news_')]
+            
+            if not news_cols:
+                logger.debug("未找到新闻情绪数据列")
+                return pd.Series(0, index=df.index)
+            
+            # 使用最重要的新闻情绪指标
+            primary_cols = ['news_sentiment_mean', 'news_sentiment_momentum_1d', 'news_news_count']
+            available_cols = [col for col in primary_cols if col in df.columns]
+            
+            if available_cols:
+                # 计算复合新闻情绪因子（不使用硬编码权重，让模型学习）
+                sentiment_factor = pd.Series(0, index=df.index)
+                for col in available_cols:
+                    col_factor = df[col].fillna(0)
+                    # 应用时间衰减
+                    col_factor = self.decay_linear(col_factor, decay)
+                    sentiment_factor += col_factor / len(available_cols)  # 简单平均而非硬编码权重
+                
+                return sentiment_factor.fillna(0)
+            else:
+                # 使用第一个可用的新闻情绪列
+                col = news_cols[0]
+                sentiment_factor = df[col].fillna(0)
+                return self.decay_linear(sentiment_factor, decay)
+                
+        except Exception as e:
+            logger.warning(f"计算新闻情绪因子失败: {e}")
+            return pd.Series(0, index=df.index)
+    
+    def _compute_market_sentiment(self, df: pd.DataFrame, windows: List[int] = [5, 22], 
+                                 decay: int = 6) -> pd.Series:
+        """计算市场情绪Alpha因子（基于SP500数据）"""
+        try:
+            # 查找市场情绪相关列
+            market_cols = [col for col in df.columns if col.startswith('market_') or 'sp500' in col]
+            
+            if not market_cols:
+                logger.debug("未找到市场情绪数据列")
+                return pd.Series(0, index=df.index)
+            
+            # 优先使用关键市场情绪指标
+            priority_cols = [col for col in market_cols if any(keyword in col for keyword in 
+                            ['momentum', 'volatility', 'fear', 'sentiment'])]
+            
+            if priority_cols:
+                # 计算复合市场情绪因子
+                sentiment_factor = pd.Series(0, index=df.index)
+                for col in priority_cols[:3]:  # 限制最多3个因子避免过度拟合
+                    col_factor = df[col].fillna(0)
+                    col_factor = self.decay_linear(col_factor, decay)
+                    sentiment_factor += col_factor / min(3, len(priority_cols))
+                
+                return sentiment_factor.fillna(0)
+            else:
+                # 使用第一个可用的市场情绪列
+                col = market_cols[0]
+                sentiment_factor = df[col].fillna(0)
+                return self.decay_linear(sentiment_factor, decay)
+                
+        except Exception as e:
+            logger.warning(f"计算市场情绪因子失败: {e}")
+            return pd.Series(0, index=df.index)
+    
+    def _compute_fear_greed_sentiment(self, df: pd.DataFrame, windows: List[int] = [5, 22], 
+                                     decay: int = 6) -> pd.Series:
+        """计算恐惧贪婪指数Alpha因子"""
+        try:
+            # 查找恐惧贪婪相关列
+            fg_cols = [col for col in df.columns if 'fear_greed' in col or 'fear' in col or 'greed' in col]
+            
+            if not fg_cols:
+                logger.debug("未找到恐惧贪婪指数数据列")
+                return pd.Series(0, index=df.index)
+            
+            # 优先使用规范化的恐惧贪婪指标
+            priority_cols = ['fear_greed_normalized', 'market_fear_level', 'market_greed_level']
+            available_cols = [col for col in priority_cols if col in df.columns]
+            
+            if available_cols:
+                # 计算复合恐惧贪婪因子
+                sentiment_factor = pd.Series(0, index=df.index)
+                for col in available_cols:
+                    col_factor = df[col].fillna(0)
+                    col_factor = self.decay_linear(col_factor, decay)
+                    sentiment_factor += col_factor / len(available_cols)
+                
+                return sentiment_factor.fillna(0)
+            else:
+                # 使用第一个可用的恐惧贪婪列
+                col = fg_cols[0]
+                sentiment_factor = df[col].fillna(0)
+                # 如果是原始值，进行归一化
+                if 'value' in col.lower():
+                    sentiment_factor = (sentiment_factor - 50) / 50  # 归一化到[-1,1]
+                return self.decay_linear(sentiment_factor, decay)
+                
+        except Exception as e:
+            logger.warning(f"计算恐惧贪婪情绪因子失败: {e}")
+            return pd.Series(0, index=df.index)
+    
+    def _compute_sentiment_momentum(self, df: pd.DataFrame, windows: List[int] = [5, 22], 
+                                   decay: int = 6) -> pd.Series:
+        """计算情绪动量因子"""
+        try:
+            # 查找情绪动量相关列
+            momentum_cols = [col for col in df.columns if 'sentiment' in col and 'momentum' in col]
+            
+            if not momentum_cols:
+                # 如果没有现成的情绪动量列，从基础情绪因子计算
+                sentiment_cols = [col for col in df.columns if any(prefix in col for prefix in 
+                                 ['news_sentiment_mean', 'fear_greed_normalized'])]
+                
+                if sentiment_cols:
+                    # 计算短期情绪动量
+                    sentiment_factor = pd.Series(0, index=df.index)
+                    for col in sentiment_cols[:2]:  # 最多使用2个基础情绪因子
+                        col_data = df[col].fillna(0)
+                        # 计算短期动量（3天）
+                        momentum = col_data.groupby(df['ticker']).diff(3)
+                        sentiment_factor += momentum / len(sentiment_cols[:2])
+                    
+                    return self.decay_linear(sentiment_factor.fillna(0), decay)
+                else:
+                    return pd.Series(0, index=df.index)
+            else:
+                # 使用现成的情绪动量列
+                sentiment_factor = df[momentum_cols[0]].fillna(0)
+                return self.decay_linear(sentiment_factor, decay)
+                
+        except Exception as e:
+            logger.warning(f"计算情绪动量因子失败: {e}")
+            return pd.Series(0, index=df.index)
+    
+    # REMOVED: 复杂的情绪波动率因子实现 - 数据质量差，计算开销大
+    def _compute_sentiment_volatility(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """DEPRECATED: 情绪波动率因子已删除"""
+        return pd.Series(0, index=df.index)
+    
+    # ========== End Sentiment Factors ==========
+    
+    # ========== Advanced Behavioral Factors ==========
+    
+    # REMOVED: 超复杂的散户羊群效应因子实现 - 计算成本最高，效果递减
+    def _compute_retail_herding_effect(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """DEPRECATED: 散户羊群效应因子已删除 - 计算成本过高"""
+        return pd.Series(0, index=df.index)
+    
+    # REMOVED: APM动量反转因子 - 过度工程化，缺乏日内数据支持
+    def _compute_apm_momentum_reversal(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """DEPRECATED: APM动量反转因子已删除 - 过度工程化，实际效果有限"""
+        return pd.Series(0, index=df.index)

@@ -35,16 +35,16 @@ except ImportError:
     BARRA_AVAILABLE = False
     
 try:
-    from polygon_complete_factors import CompletePolygonFactors
+    # 🔥 修复导入混乱：使用一致的命名
+    from autotrader.unified_polygon_factors import UnifiedPolygonFactors
     POLYGON_COMPLETE_AVAILABLE = True
 except ImportError:
+    UnifiedPolygonFactors = None
     POLYGON_COMPLETE_AVAILABLE = False
     
-try:
-    from autotrader.unified_polygon_factors import UnifiedPolygonFactors
-    AUTOTRADER_AVAILABLE = True
-except ImportError:
-    AUTOTRADER_AVAILABLE = False
+# 🔥 移除重复导入 - UnifiedPolygonFactors已经在上面导入了
+# 假设AUTOTRADER_AVAILABLE与POLYGON_COMPLETE_AVAILABLE相同
+AUTOTRADER_AVAILABLE = POLYGON_COMPLETE_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +180,10 @@ class SharedCalculations:
         if len(stock_returns) < window or len(market_returns) < window:
             return 1.0  # 默认beta
         
-        # 对齐数据
-        aligned_data = pd.concat([stock_returns, market_returns], axis=1).dropna()
+        # 对齐数据 - 确保列名不冲突
+        stock_returns_named = stock_returns.rename('stock_returns') if hasattr(stock_returns, 'name') else stock_returns
+        market_returns_named = market_returns.rename('market_returns') if hasattr(market_returns, 'name') else market_returns
+        aligned_data = pd.concat([stock_returns_named, market_returns_named], axis=1).dropna()
         if len(aligned_data) < window:
             return 1.0
             
@@ -361,7 +363,7 @@ class UnifiedFactorManager:
         
         if POLYGON_COMPLETE_AVAILABLE and self.config['engines']['polygon']['enabled']:
             try:
-                self.engines['polygon'] = CompletePolygonFactors()
+                self.engines['polygon'] = UnifiedPolygonFactors()
                 logger.info("Polygon因子引擎初始化成功")
             except Exception as e:
                 logger.error(f"Polygon因子引擎初始化失败: {e}")
@@ -612,7 +614,7 @@ class UnifiedFactorManager:
                                 symbol: str, **kwargs) -> Optional[FactorResult]:
         """计算Polygon因子"""
         try:
-            # 根据实际的CompletePolygonFactors接口调整
+            # 根据实际的UnifiedPolygonFactors接口调整
             if hasattr(engine, factor_name):
                 method = getattr(engine, factor_name)
                 result = method(symbol, **kwargs)

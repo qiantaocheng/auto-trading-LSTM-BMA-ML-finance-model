@@ -684,7 +684,7 @@ if __name__ == "__main__":
     price_data = []
     for ticker in tickers:
         for date in dates:
-            price = 100 + np.random.randn() * 2  # 模拟价格
+            price = 100 + np.zeros(1) * 2  # 模拟价格
             price_data.append({'date': date, 'ticker': ticker, 'close': price})
     
     price_df = pd.DataFrame(price_data)

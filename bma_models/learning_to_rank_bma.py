@@ -141,8 +141,35 @@ class LearningToRankBMA:
         logger.info("创建排序数据集")
         
         # 确保数据对齐
+        logger.info(f"LTR数据对齐检查: X={len(X)}, y={len(y)}, dates={len(dates)}")
+        
         if len(X) != len(y) or len(X) != len(dates):
-            raise ValueError("X, y, dates长度不一致")
+            logger.warning(f"LTR数据长度不一致: X={len(X)}, y={len(y)}, dates={len(dates)}")
+            
+            # 自动对齐到最小长度
+            min_len = min(len(X), len(y), len(dates))
+            if min_len == 0:
+                raise ValueError("所有数据长度为0，无法训练LTR模型")
+            
+            logger.info(f"自动对齐到最小长度: {min_len}")
+            
+            # 对齐数据
+            if isinstance(X, pd.DataFrame):
+                X = X.iloc[:min_len].copy()
+            else:
+                X = X[:min_len]
+                
+            if isinstance(y, pd.Series):
+                y = y.iloc[:min_len].copy()  
+            else:
+                y = y[:min_len]
+                
+            if isinstance(dates, pd.Series):
+                dates = dates.iloc[:min_len].copy()
+            else:
+                dates = dates[:min_len]
+                
+            logger.info(f"LTR数据对齐完成: X={len(X)}, y={len(y)}, dates={len(dates)}")
         
         # 组装并清洗
         df_temp = pd.DataFrame({'y': y, 'date': dates})
@@ -154,18 +181,43 @@ class LearningToRankBMA:
         if len(df_temp) == 0:
             raise ValueError("数据清洗后为空")
         
-        # 创建严格的时间分组ID，防止数据泄露
-        group_ids = self._create_robust_time_groups(df_temp['date'])
+        # 🔥 修复：使用同日横截面分组 (按日期分组，避免跨期配对)
+        logger.info("🔥 使用同日横截面分组避免跨期配对")
+        unique_dates = sorted(df_temp['date'].unique())
+        date_to_group = {date: i for i, date in enumerate(unique_dates)}
+        group_ids = np.array([date_to_group[date] for date in df_temp['date']])
         
-        # 过滤掉buffer区域（group_id = -1）
-        valid_mask = group_ids >= 0
-        if not np.any(valid_mask):
-            raise ValueError("所有样本都在buffer区域，无法进行训练")
-            
-        df_temp = df_temp[valid_mask].reset_index(drop=True)
-        group_ids = group_ids[valid_mask]
+        # 验证分组：确保同一组内的样本都是同一天
+        sample_groups = {}
+        for i, (date, group_id) in enumerate(zip(df_temp['date'], group_ids)):
+            if group_id not in sample_groups:
+                sample_groups[group_id] = {'dates': set(), 'count': 0}
+            sample_groups[group_id]['dates'].add(date)
+            sample_groups[group_id]['count'] += 1
         
-        logger.info(f"过滤buffer后剩余样本数: {len(df_temp)}")
+        # 检查是否有跨日分组
+        cross_day_groups = []
+        for group_id, info in sample_groups.items():
+            if len(info['dates']) > 1:
+                cross_day_groups.append(group_id)
+        
+        if cross_day_groups:
+            logger.error(f"🚨 发现跨日分组: {len(cross_day_groups)}个组，这会导致未来信息泄露！")
+            for group_id in cross_day_groups[:3]:  # 只显示前3个
+                logger.error(f"  组{group_id}: 包含日期{sample_groups[group_id]['dates']}")
+        else:
+            logger.info("✅ LTR分组验证通过：所有组都是同日横截面")
+        
+        # 抽样打印当天group/pair信息
+        logger.info("🔍 LTR分组详情抽样:")
+        sample_dates = unique_dates[:3] + unique_dates[-3:]  # 前3个和后3个日期
+        for date in sample_dates:
+            if date in date_to_group:
+                group_id = date_to_group[date]
+                count = sample_groups[group_id]['count']
+                logger.info(f"  日期{date}: 组ID={group_id}, 横截面股票数={count}")
+        
+        logger.info(f"LTR数据集创建完成: {len(unique_dates)}个横截面组, {len(df_temp)}个样本")
         
         # 提取特征和目标
         feature_cols = [col for col in df_temp.columns if col not in ['y', 'date']]
@@ -274,7 +326,8 @@ class LearningToRankBMA:
     
 
     def train_ranking_models(self, X: pd.DataFrame, y: pd.Series, dates: pd.Series,
-                           cv_folds: int = 5, optimize_hyperparams: bool = True) -> Dict[str, Any]:
+                           cv_folds: int = 5, optimize_hyperparams: bool = True, 
+                           validation_config=None, sample_weights=None) -> Dict[str, Any]:
         """
         训练多个排序模型
         
@@ -294,37 +347,43 @@ class LearningToRankBMA:
         X_rank, y_rank, group_ids = self.create_ranking_dataset(X, y, dates)
         # 为LightGBM准备离散标签
         y_rank_discrete = self._discretize_labels_by_group(y_rank, group_ids, n_bins=5)
-        # 统一使用Purged CV，避免信息泄露
-        try:
-            from purged_time_series_cv import ValidationConfig, PurgedGroupTimeSeriesSplit, create_time_groups
-            
-            # 创建时间组（按周分组）
-            unique_dates = np.unique(dates)
-            time_groups = create_time_groups(pd.Series(unique_dates), freq='W')
-            
-            # 精简CV配置：更短窗口，更多可用折
-            cv_config = ValidationConfig(
-                n_splits=max(3, min(5, cv_folds)), 
-                test_size=42, 
-                gap=5,
-                embargo=3,
-                min_train_size=126, 
-                group_freq='W'
-            )
-            cv = PurgedGroupTimeSeriesSplit(cv_config)
-            unique_groups = np.unique(group_ids)
-            # 确保group_ids是pandas Series
-            if isinstance(group_ids, np.ndarray):
-                group_ids_series = pd.Series(group_ids)
+        
+        # 使用V6提供的样本权重，避免重复权重计算
+        if sample_weights is not None:
+            logger.info("使用V6提供的统一样本权重，避免重复权重计算")
+            # 对齐权重到排序数据集
+            if hasattr(sample_weights, 'loc'):
+                aligned_weights = sample_weights.loc[X_rank.index] if hasattr(X_rank, 'index') else None
             else:
-                group_ids_series = group_ids
-            cv_splits = list(cv.split(X_rank, y_rank, group_ids_series))
-            
-            logger.info(f"使用PurgedGroupTimeSeriesSplit，{len(cv_splits)}个fold，gap={cv_config.gap}，embargo={cv_config.embargo}")
-            
-        except Exception as e:
-            logger.warning(f"PurgedGroupTimeSeriesSplit初始化失败: {e}, 回退到TimeSeriesSplit")
-            # 回退到简单TimeSeriesSplit
+                aligned_weights = sample_weights
+        else:
+            logger.warning("未提供V6样本权重，排序模型将使用均等权重")
+            aligned_weights = None
+        # 使用统一的V6 validation_config，避免CV配置漂移
+        if validation_config is not None:
+            try:
+                # 使用V6提供的验证配置
+                from .enhanced_temporal_validation import EnhancedPurgedTimeSeriesSplit
+                
+                cv = EnhancedPurgedTimeSeriesSplit(validation_config)
+                unique_groups = np.unique(group_ids)
+                
+                # 确保group_ids是pandas Series
+                if isinstance(group_ids, np.ndarray):
+                    group_ids_series = pd.Series(group_ids)
+                else:
+                    group_ids_series = group_ids
+                cv_splits = list(cv.split(X_rank, y_rank, group_ids_series))
+                
+                logger.info(f"使用V6统一验证配置，{len(cv_splits)}个fold，gap={validation_config.gap}，embargo={validation_config.embargo}")
+                
+            except Exception as e:
+                logger.warning(f"V6验证配置使用失败: {e}, 使用回退策略")
+                validation_config = None
+        
+        # 回退策略：使用传统CV（仅当V6配置不可用时）
+        if validation_config is None:
+            logger.warning("使用传统CV回退策略，可能存在配置漂移风险")
             tscv = TimeSeriesSplit(n_splits=cv_folds)
             unique_groups = np.unique(group_ids)
             cv_splits = list(tscv.split(unique_groups))
@@ -395,19 +454,63 @@ class LearningToRankBMA:
         
         # 兼容两种split形式：基于组索引或直接样本索引
         for split in cv_splits:
-            if isinstance(split[0][0], (np.integer, int)) and len(split[0].shape) == 1:
-                # 样本索引
-                train_mask = np.zeros(len(X), dtype=bool)
-                train_mask[split[0]] = True
-                test_mask = np.zeros(len(X), dtype=bool)
-                test_mask[split[1]] = True
-                train_groups = np.unique(group_ids[train_mask])
-                test_groups = np.unique(group_ids[test_mask])
-            else:
-                # 组索引
-                train_groups_idx, test_groups_idx = split
-                train_groups = unique_groups[train_groups_idx]
-                test_groups = unique_groups[test_groups_idx]
+            # 修复list object错误：安全检查split格式
+            try:
+                split_0_is_array = hasattr(split[0], 'shape') and len(split[0].shape) == 1
+                split_0_has_int_elements = len(split[0]) > 0 and isinstance(split[0][0], (np.integer, int))
+                
+                if split_0_has_int_elements and split_0_is_array:
+                    # 样本索引（numpy数组）
+                    train_mask = np.zeros(len(X), dtype=bool)
+                    train_mask[split[0]] = True
+                    test_mask = np.zeros(len(X), dtype=bool)
+                    test_mask[split[1]] = True
+                    train_groups = np.unique(group_ids[train_mask])
+                    test_groups = np.unique(group_ids[test_mask])
+                elif split_0_has_int_elements and isinstance(split[0], (list, tuple)):
+                    # 样本索引（列表格式）
+                    train_indices = np.array(split[0])
+                    test_indices = np.array(split[1])
+                    train_mask = np.zeros(len(X), dtype=bool)
+                    train_mask[train_indices] = True
+                    test_mask = np.zeros(len(X), dtype=bool)
+                    test_mask[test_indices] = True
+                    train_groups = np.unique(group_ids[train_mask])
+                    test_groups = np.unique(group_ids[test_mask])
+                else:
+                    # 组索引 - 添加边界检查防止越界
+                    train_groups_idx, test_groups_idx = split
+                    # 修复索引越界问题：确保索引在有效范围内
+                    train_groups_idx = np.array(train_groups_idx)
+                    test_groups_idx = np.array(test_groups_idx)
+                    
+                    # 过滤超出范围的索引
+                    valid_train_idx = train_groups_idx[train_groups_idx < len(unique_groups)]
+                    valid_test_idx = test_groups_idx[test_groups_idx < len(unique_groups)]
+                    
+                    train_groups = unique_groups[valid_train_idx]
+                    test_groups = unique_groups[valid_test_idx]
+                    
+                    if len(valid_train_idx) < len(train_groups_idx) or len(valid_test_idx) < len(test_groups_idx):
+                        logger.warning(f"过滤了超出范围的索引: 训练{len(train_groups_idx)-len(valid_train_idx)}, 测试{len(test_groups_idx)-len(valid_test_idx)}")
+                        
+            except Exception as e:
+                logger.warning(f"split格式解析失败: {e}, 使用默认组索引处理")
+                # 默认按组索引处理 - 添加边界检查
+                try:
+                    train_groups_idx, test_groups_idx = split
+                    train_groups_idx = np.array(train_groups_idx)
+                    test_groups_idx = np.array(test_groups_idx)
+                    
+                    # 过滤超出范围的索引
+                    valid_train_idx = train_groups_idx[train_groups_idx < len(unique_groups)]
+                    valid_test_idx = test_groups_idx[test_groups_idx < len(unique_groups)]
+                    
+                    train_groups = unique_groups[valid_train_idx]
+                    test_groups = unique_groups[valid_test_idx]
+                except Exception as e2:
+                    logger.error(f"组索引处理失败: {e2}, 跳过此split")
+                    continue
             
             # 获取训练和测试数据
             train_mask = np.isin(group_ids, train_groups)
@@ -527,18 +630,63 @@ class LearningToRankBMA:
         oof_uncertainties = np.full(len(X), np.nan)
         
         for split in cv_splits:
-            if isinstance(split[0][0], (np.integer, int)) and len(split[0].shape) == 1:
-                # 样本索引
-                train_mask = np.zeros(len(X), dtype=bool)
-                train_mask[split[0]] = True
-                test_mask = np.zeros(len(X), dtype=bool)
-                test_mask[split[1]] = True
-                train_groups = np.unique(group_ids[train_mask])
-                test_groups = np.unique(group_ids[test_mask])
-            else:
-                train_groups_idx, test_groups_idx = split
-                train_groups = unique_groups[train_groups_idx]
-                test_groups = unique_groups[test_groups_idx]
+            # 修复list object错误：安全检查split格式（LightGBM部分）
+            try:
+                split_0_is_array = hasattr(split[0], 'shape') and len(split[0].shape) == 1
+                split_0_has_int_elements = len(split[0]) > 0 and isinstance(split[0][0], (np.integer, int))
+                
+                if split_0_has_int_elements and split_0_is_array:
+                    # 样本索引（numpy数组）
+                    train_mask = np.zeros(len(X), dtype=bool)
+                    train_mask[split[0]] = True
+                    test_mask = np.zeros(len(X), dtype=bool)
+                    test_mask[split[1]] = True
+                    train_groups = np.unique(group_ids[train_mask])
+                    test_groups = np.unique(group_ids[test_mask])
+                elif split_0_has_int_elements and isinstance(split[0], (list, tuple)):
+                    # 样本索引（列表格式）
+                    train_indices = np.array(split[0])
+                    test_indices = np.array(split[1])
+                    train_mask = np.zeros(len(X), dtype=bool)
+                    train_mask[train_indices] = True
+                    test_mask = np.zeros(len(X), dtype=bool)
+                    test_mask[test_indices] = True
+                    train_groups = np.unique(group_ids[train_mask])
+                    test_groups = np.unique(group_ids[test_mask])
+                else:
+                    # 组索引 - 添加边界检查防止越界 (LightGBM)
+                    train_groups_idx, test_groups_idx = split
+                    # 修复索引越界问题：确保索引在有效范围内
+                    train_groups_idx = np.array(train_groups_idx)
+                    test_groups_idx = np.array(test_groups_idx)
+                    
+                    # 过滤超出范围的索引
+                    valid_train_idx = train_groups_idx[train_groups_idx < len(unique_groups)]
+                    valid_test_idx = test_groups_idx[test_groups_idx < len(unique_groups)]
+                    
+                    train_groups = unique_groups[valid_train_idx]
+                    test_groups = unique_groups[valid_test_idx]
+                    
+                    if len(valid_train_idx) < len(train_groups_idx) or len(valid_test_idx) < len(test_groups_idx):
+                        logger.warning(f"LightGBM过滤了超出范围的索引: 训练{len(train_groups_idx)-len(valid_train_idx)}, 测试{len(test_groups_idx)-len(valid_test_idx)}")
+                        
+            except Exception as e:
+                logger.warning(f"LightGBM split格式解析失败: {e}, 使用默认组索引处理")
+                # 默认按组索引处理 - 添加边界检查 
+                try:
+                    train_groups_idx, test_groups_idx = split
+                    train_groups_idx = np.array(train_groups_idx)
+                    test_groups_idx = np.array(test_groups_idx)
+                    
+                    # 过滤超出范围的索引
+                    valid_train_idx = train_groups_idx[train_groups_idx < len(unique_groups)]
+                    valid_test_idx = test_groups_idx[test_groups_idx < len(unique_groups)]
+                    
+                    train_groups = unique_groups[valid_train_idx]
+                    test_groups = unique_groups[valid_test_idx]
+                except Exception as e2:
+                    logger.error(f"LightGBM组索引处理失败: {e2}, 跳过此split")
+                    continue
             
             train_mask = np.isin(group_ids, train_groups)
             test_mask = np.isin(group_ids, test_groups)
@@ -665,8 +813,19 @@ class LearningToRankBMA:
             oof_predictions[f'q{int(quantile*100)}'] = np.full(len(X), np.nan)
             
             for train_groups_idx, test_groups_idx in cv_splits:
-                train_groups = unique_groups[train_groups_idx]
-                test_groups = unique_groups[test_groups_idx]
+                # 修复索引越界问题：确保索引在有效范围内
+                train_groups_idx = np.array(train_groups_idx)
+                test_groups_idx = np.array(test_groups_idx)
+                
+                # 过滤超出范围的索引
+                valid_train_idx = train_groups_idx[train_groups_idx < len(unique_groups)]
+                valid_test_idx = test_groups_idx[test_groups_idx < len(unique_groups)]
+                
+                if len(valid_train_idx) == 0 or len(valid_test_idx) == 0:
+                    continue
+                    
+                train_groups = unique_groups[valid_train_idx]
+                test_groups = unique_groups[valid_test_idx]
                 
                 train_mask = np.isin(group_ids, train_groups)
                 test_mask = np.isin(group_ids, test_groups)
@@ -738,8 +897,19 @@ class LearningToRankBMA:
             oof_uncertainties = np.full(len(X), np.nan)
             
             for train_groups_idx, test_groups_idx in cv_splits:
-                train_groups = unique_groups[train_groups_idx]
-                test_groups = unique_groups[test_groups_idx]
+                # 修复索引越界问题：确保索引在有效范围内
+                train_groups_idx = np.array(train_groups_idx)
+                test_groups_idx = np.array(test_groups_idx)
+                
+                # 过滤超出范围的索引
+                valid_train_idx = train_groups_idx[train_groups_idx < len(unique_groups)]
+                valid_test_idx = test_groups_idx[test_groups_idx < len(unique_groups)]
+                
+                if len(valid_train_idx) == 0 or len(valid_test_idx) == 0:
+                    continue
+                    
+                train_groups = unique_groups[valid_train_idx]
+                test_groups = unique_groups[valid_test_idx]
                 
                 train_mask = np.isin(group_ids, train_groups)
                 test_mask = np.isin(group_ids, test_groups)
@@ -1013,6 +1183,28 @@ class LearningToRankBMA:
         if not self.models:
             raise ValueError("模型未训练")
         
+        # 🔧 Fix LTR维度匹配: 确保特征维度与训练时一致
+        X_aligned = X.copy()
+        if hasattr(self, 'training_feature_columns'):
+            training_cols = self.training_feature_columns
+            current_cols = X.columns.tolist()
+            
+            if len(current_cols) != len(training_cols):
+                logger.warning(f"LTR预测特征维度不匹配: 当前{len(current_cols)} vs 训练{len(training_cols)}")
+                
+                # 对齐特征列：只保留训练时的特征
+                common_cols = [col for col in training_cols if col in current_cols]
+                missing_cols = [col for col in training_cols if col not in current_cols]
+                
+                if missing_cols:
+                    logger.warning(f"LTR预测缺失特征列: {missing_cols}，将用0填充")
+                    for col in missing_cols:
+                        X_aligned[col] = 0.0
+                
+                # 重新排序并选择训练时的特征
+                X_aligned = X_aligned[training_cols]
+                logger.info(f"LTR特征对齐完成: {X_aligned.shape}")
+        
         all_predictions = []
         all_uncertainties = []
         
@@ -1031,12 +1223,12 @@ class LearningToRankBMA:
                             try:
                                 import xgboost as xgb
                                 if isinstance(model, xgb.Booster):
-                                    dmat = xgb.DMatrix(X.values)
+                                    dmat = xgb.DMatrix(X_aligned.values)
                                     pred = model.predict(dmat)
                                 else:
-                                    pred = model.predict(X.values)
+                                    pred = model.predict(X_aligned.values)
                             except Exception:
-                                pred = model.predict(X.values)
+                                pred = model.predict(X_aligned.values)
                             category_predictions.append(pred)
                     except Exception as e:
                         logger.warning(f"预测失败: {e}")

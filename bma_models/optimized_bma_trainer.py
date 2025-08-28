@@ -14,18 +14,29 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import time
 
-# 导入优化模块
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from autotrader.memory_optimized_trainer import MemoryOptimizedTrainer
-from autotrader.smart_memory_manager import get_memory_manager, memory_optimize
-from autotrader.streaming_data_loader import StreamingDataLoader
-from autotrader.training_progress_monitor import TrainingProgressMonitor
-from autotrader.model_cache_optimizer import ModelCacheOptimizer
-from autotrader.encoding_fix import apply_encoding_fixes, get_safe_logger
+# 本地导入（避免依赖已删除的模块）
+try:
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from autotrader.encoding_fix import apply_encoding_fixes, get_safe_logger
+    apply_encoding_fixes()
+    logger = get_safe_logger(__name__)
+except ImportError:
+    # 回退到标准logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
 
-# 应用编码修复
-apply_encoding_fixes()
-logger = get_safe_logger(__name__)
+# 基础内存优化装饰器
+def memory_optimize(func):
+    """基础内存优化装饰器"""
+    def wrapper(*args, **kwargs):
+        try:
+            result = func(*args, **kwargs)
+            gc.collect()  # 强制垃圾回收
+            return result
+        except Exception as e:
+            logger.error(f"Memory optimized function failed: {e}")
+            raise
+    return wrapper
 
 class OptimizedBMATrainer:
     """内存优化版BMA训练器"""
@@ -49,27 +60,15 @@ class OptimizedBMATrainer:
         self.enable_caching = enable_caching
         self.cache_dir = cache_dir
         
-        # 初始化优化组件
-        self.memory_manager = get_memory_manager()
-        self.progress_monitor = TrainingProgressMonitor(save_dir=f"{cache_dir}/progress")
-        self.streaming_loader = StreamingDataLoader(
-            chunk_size=batch_size,
-            cache_dir=f"{cache_dir}/data",
-            memory_limit_mb=int(memory_limit_gb * 1024 * 0.3)  # 30%用于数据缓存
-        )
+        # 初始化基础组件（无依赖版本）
+        self.memory_manager = None  # 基础版本不使用内存管理器
+        self.progress_monitor = self._create_basic_progress_monitor()
+        self.streaming_loader = None  # 基础版本不使用流式加载
+        self.model_cache = None  # 基础版本不使用模型缓存
+        self.batch_trainer = None  # 自己实现批次处理，不依赖外部组件
         
-        if enable_caching:
-            self.model_cache = ModelCacheOptimizer(
-                cache_dir=f"{cache_dir}/models",
-                max_cache_size_gb=memory_limit_gb * 0.5  # 50%用于模型缓存
-            )
-        else:
-            self.model_cache = None
-        
-        self.batch_trainer = MemoryOptimizedTrainer(
-            batch_size=batch_size,
-            memory_limit_gb=memory_limit_gb * 0.8  # 80%安全边际
-        )
+        # 确保缓存目录存在
+        os.makedirs(cache_dir, exist_ok=True)
         
         # 训练统计
         self.training_stats = {
@@ -80,6 +79,79 @@ class OptimizedBMATrainer:
             'start_time': None,
             'end_time': None
         }
+    
+    def _create_basic_progress_monitor(self):
+        """创建基础进度监控器"""
+        class BasicProgressMonitor:
+            def __init__(self):
+                self.stages = {}
+                self.current_stage = None
+                
+            def add_stage(self, stage_name, total_items):
+                self.stages[stage_name] = {'total': total_items, 'completed': 0}
+                logger.info(f"添加阶段: {stage_name} ({total_items} 项目)")
+                
+            def start_training(self):
+                logger.info("训练开始")
+                
+            def start_stage(self, stage_name):
+                self.current_stage = stage_name
+                logger.info(f"开始阶段: {stage_name}")
+                
+            def complete_stage(self, stage_name, success=True):
+                status = "成功" if success else "失败"
+                logger.info(f"阶段完成: {stage_name} - {status}")
+                
+            def update_progress(self, stage_name, completed):
+                if stage_name in self.stages:
+                    self.stages[stage_name]['completed'] = completed
+                    total = self.stages[stage_name]['total']
+                    logger.info(f"进度更新: {stage_name} ({completed}/{total})")
+        
+        return BasicProgressMonitor()
+    
+    def _process_universe_in_batches(self, universe: List[str], start_date: str, end_date: str) -> Dict[str, Any]:
+        """基础批次处理实现"""
+        logger.info(f"开始批次处理: {len(universe)} 股票，批次大小 {self.batch_size}")
+        
+        # 分割为批次
+        batches = [universe[i:i + self.batch_size] for i in range(0, len(universe), self.batch_size)]
+        self.training_stats['total_batches'] = len(batches)
+        
+        # 汇总结果
+        combined_result = {
+            'predictions': {},
+            'model_performance': {},
+            'feature_importance': {},
+            'training_metadata': {
+                'batch_count': len(batches),
+                'total_stocks': len(universe)
+            }
+        }
+        
+        # 处理每个批次
+        for batch_idx, batch_tickers in enumerate(batches):
+            logger.info(f"处理批次 {batch_idx + 1}/{len(batches)}: {len(batch_tickers)} 股票")
+            
+            try:
+                # 处理单个批次
+                batch_result = self.train_single_batch(batch_tickers, start_date, end_date)
+                
+                # 合并结果
+                if batch_result:
+                    combined_result['predictions'].update(batch_result.get('predictions', {}))
+                    combined_result['model_performance'].update(batch_result.get('model_performance', {}))
+                    combined_result['feature_importance'].update(batch_result.get('feature_importance', {}))
+                
+                # 内存清理
+                gc.collect()
+                
+            except Exception as e:
+                logger.error(f"批次 {batch_idx + 1} 处理失败: {e}")
+                continue
+        
+        logger.info(f"批次处理完成: {len(combined_result['predictions'])} 个预测结果")
+        return combined_result
     
     @memory_optimize
     def load_universe(self, universe_file: str = "stocks.txt") -> List[str]:
@@ -371,7 +443,7 @@ class OptimizedBMATrainer:
                 logger.debug(f"使用缓存模型: {ticker}")
                 # 这里需要用缓存的模型生成预测
                 # 为简化，返回一个示例预测
-                return np.random.normal(0.01, 0.05)  # 示例预测
+                return np.zeros(0.01)  # 示例预测
             
         except Exception as e:
             logger.debug(f"缓存检查失败 {ticker}: {e}")
@@ -422,12 +494,11 @@ class OptimizedBMATrainer:
         self.training_stats['total_stocks'] = len(universe)
         
         try:
-            # 使用批次训练器
-            final_result = self.batch_trainer.train_universe(
+            # 基础批次处理实现
+            final_result = self._process_universe_in_batches(
                 universe=universe,
-                model_trainer_func=lambda batch_tickers: self.train_single_batch(
-                    batch_tickers, start_date, end_date
-                )
+                start_date=start_date,
+                end_date=end_date
             )
             
             # 更新统计
