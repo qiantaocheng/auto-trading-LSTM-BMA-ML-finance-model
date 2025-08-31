@@ -5,10 +5,9 @@ BMA Models Package
 This package contains all BMA (Bayesian Model Averaging) related models and algorithms.
 
 Modules:
-- bma_walkforward_enhanced: Enhanced walkforward BMA implementation
-- learning_to_rank_bma: Learning to rank with BMA
-- robust_bma_weighting: Robust BMA weighting strategies
+- bma_enhanced_integrated_system: Main BMA enhanced system with integrated ML components
 - enhanced_alpha_strategies: Alpha generation strategies
+- unified_feature_pipeline: Unified feature engineering pipeline
 - model_monitoring: Model performance monitoring
 - model_version_control: Model versioning and management
 """
@@ -19,17 +18,12 @@ __author__ = "Trading System"
 
 # Import main components
 try:
-    from .bma_walkforward_enhanced import *
+    from .bma_enhanced_integrated_system import *
 except ImportError:
     pass
 
 try:
-    from .learning_to_rank_bma import *
-except ImportError:
-    pass
-
-try:
-    from .robust_bma_weighting import *
+    from .unified_feature_pipeline import *
 except ImportError:
     pass
 

@@ -545,39 +545,65 @@ class AlphaSummaryProcessor:
         return combined_features
     
     def _apply_pca_compression(self, alpha_values: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], List[str]]:
-        """Apply PCA compression"""
+        """Apply TIME-SAFE PCA compression - 修复时间泄露风险"""
         try:
-            # Handle missing values
-            alpha_imputed = self.imputer.fit_transform(alpha_values.fillna(0))
+            # 🔥 CRITICAL FIX: 使用时间安全的PCA替代原有实现
+            from time_safe_pca import TimeSeriesSafePCA
             
-            # Fit PCA
-            pca = PCA()
-            pca_transformed = pca.fit_transform(alpha_imputed)
+            logger.info("🔧 使用时间安全PCA，防止时间泄露")
             
-            # Find components that explain target variance
-            cumsum_variance = np.cumsum(pca.explained_variance_ratio_)
-            n_components = np.argmax(cumsum_variance >= self.config.pca_variance_explained) + 1
-            # Professional standard: 15-18 features total (leaving room for interaction features)
-            n_components = min(n_components, self.config.max_alpha_features - 3, alpha_values.shape[1])
-            n_components = max(n_components, self.config.min_alpha_features - 3)  # Ensure minimum
-            
-            # Keep only selected components
-            pca_final = PCA(n_components=n_components)
-            pca_features = pca_final.fit_transform(alpha_imputed)
-            
-            # Store fitted model for future use
-            self.pca_fitted = pca_final
-            self.stats['compression_variance_explained'] = cumsum_variance[n_components-1]
-            
-            # Create DataFrame with proper index
-            pca_df = pd.DataFrame(
-                pca_features, 
-                index=alpha_values.index,
-                columns=[f'alpha_pc{i+1}' for i in range(n_components)]
+            # 创建时间安全PCA
+            safe_pca = TimeSeriesSafePCA(
+                n_components=self.config.pca_variance_explained,  # 0.85解释方差
+                min_history_days=60,  # 最小60天历史
+                refit_frequency=21,   # 21天重新拟合
+                max_components=min(self.config.max_alpha_features - 3, 10)  # 限制最大组件数
             )
             
+            # 时间安全的拟合转换
+            pca_features_df, pca_stats = safe_pca.fit_transform_safe(alpha_values)
+            
+            if pca_features_df.empty:
+                logger.warning("时间安全PCA处理失败")
+                return None, []
+            
+            # 获取PCA特征数据（排除日期和ticker列）
+            pca_feature_cols = [col for col in pca_features_df.columns 
+                              if col.startswith('alpha_pca_')]
+            
+            if not pca_feature_cols:
+                logger.warning("未生成PCA特征")
+                return None, []
+            
+            pca_features = pca_features_df[pca_feature_cols].values
+            
+            # 存储统计信息
+            self.pca_fitted = safe_pca  # 存储时间安全PCA对象
+            self.stats['compression_variance_explained'] = pca_stats.get('avg_components', 0)
+            self.stats['time_safe_pca_stats'] = pca_stats
+            
+            # 确保索引对齐
+            if isinstance(alpha_values.index, pd.MultiIndex):
+                # MultiIndex情况：使用pca_features_df的索引
+                pca_df = pca_features_df[pca_feature_cols].copy()
+            else:
+                # 普通索引情况：创建新DataFrame并对齐索引
+                pca_df = pd.DataFrame(
+                    pca_features,
+                    index=alpha_values.index[:len(pca_features)],  # 确保长度匹配
+                    columns=pca_feature_cols
+                )
+            
             feature_names = list(pca_df.columns)
-            logger.info(f"PCA压缩: {n_components} 个主成分，解释方差 {cumsum_variance[n_components-1]:.3f}")
+            
+            # 更新日志信息
+            n_components = len(pca_feature_cols)
+            variance_explained = pca_stats.get('variance_explained_history', [0])
+            avg_variance = np.mean(variance_explained) if variance_explained else 0
+            
+            logger.info(f"时间安全PCA完成: {n_components} 个主成分，"
+                       f"平均解释方差 {avg_variance:.3f}，"
+                       f"处理 {pca_stats.get('n_dates_processed', 0)} 个交易日")
             
             return pca_df, feature_names
             

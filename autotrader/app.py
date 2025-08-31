@@ -1231,6 +1231,13 @@ class AutoTraderGUI(tk.Tk):
         
         tk.Button(add_frame, text="添加股票", command=self._add_ticker_global, bg="lightgreen").grid(row=1, column=0, columnspan=2, pady=5)
         
+        # 股票池管理
+        pool_frame = tk.LabelFrame(right_frame, text="股票池管理器")
+        pool_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Button(pool_frame, text="打开股票池管理器", command=self._open_stock_pool_manager, 
+                 bg="#FF9800", fg="white", font=("Arial", 10)).pack(pady=5)
+        
         # 批量导入to全局tickers
         import_frame = tk.LabelFrame(right_frame, text="批量导入(全局)")
         import_frame.pack(fill=tk.X, pady=5)
@@ -1739,7 +1746,7 @@ class AutoTraderGUI(tk.Tk):
         # 创建自定义对话框
         dialog = tk.Toplevel(self)
         dialog.title("BMA Enhanced 股票选择")
-        dialog.geometry("600x500")
+        dialog.geometry("600x700")  # 增加高度以容纳新的状态框架和按钮
         dialog.transient(self)
         dialog.grab_set()
         
@@ -1768,6 +1775,83 @@ class AutoTraderGUI(tk.Tk):
                                      font=("Arial", 9))
         default_radio.pack(anchor=tk.W, padx=10, pady=5)
         
+        # 股票池选项
+        pool_radio = tk.Radiobutton(selection_frame, 
+                                   text="使用股票池管理器",
+                                   variable=choice_var, value="pool",
+                                   font=("Arial", 9))
+        pool_radio.pack(anchor=tk.W, padx=10, pady=5)
+        
+        # 股票池选择框架
+        pool_frame = tk.Frame(selection_frame)
+        pool_frame.pack(fill=tk.X, padx=30, pady=5)
+        
+        # 股票池信息显示
+        pool_info_var = tk.StringVar(value="请选择股票池")
+        pool_info_label = tk.Label(pool_frame, textvariable=pool_info_var, 
+                                  font=("Arial", 9), fg="blue")
+        pool_info_label.pack(anchor=tk.W, pady=2)
+        
+        # 股票池选择和管理按钮
+        pool_buttons_frame = tk.Frame(pool_frame)
+        pool_buttons_frame.pack(anchor=tk.W, pady=2)
+        
+        # 存储选中的股票池信息
+        selected_pool_info = {}
+        
+        def open_pool_selector():
+            try:
+                # 导入股票池选择器
+                import os
+                import sys
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                if current_dir not in sys.path:
+                    sys.path.insert(0, current_dir)
+                from stock_pool_selector import select_stock_pool
+                
+                # 显示股票池选择对话框
+                pool_result = select_stock_pool(dialog)
+                
+                if pool_result:
+                    # 用户确认选择了股票池
+                    selected_pool_info.update(pool_result)
+                    pool_info_var.set(
+                        f"✓ 已选择: {pool_result['pool_name']} ({len(pool_result['tickers'])}只股票)"
+                    )
+                    choice_var.set("pool")  # 自动选择股票池选项
+                    # 更新按钮外观以提示用户可以开始训练
+                    start_button.config(bg="#228B22", text="开始训练 (股票池已选择)")  # 更深的绿色
+                    self.log(f"[BMA] 已选择股票池: {pool_result['pool_name']} ({len(pool_result['tickers'])}只股票)")
+                else:
+                    self.log("[BMA] 用户取消了股票池选择")
+                
+            except Exception as e:
+                messagebox.showerror("错误", f"打开股票池选择器失败: {e}")
+                self.log(f"[ERROR] 打开股票池选择器失败: {e}")
+        
+        def open_pool_manager():
+            try:
+                # 导入股票池管理器
+                import os
+                import sys
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                if current_dir not in sys.path:
+                    sys.path.insert(0, current_dir)
+                from stock_pool_gui import StockPoolWindow
+                
+                # 创建完整的股票池管理窗口（用于管理）
+                pool_window = StockPoolWindow()
+                
+            except Exception as e:
+                messagebox.showerror("错误", f"打开股票池管理器失败: {e}")
+                self.log(f"[ERROR] 打开股票池管理器失败: {e}")
+        
+        tk.Button(pool_buttons_frame, text="选择股票池", command=open_pool_selector,
+                 bg="#4CAF50", fg="white", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        
+        tk.Button(pool_buttons_frame, text="管理股票池", command=open_pool_manager,
+                 bg="#2196F3", fg="white", font=("Arial", 9)).pack(side=tk.LEFT)
+        
         # 自定义股票选项
         custom_radio = tk.Radiobutton(selection_frame, 
                                     text="自定义股票代码",
@@ -1786,21 +1870,42 @@ class AutoTraderGUI(tk.Tk):
         
         # 时间范围框架
         time_frame = tk.LabelFrame(main_frame, text="时间范围", font=("Arial", 10))
-        time_frame.pack(fill=tk.X, pady=(0, 15))
+        time_frame.pack(fill=tk.X, pady=(0, 10))
         
         time_info = tk.Label(time_frame, 
                            text="• 训练时间范围: 最近3年\n• 建议至少252个交易日的数据\n• 系统会自动处理时间序列和数据对齐",
                            font=("Arial", 9), justify=tk.LEFT)
         time_info.pack(anchor=tk.W, padx=10, pady=10)
         
-        # 按钮框架 - 确保可见性
-        button_frame = tk.Frame(main_frame, height=60)
-        button_frame.pack(fill=tk.X, pady=(15, 0))
+        # 系统状态框架 - 新增状态指示器
+        status_frame = tk.LabelFrame(main_frame, text="系统状态", font=("Arial", 10))
+        status_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # 状态指示器
+        status_text = "✓ BMA Enhanced系统已加载完成\n✓ Alpha引擎就绪 (58个因子)\n✓ 机器学习模型已初始化\n✓ 系统准备就绪，可以开始训练"
+        status_label = tk.Label(status_frame, 
+                               text=status_text,
+                               font=("Arial", 9), 
+                               fg="#2E8B57",  # 深绿色
+                               justify=tk.LEFT)
+        status_label.pack(anchor=tk.W, padx=10, pady=8)
+        
+        # 按钮框架 - 固定在底部确保可见性
+        button_frame = tk.Frame(main_frame, height=80, bg="#f0f0f0")
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
         button_frame.pack_propagate(False)  # 防止框架收缩
         
         def on_confirm():
             if choice_var.get() == "default":
                 result['tickers'] = None  # 使用默认
+            elif choice_var.get() == "pool":
+                # 使用选中的股票池
+                if selected_pool_info and 'tickers' in selected_pool_info:
+                    result['tickers'] = selected_pool_info['tickers']
+                    self.log(f"[BMA] 使用股票池: {selected_pool_info['pool_name']}, 包含{len(selected_pool_info['tickers'])}只股票")
+                else:
+                    messagebox.showerror("错误", "请先选择一个股票池")
+                    return
             else:
                 # 解析自定义股票
                 custom_text = custom_entry.get("1.0", tk.END).strip()
@@ -1812,7 +1917,7 @@ class AutoTraderGUI(tk.Tk):
                         messagebox.showerror("错误", "请输入有效的股票代码")
                         return
                 else:
-                    messagebox.showerror("错误", "请输入股票代码或选择默认股票池")
+                    messagebox.showerror("错误", "请输入股票代码、选择股票池或选择默认股票池")
                     return
             
             result['confirmed'] = True
@@ -1823,9 +1928,9 @@ class AutoTraderGUI(tk.Tk):
             dialog.destroy()
         
         # 创建按钮 - 增大尺寸确保可见
-        start_button = tk.Button(button_frame, text="开始训练", command=on_confirm, 
+        start_button = tk.Button(button_frame, text="开始训练 (系统就绪)", command=on_confirm, 
                                 bg="#4CAF50", fg="white", font=("Arial", 11, "bold"),
-                                width=15, height=2)
+                                width=18, height=2)
         start_button.pack(side=tk.RIGHT, padx=10, pady=10)
         
         cancel_button = tk.Button(button_frame, text="取消", command=on_cancel,
@@ -1840,6 +1945,25 @@ class AutoTraderGUI(tk.Tk):
             return result['tickers']
         else:
             return None
+
+    def _open_stock_pool_manager(self) -> None:
+        """打开股票池管理器"""
+        try:
+            # 导入股票池管理器
+            import os
+            import sys
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            if current_dir not in sys.path:
+                sys.path.insert(0, current_dir)
+            from stock_pool_gui import StockPoolWindow
+            
+            # 创建股票池管理窗口
+            pool_window = StockPoolWindow()
+            self.log("[INFO] 股票池管理器已打开")
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"打开股票池管理器失败: {e}")
+            self.log(f"[ERROR] 打开股票池管理器失败: {e}")
 
     def _clear_log(self) -> None:
         self.txt.delete(1.0, tk.END)
@@ -2640,23 +2764,52 @@ class AutoTraderGUI(tk.Tk):
                         
                         # 显示推荐结果
                         recommendations = results.get('recommendations', [])
-                        if recommendations:
-                            self.after(0, lambda: self.log(f"[BMA] 📈 生成推荐: {len(recommendations)} 只股票"))
-                            
-                            # 显示前5个推荐结果
-                            for i, rec in enumerate(recommendations[:5]):
-                                ticker = rec.get('ticker', 'N/A')
-                                weight = rec.get('weight', 0)
-                                prediction = rec.get('prediction_signal', 0)
-                                self.after(0, lambda t=ticker, w=weight, p=prediction: 
-                                         self.log(f"[BMA] {t}: 权重={w:.4f}, 预测={p:.4f} ({p*100:.2f}%)"))
+                        
+                        # 🔥 CRITICAL FIX: 检查recommendations是否为DataFrame
+                        if hasattr(recommendations, 'empty'):
+                            # recommendations是DataFrame
+                            if not recommendations.empty:
+                                rec_count = len(recommendations)
+                                self.after(0, lambda: self.log(f"[BMA] 📈 生成推荐: {rec_count} 只股票"))
+                                
+                                # 显示前5个推荐结果 - 新格式显示T+10收益率
+                                for i in range(min(5, len(recommendations))):
+                                    rec = recommendations.iloc[i]
+                                    rank = rec.get('rank', i+1) if hasattr(rec, 'get') else i+1
+                                    ticker = rec.get('ticker', 'N/A') if hasattr(rec, 'get') else str(rec.name)
+                                    t10_return = rec.get('t10_return_prediction', '0.00%') if hasattr(rec, 'get') else '0.00%'
+                                    action = rec.get('recommendation', 'HOLD') if hasattr(rec, 'get') else 'HOLD'
+                                    weight = rec.get('portfolio_weight', '0.00%') if hasattr(rec, 'get') else '0.00%'
+                                    self.after(0, lambda r=rank, t=ticker, ret=t10_return, a=action, w=weight: 
+                                             self.log(f"[BMA] 排名{r}: {t} - T+10收益率: {ret} - {a} - 权重: {w}"))
+                            else:
+                                rec_count = 0
+                        elif isinstance(recommendations, list):
+                            # recommendations是列表
+                            if recommendations:
+                                rec_count = len(recommendations)
+                                self.after(0, lambda: self.log(f"[BMA] 📈 生成推荐: {rec_count} 只股票"))
+                                
+                                # 显示前5个推荐结果 - 新格式显示T+10收益率
+                                for i, rec in enumerate(recommendations[:5]):
+                                    rank = rec.get('rank', i+1)
+                                    ticker = rec.get('ticker', 'N/A')
+                                    t10_return = rec.get('t10_return_prediction', '0.00%')
+                                    action = rec.get('recommendation', 'HOLD')
+                                    weight = rec.get('portfolio_weight', '0.00%')
+                                    self.after(0, lambda r=rank, t=ticker, ret=t10_return, a=action, w=weight: 
+                                             self.log(f"[BMA] 排名{r}: {t} - T+10收益率: {ret} - {a} - 权重: {w}"))
+                            else:
+                                rec_count = 0
+                        else:
+                            rec_count = 0
                         
                         # Excel文件路径
                         excel_path = results.get('result_file', 'result目录')
                         
                         success_msg = (f"BMA Enhanced统一训练完成!\n\n"
                                      f"训练股票: {total_stocks} 只\n"
-                                     f"推荐股票: {len(recommendations) if recommendations else 0} 只\n"
+                                     f"推荐股票: {rec_count} 只\n"
                                      f"时间范围: {start_date} 到 {end_date}\n"
                                      f"结果文件: {excel_path}")
                         

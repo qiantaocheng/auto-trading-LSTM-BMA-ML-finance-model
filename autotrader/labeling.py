@@ -9,7 +9,7 @@ Triple-Barrier + Meta-Label + OOF Isotonic 标签工程
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
-from sklearn.model_selection import TimeSeriesSplit
+# 🚫 已删除TimeSeriesSplit导入 - 使用统一CV工厂
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestClassifier
 import logging

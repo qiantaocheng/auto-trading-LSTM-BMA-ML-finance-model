@@ -318,3 +318,29 @@ def adaptive_orthogonalization(factors: pd.DataFrame,
         orthogonalizer = FactorOrthogonalizer(method='sequential', threshold=0.85)
     
     return orthogonalizer.fit_transform(factors)
+
+
+def orthogonalize_factors_predictive_safe(factors: pd.DataFrame, 
+                                        method: str = 'sequential',
+                                        threshold: float = 0.85) -> pd.DataFrame:
+    """
+    预测安全的因子正交化函数
+    确保在预测阶段不引入未来信息偏差
+    
+    Args:
+        factors: 因子数据DataFrame
+        method: 正交化方法
+        threshold: 相关性阈值
+    
+    Returns:
+        正交化后的因子DataFrame
+    """
+    if factors.empty or len(factors.columns) <= 1:
+        return factors
+    
+    try:
+        orthogonalizer = FactorOrthogonalizer(method=method, threshold=threshold)
+        return orthogonalizer.fit_transform(factors)
+    except Exception as e:
+        logger.warning(f"因子正交化失败，返回原始数据: {e}")
+        return factors

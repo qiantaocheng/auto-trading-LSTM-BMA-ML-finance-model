@@ -76,17 +76,15 @@ try:
     from .purged_time_series_cv import PurgedGroupTimeSeriesSplit
     from .unified_polygon_factors import UnifiedPolygonFactors as PolygonCompleteFactors
     
-    # 🔒 价格验证系统集成
+
     from .price_validator import get_price_validator, PriceValidationConfig, PriceData
-    
-    # ⚙️ 统一配置管理系统集成
+
     from .centralized_config import get_centralized_config_manager
     
-    # 📊 增强监控系统集成
+ 
     from .enhanced_monitoring import get_enhanced_monitor, AlertLevel, MetricType
     from .monitoring_decorators import monitor_performance, monitor_api_call, monitor_trading_operation, monitor_connection
     
-    # 🚀 微结构信号系统集成
     from .microstructure_signals import get_microstructure_engine
     from .impact_model import get_impact_model  
     from .realtime_alpha_engine import get_realtime_alpha_engine
@@ -172,15 +170,6 @@ class OrderRef:
     order_type: str
     limit_price: Optional[float] = None
     parent_id: Optional[int] = None
-    timestamp: float = None
-    
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = time.time()
-    
-    def get_dedup_key(self) -> str:
-        """生成用于去重的唯一键"""
-        return f"{self.symbol}_{self.side}_{self.qty}_{self.order_type}_{self.limit_price}"
 
 
 # ----------------------------- real-time信号/数据结构 -----------------------------
@@ -299,8 +288,7 @@ class IbkrAutoTrader:
         config_manager=None,
         ib_client: Optional[IB] = None,
     ) -> None:
-        # 使use统一配置管理器
-        # ⚙️ 优先使用统一配置管理器
+       
         self.centralized_config = get_centralized_config_manager(
             config_dir=os.path.join(os.path.dirname(os.path.dirname(__file__)), "config"),
             db_path="trading_audit.db"
@@ -319,14 +307,15 @@ class IbkrAutoTrader:
         
         self.config_manager = config_manager
         
-        # 🔧 并发安全：使用异步锁保护
+       
+        import threading
         import asyncio
-        self._account_lock = None  # 将在异步上下文中初始化为asyncio.Lock()
-        self._position_lock = None  # 将在异步上下文中初始化为asyncio.Lock()
-        self._order_lock = None  # 将在异步上下文中初始化为asyncio.Lock()
+        self._account_lock = threading.Lock()
+        self._position_lock = threading.Lock()
+        self._order_lock = threading.Lock()
         self._position_update_semaphore = None  # 将在异步上下文中初始化
         
-        # ⚙️ 从统一配置管理器获取连接参数
+      
         connection_config = self.centralized_config.get_section('connection')
         self.host = connection_config.get('host', '127.0.0.1')
         self.port = connection_config.get('port', 7497)
@@ -391,16 +380,11 @@ class IbkrAutoTrader:
         self.open_orders: Dict[int, OrderRef] = {}
         self._stop_event: Optional[asyncio.Event] = None
         
-        # 🔄 订单去重系统
-        self._recent_orders: Dict[str, float] = {}  # dedup_key -> timestamp
-        self._order_dedup_window_seconds = 30  # 30秒内的相同订单视为重复
-        self._max_recent_orders = 1000  # 最多保留1000个最近订单记录
-        
         # account状态管理增强（从配置加载）
         monitoring_config = self.centralized_config.get_section('monitoring')
         self.account_ready: bool = False
         self._last_account_update: float = 0.0
-        # 异步锁初始化将在连接时进行
+        # self._account_lock = asyncio.Lock()  # 已在上面使用threading.Lock初始化
         self.account_update_interval: float = monitoring_config.get('account_update_interval', 60.0)
         
         # 使use任务生命周期管理器
@@ -424,7 +408,6 @@ class IbkrAutoTrader:
         self.order_manager = OrderManager(auditor=self.auditor)  # 传入审计器
         self.enhanced_executor = EnhancedOrderExecutor(self.ib, self.order_manager)
         
-        # 🚀 动态头寸规模计算器
         self.position_calculator = create_position_calculator(
             target_percentage=0.05,  # 5%目标
             min_percentage=0.04,     # 4%最小  
@@ -433,7 +416,7 @@ class IbkrAutoTrader:
         )
         self.logger.info("✅ 动态头寸计算器已启用")
         
-        # 🔥 修复硬编码：动态波动率自适应门控系统
+        
         volatility_config = self._load_volatility_gating_config()
         self.volatility_gating = create_volatility_gating(
             base_k=volatility_config["base_k"],
@@ -443,7 +426,7 @@ class IbkrAutoTrader:
         )
         self.logger.info("✅ 波动率自适应门控系统已启用")
         
-        # 🔒 增强价格验证系统（从统一配置加载）
+  
         price_config = self.centralized_config.get_section('price_validation')
         price_validation_config = PriceValidationConfig(
             min_price=price_config.get('min_price', 0.01),
@@ -589,19 +572,7 @@ class IbkrAutoTrader:
                 # Complete factor calculator
                 self.complete_factors = PolygonCompleteFactors()
                 
-                # Adaptive factor weights system
-                from .adaptive_factor_weights import AdaptiveFactorWeights
-                self.adaptive_weights = AdaptiveFactorWeights()
-                
-                # Enhanced monitoring and performance tracking
-                from .realtime_monitoring_system import get_realtime_monitoring_system
-                self.realtime_monitor = get_realtime_monitoring_system()
-                
-                # Backtest engine for strategy validation
-                from .backtest_engine import BacktestEngine
-                self.backtest_engine = BacktestEngine()
-                
-                self.logger.info("✅ 所有统一组件已初始化(包含自适应权重系统)")
+                self.logger.info("✅ 所有统一组件已初始化")
             except Exception as e:
                 self.logger.warning(f"统一组件初始化部分失败: {e}")
                 # Set fallback None values
@@ -612,9 +583,6 @@ class IbkrAutoTrader:
                 self.neutralization_pipeline = None
                 self.purged_cv = None
                 self.complete_factors = None
-                self.adaptive_weights = None
-                self.realtime_monitor = None
-                self.backtest_engine = None
         
         # Polygon统一因子集成
         self.polygon_enabled = False
@@ -881,34 +849,35 @@ class IbkrAutoTrader:
             return False
 
     def _calculate_signal_multiplier(self, signal_strength: float) -> float:
-        """🔥 基于信号强度计算仓位调整倍数 - 已优化，更激进的信号响应"""
+        """🔥 基于信号强度计算仓位调整倍数"""
         try:
             # 确保信号强度在合理范围内
             signal_strength = max(-1.0, min(1.0, float(signal_strength)))
             
-            # 更激进的信号强度映射 - 提高弱信号利用
-            if abs(signal_strength) < 0.05:
-                # 极弱信号：从30%提高至80%
-                multiplier = 0.8
-            elif abs(signal_strength) < 0.2:
-                # 弱信号：从60%提高至100%
-                multiplier = 1.0 + abs(signal_strength) * 1.0
-            elif abs(signal_strength) < 0.5:
-                # 中等信号：正常到高仓位
-                multiplier = 1.2 + abs(signal_strength) * 1.0
+            # 信号强度到仓位倍数的映射
+            # 使用S型曲线确保极端信号不会导致过度杠杆
+            if abs(signal_strength) < 0.1:
+                # 弱信号：大幅减少仓位
+                multiplier = 0.3
+            elif abs(signal_strength) < 0.3:
+                # 中等信号：适度减少仓位
+                multiplier = 0.6 + abs(signal_strength) * 0.5
+            elif abs(signal_strength) < 0.7:
+                # 强信号：正常到略高仓位
+                multiplier = 0.8 + abs(signal_strength) * 0.4
             else:
-                # 强信号：高仓位
-                multiplier = 1.5 + (abs(signal_strength) - 0.5) * 1.0
+                # 极强信号：高仓位但有上限
+                multiplier = 1.0 + (abs(signal_strength) - 0.7) * 0.5
                 
-            # 提高安全上限：从1.5倍提高至3.0倍
-            multiplier = min(multiplier, 3.0)
+            # 安全上限：最多1.5倍基础仓位
+            multiplier = min(multiplier, 1.5)
             
-            # 提高下限保护：从0.2倍提高至0.8倍
-            multiplier = max(multiplier, 0.8)
+            # 下限保护：最少0.2倍基础仓位
+            multiplier = max(multiplier, 0.2)
             
-            # 负信号处理优化：不再减半，改为轻微折扣
+            # 负信号处理：如果是负信号，减少仓位或跳过
             if signal_strength < 0:
-                multiplier *= 0.9  # 从50%折扣改为10%折扣
+                multiplier *= 0.5  # 负信号减半处理
                 
             return multiplier
             
@@ -1257,16 +1226,6 @@ class IbkrAutoTrader:
         
         # 使use统一配置管理器直接connection，简化逻辑
         
-        # 初始化异步锁
-        if self._account_lock is None:
-            self._account_lock = asyncio.Lock()
-        if self._position_lock is None:
-            self._position_lock = asyncio.Lock()
-        if self._order_lock is None:
-            self._order_lock = asyncio.Lock()
-        if self._position_update_semaphore is None:
-            self._position_update_semaphore = asyncio.Semaphore(1)
-            
         self.logger.info(f"startingconnection {self.host}:{self.port}，目标ClientID={self.client_id}，account={self.account_id}")
         
         # 使use统一connection管理器
@@ -1619,7 +1578,7 @@ class IbkrAutoTrader:
             rows = await asyncio.wait_for(self.ib.accountSummaryAsync(), timeout=timeout)
             
             # 🔧 原子更新账户数据
-            async with self._account_lock:
+            with self._account_lock:
                 temp_account_values = {}
                 temp_cash_balance = self.cash_balance
                 temp_net_liq = self.net_liq
@@ -1965,56 +1924,6 @@ class IbkrAutoTrader:
             self.tickers.clear()
             self.logger.info("✅ 市场数据订阅已全部清理，运行纯交易模式")
 
-    def _clean_old_orders(self):
-        """清理过期的订单记录"""
-        current_time = time.time()
-        cutoff_time = current_time - self._order_dedup_window_seconds
-        
-        # 清理过期订单
-        expired_keys = [key for key, timestamp in self._recent_orders.items() if timestamp < cutoff_time]
-        for key in expired_keys:
-            del self._recent_orders[key]
-        
-        # 如果订单记录过多，清理最老的记录
-        if len(self._recent_orders) > self._max_recent_orders:
-            sorted_orders = sorted(self._recent_orders.items(), key=lambda x: x[1])
-            orders_to_remove = len(self._recent_orders) - self._max_recent_orders
-            for key, _ in sorted_orders[:orders_to_remove]:
-                del self._recent_orders[key]
-
-    def _is_duplicate_order(self, symbol: str, side: str, qty: int, order_type: str, limit_price: Optional[float] = None) -> bool:
-        """检查是否为重复订单"""
-        # 创建临时OrderRef来生成去重键
-        temp_order = OrderRef(
-            order_id=0,  # 临时ID
-            symbol=symbol,
-            side=side,
-            qty=qty,
-            order_type=order_type,
-            limit_price=limit_price
-        )
-        
-        dedup_key = temp_order.get_dedup_key()
-        current_time = time.time()
-        
-        # 清理过期记录
-        self._clean_old_orders()
-        
-        # 检查是否重复
-        if dedup_key in self._recent_orders:
-            last_time = self._recent_orders[dedup_key]
-            if current_time - last_time < self._order_dedup_window_seconds:
-                self.logger.warning(f"🚫 检测到重复订单: {symbol} {side} {qty} (距离上次 {current_time - last_time:.1f}s)")
-                return True
-        
-        return False
-
-    def _record_order_for_dedup(self, order_ref: OrderRef):
-        """记录订单用于去重"""
-        dedup_key = order_ref.get_dedup_key()
-        self._recent_orders[dedup_key] = order_ref.timestamp
-        self.logger.debug(f"📝 记录订单用于去重: {dedup_key}")
-
     async def _validate_order_before_submission(self, symbol: str, side: str, qty: int, price: float) -> bool:
         """统一风险验证 - 使use统一风险管理器 - 带详细调试信息"""
         
@@ -2355,131 +2264,8 @@ class IbkrAutoTrader:
         except Exception as e:
             self.logger.error(f"价格获取性能监控失败: {e}")
             # 降级到直接调用
-            return self.get_price(symbol)
-    
-    async def _get_price_with_multiple_fallbacks(self, symbol: str) -> float:
-        """多重fallback价格获取方法"""
-        try:
-            # 1. 重新尝试Polygon数据
-            await self.prepare_symbol_for_trading(symbol)
-            price = await self.get_price_with_refresh(symbol, force_refresh=True)
-            if price and price > 0:
-                return float(price)
-            
-            # 2. 尝试从历史数据推断
-            price = await self._get_historical_close_price(symbol)
-            if price and price > 0:
-                return float(price)
-                
-            # 3. 尝试从ticker详情估算
-            price = await self._get_ticker_detail_price(symbol)
-            if price and price > 0:
-                return float(price)
-                
-        except Exception as e:
-            self.logger.debug(f"Multiple fallback price fetch failed for {symbol}: {e}")
-        
-        return 0.0
-    
-    async def _estimate_price_from_symbol(self, symbol: str) -> float:
-        """从股票代码估算价格"""
-        try:
-            # 基于市值和股本估算
-            import sys
-            import os
-            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from polygon_client import polygon_client
-            
-            details = polygon_client.get_ticker_details(symbol)
-            if details:
-                market_cap = details.get('marketCap', 0)
-                shares = details.get('share_class_shares_outstanding', 0)
-                if market_cap > 0 and shares > 0:
-                    estimated_price = market_cap / shares
-                    if estimated_price > 0:
-                        self.logger.info(f"使用市值估算价格: {symbol} = ${estimated_price:.2f}")
-                        return float(estimated_price)
-        except Exception as e:
-            self.logger.debug(f"Price estimation failed for {symbol}: {e}")
-        
-        return 0.0
-    
-    def _get_default_price_by_symbol(self, symbol: str) -> float:
-        """基于股票代码获取默认价格"""
-        try:
-            # 常见股票的近似价格范围
-            high_price_stocks = ['BRK.A', 'BRK-A', 'BRKHA']  # 伯克希尔A股
-            mid_price_stocks = ['AMZN', 'GOOGL', 'GOOG', 'TSLA']  # 高价股
-            low_price_stocks = ['F', 'GE', 'BAC', 'NOK']  # 低价股
-            
-            if any(s in symbol.upper() for s in high_price_stocks):
-                default_price = 500000.0  # 伯克希尔约50万
-                self.logger.warning(f"使用高价股默认价格: {symbol} = ${default_price:,.2f}")
-                return default_price
-            elif any(s in symbol.upper() for s in mid_price_stocks):
-                default_price = 2000.0  # 高价股约2000
-                self.logger.warning(f"使用高价股默认价格: {symbol} = ${default_price:.2f}")
-                return default_price
-            elif any(s in symbol.upper() for s in low_price_stocks):
-                default_price = 10.0  # 低价股约10
-                self.logger.warning(f"使用低价股默认价格: {symbol} = ${default_price:.2f}")
-                return default_price
-            else:
-                default_price = 100.0  # 一般股票约100
-                self.logger.warning(f"使用通用默认价格: {symbol} = ${default_price:.2f}")
-                return default_price
-                
-        except Exception as e:
-            self.logger.debug(f"Default price calculation failed for {symbol}: {e}")
-            return 100.0  # 最终fallback
-    
-    async def _get_historical_close_price(self, symbol: str) -> float:
-        """从历史数据获取最近收盘价"""
-        try:
-            import sys
-            import os
-            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from polygon_client import polygon_client
-            from datetime import datetime, timedelta
-            
-            # 获取过去10天数据
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
-            
-            df = polygon_client.get_historical_bars(symbol, start_date, end_date)
-            if not df.empty:
-                close_col = 'Close' if 'Close' in df.columns else 'close'
-                if close_col in df.columns:
-                    latest_close = df[close_col].iloc[-1]
-                    if latest_close > 0:
-                        self.logger.info(f"使用历史收盘价: {symbol} = ${latest_close:.2f}")
-                        return float(latest_close)
-        except Exception as e:
-            self.logger.debug(f"Historical price fetch failed for {symbol}: {e}")
-        
-        return 0.0
-    
-    async def _get_ticker_detail_price(self, symbol: str) -> float:
-        """从ticker详情获取价格"""
-        try:
-            import sys
-            import os
-            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from polygon_client import polygon_client
-            
-            details = polygon_client.get_ticker_details(symbol)
-            if details:
-                # 尝试多个价格字段
-                price_fields = ['price', 'close_price', 'last_price', 'market_price']
-                for field in price_fields:
-                    if field in details and details[field] and details[field] > 0:
-                        price = float(details[field])
-                        self.logger.info(f"使用ticker详情价格: {symbol} = ${price:.2f} (from {field})")
-                        return price
-        except Exception as e:
-            self.logger.debug(f"Ticker detail price fetch failed for {symbol}: {e}")
-        
-        return 0.0
+            price = self.get_price(symbol)
+            return price
     
     def _get_current_price(self, symbol: str) -> float:
         """获取股票当前价格 - 为头寸计算器提供价格数据"""
@@ -3080,36 +2866,23 @@ class IbkrAutoTrader:
 
         # order placementbefore验证
         print(f"\n🔍 开始订单前置验证...")
-        
-        # 🔄 订单去重检查
-        if self._is_duplicate_order(symbol, action, quantity, "MARKET"):
-            error_msg = f"🚫 重复订单被阻止: {symbol} {action} {quantity}"
-            print(error_msg)
-            self.logger.warning(error_msg)
-            raise ValueError(f"Duplicate order detected: {symbol} {action} {quantity}")
-        
         try:
             print(f"💰 获取价格: {symbol}")
             price_now = self.get_price(symbol) or 0.0
             print(f"   ├─ 首次价格获取: ${price_now:.4f}")
             
             if price_now <= 0:
-                print(f"   ├─ 价格无效，尝试多重fallback价格获取...")
-                # 尝试多种价格获取方式
-                price_now = await self._get_price_with_multiple_fallbacks(symbol)
-                print(f"   ├─ Fallback后价格: ${price_now:.4f}")
+                print(f"   ├─ 价格无效，尝试刷新Polygon数据...")
+                await self.prepare_symbol_for_trading(symbol)
+                price_now = await self.get_price_with_refresh(symbol, force_refresh=True) or 0.0
+                print(f"   ├─ 刷新后价格: ${price_now:.4f}")
                 
             if price_now <= 0:
-                # 最后使用估算价格，不再拒绝订单
-                price_now = await self._estimate_price_from_symbol(symbol)
-                print(f"   ├─ ⚠️ 使用估算价格: ${price_now:.4f}")
-                
-            if price_now <= 0:
-                # 使用最后的默认价格，基于股票类型
-                price_now = self._get_default_price_by_symbol(symbol)
-                print(f"   ├─ 📊 使用默认价格: ${price_now:.4f}")
-                
-            print(f"   └─ ✅ 最终价格: ${price_now:.4f}")
+                print(f"   └─ ❌ 价格获取失败!")
+                await self._notify_webhook("no_price", "priceretrievalfailed", f"{symbol} nohas效price，拒绝order placement", {"symbol": symbol})
+                raise RuntimeError(f"no法retrievalhas效price: {symbol}")
+            else:
+                print(f"   └─ ✅ 价格获取成功: ${price_now:.4f}")
             
             self.logger.debug(f"Starting risk validation: {symbol} {action} {quantity} shares @ ${price_now:.4f}")
             
@@ -3178,9 +2951,6 @@ class IbkrAutoTrader:
             )
             
             print(f"📋 订单引用创建: OrderRef(id={enhanced_ref.order_id})")
-            
-            # 🔄 记录订单用于去重
-            self._record_order_for_dedup(enhanced_ref)
             
             # 审计记录通过OrderManager回调自动处理，no需重复记录
             
@@ -5038,10 +4808,10 @@ class IbkrAutoTrader:
                 try:
                     current_risk_config = db.get_risk_config("默认风险配置")
                     if current_risk_config:
-                        # 更新风险参数 - 已放宽限制
-                        max_single_position_pct = current_risk_config.get("max_single_position_pct", 0.50)  # 从10%提高至50%
-                        max_daily_orders = current_risk_config.get("max_daily_orders", 1000)              # 从5提高至1000
-                        min_order_value_usd = current_risk_config.get("min_order_value_usd", 0)           # 从100降至0
+                        # updates风险参数
+                        max_single_position_pct = current_risk_config.get("max_single_position_pct", 0.1)
+                        max_daily_orders = current_risk_config.get("max_daily_orders", 5)
+                        min_order_value_usd = current_risk_config.get("min_order_value_usd", 100)
                         self.logger.debug(f"Risk configuration loaded: 单笔限制{max_single_position_pct*100:.1f}%, 日内最多{max_daily_orders}单")
                 except Exception as e:
                     self.logger.warning(f"加载风险配置failed，使use默认值: {e}")
@@ -5166,8 +4936,9 @@ class IbkrAutoTrader:
                                 
                                 self.logger.info(f"🎯 {sym} 信号转换: 强度={signal_strength:.4f}, 倍数={signal_multiplier:.2f}, 基础预算=${base_budget:.2f}, 调整后=${adjusted_budget:.2f}, 股数={qty}")
 
-                                # 移除最小订单金额保护 - 允许任何金额的订单
-                                # 原有的最小金额检查已移除，允许小额交易
+                                # 最小order placement金额保护
+                                if qty * price < min_order_value_usd:
+                                    qty = max(int(math.ceil(min_order_value_usd / price)), 1)
 
                             order_value = qty * (price or 0.0)
 
@@ -5417,18 +5188,14 @@ class IbkrAutoTrader:
     
     def process_signals_with_polygon_risk_control(self, signals) -> List[Dict]:
         """
-        使usePolygonrisk control收益平衡器处理信号，集成自适应权重系统
+        使usePolygonrisk control收益平衡器处理信号
         """
         if not POLYGON_INTEGRATED or not hasattr(self, 'polygon_unified') or not self.polygon_unified:
             self.logger.warning("Polygon未集成，使use基础信号处理")
             return self._process_signals_basic(signals)
         
         try:
-            # 首先应用自适应权重优化信号
-            optimized_signals = self._apply_adaptive_weights(signals)
-            
-            # 然后使用Polygon风险控制处理
-            return process_signals_with_polygon(optimized_signals)
+            return process_signals_with_polygon(signals)
         except Exception as e:
             context = ErrorContext(
                 operation="ibkr_auto_trader",
@@ -5642,65 +5409,6 @@ class IbkrAutoTrader:
                 self.logger.info("Polygon缓存清理")
             except Exception as e:
                 self.logger.error(f"清理Polygon缓存failed: {e}")
-    
-    def _apply_adaptive_weights(self, signals):
-        """应用自适应因子权重优化信号"""
-        if not hasattr(self, 'adaptive_weights') or not self.adaptive_weights:
-            self.logger.debug("自适应权重系统未启用，使用原始信号")
-            return signals
-        
-        try:
-            # 提取股票代码列表
-            if hasattr(signals, 'to_dict'):  # pandas DataFrame
-                signal_data = signals.to_dict('records')
-            elif isinstance(signals, list):
-                signal_data = signals
-            else:
-                return signals
-            
-            symbols = [s.get('symbol', s.get('ticker', '')) for s in signal_data if s.get('symbol') or s.get('ticker')]
-            if not symbols:
-                return signals
-            
-            # 学习最新权重
-            self.logger.info(f"为{len(symbols)}只股票学习自适应权重...")
-            weight_result = self.adaptive_weights.learn_weights_from_bma(symbols)
-            
-            if weight_result and weight_result.confidence > 0.6:
-                self.logger.info(f"成功学习权重，置信度: {weight_result.confidence:.3f}")
-                self.logger.info(f"权重分布: {weight_result.weights}")
-                
-                # 应用权重到信号（这里可以根据具体信号结构调整）
-                # 暂时返回原始信号，后续可根据权重调整信号强度
-                return signals
-            else:
-                self.logger.warning("权重学习失败或置信度过低，使用原始信号")
-                return signals
-                
-        except Exception as e:
-            self.logger.error(f"自适应权重应用失败: {e}")
-            return signals
-    
-    def get_adaptive_weights_stats(self) -> Dict[str, Any]:
-        """获取自适应权重系统统计信息"""
-        if not hasattr(self, 'adaptive_weights') or not self.adaptive_weights:
-            return {'status': 'disabled'}
-        
-        try:
-            latest_weights = self.adaptive_weights.load_latest_weights()
-            if latest_weights:
-                return {
-                    'status': 'active',
-                    'last_learning_date': latest_weights.learning_date.isoformat(),
-                    'confidence': latest_weights.confidence,
-                    'performance_score': latest_weights.performance_score,
-                    'weights': latest_weights.weights,
-                    'method': latest_weights.metadata.get('method', 'unknown')
-                }
-            else:
-                return {'status': 'no_weights_learned'}
-        except Exception as e:
-            return {'status': 'error', 'message': str(e)}
 
 
 # ----------------------------- CLI 入口 -----------------------------

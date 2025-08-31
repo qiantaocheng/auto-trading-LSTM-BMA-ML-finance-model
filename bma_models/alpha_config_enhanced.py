@@ -39,7 +39,7 @@ class EnhancedAlphaConfig:
     # Data Processing Configuration
     # =========================================================================
     # Time alignment settings to fix violations
-    DEFAULT_LAG: int = 5          # T-5 lag for all alpha factors
+    DEFAULT_LAG: int = 1          # T-1 lag for all alpha factors (unified with alphas_config.yaml)
     SAFETY_BUFFER: int = 2        # Additional safety buffer
     STRICT_TIME_CHECK: bool = True  # Enable strict time validation
     

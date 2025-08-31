@@ -21,10 +21,10 @@ class CVPolicy:
     # ==================== 核心隔离参数 ====================
     # T10配置作为唯一事实来源
     holding_period: int = 10                    # 持仓期
-    isolation_days: int = 10                    # 严格隔离天数，不允许自适应下调
-    embargo_days: int = 10                      # 禁带期，等于持仓期
-    gap_days: int = 10                          # CV gap，等于持仓期
-    min_isolation_days: int = 10                # 最小隔离天数，禁用向下自适应
+    isolation_days: int = 10                    # CRITICAL FIX: 统一10天隔离
+    embargo_days: int = 10                      # CRITICAL FIX: 统一10天embargo
+    gap_days: int = 10                          # CRITICAL FIX: 统一10天gap
+    min_isolation_days: int = 10                # CRITICAL FIX: 统一10天最小隔离
     
     # ==================== CV配置 ====================
     n_splits: int = 5                          # CV折数

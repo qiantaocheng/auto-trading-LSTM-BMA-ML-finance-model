@@ -27,7 +27,7 @@ from sklearn.linear_model import HuberRegressor
 from sklearn.covariance import LedoitWolf, OAS, EmpiricalCovariance
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import TimeSeriesSplit
+# 🚫 已删除TimeSeriesSplit导入 - 使用统一CV工厂
 
 # 配置日志
 logger = logging.getLogger(__name__)

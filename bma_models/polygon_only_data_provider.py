@@ -172,6 +172,18 @@ class PolygonOnlyDataProvider:
             # Get financials from polygon_client
             data = self.client.get_financials(ticker, limit=limit)
             
+            # 🔧 Enhanced validation
+            if not data:
+                logger.warning(f"No financial data response for {ticker}")
+                return None
+                
+            status = data.get('status', 'UNKNOWN')
+            if status not in ['OK', 'DELAYED']:
+                logger.warning(f"Financial data API returned status={status} for {ticker}")
+                if status == 'NOT_AUTHORIZED':
+                    logger.error(f"API authorization issue for {ticker} financials")
+                    return None
+            
             if data and data.get('results'):
                 results = data['results']
                 
@@ -257,6 +269,9 @@ class PolygonOnlyDataProvider:
                         else:
                             df['market_cap'] = np.nan
                     
+                    # 🔧 Validate fundamental data reasonableness
+                    df = self._validate_fundamental_data(df, ticker)
+                    
                     logger.info(f"Retrieved {len(df)} periods of fundamentals for {ticker}")
                     return df
                 else:
@@ -269,6 +284,46 @@ class PolygonOnlyDataProvider:
         except Exception as e:
             logger.error(f"Error fetching fundamentals for {ticker}: {e}")
             return None
+    
+    def _validate_fundamental_data(self, df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+        """Validate fundamental data reasonableness"""
+        try:
+            # Check for negative values in typically positive metrics
+            positive_metrics = ['market_cap', 'total_assets', 'total_equity', 'revenue']
+            for metric in positive_metrics:
+                if metric in df.columns:
+                    negative_mask = df[metric] < 0
+                    if negative_mask.any():
+                        logger.warning(f"{ticker}: Found negative {metric} values")
+                        # Set unreasonable negative values to NaN
+                        df.loc[negative_mask, metric] = np.nan
+            
+            # Check PE ratio reasonableness (should be between -100 and 1000)
+            if 'pe_ratio' in df.columns:
+                extreme_pe = (df['pe_ratio'] < -100) | (df['pe_ratio'] > 1000)
+                if extreme_pe.any():
+                    logger.warning(f"{ticker}: Extreme PE ratios detected")
+                    df.loc[extreme_pe, 'pe_ratio'] = np.nan
+            
+            # Check ROE reasonableness (should be between -200% and 200%)
+            if 'roe' in df.columns:
+                extreme_roe = (df['roe'] < -2) | (df['roe'] > 2)
+                if extreme_roe.any():
+                    logger.warning(f"{ticker}: Extreme ROE values detected")
+                    df.loc[extreme_roe, 'roe'] = np.nan
+            
+            # Check debt_to_equity reasonableness
+            if 'debt_to_equity' in df.columns:
+                extreme_de = (df['debt_to_equity'] < 0) | (df['debt_to_equity'] > 50)
+                if extreme_de.any():
+                    logger.warning(f"{ticker}: Extreme debt-to-equity ratios detected")
+                    df.loc[extreme_de, 'debt_to_equity'] = np.nan
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Fundamental data validation failed for {ticker}: {e}")
+            return df
     
     def get_news(
         self,

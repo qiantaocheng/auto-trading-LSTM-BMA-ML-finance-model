@@ -74,19 +74,70 @@ class ProductionReadinessValidator:
     
 
     def _align_validation_data(self, predictions: np.ndarray, labels: np.ndarray, dates: pd.Series) -> Tuple[np.ndarray, np.ndarray, pd.Series]:
-        """对齐验证数据，确保长度一致并处理NaN值"""
+        """🔥 CRITICAL FIX: 使用IndexAligner对齐验证数据，解决738 vs 748问题"""
         try:
-            logger.info(f"验证数据长度不匹配: pred={len(predictions)}, labels={len(labels)}, dates={len(dates)}")
+            # 转换为numpy数组并展平多维数组
+            predictions = np.asarray(predictions).flatten()
+            labels = np.asarray(labels).flatten()
             
-            # 找到最小长度
-            min_len = min(len(predictions), len(labels), len(dates))
+            logger.info(f"🎯 验证数据维度: pred={predictions.shape}, labels={labels.shape}, dates={len(dates)}")
             
-            # 截取到最小长度
-            predictions_aligned = predictions[:min_len]
-            labels_aligned = labels[:min_len]
-            dates_aligned = dates.iloc[:min_len] if hasattr(dates, 'iloc') else dates[:min_len]
+            # 检查数组维度一致性
+            if predictions.ndim > 1:
+                logger.warning(f"预测数据是多维数组 {predictions.shape}，将展平为一维")
+                predictions = predictions.flatten()
+            if labels.ndim > 1:
+                logger.warning(f"标签数据是多维数组 {labels.shape}，将展平为一维")
+                labels = labels.flatten()
             
-            logger.info(f"数据已对齐到长度: {min_len}")
+            # 🔥 CRITICAL: 使用IndexAligner代替简单截断，确保数据完全对齐
+            try:
+                from index_aligner import create_index_aligner
+                # 🔥 CRITICAL FIX: 验证horizon必须与训练一致，避免前视偏差
+                validation_aligner = create_index_aligner(horizon=10, strict_mode=True)  # 与T+10训练horizon一致
+                
+                # 创建公共索引长度
+                min_len = min(len(predictions), len(labels), len(dates))
+                common_index = pd.RangeIndex(min_len)
+                
+                # 准备数据用于对齐
+                pred_series = pd.Series(predictions[:min_len], index=common_index)
+                label_series = pd.Series(labels[:min_len], index=common_index)
+                date_series = pd.Series(dates.iloc[:min_len].values, index=common_index)
+                
+                # 使用IndexAligner对齐
+                aligned_data, alignment_report = validation_aligner.align_all_data(
+                    predictions=pred_series,
+                    labels=label_series,
+                    dates=date_series
+                )
+                
+                # 提取对齐后的数据
+                predictions = aligned_data['predictions'].values
+                labels = aligned_data['labels'].values
+                dates = pd.Series(aligned_data['dates'].values)
+                
+                logger.info(f"✅ IndexAligner验证数据对齐成功: {len(predictions)} 条, 覆盖率={alignment_report.coverage_rate:.1%}")
+                
+            except Exception as aligner_error:
+                logger.warning(f"IndexAligner对齐失败，回退到简单截断: {aligner_error}")
+                # 回退机制：简单截取到最小长度
+                min_len = min(len(predictions), len(labels), len(dates))
+                
+                if len(predictions) != len(labels) or len(predictions) != len(dates):
+                    logger.warning(f"验证数据长度不匹配: pred={len(predictions)}, labels={labels.shape}, dates={len(dates)}")
+                    logger.info(f"将对齐到最小长度: {min_len}")
+                
+                # 截取到最小长度
+                predictions = predictions[:min_len]
+                labels = labels[:min_len]
+                dates = pd.Series(dates.iloc[:min_len].values) if hasattr(dates, 'iloc') else pd.Series(dates[:min_len])
+            
+            predictions_aligned = predictions
+            labels_aligned = labels  
+            dates_aligned = dates
+            
+            logger.info(f"数据已对齐到长度: {len(predictions_aligned)}")
             
             # 检查和移除NaN值
             if isinstance(predictions_aligned, np.ndarray) and isinstance(labels_aligned, np.ndarray):
@@ -148,7 +199,9 @@ class ProductionReadinessValidator:
         # 🔧 自适应阈值优化 (基于实际BMA运行结果)
         if self.thresholds.adaptive_mode and weight_details:
             try:
-                from adaptive_validation_thresholds import create_adaptive_validation_from_bma_results
+                # 自适应阈值模块未实现，使用固定阈值
+                logger.warning("自适应阈值模块未实现，使用固定阈值")
+                raise ImportError("adaptive_validation_thresholds module not implemented")
                 
                 # 从权重明细中提取模型性能数据
                 if 'model_performance' in weight_details:
@@ -671,43 +724,6 @@ class ProductionReadinessValidator:
         
         logger.info("="*60)
     
-    def _align_validation_data(self, predictions: np.ndarray, true_labels: np.ndarray, dates: pd.Series) -> Tuple[np.ndarray, np.ndarray, pd.Series]:
-        """对齐和清理验证数据"""
-        # 转换为numpy数组
-        predictions = np.asarray(predictions)
-        true_labels = np.asarray(true_labels)
-        
-        # 长度对齐
-        min_len = min(len(predictions), len(true_labels), len(dates))
-        if len(predictions) != len(true_labels) or len(predictions) != len(dates):
-            logger.warning(f"验证数据长度不匹配: pred={len(predictions)}, labels={len(true_labels)}, dates={len(dates)}")
-            predictions = predictions[:min_len]
-            true_labels = true_labels[:min_len]
-            # 安全地截取dates，处理Series或Index类型
-            if hasattr(dates, 'iloc'):
-                dates = dates.iloc[:min_len]
-            else:
-                dates = dates[:min_len]
-            logger.info(f"数据已对齐到长度: {min_len}")
-        
-        # NaN清理 - 只对预测值和标签检查NaN
-        valid_mask = ~(np.isnan(predictions) | np.isnan(true_labels))
-        if not np.all(valid_mask):
-            nan_count = (~valid_mask).sum()
-            logger.warning(f"发现{nan_count}个NaN值，将被移除")
-            predictions = predictions[valid_mask]
-            true_labels = true_labels[valid_mask]
-            # 安全地应用mask到dates
-            if hasattr(dates, 'iloc'):
-                dates = dates.iloc[valid_mask].reset_index(drop=True)
-            elif isinstance(dates, pd.Series):
-                dates = dates[valid_mask].reset_index(drop=True)
-            else:
-                # DatetimeIndex或其他Index类型
-                dates = dates[valid_mask]
-        
-        logger.info(f"验证数据清理完成，最终长度: {len(predictions)}")
-        return predictions, true_labels, dates
 
 def create_production_validator(thresholds: Optional[ValidationThresholds] = None) -> ProductionReadinessValidator:
     """创建生产就绪验证器"""

@@ -18,8 +18,8 @@ class ValidationConfig:
     """验证配置 - 与Ultra Enhanced模型保持一致"""
     n_splits: int = 5
     test_size: int = 63  # 测试集大小（交易日）
-    gap: int = 10        # ✅ FIX: 统一为10天，与isolation_days一致
-    embargo: int = 0     # ✅ FIX: 避免双重隔离，V6使用单一隔离方法
+    gap: int = 10        # ✅ CRITICAL FIX: 统一为10天，与holding period一致
+    embargo: int = 10    # ✅ CRITICAL FIX: 10天embargo，与holding period一致
     min_train_size: int = 252  # 最小训练集大小
     group_freq: str = 'W'      # 分组频率
     strict_validation: bool = True  # 严格验证模式
@@ -65,20 +65,24 @@ class FixedPurgedGroupTimeSeriesSplit(BaseCrossValidator):
         if hasattr(groups, 'index'):
             groups = groups.reindex(data_index)
         
-        unique_groups = sorted(groups.unique())
+        if hasattr(groups, 'unique'):
+            unique_groups = sorted(groups.unique())
+        else:
+            unique_groups = sorted(np.unique(groups))
         n_groups = len(unique_groups)
         
         logger.info(f"总共{n_groups}个时间组，配置{self.config.n_splits}折验证")
         
-        # ✅ FIX: 更新数据充足性检查（V6单一隔离）
-        min_required_groups = self.config.n_splits + self.config.gap + 2  # 移除embargo
-        if n_groups < min_required_groups:
-            logger.warning(f"数据较少: 推荐至少{min_required_groups}组，实际只有{n_groups}组")
-            # V6: 对小数据集更宽松，不直接返回空
-            if n_groups < (self.config.n_splits + 2):  # 最低要求
-                logger.error(f"数据极少: 至少需要{self.config.n_splits + 2}组进行CV")
-                if self.config.strict_validation:
-                    return  # 严格模式下直接返回空
+        # 🔥 CRITICAL FIX: 强化数据充足性检查，禁用适应性减少
+        # 使用绝对最小要求，防止在小数据集上的时间泄露
+        from .enhanced_temporal_safety import TemporalSafetyConfig
+        safety_config = TemporalSafetyConfig()
+        
+        min_absolute_groups = self.config.n_splits + safety_config.min_absolute_gap_days + 3
+        if n_groups < min_absolute_groups:
+            logger.error(f"数据不足进行安全CV: 需要至少{min_absolute_groups}组，实际只有{n_groups}组")
+            logger.error("拒绝执行可能导致时间泄露的CV分割")
+            return  # 直接返回空，不允许降级
         
         # 计算每折的测试组数量
         groups_per_fold = max(1, self.config.test_size // 20)  # 假设每组~20个样本
@@ -92,11 +96,10 @@ class FixedPurgedGroupTimeSeriesSplit(BaseCrossValidator):
             )
             test_end_idx = min(n_groups, test_start_idx + groups_per_fold)
             
-            # ✅ FIX: V6单一隔离方法 - 只使用gap，避免双重隔离
-            # Gap已经包含了所有需要的隔离期间
-            # Embargo设为0以避免与Enhanced Temporal Validation重复
-            total_buffer = self.config.gap  # V6: 使用单一gap，不再叠加embargo
-            train_end_idx = max(0, test_start_idx - total_buffer)
+            # 🔥 CRITICAL FIX: 使用绝对安全间隔，禁用适应性减少
+            # 强制使用最小安全间隔，防止时间泄露
+            absolute_safety_gap = safety_config.min_absolute_gap_days
+            train_end_idx = max(0, test_start_idx - absolute_safety_gap)
             
             logger.debug(f"第{i+1}折: 使用单一隔离gap={self.config.gap}天，避免双重隔离")
             
@@ -120,8 +123,12 @@ class FixedPurgedGroupTimeSeriesSplit(BaseCrossValidator):
                 continue
             
             # 转换为索引
-            train_mask = groups.isin(train_groups)
-            test_mask = groups.isin(test_groups)
+            if hasattr(groups, 'isin'):
+                train_mask = groups.isin(train_groups)
+                test_mask = groups.isin(test_groups)
+            else:
+                train_mask = np.isin(groups, train_groups)
+                test_mask = np.isin(groups, test_groups)
             
             train_indices = data_index[train_mask].tolist()
             test_indices = data_index[test_mask].tolist()
@@ -180,7 +187,10 @@ class FixedPurgedGroupTimeSeriesSplit(BaseCrossValidator):
             logger.info(f"第{valid_folds}折: 训练{len(train_indices)}样本, 测试{len(test_indices)}样本")
             logger.info(f"训练期间: {train_start_str} to {train_end_str}")
             logger.info(f"测试期间: {valid_start_str} to {valid_end_str}")
-            logger.info(f"时间缓冲: {total_buffer}组 (Gap:{self.config.gap} + Embargo:{self.config.embargo})")
+            
+            # 计算实际时间缓冲
+            buffer_groups = test_start_idx - train_end_idx
+            logger.info(f"时间缓冲: {buffer_groups}组 (Gap:{self.config.gap} + Embargo:{self.config.embargo})")
             
             # 🔥 验证无重叠：确保 train_end < valid_start
             if hasattr(train_end_date, 'strftime') and hasattr(valid_start_date, 'strftime'):

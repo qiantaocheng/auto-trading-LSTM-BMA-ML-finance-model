@@ -1,471 +1,489 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Real OOS (Out-of-Sample) Data Manager for BMA Weight Updates
-真实样本外数据管理器 - 替代Mock OOS
+Real Out-of-Sample Manager
+真实样本外管理器 - 管理和维护真实的OOS预测历史，用于BMA权重优化
 
-This module manages real out-of-sample predictions from previous CV folds
-and rolling windows for accurate BMA weight updates.
+核心功能:
+1. 收集和存储各个模型在真实OOS折上的预测结果
+2. 维护历史性能记录，避免使用模拟或泄露数据
+3. 为BMA权重更新提供可靠的历史OOS数据
+4. 支持时间窗口和最小折数筛选
 """
 
 import pandas as pd
 import numpy as np
-import logging
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
+import logging
+from pathlib import Path
 import pickle
 import json
-from pathlib import Path
-from collections import deque
+from dataclasses import dataclass, field
+import warnings
 
+warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
 
-
 @dataclass
-class OOSPrediction:
-    """Single OOS prediction record"""
-    timestamp: datetime
+class OOSFoldRecord:
+    """单个OOS折记录"""
     fold_id: str
-    model_name: str
-    predictions: pd.Series
+    timestamp: datetime
+    model_predictions: Dict[str, pd.Series]  # model_name -> predictions
     actuals: pd.Series
-    feature_hash: str
-    model_version: str
+    fold_metrics: Dict[str, float] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
-    def calculate_metrics(self) -> Dict[str, float]:
-        """Calculate prediction metrics"""
-        from scipy.stats import spearmanr
-        
-        # Remove NaN values
-        mask = ~(self.predictions.isna() | self.actuals.isna())
-        pred_clean = self.predictions[mask]
-        actual_clean = self.actuals[mask]
-        
-        if len(pred_clean) < 10:  # Need minimum samples
-            return {}
-        
-        # Calculate metrics
-        ic, _ = spearmanr(pred_clean, actual_clean)
-        mse = np.mean((pred_clean - actual_clean) ** 2)
-        mae = np.mean(np.abs(pred_clean - actual_clean))
-        
-        return {
-            'ic': ic if not np.isnan(ic) else 0.0,
-            'mse': mse,
-            'mae': mae,
-            'n_samples': len(pred_clean)
-        }
-
+    def __post_init__(self):
+        """计算并存储基本指标"""
+        if not self.fold_metrics and len(self.model_predictions) > 0 and len(self.actuals) > 0:
+            from scipy.stats import pearsonr, spearmanr
+            
+            for model_name, predictions in self.model_predictions.items():
+                try:
+                    # 确保索引对齐
+                    aligned_actuals = self.actuals.loc[predictions.index] if hasattr(self.actuals, 'loc') else self.actuals
+                    
+                    if len(predictions) > 10:  # 最小样本要求
+                        ic, _ = pearsonr(aligned_actuals, predictions)
+                        rank_ic, _ = spearmanr(aligned_actuals, predictions)
+                        mse = np.mean((aligned_actuals - predictions) ** 2)
+                        
+                        self.fold_metrics[f"{model_name}_ic"] = ic if not np.isnan(ic) else 0.0
+                        self.fold_metrics[f"{model_name}_rank_ic"] = rank_ic if not np.isnan(rank_ic) else 0.0
+                        self.fold_metrics[f"{model_name}_mse"] = mse if not np.isnan(mse) else 1.0
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to calculate metrics for {model_name}: {e}")
+                    self.fold_metrics[f"{model_name}_ic"] = 0.0
+                    self.fold_metrics[f"{model_name}_rank_ic"] = 0.0
+                    self.fold_metrics[f"{model_name}_mse"] = 1.0
 
 class RealOOSManager:
-    """
-    Manages real out-of-sample predictions for BMA weight updates
-    管理真实样本外预测用于BMA权重更新
-    """
+    """真实样本外管理器"""
     
-    def __init__(self, 
-                 cache_dir: str = "cache/oos_predictions",
-                 max_history: int = 20,
-                 min_samples_for_update: int = 100):
+    def __init__(self, storage_path: str = "cache/real_oos_history", 
+                 max_history_days: int = 180, 
+                 auto_cleanup: bool = True):
         """
-        Initialize OOS manager
+        初始化真实OOS管理器
         
         Args:
-            cache_dir: Directory to cache OOS predictions
-            max_history: Maximum number of historical predictions to keep
-            min_samples_for_update: Minimum samples needed for weight update
+            storage_path: 存储路径
+            max_history_days: 最大历史记录天数
+            auto_cleanup: 是否自动清理过期数据
         """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.storage_path = Path(storage_path)
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.max_history_days = max_history_days
+        self.auto_cleanup = auto_cleanup
         
-        self.max_history = max_history
-        self.min_samples_for_update = min_samples_for_update
+        # 内存缓存
+        self.fold_history: List[OOSFoldRecord] = []
+        self.model_performance_cache: Dict[str, Dict] = {}
         
-        # Storage for OOS predictions
-        self.oos_history: deque = deque(maxlen=max_history)
-        self.current_fold_predictions: Dict[str, List[OOSPrediction]] = {}
+        # 加载历史数据
+        self._load_history()
         
-        # Aggregated OOS data for BMA updates
-        self.aggregated_oos: Optional[pd.DataFrame] = None
-        
-        # Load existing cache
-        self._load_cache()
-        
-        logger.info(f"RealOOSManager initialized with {len(self.oos_history)} historical predictions")
+        logger.info(f"RealOOSManager初始化完成，历史记录: {len(self.fold_history)}个折")
     
-    def add_fold_predictions(self, 
-                           fold_id: str,
+    def add_fold_predictions(self, fold_id: str, 
                            model_predictions: Dict[str, pd.Series],
                            actuals: pd.Series,
-                           model_versions: Optional[Dict[str, str]] = None) -> bool:
+                           metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
-        Add predictions from a CV fold
+        添加一个折的预测结果
         
         Args:
-            fold_id: Unique identifier for the fold
-            model_predictions: Dictionary of model_name -> predictions
-            actuals: Actual target values
-            model_versions: Optional model version tracking
+            fold_id: 折ID，唯一标识符
+            model_predictions: 模型预测字典 {model_name: predictions}
+            actuals: 真实标签
+            metadata: 元数据
             
         Returns:
-            Success status
+            bool: 是否成功添加
         """
         try:
-            timestamp = datetime.now()
-            feature_hash = self._compute_feature_hash(model_predictions)
+            # 检查是否已存在
+            if any(record.fold_id == fold_id for record in self.fold_history):
+                logger.warning(f"折 {fold_id} 已存在，跳过添加")
+                return False
             
+            # 验证数据有效性
+            if not model_predictions or len(actuals) == 0:
+                logger.warning(f"折 {fold_id} 数据无效，跳过添加")
+                return False
+            
+            # 验证预测和实际值的对齐
             for model_name, predictions in model_predictions.items():
-                oos_pred = OOSPrediction(
-                    timestamp=timestamp,
-                    fold_id=fold_id,
-                    model_name=model_name,
-                    predictions=predictions,
-                    actuals=actuals,
-                    feature_hash=feature_hash,
-                    model_version=model_versions.get(model_name, 'unknown') if model_versions else 'unknown'
-                )
-                
-                # Add to history
-                self.oos_history.append(oos_pred)
-                
-                # Add to current fold tracking
-                if fold_id not in self.current_fold_predictions:
-                    self.current_fold_predictions[fold_id] = []
-                self.current_fold_predictions[fold_id].append(oos_pred)
+                if len(predictions) != len(actuals):
+                    logger.warning(f"模型 {model_name} 预测长度与实际值不匹配")
+                    continue
             
-            # Update aggregated OOS
-            self._update_aggregated_oos()
+            # 创建记录
+            fold_record = OOSFoldRecord(
+                fold_id=fold_id,
+                timestamp=datetime.now(),
+                model_predictions=model_predictions.copy(),
+                actuals=actuals.copy(),
+                metadata=metadata or {}
+            )
             
-            logger.info(f"Added OOS predictions for fold {fold_id} with {len(model_predictions)} models")
+            # 添加到历史
+            self.fold_history.append(fold_record)
+            
+            # 异步持久化
+            self._save_fold_record(fold_record)
+            
+            # 更新性能缓存
+            self._update_performance_cache(fold_record)
+            
+            # 自动清理
+            if self.auto_cleanup:
+                self._cleanup_expired_data()
+            
+            logger.info(f"成功添加折 {fold_id}，包含 {len(model_predictions)} 个模型，"
+                       f"{len(actuals)} 个样本")
+            
             return True
             
         except Exception as e:
-            logger.error(f"Failed to add fold predictions: {e}")
+            logger.error(f"添加折 {fold_id} 失败: {e}")
             return False
     
-    def get_bma_update_data(self, 
-                           min_folds: int = 3,
-                           lookback_days: int = 30) -> Optional[pd.DataFrame]:
+    def get_bma_update_data(self, min_folds: int = 3, 
+                          lookback_days: int = 30,
+                          models: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
         """
-        Get aggregated OOS data for BMA weight updates
+        获取用于BMA权重更新的OOS数据
         
         Args:
-            min_folds: Minimum number of folds required
-            lookback_days: Days of history to consider
+            min_folds: 最小折数要求
+            lookback_days: 回看天数
+            models: 指定模型列表，None则使用所有模型
             
         Returns:
-            DataFrame with columns: target, model1_pred, model2_pred, ...
+            DataFrame: 包含target和各模型预测列的数据，如果数据不足返回None
         """
-        
-        # Filter by recency
-        cutoff_date = datetime.now() - timedelta(days=lookback_days)
-        recent_predictions = [
-            p for p in self.oos_history 
-            if p.timestamp >= cutoff_date
-        ]
-        
-        if len(recent_predictions) < self.min_samples_for_update:
-            logger.warning(f"Insufficient OOS samples: {len(recent_predictions)} < {self.min_samples_for_update}")
-            return None
-        
-        # Check fold diversity
-        unique_folds = len(set(p.fold_id for p in recent_predictions))
-        if unique_folds < min_folds:
-            logger.warning(f"Insufficient fold diversity: {unique_folds} < {min_folds}")
-            return None
-        
-        # Aggregate predictions by model
-        model_data = {}
-        actuals_list = []
-        
-        # Group by model
-        model_groups = {}
-        for pred in recent_predictions:
-            if pred.model_name not in model_groups:
-                model_groups[pred.model_name] = []
-            model_groups[pred.model_name].append(pred)
-        
-        # Combine predictions for each model
-        for model_name, preds in model_groups.items():
-            combined_preds = pd.concat([p.predictions for p in preds])
-            combined_actuals = pd.concat([p.actuals for p in preds])
-            
-            model_data[f'{model_name}_pred'] = combined_preds
-            if 'target' not in model_data:
-                model_data['target'] = combined_actuals
-        
-        # Create DataFrame
-        oos_df = pd.DataFrame(model_data)
-        
-        # Remove rows with any NaN
-        oos_df = oos_df.dropna()
-        
-        if len(oos_df) < self.min_samples_for_update:
-            logger.warning(f"Insufficient clean samples after NaN removal: {len(oos_df)}")
-            return None
-        
-        logger.info(f"Prepared BMA update data with {len(oos_df)} samples from {unique_folds} folds")
-        
-        return oos_df
-    
-    def get_model_performance_history(self, 
-                                     model_name: str,
-                                     lookback_days: int = 30) -> pd.DataFrame:
-        """
-        Get historical performance metrics for a specific model
-        
-        Args:
-            model_name: Name of the model
-            lookback_days: Days of history to analyze
-            
-        Returns:
-            DataFrame with performance metrics over time
-        """
-        cutoff_date = datetime.now() - timedelta(days=lookback_days)
-        
-        model_predictions = [
-            p for p in self.oos_history 
-            if p.model_name == model_name and p.timestamp >= cutoff_date
-        ]
-        
-        if not model_predictions:
-            return pd.DataFrame()
-        
-        # Calculate metrics for each prediction
-        metrics_list = []
-        for pred in model_predictions:
-            metrics = pred.calculate_metrics()
-            if metrics:
-                metrics['timestamp'] = pred.timestamp
-                metrics['fold_id'] = pred.fold_id
-                metrics['model_version'] = pred.model_version
-                metrics_list.append(metrics)
-        
-        if not metrics_list:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(metrics_list)
-        df = df.sort_values('timestamp')
-        
-        # Add rolling statistics
-        if len(df) > 3:
-            df['ic_rolling_mean'] = df['ic'].rolling(window=3, min_periods=1).mean()
-            df['ic_rolling_std'] = df['ic'].rolling(window=3, min_periods=1).std()
-        
-        return df
-    
-    def get_fold_comparison(self, fold_ids: List[str]) -> pd.DataFrame:
-        """
-        Compare performance across specific folds
-        
-        Args:
-            fold_ids: List of fold IDs to compare
-            
-        Returns:
-            DataFrame with fold comparison metrics
-        """
-        comparison_data = []
-        
-        for fold_id in fold_ids:
-            if fold_id not in self.current_fold_predictions:
-                continue
-                
-            fold_preds = self.current_fold_predictions[fold_id]
-            
-            for pred in fold_preds:
-                metrics = pred.calculate_metrics()
-                if metrics:
-                    metrics['fold_id'] = fold_id
-                    metrics['model_name'] = pred.model_name
-                    metrics['timestamp'] = pred.timestamp
-                    comparison_data.append(metrics)
-        
-        if not comparison_data:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(comparison_data)
-        
-        # Pivot for easier comparison
-        pivot_df = df.pivot_table(
-            index='fold_id',
-            columns='model_name',
-            values='ic',
-            aggfunc='mean'
-        )
-        
-        return pivot_df
-    
-    def _update_aggregated_oos(self):
-        """Update aggregated OOS data"""
-        
-        # Get recent data
-        oos_df = self.get_bma_update_data()
-        
-        if oos_df is not None:
-            self.aggregated_oos = oos_df
-            logger.debug(f"Updated aggregated OOS with {len(oos_df)} samples")
-    
-    def _compute_feature_hash(self, model_predictions: Dict[str, pd.Series]) -> str:
-        """Compute hash for feature set identification"""
-        import hashlib
-        
-        # Use first model's index as feature identifier
-        if model_predictions:
-            first_pred = next(iter(model_predictions.values()))
-            index_str = str(sorted(first_pred.index.tolist()))
-            return hashlib.md5(index_str.encode()).hexdigest()[:8]
-        return "unknown"
-    
-    def _save_cache(self):
-        """Save OOS history to cache"""
         try:
-            cache_file = self.cache_dir / "oos_history.pkl"
-            with open(cache_file, 'wb') as f:
-                pickle.dump(list(self.oos_history), f)
+            # 筛选时间范围内的折
+            cutoff_date = datetime.now() - timedelta(days=lookback_days)
+            recent_folds = [
+                fold for fold in self.fold_history 
+                if fold.timestamp >= cutoff_date
+            ]
             
-            # Also save metadata
-            metadata = {
-                'last_updated': datetime.now().isoformat(),
-                'n_predictions': len(self.oos_history),
-                'unique_folds': len(set(p.fold_id for p in self.oos_history)),
-                'unique_models': len(set(p.model_name for p in self.oos_history))
-            }
+            if len(recent_folds) < min_folds:
+                logger.warning(f"OOS折数不足: {len(recent_folds)} < {min_folds}")
+                return None
             
-            metadata_file = self.cache_dir / "oos_metadata.json"
-            with open(metadata_file, 'w') as f:
-                json.dump(metadata, f, indent=2)
+            # 收集所有模型名称
+            all_models = set()
+            for fold in recent_folds:
+                all_models.update(fold.model_predictions.keys())
+            
+            if models is not None:
+                all_models = all_models.intersection(set(models))
+            
+            if not all_models:
+                logger.warning("没有可用的模型数据")
+                return None
+            
+            # 构建BMA更新数据
+            all_data = []
+            
+            for fold in recent_folds:
+                # 为每个折创建一个包含所有模型预测的数据帧
+                fold_data_dict = {'target': fold.actuals}
                 
-            logger.debug(f"Saved OOS cache with {len(self.oos_history)} predictions")
+                for model_name in all_models:
+                    if model_name in fold.model_predictions:
+                        predictions = fold.model_predictions[model_name]
+                        # 确保索引对齐
+                        if hasattr(predictions, 'index') and hasattr(fold.actuals, 'index'):
+                            common_idx = predictions.index.intersection(fold.actuals.index)
+                            if len(common_idx) > 0:
+                                fold_data_dict[f'{model_name}_pred'] = predictions.loc[common_idx]
+                                fold_data_dict['target'] = fold.actuals.loc[common_idx]
+                        else:
+                            fold_data_dict[f'{model_name}_pred'] = predictions
+                
+                if len(fold_data_dict) > 1:  # 至少有target + 一个模型
+                    fold_data = pd.DataFrame(fold_data_dict)
+                    fold_data['fold_id'] = fold.fold_id
+                    fold_data['timestamp'] = fold.timestamp
+                    all_data.append(fold_data)
+            
+            if not all_data:
+                logger.warning("无法构建BMA更新数据")
+                return None
+            
+            # 合并所有数据
+            combined_data = pd.concat(all_data, ignore_index=True)
+            
+            # 透视表格式：每行是一个样本，列包含target和各模型预测
+            pivot_data = {}
+            pivot_data['target'] = combined_data['target']
+            
+            for model_name in all_models:
+                pred_col = f'{model_name}_pred'
+                if pred_col in combined_data.columns:
+                    pivot_data[pred_col] = combined_data[pred_col]
+            
+            result = pd.DataFrame(pivot_data)
+            result = result.dropna()  # 移除任何包含NaN的行
+            
+            logger.info(f"构建BMA更新数据成功: {len(result)} 样本, "
+                       f"{len(all_models)} 模型, {len(recent_folds)} 折")
+            
+            return result
             
         except Exception as e:
-            logger.error(f"Failed to save OOS cache: {e}")
+            logger.error(f"获取BMA更新数据失败: {e}")
+            return None
     
-    def _load_cache(self):
-        """Load OOS history from cache"""
+    def get_model_performance_summary(self, lookback_days: int = 30) -> Dict[str, Dict[str, float]]:
+        """
+        获取模型性能摘要
+        
+        Args:
+            lookback_days: 回看天数
+            
+        Returns:
+            Dict: {model_name: {metric_name: value}}
+        """
         try:
-            cache_file = self.cache_dir / "oos_history.pkl"
-            if cache_file.exists():
-                with open(cache_file, 'rb') as f:
-                    history_list = pickle.load(f)
-                    self.oos_history = deque(history_list, maxlen=self.max_history)
-                    
-                # Rebuild current fold predictions
-                for pred in self.oos_history:
-                    if pred.fold_id not in self.current_fold_predictions:
-                        self.current_fold_predictions[pred.fold_id] = []
-                    self.current_fold_predictions[pred.fold_id].append(pred)
-                    
-                logger.info(f"Loaded {len(self.oos_history)} OOS predictions from cache")
+            cutoff_date = datetime.now() - timedelta(days=lookback_days)
+            recent_folds = [
+                fold for fold in self.fold_history 
+                if fold.timestamp >= cutoff_date
+            ]
+            
+            if not recent_folds:
+                return {}
+            
+            # 收集各模型指标
+            model_metrics = {}
+            
+            for fold in recent_folds:
+                for metric_name, value in fold.fold_metrics.items():
+                    if '_' in metric_name:
+                        model_name, metric_type = metric_name.rsplit('_', 1)
+                        
+                        if model_name not in model_metrics:
+                            model_metrics[model_name] = {}
+                        
+                        if metric_type not in model_metrics[model_name]:
+                            model_metrics[model_name][metric_type] = []
+                        
+                        model_metrics[model_name][metric_type].append(value)
+            
+            # 计算汇总统计
+            summary = {}
+            for model_name, metrics in model_metrics.items():
+                summary[model_name] = {}
+                
+                for metric_type, values in metrics.items():
+                    if values:
+                        summary[model_name][f'mean_{metric_type}'] = np.mean(values)
+                        summary[model_name][f'std_{metric_type}'] = np.std(values)
+                        summary[model_name][f'n_folds_{metric_type}'] = len(values)
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"获取性能摘要失败: {e}")
+            return {}
+    
+    def get_fold_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        获取折历史记录
+        
+        Args:
+            limit: 限制返回数量
+            
+        Returns:
+            List: 历史记录列表
+        """
+        try:
+            # 按时间排序
+            sorted_folds = sorted(self.fold_history, key=lambda x: x.timestamp, reverse=True)
+            
+            if limit:
+                sorted_folds = sorted_folds[:limit]
+            
+            history = []
+            for fold in sorted_folds:
+                record = {
+                    'fold_id': fold.fold_id,
+                    'timestamp': fold.timestamp.isoformat(),
+                    'models': list(fold.model_predictions.keys()),
+                    'sample_count': len(fold.actuals),
+                    'metrics': fold.fold_metrics,
+                    'metadata': fold.metadata
+                }
+                history.append(record)
+            
+            return history
+            
+        except Exception as e:
+            logger.error(f"获取折历史失败: {e}")
+            return []
+    
+    def cleanup_old_data(self, days_to_keep: Optional[int] = None) -> int:
+        """
+        清理过期数据
+        
+        Args:
+            days_to_keep: 保留天数，None则使用默认值
+            
+        Returns:
+            int: 清理的记录数
+        """
+        try:
+            days_to_keep = days_to_keep or self.max_history_days
+            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+            
+            # 筛选要保留的记录
+            original_count = len(self.fold_history)
+            self.fold_history = [
+                fold for fold in self.fold_history
+                if fold.timestamp >= cutoff_date
+            ]
+            cleaned_count = original_count - len(self.fold_history)
+            
+            # 清理文件存储
+            self._cleanup_storage_files(cutoff_date)
+            
+            # 重建性能缓存
+            self._rebuild_performance_cache()
+            
+            if cleaned_count > 0:
+                logger.info(f"清理了 {cleaned_count} 个过期记录")
+            
+            return cleaned_count
+            
+        except Exception as e:
+            logger.error(f"清理数据失败: {e}")
+            return 0
+    
+    def _load_history(self) -> None:
+        """从存储中加载历史数据"""
+        try:
+            history_file = self.storage_path / "fold_history.pkl"
+            if history_file.exists():
+                with open(history_file, 'rb') as f:
+                    self.fold_history = pickle.load(f)
+                logger.info(f"加载了 {len(self.fold_history)} 个历史折记录")
+            else:
+                self.fold_history = []
+                logger.info("初始化空的历史记录")
+                
+            # 重建缓存
+            self._rebuild_performance_cache()
+            
+        except Exception as e:
+            logger.error(f"加载历史数据失败: {e}")
+            self.fold_history = []
+    
+    def _save_fold_record(self, fold_record: OOSFoldRecord) -> None:
+        """保存单个折记录"""
+        try:
+            # 保存到主历史文件
+            history_file = self.storage_path / "fold_history.pkl"
+            with open(history_file, 'wb') as f:
+                pickle.dump(self.fold_history, f)
+            
+            # 保存单个折的详细数据
+            fold_file = self.storage_path / f"fold_{fold_record.fold_id}.pkl"
+            with open(fold_file, 'wb') as f:
+                pickle.dump(fold_record, f)
                 
         except Exception as e:
-            logger.warning(f"Failed to load OOS cache: {e}")
-            self.oos_history = deque(maxlen=self.max_history)
+            logger.warning(f"保存折记录失败: {e}")
     
-    def clear_old_predictions(self, days_to_keep: int = 60):
-        """Clear predictions older than specified days"""
-        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-        
-        # Filter history
-        new_history = [
-            p for p in self.oos_history 
-            if p.timestamp >= cutoff_date
-        ]
-        
-        removed = len(self.oos_history) - len(new_history)
-        
-        self.oos_history = deque(new_history, maxlen=self.max_history)
-        
-        # Rebuild current fold predictions
-        self.current_fold_predictions.clear()
-        for pred in self.oos_history:
-            if pred.fold_id not in self.current_fold_predictions:
-                self.current_fold_predictions[pred.fold_id] = []
-            self.current_fold_predictions[pred.fold_id].append(pred)
-        
-        # Save updated cache
-        self._save_cache()
-        
-        logger.info(f"Cleared {removed} old OOS predictions")
+    def _update_performance_cache(self, fold_record: OOSFoldRecord) -> None:
+        """更新性能缓存"""
+        try:
+            for model_name in fold_record.model_predictions.keys():
+                if model_name not in self.model_performance_cache:
+                    self.model_performance_cache[model_name] = {
+                        'recent_performance': [],
+                        'summary_stats': {}
+                    }
+                
+                # 添加到recent_performance
+                performance_entry = {
+                    'timestamp': fold_record.timestamp,
+                    'fold_id': fold_record.fold_id,
+                    'ic': fold_record.fold_metrics.get(f'{model_name}_ic', 0.0),
+                    'rank_ic': fold_record.fold_metrics.get(f'{model_name}_rank_ic', 0.0),
+                    'mse': fold_record.fold_metrics.get(f'{model_name}_mse', 1.0)
+                }
+                
+                self.model_performance_cache[model_name]['recent_performance'].append(performance_entry)
+                
+                # 保持最近50个记录
+                if len(self.model_performance_cache[model_name]['recent_performance']) > 50:
+                    self.model_performance_cache[model_name]['recent_performance'] = \
+                        self.model_performance_cache[model_name]['recent_performance'][-50:]
+                
+        except Exception as e:
+            logger.warning(f"更新性能缓存失败: {e}")
     
-    def get_summary_statistics(self) -> Dict[str, Any]:
-        """Get summary statistics of OOS data"""
-        
-        if not self.oos_history:
-            return {
-                'total_predictions': 0,
-                'unique_folds': 0,
-                'unique_models': 0,
-                'date_range': None
+    def _rebuild_performance_cache(self) -> None:
+        """重建性能缓存"""
+        try:
+            self.model_performance_cache.clear()
+            
+            for fold_record in self.fold_history:
+                self._update_performance_cache(fold_record)
+                
+            logger.debug("性能缓存重建完成")
+            
+        except Exception as e:
+            logger.error(f"重建性能缓存失败: {e}")
+    
+    def _cleanup_expired_data(self) -> None:
+        """自动清理过期数据"""
+        if len(self.fold_history) > 100:  # 如果记录太多，触发清理
+            self.cleanup_old_data()
+    
+    def _cleanup_storage_files(self, cutoff_date: datetime) -> None:
+        """清理存储文件"""
+        try:
+            for file_path in self.storage_path.glob("fold_*.pkl"):
+                try:
+                    # 检查文件修改时间
+                    file_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+                    if file_time < cutoff_date:
+                        file_path.unlink()
+                except:
+                    continue
+                    
+        except Exception as e:
+            logger.warning(f"清理存储文件失败: {e}")
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取管理器状态"""
+        try:
+            status = {
+                'total_folds': len(self.fold_history),
+                'storage_path': str(self.storage_path),
+                'max_history_days': self.max_history_days,
+                'models_tracked': len(self.model_performance_cache),
+                'oldest_record': None,
+                'newest_record': None
             }
-        
-        timestamps = [p.timestamp for p in self.oos_history]
-        
-        return {
-            'total_predictions': len(self.oos_history),
-            'unique_folds': len(set(p.fold_id for p in self.oos_history)),
-            'unique_models': len(set(p.model_name for p in self.oos_history)),
-            'date_range': (min(timestamps), max(timestamps)),
-            'avg_samples_per_fold': len(self.oos_history) / len(set(p.fold_id for p in self.oos_history))
-        }
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    # Create OOS manager
-    oos_manager = RealOOSManager()
-    
-    print("\n" + "=" * 60)
-    print("REAL OOS MANAGER TEST")
-    print("=" * 60)
-    
-    # Simulate adding fold predictions
-    # np.random.seed removed
-    
-    for fold_id in range(5):
-        # Create mock predictions
-        n_samples = 100
-        dates = pd.date_range(end=datetime.now(), periods=n_samples, freq='D')
-        
-        model_predictions = {
-            'lightgbm': pd.Series(np.zeros(n_samples), index=dates),
-            'xgboost': pd.Series(np.zeros(n_samples), index=dates),
-            'catboost': pd.Series(np.zeros(n_samples), index=dates)
-        }
-        
-        actuals = pd.Series(np.zeros(n_samples), index=dates)
-        
-        # Add to manager
-        success = oos_manager.add_fold_predictions(
-            fold_id=f"fold_{fold_id}",
-            model_predictions=model_predictions,
-            actuals=actuals
-        )
-        
-        print(f"Added fold {fold_id}: {'Success' if success else 'Failed'}")
-    
-    # Get BMA update data
-    print("\nGetting BMA update data...")
-    bma_data = oos_manager.get_bma_update_data()
-    
-    if bma_data is not None:
-        print(f"BMA update data shape: {bma_data.shape}")
-        print(f"Columns: {list(bma_data.columns)}")
-        print(f"Sample correlations:")
-        print(bma_data.corr())
-    
-    # Get performance history
-    print("\nModel performance history for 'lightgbm':")
-    perf_history = oos_manager.get_model_performance_history('lightgbm')
-    if not perf_history.empty:
-        print(perf_history[['timestamp', 'fold_id', 'ic', 'n_samples']].head())
-    
-    # Get summary statistics
-    print("\nSummary statistics:")
-    summary = oos_manager.get_summary_statistics()
-    for key, value in summary.items():
-        print(f"  {key}: {value}")
-    
-    print("\n" + "=" * 60)
-    print("TEST COMPLETE")
-    print("=" * 60)
+            
+            if self.fold_history:
+                timestamps = [fold.timestamp for fold in self.fold_history]
+                status['oldest_record'] = min(timestamps).isoformat()
+                status['newest_record'] = max(timestamps).isoformat()
+            
+            return status
+            
+        except Exception as e:
+            logger.error(f"获取状态失败: {e}")
+            return {'status': 'error', 'error': str(e)}

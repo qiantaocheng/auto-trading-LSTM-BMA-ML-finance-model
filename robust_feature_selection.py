@@ -223,7 +223,7 @@ class RobustFeatureSelector:
     
     def fit(self, X: pd.DataFrame, y: pd.Series, dates: pd.Series) -> 'RobustFeatureSelector':
         """
-        拟合特征选择器
+        拟合特征选择器 (Stage-A: 全局稳健层)
         
         Args:
             X: 特征矩阵
@@ -234,7 +234,7 @@ class RobustFeatureSelector:
             self
         """
         print("=" * 60)
-        print("稳健特征选择系统")
+        print("Stage-A: 全局稳健特征选择 (唯一入口)")
         print("=" * 60)
         print(f"输入: {X.shape[1]} 个特征, {len(X)} 个样本")
         print(f"目标: 选择 {self.target_features} 个稳健特征")
@@ -258,9 +258,13 @@ class RobustFeatureSelector:
         
         self.selected_features_ = selected
         
+        # 4. 🔥 NEW: 注册到FeatureRegistry系统
+        self._register_to_feature_registry(X, y, dates, selected, ic_stats)
+        
         print("\n" + "=" * 60)
-        print(f"特征选择完成: {X.shape[1]} -> {len(selected)} 特征")
+        print(f"Stage-A特征选择完成: {X.shape[1]} -> {len(selected)} 特征")
         print(f"最终特征: {selected}")
+        print("✅ 已注册到FeatureRegistry，防止重复选择")
         print("=" * 60)
         
         return self
@@ -282,7 +286,7 @@ class RobustFeatureSelector:
     
     def fit_transform(self, X: pd.DataFrame, y: pd.Series, dates: pd.Series) -> pd.DataFrame:
         """
-        拟合并转换
+        拟合并转换 - SSOT唯一特征选择入口
         
         Args:
             X: 特征矩阵
@@ -292,7 +296,60 @@ class RobustFeatureSelector:
         Returns:
             转换后的特征矩阵
         """
-        return self.fit(X, y, dates).transform(X)
+        result = self.fit(X, y, dates).transform(X)
+        
+        # 🚨 SSOT特征选择记录：落盘evaluation_report.json
+        self._save_feature_selection_report(X, result, y, dates)
+        
+        return result
+    
+    def _save_feature_selection_report(self, X_original: pd.DataFrame, X_selected: pd.DataFrame, 
+                                     y: pd.Series, dates: pd.Series):
+        """保存特征选择报告到evaluation_report.json"""
+        try:
+            import json
+            import hashlib
+            from datetime import datetime
+            
+            # 创建特征选择报告
+            feature_report = {
+                "feature_selection": {
+                    "selector": "RobustFeatureSelector",
+                    "timestamp": datetime.now().isoformat(),
+                    "original_features": len(X_original.columns),
+                    "selected_features": len(X_selected.columns),
+                    "reduction_ratio": 1 - len(X_selected.columns) / len(X_original.columns),
+                    "selected_feature_names": X_selected.columns.tolist(),
+                    "removed_feature_names": [col for col in X_original.columns if col not in X_selected.columns],
+                    "selection_criteria": {
+                        "min_ic_threshold": getattr(self, 'min_ic_threshold', 0.015),
+                        "max_correlation": getattr(self, 'max_correlation', 0.85),
+                        "min_ic_ir": getattr(self, 'min_ic_ir', 1.5)
+                    },
+                    "data_hash": hashlib.md5(str(X_original.values.tobytes()).encode()).hexdigest()[:8]
+                }
+            }
+            
+            # 尝试读取现有报告
+            evaluation_report = {}
+            try:
+                with open('evaluation_report.json', 'r', encoding='utf-8') as f:
+                    evaluation_report = json.load(f)
+            except FileNotFoundError:
+                pass
+            
+            # 更新报告
+            evaluation_report.update(feature_report)
+            
+            # 保存报告
+            with open('evaluation_report.json', 'w', encoding='utf-8') as f:
+                json.dump(evaluation_report, f, indent=2, ensure_ascii=False)
+                
+            print(f"✅ SSOT特征选择报告已保存到evaluation_report.json")
+            print(f"   原始特征: {len(X_original.columns)} → 选择特征: {len(X_selected.columns)}")
+            
+        except Exception as e:
+            print(f"⚠️ 保存特征选择报告失败: {e}")
     
     def get_feature_report(self) -> pd.DataFrame:
         """
@@ -329,6 +386,118 @@ class RobustFeatureSelector:
         
         report_df = pd.DataFrame(report_data)
         return report_df.sort_values('ic_ir', ascending=False)
+    
+    def _register_to_feature_registry(self, X: pd.DataFrame, y: pd.Series, 
+                                    dates: pd.Series, selected_features: List[str], 
+                                    ic_stats: Dict[str, Tuple[float, float]]):
+        """
+        将Stage-A选择结果注册到FeatureRegistry
+        
+        Args:
+            X: 原始特征矩阵
+            y: 目标变量
+            dates: 日期序列
+            selected_features: 选择的特征列表
+            ic_stats: IC统计结果
+        """
+        try:
+            from .feature_registry import get_feature_registry
+            
+            registry = get_feature_registry()
+            
+            # 准备特征元数据
+            feature_metadata = {}
+            for feature in selected_features:
+                if feature in ic_stats:
+                    ic_mean, ic_std = ic_stats[feature]
+                    ic_ir = ic_mean / (ic_std + 1e-8)
+                    
+                    # 找到特征所属簇
+                    cluster_id = None
+                    if self.feature_clusters_:
+                        for cid, cinfo in self.feature_clusters_.items():
+                            if feature in cinfo['features']:
+                                cluster_id = cid
+                                break
+                    
+                    feature_metadata[feature] = {
+                        'ic_mean': ic_mean,
+                        'ic_std': ic_std,
+                        'ic_ir': ic_ir,
+                        'cluster': cluster_id,
+                        'family': self._get_feature_family(feature)
+                    }
+            
+            # 准备选择统计
+            selection_stats = {
+                'input_features': len(X.columns),
+                'output_features': len(selected_features),
+                'reduction_ratio': len(selected_features) / len(X.columns),
+                'ic_candidates': len([f for f, stats in ic_stats.items() 
+                                    if stats[0] > self.min_ic_mean]),
+                'final_avg_ic': np.mean([ic_stats[f][0] for f in selected_features]),
+                'final_avg_ic_ir': np.mean([ic_stats[f][0]/(ic_stats[f][1]+1e-8) 
+                                          for f in selected_features]),
+                'selection_date_range': {
+                    'start': str(dates.min()),
+                    'end': str(dates.max()),
+                    'days': int((dates.max() - dates.min()).days)
+                }
+            }
+            
+            # 准备选择器配置
+            selector_config = {
+                'target_features': self.target_features,
+                'ic_window': self.ic_window,
+                'min_ic_mean': self.min_ic_mean,
+                'min_ic_ir': self.min_ic_ir,
+                'max_correlation': self.max_correlation,
+                'method': 'RobustFeatureSelector_v1'
+            }
+            
+            # 注册到系统
+            registry_id = registry.register_stage_a_selection(
+                selected_features=selected_features,
+                feature_metadata=feature_metadata,
+                selection_stats=selection_stats,
+                selector_config=selector_config
+            )
+            
+            print(f"✅ Stage-A结果已注册: {registry_id}")
+            
+        except ImportError as e:
+            print(f"⚠️ FeatureRegistry导入失败，跳过注册: {e}")
+        except Exception as e:
+            print(f"⚠️ FeatureRegistry注册失败: {e}")
+    
+    def _get_feature_family(self, feature_name: str) -> str:
+        """
+        根据特征名推断特征族
+        
+        Args:
+            feature_name: 特征名
+            
+        Returns:
+            特征族名称
+        """
+        feature_lower = feature_name.lower()
+        
+        if 'rsi' in feature_lower:
+            return 'momentum_rsi'
+        elif 'macd' in feature_lower:
+            return 'momentum_macd'
+        elif 'bb' in feature_lower or 'bollinger' in feature_lower:
+            return 'volatility_bb'
+        elif 'volume' in feature_lower or 'vol' in feature_lower:
+            return 'volume'
+        elif 'price' in feature_lower or 'close' in feature_lower:
+            return 'price'
+        elif 'return' in feature_lower:
+            return 'returns'
+        elif 'alpha' in feature_lower:
+            return 'alpha_factors'
+        else:
+            return 'other'
 
 
 def test_robust_feature_selection():
