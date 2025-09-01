@@ -466,3 +466,86 @@ class LeakFreeRegimeDetector:
                 'status': 'PROTECTED'
             }
         }
+    
+    def process_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Process data with leak-free regime detection
+        
+        Args:
+            data: Input data with date index or date column
+            
+        Returns:
+            Data with regime information added
+        """
+        try:
+            if data.empty:
+                logger.warning("Empty data provided to regime detector")
+                return data.copy()
+            
+            # Create a copy to avoid modifying original data
+            processed_data = data.copy()
+            
+            # Ensure we have date information
+            if 'date' in processed_data.columns:
+                dates = pd.to_datetime(processed_data['date'])
+                unique_dates = dates.unique()
+            elif isinstance(processed_data.index, pd.DatetimeIndex):
+                unique_dates = processed_data.index.unique()
+            else:
+                logger.warning("No date information found in data")
+                # Add dummy regime info
+                processed_data['regime_state'] = 0
+                processed_data['regime_confidence'] = 0.5
+                return processed_data
+            
+            # Process each unique date
+            regime_info = {}
+            for current_date in sorted(unique_dates):
+                # Get data up to current date for regime detection
+                if 'date' in processed_data.columns:
+                    historical_data = processed_data[dates <= current_date].copy()
+                else:
+                    historical_data = processed_data[processed_data.index <= current_date].copy()
+                
+                if len(historical_data) < self.config.lookback_window:
+                    # Not enough data for regime detection
+                    regime_info[current_date] = {
+                        'regime_state': 0,
+                        'regime_confidence': 0.5,
+                        'regime_probabilities': [0.5, 0.3, 0.2]
+                    }
+                    continue
+                
+                # Update model if needed
+                if self.should_update_model(current_date):
+                    self.fit_regime_model(historical_data, current_date)
+                
+                # Get current regime
+                regime_result = self.get_current_regime(historical_data, current_date)
+                regime_info[current_date] = regime_result
+            
+            # Add regime information to the processed data
+            if 'date' in processed_data.columns:
+                for idx, row in processed_data.iterrows():
+                    row_date = pd.to_datetime(row['date'])
+                    if row_date in regime_info:
+                        info = regime_info[row_date]
+                        processed_data.loc[idx, 'regime_state'] = info.get('regime_state', 0)
+                        processed_data.loc[idx, 'regime_confidence'] = info.get('regime_confidence', 0.5)
+            else:
+                for idx in processed_data.index:
+                    if idx in regime_info:
+                        info = regime_info[idx]
+                        processed_data.loc[idx, 'regime_state'] = info.get('regime_state', 0)
+                        processed_data.loc[idx, 'regime_confidence'] = info.get('regime_confidence', 0.5)
+            
+            logger.info(f"Processed {len(regime_info)} dates with regime detection")
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Regime processing failed: {e}")
+            # Return original data with dummy regime info if processing fails
+            processed_data = data.copy()
+            processed_data['regime_state'] = 0
+            processed_data['regime_confidence'] = 0.5
+            return processed_data

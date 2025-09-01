@@ -262,11 +262,19 @@ class AlphaSummaryProcessor:
                 alpha_df_shifted[numeric_cols] = alpha_df[numeric_cols].shift(default_lag)
                 
             # 删除因滞后产生的NaN行
+            pre_dropna_len = len(alpha_df_shifted)
             alpha_df_shifted = alpha_df_shifted.dropna()
+            post_dropna_len = len(alpha_df_shifted)
+            
+            # 验证滞后效果
+            if post_dropna_len < pre_dropna_len * 0.1:
+                logger.warning(f"滞后处理导致数据大幅减少: {pre_dropna_len} -> {post_dropna_len}")
+            else:
+                logger.info(f"滞后处理成功: {pre_dropna_len} -> {post_dropna_len} 行, lag={default_lag}天")
                 
         except Exception as e:
-            logger.warning(f"滞后处理失败: {e}，使用原始数据")
-            alpha_df_shifted = alpha_df.copy()
+            logger.error(f"滞后处理失败: {e}，返回空数据以避免时间泄漏风险")
+            alpha_df_shifted = pd.DataFrame()  # 严格模式：失败时返回空数据
         
         logger.info(f"应用了{default_lag}天滞后（基于{label_horizon}天标签期），避免时间对齐违规")
         
@@ -306,10 +314,13 @@ class AlphaSummaryProcessor:
                     col.startswith('volume') or   # Include all volume-based features
                     col.startswith('momentum') or  # Include all momentum features
                     col.startswith('volatility') or # Include all volatility features
+                    col.startswith('mean_reversion') or # Include mean reversion features
+                    col.startswith('rsi') or  # Include RSI features
+                    col.startswith('price_position') or # Include price position features
                     any(pattern in col.lower() for pattern in ['factor', 'reversal', 
                                                                'turnover', 'amihud', 'bid_ask', 'yield',
                                                                'ohlson', 'altman', 'qmj', 'earnings', 'beta',
-                                                               'ratio', 'rsi', 'macd', 'ma_', '_ma'])):
+                                                               'ratio', 'rsi', 'macd', 'ma_', '_ma', '_1d', '_5d', '_20d', '_14d'])):
                     alpha_cols.append(col)
         
         # Log what columns were detected
@@ -365,7 +376,19 @@ class AlphaSummaryProcessor:
             return self._fallback_to_traditional_features(alpha_df)
         
         result = pd.concat(cleaned_data)
-        logger.info(f"数据清洗完成，处理了 {len(result.index.get_level_values('date').unique())} 个交易日")
+        
+        # Safe way to get trading days count
+        try:
+            if isinstance(result.index, pd.MultiIndex) and 'date' in result.index.names:
+                trading_days = len(result.index.get_level_values('date').unique())
+            elif 'date' in result.columns:
+                trading_days = len(result['date'].unique())
+            else:
+                trading_days = len(result)
+            logger.info(f"数据清洗完成，处理了 {trading_days} 个交易日")
+        except Exception as e:
+            logger.warning(f"无法计算交易日数量: {e}, 使用总行数: {len(result)}")
+            logger.info(f"数据清洗完成，处理了 {len(result)} 行数据")
         
         return result
     
@@ -855,10 +878,22 @@ class AlphaSummaryProcessor:
         if self.config.fill_method == 'cross_median':
             # Fill with cross-sectional median by date
             filled_features = []
-            for date, group in combined_features.groupby('date'):
-                group_filled = group.fillna(group.median())
-                filled_features.append(group_filled)
-            combined_features = pd.concat(filled_features)
+            # Check if date is in index or columns
+            if isinstance(combined_features.index, pd.MultiIndex) and 'date' in combined_features.index.names:
+                # Date is in MultiIndex
+                for date, group in combined_features.groupby(level='date'):
+                    group_filled = group.fillna(group.median())
+                    filled_features.append(group_filled)
+                combined_features = pd.concat(filled_features)
+            elif 'date' in combined_features.columns:
+                # Date is in columns
+                for date, group in combined_features.groupby('date'):
+                    group_filled = group.fillna(group.median())
+                    filled_features.append(group_filled)
+                combined_features = pd.concat(filled_features)
+            else:
+                # No date column, use simple fill
+                combined_features = combined_features.fillna(combined_features.median())
         elif self.config.fill_method == 'forward_fill':
             combined_features = combined_features.fillna(method='ffill').fillna(0)
         else:  # zero fill
@@ -902,12 +937,26 @@ class AlphaSummaryProcessor:
                     logger.debug("无法转换target_dates，跳过时间对齐验证")
                     return 0
                 
-                # 只验证明显的未来数据泄漏（容忍1天的差异）
-                for target_date in target_dates:
-                    # 检查是否有明显的未来数据（>1天的差异）
-                    future_data = alpha_dates > (target_date + pd.Timedelta(days=1))
-                    if future_data.any():
-                        violations += future_data.sum()
+                # ✅ FIX: 正确的时间泄漏验证逻辑
+                # 检查每个alpha数据点是否违反时间顺序
+                max_target_date = target_dates.max()
+                min_target_date = target_dates.min()
+                
+                # 计算实际的时间泄漏：alpha数据晚于最新目标日期 + 容忍期
+                tolerance_days = 1  # 容忍1天的差异
+                cutoff_date = max_target_date + pd.Timedelta(days=tolerance_days)
+                
+                # 统计违规数据点（不重复计算）
+                future_data_mask = alpha_dates > cutoff_date
+                violations = future_data_mask.sum()
+                
+                if violations > 0:
+                    logger.debug(f"发现 {violations} 个数据点晚于截止日期 {cutoff_date}")
+                    # 额外检查：严重违规（超过7天）
+                    severe_cutoff = max_target_date + pd.Timedelta(days=7)
+                    severe_violations = (alpha_dates > severe_cutoff).sum()
+                    if severe_violations > 0:
+                        logger.warning(f"严重时间违规: {severe_violations} 个数据点超过7天截止期")
             
         except Exception as e:
             logger.debug(f"时间对齐验证异常: {e}")

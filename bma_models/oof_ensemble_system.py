@@ -17,6 +17,37 @@ import warnings
 logger = logging.getLogger(__name__)
 
 
+class BMAWeightCalculator:
+    """BMA权重计算器"""
+    
+    def __init__(self):
+        self.weights = {}
+        
+    def calculate_bma_weights(self, model_scores: Dict[str, float]) -> Dict[str, float]:
+        """计算BMA权重"""
+        if not model_scores:
+            return {}
+            
+        # 简单权重计算基于模型得分
+        total_score = sum(abs(score) for score in model_scores.values())
+        if total_score == 0:
+            # 如果所有得分为0，使用等权重
+            n_models = len(model_scores)
+            return {model: 1.0/n_models for model in model_scores.keys()}
+        
+        # 基于相对表现计算权重
+        weights = {}
+        for model, score in model_scores.items():
+            weights[model] = abs(score) / total_score
+            
+        return weights
+        
+    def update_weights(self, new_scores: Dict[str, float]):
+        """更新权重"""
+        self.weights = self.calculate_bma_weights(new_scores)
+        return self.weights
+
+
 class OOFEnsembleSystem:
     """
     OOF-First集成系统 - 机构级BMA权重计算

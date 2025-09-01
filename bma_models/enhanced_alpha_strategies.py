@@ -13,33 +13,60 @@ from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import RobustScaler
 from sklearn.model_selection import TimeSeriesSplit
+
+# Configure logging first
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 核心依赖 - 必需
 try:
-    # 尝试相对导入（当作为模块运行时）
     from .unified_nan_handler import unified_nan_handler, clean_nan_predictive_safe
+except ImportError:
+    from unified_nan_handler import unified_nan_handler, clean_nan_predictive_safe
+
+try:
     from cross_sectional_standardization import CrossSectionalStandardizer, standardize_cross_sectional_predictive_safe
+except ImportError:
+    logger.warning("CrossSectionalStandardizer not available")
+    CrossSectionalStandardizer = None
+    standardize_cross_sectional_predictive_safe = None
+
+# 可选依赖
+try:
     from .factor_orthogonalization import orthogonalize_factors_predictive_safe, FactorOrthogonalizer
+except ImportError:
+    try:
+        from factor_orthogonalization import orthogonalize_factors_predictive_safe, FactorOrthogonalizer
+    except ImportError:
+        logger.warning("FactorOrthogonalizer not available, using simplified version")
+        orthogonalize_factors_predictive_safe = None
+        FactorOrthogonalizer = None
+
+try:
     from .parameter_optimization import TechnicalIndicatorOptimizer, ParameterConfig
+except ImportError:
+    try:
+        from parameter_optimization import TechnicalIndicatorOptimizer, ParameterConfig
+    except ImportError:
+        logger.warning("ParameterOptimizer not available, using default parameters")
+        TechnicalIndicatorOptimizer = None
+        ParameterConfig = None
+
+try:
     from .dynamic_factor_weighting import DynamicFactorWeighter, calculate_dynamic_factor_weights_predictive_safe
 except ImportError:
-    # 回退到绝对导入（当直接运行时）
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-    from unified_nan_handler import unified_nan_handler, clean_nan_predictive_safe
-    from cross_sectional_standardization import CrossSectionalStandardizer, standardize_cross_sectional_predictive_safe
-    from factor_orthogonalization import orthogonalize_factors_predictive_safe, FactorOrthogonalizer
-    from parameter_optimization import TechnicalIndicatorOptimizer, ParameterConfig
-    from dynamic_factor_weighting import DynamicFactorWeighter, calculate_dynamic_factor_weights_predictive_safe
+    try:
+        from dynamic_factor_weighting import DynamicFactorWeighter, calculate_dynamic_factor_weights_predictive_safe
+    except ImportError:
+        logger.warning("DynamicFactorWeighter not available, using equal weights")
+        DynamicFactorWeighter = None
+        calculate_dynamic_factor_weights_predictive_safe = None
 
 # 为了兼容性，创建别名
 cross_sectional_standardize = standardize_cross_sectional_predictive_safe
-import logging
 
 # Removed external advanced factor dependencies, all factors integrated into this module
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 class AlphaStrategiesEngine:
     """Alpha Strategy Engine: Unified computation, neutralization, ranking, gating"""
@@ -69,11 +96,17 @@ class AlphaStrategiesEngine:
             self.lag_manager = None
         
         # ✅ PERFORMANCE FIX: Initialize parameter optimizer
-        self.parameter_optimizer = TechnicalIndicatorOptimizer()
+        if TechnicalIndicatorOptimizer is not None:
+            self.parameter_optimizer = TechnicalIndicatorOptimizer()
+        else:
+            self.parameter_optimizer = None
         self.optimized_parameters = {}
         
         # ✅ PERFORMANCE FIX: Initialize dynamic factor weighter
-        self.factor_weighter = DynamicFactorWeighter()
+        if DynamicFactorWeighter is not None:
+            self.factor_weighter = DynamicFactorWeighter()
+        else:
+            self.factor_weighter = None
         self.dynamic_weights = {}
         
         # Statistics
@@ -125,8 +158,12 @@ class AlphaStrategiesEngine:
         """Load configuration file"""
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-            return config
+                user_config = yaml.safe_load(f)
+            
+            # Merge user config with defaults
+            default_config = self._get_default_config()
+            default_config.update(user_config)
+            return default_config
         except FileNotFoundError:
             logger.warning(f"Config file {config_path} not found, using default config")
             return self._get_default_config()
@@ -153,6 +190,10 @@ class AlphaStrategiesEngine:
             'momentum_6_1': self._compute_momentum_6_1,
             'reversal': self._compute_reversal,
             'reversal_5': self._compute_reversal_5,
+            'mean_reversion': self._compute_mean_reversion,
+            'volume_ratio': self._compute_volume_ratio,
+            'rsi': self._compute_rsi,
+            'price_position': self._compute_price_position,
             'volatility': self._compute_volatility,
             'volume_turnover': self._compute_volume_turnover,
             'amihud': self._compute_amihud_illiquidity,
@@ -556,7 +597,7 @@ class AlphaStrategiesEngine:
                          decay: int = 6) -> pd.Series:
         """Time-safe momentum factor: Multi-window price momentum - 数值稳定性增强"""
         # 🔥 CRITICAL FIX: 导入数值稳定性保护
-        from numerical_stability import safe_log, safe_divide
+        from .numerical_stability import safe_log, safe_divide
         
         results = []
         
@@ -595,7 +636,7 @@ class AlphaStrategiesEngine:
                          decay: int = 6) -> pd.Series:
         """Reversal factor: Short-term price reversal - 数值稳定性增强"""
         # 🔥 CRITICAL FIX: 导入数值稳定性保护
-        from numerical_stability import safe_log, safe_divide
+        from .numerical_stability import safe_log, safe_divide
         
         results = []
         
@@ -633,7 +674,7 @@ class AlphaStrategiesEngine:
         
         for window in windows:
             # 🛡️ SAFETY FIX: Calculate log returns with numerical stability
-            from numerical_stability import safe_log, safe_divide
+            from .numerical_stability import safe_log, safe_divide
             
             def safe_log_returns_calc(x):
                 """安全的对数收益率计算"""
@@ -653,7 +694,7 @@ class AlphaStrategiesEngine:
             ).reset_index(level=0, drop=True)
 
             # 🛡️ SAFETY FIX: Volatility reciprocal (low volatility anomaly)
-            from numerical_stability import safe_divide
+            from .numerical_stability import safe_divide
             inv_volatility = safe_divide(1.0, volatility, fill_value=0.0)
 
             # Exponential decay
@@ -707,7 +748,7 @@ class AlphaStrategiesEngine:
         
         for window in windows:
             # 🛡️ SAFETY FIX: Calculate daily returns with stability
-            from numerical_stability import safe_log, safe_divide
+            from .numerical_stability import safe_log, safe_divide
             
             def safe_abs_log_returns(x):
                 """安全的绝对对数收益率计算"""
@@ -932,6 +973,108 @@ class AlphaStrategiesEngine:
             return pd.Series(result.values, index=df.index, name='new_high_proximity').fillna(0.0)
         except Exception as e:
             logger.warning(f"52周新高接近度 computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_mean_reversion(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """Mean reversion factor - short term reversal"""
+        try:
+            from .numerical_stability import safe_divide
+            
+            window = windows[0] if windows else 5
+            close_prices = df['Close']
+            
+            # Calculate rolling mean
+            rolling_mean = close_prices.rolling(window=window, min_periods=1).mean()
+            
+            # Mean reversion signal: (mean - current) / mean
+            mean_reversion = safe_divide(rolling_mean - close_prices, rolling_mean, fill_value=0.0)
+            
+            # Apply decay
+            result = mean_reversion.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return pd.Series(result.values, index=df.index, name='mean_reversion').fillna(0.0)
+        except Exception as e:
+            logger.warning(f"Mean reversion computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_volume_ratio(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """Volume ratio factor - current volume vs average"""
+        try:
+            from .numerical_stability import safe_divide
+            
+            window = windows[0] if windows else 20
+            volume = df['Volume']
+            
+            # Calculate rolling average volume
+            avg_volume = volume.rolling(window=window, min_periods=1).mean()
+            
+            # Volume ratio signal
+            volume_ratio = safe_divide(volume, avg_volume, fill_value=1.0)
+            
+            # Apply log transformation and decay
+            log_ratio = np.log(volume_ratio)
+            result = log_ratio.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return pd.Series(result.values, index=df.index, name='volume_ratio').fillna(0.0)
+        except Exception as e:
+            logger.warning(f"Volume ratio computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_rsi(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """RSI (Relative Strength Index) factor"""
+        try:
+            from .numerical_stability import safe_divide
+            
+            window = windows[0] if windows else 14
+            close_prices = df['Close']
+            
+            # Calculate price changes
+            delta = close_prices.diff()
+            
+            # Separate gains and losses
+            gains = delta.where(delta > 0, 0)
+            losses = (-delta).where(delta < 0, 0)
+            
+            # Calculate rolling averages
+            avg_gains = gains.rolling(window=window, min_periods=1).mean()
+            avg_losses = losses.rolling(window=window, min_periods=1).mean()
+            
+            # Calculate RS and RSI
+            rs = safe_divide(avg_gains, avg_losses, fill_value=1.0)
+            rsi = 100 - safe_divide(100, 1 + rs, fill_value=50.0)
+            
+            # Normalize RSI to [-1, 1] range
+            normalized_rsi = (rsi - 50) / 50
+            
+            # Apply decay
+            result = normalized_rsi.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return pd.Series(result.values, index=df.index, name='rsi').fillna(0.0)
+        except Exception as e:
+            logger.warning(f"RSI computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_price_position(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """Price position within recent range"""
+        try:
+            from .numerical_stability import safe_divide
+            
+            window = windows[0] if windows else 20
+            close_prices = df['Close']
+            
+            # Calculate rolling min/max
+            rolling_min = close_prices.rolling(window=window, min_periods=1).min()
+            rolling_max = close_prices.rolling(window=window, min_periods=1).max()
+            
+            # Price position: (current - min) / (max - min)
+            price_range = rolling_max - rolling_min
+            position = safe_divide(close_prices - rolling_min, price_range, fill_value=0.5)
+            
+            # Normalize to [-1, 1] range
+            normalized_position = (position - 0.5) * 2
+            
+            # Apply decay
+            result = normalized_position.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return pd.Series(result.values, index=df.index, name='price_position').fillna(0.0)
+        except Exception as e:
+            logger.warning(f"Price position computation failed: {e}")
             return pd.Series(0.0, index=df.index)
     
     def _compute_low_beta_anomaly(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
@@ -1318,7 +1461,7 @@ class AlphaStrategiesEngine:
         
         for alpha_config in self.config['alphas']:
             alpha_name = alpha_config['name']
-            alpha_kind = alpha_config['kind']
+            alpha_kind = alpha_config.get('kind', alpha_config.get('function', 'momentum'))
             
             try:
                 start_time = pd.Timestamp.now()
@@ -1483,7 +1626,13 @@ class AlphaStrategiesEngine:
         alpha_factor = self.winsorize_series(alpha_factor, k=winsorize_std)
         
         # 2. 构建临时DataFrame进行neutralize
-        temp_df = df[['date', 'ticker'] + self.config['neutralization']].copy()
+        base_cols = ['date', 'ticker']
+        neutralization_cols = []
+        for col in self.config['neutralization']:
+            if col in df.columns:
+                neutralization_cols.append(col)
+        
+        temp_df = df[base_cols + neutralization_cols].copy()
         temp_df[alpha_name] = alpha_factor
         
         # 3. neutralize（default关闭，避免与全局Pipeline重复；仅研究Using时打开）
@@ -1497,7 +1646,7 @@ class AlphaStrategiesEngine:
         
         # 4. ✅ PERFORMANCE FIX: 横截面标准化，消除市场风格偏移
         try:
-            from cross_sectional_standardization import CrossSectionalStandardizer
+            from .cross_sectional_standardization import CrossSectionalStandardizer
             
             standardizer = CrossSectionalStandardizer(method="robust_zscore")
             standardized_df = standardizer.fit_transform(

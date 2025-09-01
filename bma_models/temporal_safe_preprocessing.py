@@ -74,9 +74,31 @@ class TemporalSafePreprocessor:
         logger.info(f"开始时序安全特征变换，输入形状: {X.shape}")
         
         # 确保有日期列
-        if date_col not in X.columns:
-            X = X.copy()
-            X[date_col] = dates
+        X = X.copy()  # 总是复制以避免修改原始数据
+        
+        # 处理MultiIndex情况
+        if isinstance(X.index, pd.MultiIndex):
+            # 如果date在index中，将其重置为列
+            if date_col in X.index.names:
+                # 检查date是否已经在columns中
+                if date_col not in X.columns:
+                    X = X.reset_index(level=date_col)
+                else:
+                    # date既在index又在columns中，先删除columns中的date，再从index重置
+                    X = X.drop(columns=[date_col])
+                    X = X.reset_index(level=date_col)
+                    logger.info(f"date同时存在于index和columns中，使用index中的date")
+            elif dates is not None:
+                X[date_col] = dates
+        elif date_col not in X.columns:
+            if dates is not None:
+                X[date_col] = dates
+            else:
+                raise ValueError(f"需要{date_col}列或提供dates参数")
+        else:
+            # date_col 已存在于columns中，检查是否需要使用传入的dates
+            if dates is not None and not dates.equals(X[date_col]):
+                logger.warning(f"传入的dates与现有{date_col}列不一致，使用现有{date_col}列")
         
         # 按日期排序
         X_sorted = X.sort_values(date_col).reset_index(drop=True)

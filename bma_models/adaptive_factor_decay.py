@@ -494,3 +494,48 @@ class AdaptiveFactorDecay:
             'regime_adaptation_enabled': self.config.enable_regime_adaptation,
             'optimized_factors': len(self.optimization_results)
         }
+    
+    def apply_decay(self, factor_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply adaptive factor decay to the factor data
+        
+        Args:
+            factor_data: DataFrame with factor values
+            
+        Returns:
+            DataFrame with decay-weighted factor values
+        """
+        try:
+            if factor_data.empty:
+                logger.warning("Empty factor data provided for decay")
+                return factor_data.copy()
+            
+            # Classify factors if not already done
+            factor_names = [col for col in factor_data.columns if col not in ['date', 'ticker', 'target']]
+            if not self.factor_classifications:
+                self.factor_classifications = self.classify_factors(factor_names)
+                logger.info(f"Classified {len(self.factor_classifications)} factors for decay")
+            
+            # Apply decay weights
+            decayed_data = factor_data.copy()
+            applied_decay_count = 0
+            
+            # Apply decay to each classified factor
+            for factor_name, classification in self.factor_classifications.items():
+                if factor_name in decayed_data.columns:
+                    # Calculate decay multiplier based on half-life
+                    half_life = classification.effective_half_life
+                    # Simple decay factor: exp(-ln(2)/half_life) for 1-day decay
+                    decay_factor = np.exp(-np.log(2) / max(half_life, 1))
+                    
+                    # Apply decay by multiplying factor values
+                    decayed_data[factor_name] = decayed_data[factor_name] * decay_factor
+                    applied_decay_count += 1
+                        
+            logger.info(f"Applied adaptive decay to {applied_decay_count} factors")
+            return decayed_data
+            
+        except Exception as e:
+            logger.error(f"Factor decay application failed: {e}")
+            # Return original data if decay fails
+            return factor_data.copy()

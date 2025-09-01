@@ -73,11 +73,11 @@ class FearGreedDataProvider:
                 logger.info(f"成功获取Fear & Greed数据: {len(df)}条记录，当前指数: {current_index.value}")
                 
             except ImportError:
-                logger.warning("fear_and_greed库未安装，使用模拟数据")
-                df = self._generate_mock_data(lookback_days)
+                logger.warning("fear_and_greed库未安装，需要配置真实数据源")
+                return None
             except Exception as e:
-                logger.warning(f"获取实际Fear & Greed数据失败: {e}，使用模拟数据")
-                df = self._generate_mock_data(lookback_days)
+                logger.warning(f"获取实际Fear & Greed数据失败: {e}，需要配置真实数据源")
+                return None
             
             # 缓存数据
             self.cache[cache_key] = {
@@ -92,36 +92,9 @@ class FearGreedDataProvider:
             return None
     
     def _generate_mock_data(self, lookback_days: int) -> pd.DataFrame:
-        """生成模拟的Fear & Greed数据"""
-        logger.info("生成模拟Fear & Greed数据")
-        
-        end_date = datetime.now()
-        dates = pd.date_range(
-            start=end_date - timedelta(days=lookback_days),
-            end=end_date,
-            freq='D'
-        )
-        
-        data = []
-        # 生成具有趋势和周期性的模拟数据
-        for i, date in enumerate(dates):
-            # 基础趋势 + 周期性 + 随机噪声
-            trend = 50 + 20 * np.sin(i * 0.1)  # 周期性波动
-            noise = np.random.normal(0, 10)     # 随机噪声
-            fear_greed_value = np.clip(trend + noise, 0, 100)
-            
-            data.append({
-                'date': date,
-                'fear_greed_value': fear_greed_value,
-                'fear_greed_normalized': (fear_greed_value - 50) / 50,
-                'fear_greed_extreme': 1 if fear_greed_value < 20 or fear_greed_value > 80 else 0,
-                'market_fear_level': max(0, (50 - fear_greed_value) / 50) if fear_greed_value < 50 else 0,
-                'market_greed_level': max(0, (fear_greed_value - 50) / 50) if fear_greed_value > 50 else 0
-            })
-        
-        df = pd.DataFrame(data)
-        logger.info(f"生成模拟Fear & Greed数据: {len(df)}条记录")
-        return df
+        """已弃用 - 不再生成模拟数据"""
+        logger.error("不允许生成模拟数据，请配置真实数据源")
+        return None
     
     def _is_cache_valid(self, cache_key: str) -> bool:
         """检查缓存是否有效"""
@@ -204,7 +177,7 @@ class FearGreedDataProvider:
                 'classification': 'Neutral',
                 'normalized': 0.0,
                 'timestamp': datetime.now(),
-                'source': 'Mock Data'
+                'source': 'Real Fear & Greed API'
             }
 
 def create_fear_greed_provider() -> FearGreedDataProvider:

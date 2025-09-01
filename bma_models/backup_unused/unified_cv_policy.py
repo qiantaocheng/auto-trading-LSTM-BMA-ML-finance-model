@@ -46,7 +46,6 @@ class CVPolicy:
     # ==================== 一致性控制 ====================
     single_isolation_source: bool = True      # 单一隔离策略来源
     disable_adaptive_reduction: bool = True   # 禁用自适应缩减
-    strict_temporal_validation: bool = True   # 严格时间验证
 
     def validate_consistency(self) -> Dict[str, Any]:
         """验证配置一致性"""

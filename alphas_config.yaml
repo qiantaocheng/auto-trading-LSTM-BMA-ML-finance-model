@@ -1,0 +1,77 @@
+alphas:
+  - name: "momentum_1d"
+    function: "momentum"
+    period: 1
+    weight_hint: 0.15
+    decay: 10
+    enabled: true
+  
+  - name: "momentum_5d" 
+    function: "momentum"
+    period: 5
+    weight_hint: 0.12
+    decay: 15
+    enabled: true
+    
+  - name: "momentum_20d"
+    function: "momentum" 
+    period: 20
+    weight_hint: 0.08
+    decay: 20
+    enabled: true
+    
+  - name: "mean_reversion_5d"
+    function: "mean_reversion"
+    period: 5
+    weight_hint: 0.18
+    decay: 12
+    enabled: true
+    
+  - name: "mean_reversion_20d"
+    function: "mean_reversion"
+    period: 20
+    weight_hint: 0.15
+    decay: 18
+    enabled: true
+    
+  - name: "volatility_5d"
+    function: "volatility"
+    period: 5
+    weight_hint: 0.10
+    decay: 8
+    enabled: true
+    
+  - name: "volume_ratio"
+    function: "volume_ratio"
+    period: 20
+    weight_hint: 0.08
+    decay: 10
+    enabled: true
+    
+  - name: "rsi_14d"
+    function: "rsi"
+    period: 14
+    weight_hint: 0.06
+    decay: 14
+    enabled: true
+    
+  - name: "price_position"
+    function: "price_position"
+    period: 20
+    weight_hint: 0.08
+    decay: 15
+    enabled: true
+
+# Alpha processing settings
+processing:
+  winsorize_quantiles: [0.01, 0.99]
+  standardization: "cross_sectional"
+  neutralization:
+    by_industry: false
+    by_market_cap: false
+  
+# Performance settings  
+performance:
+  cache_enabled: true
+  parallel_processing: true
+  max_workers: 4

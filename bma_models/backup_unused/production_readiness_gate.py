@@ -616,8 +616,8 @@ if __name__ == "__main__":
     # 测试生产就绪闸门
     gate = create_production_readiness_gate()
     
-    # 模拟模型指标
-    mock_model_metrics = {
+    # 测试模型指标
+    test_model_metrics = {
         'ic_mean': 0.025,
         'rank_ic_mean': 0.028,
         'ic_stability': 0.65,
@@ -632,8 +632,8 @@ if __name__ == "__main__":
         'hit_rate': 0.54
     }
     
-    # 模拟系统指标
-    mock_system_metrics = {
+    # 测试系统指标
+    test_system_metrics = {
         'feature_count': 18,
         'liquidity_score': 0.7,
         'data_freshness': 0.92,
@@ -642,7 +642,7 @@ if __name__ == "__main__":
     }
     
     # 评估生产就绪度
-    decision = gate.evaluate_readiness(mock_model_metrics, mock_system_metrics)
+    decision = gate.evaluate_readiness(test_model_metrics, test_system_metrics)
     
     print("=== 生产就绪闸门测试 ===")
     print(f"总体状态: {decision.overall_status.value}")

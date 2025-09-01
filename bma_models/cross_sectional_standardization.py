@@ -69,7 +69,23 @@ class CrossSectionalStandardizer:
         stats_by_date = {}
         
         # 按日期分组进行横截面标准化
-        for date, group in data.groupby(date_col):
+        # 处理date既在index又在columns的情况
+        try:
+            # 尝试按columns中的date分组
+            if date_col in data.columns:
+                grouped_data = data.groupby(data[date_col])
+            else:
+                # 如果date不在columns中，尝试从index获取
+                grouped_data = data.groupby(date_col)
+        except ValueError as e:
+            if "ambiguous" in str(e).lower():
+                logger.warning(f"date列存在歧义，使用columns中的date: {e}")
+                # 强制使用columns中的date
+                grouped_data = data.groupby(data[date_col])
+            else:
+                raise e
+        
+        for date, group in grouped_data:
             if len(group) < self.min_observations:
                 # 观测数量太少，跳过标准化
                 standardized_sections.append(group)

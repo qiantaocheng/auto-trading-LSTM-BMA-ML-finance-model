@@ -10,10 +10,24 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
-# 导入新创建的ML模块
+# 导入新创建的ML模块 - 使用条件导入避免破坏系统
 # 🚫 已删除MLFeatureSelector - 仅使用RobustFeatureSelector
-from ml_hyperparameter_optimization import MLHyperparameterOptimizer, HyperparameterConfig
-from ml_ensemble_enhanced import MLEnsembleEnhanced, EnsembleConfig, DynamicBMAWeightLearner
+try:
+    from ml_hyperparameter_optimization import MLHyperparameterOptimizer, HyperparameterConfig
+    ML_HYPEROPT_AVAILABLE = True
+except ImportError:
+    ML_HYPEROPT_AVAILABLE = False
+    MLHyperparameterOptimizer = None
+    HyperparameterConfig = None
+
+try:
+    from ml_ensemble_enhanced import MLEnsembleEnhanced, EnsembleConfig, DynamicBMAWeightLearner
+    ML_ENSEMBLE_AVAILABLE = True
+except ImportError:
+    ML_ENSEMBLE_AVAILABLE = False
+    MLEnsembleEnhanced = None
+    EnsembleConfig = None
+    DynamicBMAWeightLearner = None
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +83,21 @@ class MLEnhancementSystem:
                 "设置 enable_feature_selection=False"
             )
         
-        if self.config.enable_hyperparameter_optimization:
+        if self.config.enable_hyperparameter_optimization and ML_HYPEROPT_AVAILABLE:
             self.hyperparameter_optimizer = MLHyperparameterOptimizer(
                 self.config.hyperparameter_config or HyperparameterConfig()
             )
             self.logger.info("超参数优化器已初始化")
+        elif self.config.enable_hyperparameter_optimization:
+            self.logger.warning("超参数优化已启用但模块不可用")
         
-        if self.config.enable_ensemble_learning:
+        if self.config.enable_ensemble_learning and ML_ENSEMBLE_AVAILABLE:
             self.ensemble_builder = MLEnsembleEnhanced(
                 self.config.ensemble_config or EnsembleConfig()
             )
             self.logger.info("集成学习系统已初始化")
+        elif self.config.enable_ensemble_learning:
+            self.logger.warning("集成学习已启用但模块不可用")
     
     def enhance_training_pipeline(self, X: pd.DataFrame, y: pd.Series, 
                                  cv_factory: callable,

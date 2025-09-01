@@ -1,0 +1,256 @@
+# BMA Ultra Enhanced 统一配置文件
+# 所有配置参数集中管理
+
+# ==========================================
+# 时间配置 - 防止数据泄露的关键参数
+# ==========================================
+temporal:
+  prediction_horizon_days: 10      # T+10预测
+  feature_lag_days: 5              # T-5特征滞后
+  safety_gap_days: 1               # 安全间隔
+  cv_gap_days: 11                  # CV间隔 = prediction_horizon + safety
+  cv_embargo_days: 11              # CV禁止期
+  min_total_gap_days: 15           # 最小总间隔要求
+
+# ==========================================
+# 数据配置
+# ==========================================
+data:
+  # 数据下载配置
+  max_risk_model_tickers: 50
+  max_market_regime_tickers: 20
+  max_alpha_data_tickers: 50
+  
+  # 历史数据天数
+  risk_model_history_days: 300
+  market_regime_history_days: 200
+  alpha_data_history_days: 200
+  
+  # 数据质量要求
+  min_data_days: 20
+  min_risk_model_days: 100
+  min_cross_sectional_stocks: 30    # 横截面最少股票数
+  
+  # 批处理配置
+  batch_size: 50
+  api_delay: 0.12
+  max_retries: 3
+
+# ==========================================
+# 特征工程配置
+# ==========================================
+features:
+  # 技术指标配置
+  beta_calculation_window: 60
+  rsi_period: 14
+  volatility_window: 20
+  momentum_window: 20
+  
+  # 特征选择
+  feature_selection:
+    method: "robust"
+    max_features: 100
+    min_importance: 0.001
+    
+  # 特征滞后优化
+  lag_optimization:
+    enable: true
+    max_lag: 5
+    optimization_method: "grid_search"
+    
+  # 自适应因子衰减
+  factor_decay:
+    enable: true
+    base_halflife: 30
+    family_specific_halflives:
+      momentum: 8
+      reversal: 5
+      volatility: 6
+      quality: 60
+      value: 90
+      sentiment: 10
+      volume: 7
+      technical: 12
+      fundamental: 120
+      microstructure: 3
+
+# ==========================================
+# 模型训练配置
+# ==========================================
+training:
+  # 训练类型
+  incremental_days: 14
+  full_rebuild_days: 28
+  
+  # 交叉验证
+  cv_splits: 5
+  cv_method: "purged_time_series"
+  
+  # 传统ML模型
+  traditional_models:
+    enable: true
+    models:
+      - ridge
+      - lasso
+      - elastic_net
+      - random_forest
+      - gradient_boosting
+    
+  # LTR配置
+  ltr:
+    enable: true
+    objective: "rank:pairwise"
+    n_estimators: 100
+    learning_rate: 0.05
+    max_depth: 5
+    
+  # Stacking配置
+  stacking:
+    enable: true
+    meta_model: "ridge"
+    cv_folds: 3
+    use_oof_predictions: true
+    
+  # Regime-aware训练
+  regime_aware:
+    enable: true
+    n_regimes: 3
+    detection_window: 252
+    update_frequency: 63
+
+# ==========================================
+# 模型评估配置
+# ==========================================
+evaluation:
+  # IC计算配置
+  ic_calculation:
+    use_rank_ic: true
+    temporal_aggregation: "ewm"
+    decay_halflife: 30
+    min_samples: 5
+    
+  # 生产门禁
+  production_gate:
+    min_rank_ic: 0.02
+    min_t_stat: 2.0
+    min_months: 12
+    max_qlike: 0.12
+    
+  # OOF配置
+  oof:
+    enable: true
+    min_coverage: 0.7
+    suspicious_threshold: 0.001
+
+# ==========================================
+# 专业因子库配置
+# ==========================================
+professional_factors:
+  enable: true
+  decay_halflife: 30
+  enable_decay: true
+  
+  # 因子类别
+  categories:
+    - technical
+    - fundamental
+    - sentiment
+    - microstructure
+    - alternative
+
+# ==========================================
+# 集成系统配置
+# ==========================================
+ensemble:
+  # BMA权重计算
+  bma_weights:
+    method: "ic_weighted"
+    lookback_window: 60
+    min_ic_threshold: 0.01
+    
+  # 动态权重
+  dynamic_weighting:
+    enable: true
+    update_frequency: 5
+    weight_bounds: [0.0, 0.5]
+
+# ==========================================
+# 异常处理配置
+# ==========================================
+error_handling:
+  enable_retry: true
+  max_retries: 3
+  enable_fallback: false
+  log_errors: true
+  raise_on_critical: true
+
+# ==========================================
+# 性能优化配置
+# ==========================================
+optimization:
+  # 内存优化
+  enable_memory_optimization: true
+  max_memory_gb: 4
+  gc_frequency: 100
+  
+  # 并行处理
+  enable_parallel: true
+  n_jobs: -1
+  backend: "threading"
+  
+  # 缓存配置
+  enable_cache: true
+  cache_size_mb: 500
+  cache_ttl_seconds: 3600
+
+# ==========================================
+# 日志配置
+# ==========================================
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "bma_ultra_enhanced.log"
+  max_size_mb: 100
+  backup_count: 5
+  
+  # 减少日志输出
+  suppress_modules:
+    - "matplotlib"
+    - "sklearn"
+    - "urllib3"
+
+# ==========================================
+# 模块启用阈值
+# ==========================================
+module_thresholds:
+  robust_feature_min_samples: 300
+  isotonic_min_samples: 200
+  stacking_min_oof_coverage: 0.3
+  stacking_min_models: 2
+  regime_min_samples: 500
+  ltr_min_samples: 1000
+
+# ==========================================
+# 默认股票池
+# ==========================================
+default_tickers:
+  - AAPL
+  - MSFT
+  - AMZN
+  - NVDA
+  - GOOGL
+  - TSLA
+  - META
+  - BRK-B
+  - UNH
+  - JNJ
+  - JPM
+  - V
+  - MA
+  - BAC
+  - WMT
+  - PG
+  - HD
+  - DIS
+  - NFLX
+  - ADBE
