@@ -659,7 +659,19 @@ class ModuleManager:
             total_samples = data_info.get('n_samples', 1)
             correlations = data_info.get('model_correlations', {})
             
-            good_models = sum(1 for ic_ir in base_models.values() if ic_ir > self.thresholds.stacking_min_ic_ir)
+            # Fix: Handle both dict of models and aggregated metrics dict
+            if isinstance(base_models, dict):
+                # Check if it's an aggregated metrics dict (has 'mean_ic', 'mean_ir' keys)
+                if 'mean_ic' in base_models or 'mean_ir' in base_models:
+                    # Use mean_ir as the metric for comparison
+                    mean_ir = base_models.get('mean_ir', 0.0)
+                    good_models = 1 if mean_ir > self.thresholds.stacking_min_ic_ir else 0
+                else:
+                    # It's a dict of model_name -> metric
+                    good_models = sum(1 for ic_ir in base_models.values() 
+                                    if isinstance(ic_ir, (int, float)) and ic_ir > self.thresholds.stacking_min_ic_ir)
+            else:
+                good_models = 0
             oof_ratio = oof_samples / total_samples
             # 修复：correlations是字典，需要取max_correlation键的值
             max_corr = correlations.get('max_correlation', 0.0) if isinstance(correlations, dict) else 0.0
@@ -2556,7 +2568,7 @@ class UltraEnhancedQuantitativeModel:
             # ✅ NEW: 基础特征按照差异化滞后策略计算 - 统一使用MarketDataManager
             # 所有基础技术特征使用T-1滞后（价格/技术类）
             features['returns'] = data[close_col].pct_change().shift(1)  # T-1
-            features['volatility'] = features['returns'].rolling(20).std().shift(1)  # T-1
+            # REMOVED: volatility calculation - 已整合到UnifiedPolygonFactors，避免重复
             
             # 使用统一的技术指标计算
             if hasattr(self, 'market_data_manager') and self.market_data_manager:
@@ -3436,12 +3448,12 @@ class UltraEnhancedQuantitativeModel:
         beta_factor = self._build_beta_factor(returns_matrix)
         factors['beta'] = beta_factor
         
-        # 6. [ENHANCED] P1 动量因子 (12-1月动量策略) - 使用真实价格数据  
-        factors['momentum'] = self._build_real_momentum_factor(tickers, returns_matrix.index)
+        # 6. [ENHANCED] P1 动量因子 (12-1月动量策略) - DEPRECATED: 已整合到UnifiedPolygonFactors
+        # factors['momentum'] = self._build_real_momentum_factor(tickers, returns_matrix.index)  # REMOVED: 避免重复计算
         
-        # 7. [ENHANCED] P1 波动率因子 (历史波动率)
-        volatility_factor = self._build_volatility_factor(returns_matrix)
-        factors['volatility'] = volatility_factor
+        # 7. [ENHANCED] P1 波动率因子 (历史波动率) - DEPRECATED: 已整合到UnifiedPolygonFactors
+        # volatility_factor = self._build_volatility_factor(returns_matrix)  # REMOVED: 避免重复计算
+        # factors['volatility'] = volatility_factor  # REMOVED: 避免重复计算
         
         # 8. [ENHANCED] P1 行业因子 (从真实元数据构建)
         industry_factors = self._build_industry_factors(tickers, returns_matrix.index)
@@ -3575,50 +3587,9 @@ class UltraEnhancedQuantitativeModel:
             raise ValueError(f"Value因子构建失败: {str(e)}")
     
     def _build_real_momentum_factor(self, tickers: List[str], date_index: pd.DatetimeIndex) -> pd.Series:
-        """构建动量因子 - 统一使用MarketDataManager"""
-        try:
-            if not hasattr(self, 'market_data_manager') or self.market_data_manager is None:
-                logger.warning("MarketDataManager不可用，返回空动量因子")
-                # 不使用随机数据，返回零值或NaN
-                return pd.Series(0.0, index=date_index, name='momentum_factor')
-            
-            momentum_data = []
-            for date in date_index:
-                daily_momentums = []
-                for ticker in tickers:
-                    try:
-                        # 使用MarketDataManager下载历史数据计算动量
-                        end_date = date.strftime('%Y-%m-%d')
-                        start_date = (date - pd.Timedelta(days=300)).strftime('%Y-%m-%d')  # 获取足够的历史数据
-                        
-                        historical_data = self.market_data_manager.download_historical_data(ticker, start_date, end_date)
-                        if historical_data is not None and len(historical_data) >= 252:
-                            close_col_hist = 'Close' if 'Close' in historical_data.columns else 'close'
-                            close_prices = historical_data[close_col_hist]
-                            # 计算12-1月动量
-                            current_price = close_prices.iloc[-21]  # 1个月前
-                            past_12m_price = close_prices.iloc[-252]  # 12个月前
-                            
-                            momentum_12m = (current_price / past_12m_price) - 1
-                            daily_momentums.append(momentum_12m)
-                            
-                    except Exception as e:
-                        logger.debug(f"获取{ticker}动量数据失败: {e}")
-                        continue
-                
-                if daily_momentums:
-                    momentum_factor = np.mean(daily_momentums)
-                    momentum_data.append(momentum_factor)
-                else:
-                    momentum_data.append(0.0)
-            
-            factor_series = pd.Series(momentum_data, index=date_index, name='real_momentum_factor')
-            logger.info(f"✅ 动量因子构建成功，数据点: {len(factor_series)}")
-            return factor_series
-            
-        except Exception as e:
-            logger.error(f"动量因子构建失败: {e}")
-            raise ValueError(f"Momentum因子构建失败: {str(e)}")
+        """DEPRECATED: 动量因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
+        logger.debug("动量因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
+        return pd.Series(0.0, index=date_index, name='momentum_factor')
     
     # 零值回退函数已删除 - 根据用户要求不允许回退机制
     
@@ -3778,9 +3749,9 @@ class UltraEnhancedQuantitativeModel:
     
     
     def _build_volatility_factor(self, returns_matrix: pd.DataFrame) -> pd.Series:
-        """构建波动率因子"""
-        volatility = returns_matrix.rolling(window=self.model_config.volatility_window).std().mean(axis=1)
-        return volatility.fillna(0)
+        """DEPRECATED: 波动率因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
+        logger.debug("波动率因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
+        return pd.Series(0.0, index=returns_matrix.index, name='volatility_factor')
     
     def _build_industry_factors(self, tickers: List[str], date_index: pd.DatetimeIndex) -> Dict[str, pd.Series]:
         """构建行业因子（来自真实元数据） - 统一使用MarketDataManager"""

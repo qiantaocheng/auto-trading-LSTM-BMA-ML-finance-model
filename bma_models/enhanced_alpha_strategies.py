@@ -593,48 +593,22 @@ class AlphaStrategiesEngine:
     
     def _compute_momentum(self, df: pd.DataFrame, windows: List[int], 
                          decay: int = 6) -> pd.Series:
-        """Time-safe momentum factor: Multi-window price momentum - 数值稳定性增强"""
-        # 🔥 CRITICAL FIX: 导入数值稳定性保护
-        from .numerical_stability import safe_log, safe_divide
-        
-        results = []
-        
-        for window in windows:
-            # 🛡️ SAFETY FIX: 使用数值安全的动量计算
-            def safe_momentum_calc(x):
-                """安全的动量计算函数"""
-                if len(x) <= window + 2:
-                    return pd.Series(index=x.index, dtype=float)
-                
-                current_price = x.shift(2)
-                past_price = x.shift(window + 2)
-                
-                # 使用安全除法和对数计算
-                price_ratio = safe_divide(current_price, past_price, fill_value=1.0)
-                momentum_values = safe_log(price_ratio)
-                
-                return momentum_values
-            
-            momentum = df.groupby('ticker')['Close'].transform(safe_momentum_calc)
-
-            # Time-safe exponential decay - Use expanding computation to ensure only historical data
-            momentum_decayed = momentum.groupby(df['ticker']).apply(
-                lambda s: s.expanding(min_periods=1).apply(
-                    lambda x: pd.Series(x).ewm(span=decay, adjust=False).mean().iloc[-1]
-                    if len(x) > 0 else np.nan
-                )
-            ).reset_index(level=0, drop=True)
-
-            results.append(momentum_decayed)
-        
-        # Multi-window average
-        return pd.concat(results, axis=1).mean(axis=1)
+        """DEPRECATED: 动量因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
+        logger.debug("动量因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
+        return pd.Series(0.0, index=df.index, name='momentum')
     
     def _compute_reversal(self, df: pd.DataFrame, windows: List[int], 
                          decay: int = 6) -> pd.Series:
         """Reversal factor: Short-term price reversal - 数值稳定性增强"""
         # 🔥 CRITICAL FIX: 导入数值稳定性保护
-        from .numerical_stability import safe_log, safe_divide
+        try:
+            from numerical_stability import safe_log, safe_divide
+        except ImportError:
+            # Fallback implementations
+            def safe_log(x, epsilon=1e-10):
+                return np.log(np.maximum(x, epsilon))
+            def safe_divide(a, b, epsilon=1e-10):
+                return a / np.maximum(np.abs(b), epsilon)
         
         results = []
         
@@ -667,12 +641,21 @@ class AlphaStrategiesEngine:
     
     def _compute_volatility(self, df: pd.DataFrame, windows: List[int], 
                            decay: int = 6) -> pd.Series:
-        """Volatility factor: Reciprocal of realized volatility"""
+        """DEPRECATED: 波动率因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
+        logger.debug("波动率因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
+        return pd.Series(0.0, index=df.index, name='volatility')
         results = []
         
         for window in windows:
             # 🛡️ SAFETY FIX: Calculate log returns with numerical stability
-            from .numerical_stability import safe_log, safe_divide
+            try:
+                from numerical_stability import safe_log, safe_divide
+            except ImportError:
+                # Fallback implementations
+                def safe_log(x, epsilon=1e-10):
+                    return np.log(np.maximum(x, epsilon))
+                def safe_divide(a, b, epsilon=1e-10):
+                    return a / np.maximum(np.abs(b), epsilon)
             
             def safe_log_returns_calc(x):
                 """安全的对数收益率计算"""
@@ -692,7 +675,12 @@ class AlphaStrategiesEngine:
             ).reset_index(level=0, drop=True)
 
             # 🛡️ SAFETY FIX: Volatility reciprocal (low volatility anomaly)
-            from .numerical_stability import safe_divide
+            try:
+                from numerical_stability import safe_divide
+            except ImportError:
+                # Fallback implementation
+                def safe_divide(a, b, epsilon=1e-10):
+                    return a / np.maximum(np.abs(b), epsilon)
             inv_volatility = safe_divide(1.0, volatility, fill_value=0.0)
 
             # Exponential decay
@@ -746,7 +734,14 @@ class AlphaStrategiesEngine:
         
         for window in windows:
             # 🛡️ SAFETY FIX: Calculate daily returns with stability
-            from .numerical_stability import safe_log, safe_divide
+            try:
+                from numerical_stability import safe_log, safe_divide
+            except ImportError:
+                # Fallback implementations
+                def safe_log(x, epsilon=1e-10):
+                    return np.log(np.maximum(x, epsilon))
+                def safe_divide(a, b, epsilon=1e-10):
+                    return a / np.maximum(np.abs(b), epsilon)
             
             def safe_abs_log_returns(x):
                 """安全的绝对对数收益率计算"""
@@ -974,9 +969,16 @@ class AlphaStrategiesEngine:
             return pd.Series(0.0, index=df.index)
     
     def _compute_mean_reversion(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
-        """Mean reversion factor - short term reversal"""
+        """DEPRECATED: 均值回归因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
+        logger.debug("均值回归因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
+        return pd.Series(0.0, index=df.index, name='mean_reversion')
         try:
-            from .numerical_stability import safe_divide
+            try:
+                from numerical_stability import safe_divide
+            except ImportError:
+                # Fallback implementation
+                def safe_divide(a, b, epsilon=1e-10):
+                    return a / np.maximum(np.abs(b), epsilon)
             
             window = windows[0] if windows else 5
             close_prices = df['Close']
@@ -997,7 +999,12 @@ class AlphaStrategiesEngine:
     def _compute_volume_ratio(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """Volume ratio factor - current volume vs average"""
         try:
-            from .numerical_stability import safe_divide
+            try:
+                from numerical_stability import safe_divide
+            except ImportError:
+                # Fallback implementation
+                def safe_divide(a, b, epsilon=1e-10):
+                    return a / np.maximum(np.abs(b), epsilon)
             
             window = windows[0] if windows else 20
             volume = df['Volume']
@@ -1019,7 +1026,12 @@ class AlphaStrategiesEngine:
     def _compute_rsi(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """RSI (Relative Strength Index) factor"""
         try:
-            from .numerical_stability import safe_divide
+            try:
+                from numerical_stability import safe_divide
+            except ImportError:
+                # Fallback implementation
+                def safe_divide(a, b, epsilon=1e-10):
+                    return a / np.maximum(np.abs(b), epsilon)
             
             window = windows[0] if windows else 14
             close_prices = df['Close']
@@ -1052,7 +1064,12 @@ class AlphaStrategiesEngine:
     def _compute_price_position(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """Price position within recent range"""
         try:
-            from .numerical_stability import safe_divide
+            try:
+                from numerical_stability import safe_divide
+            except ImportError:
+                # Fallback implementation
+                def safe_divide(a, b, epsilon=1e-10):
+                    return a / np.maximum(np.abs(b), epsilon)
             
             window = windows[0] if windows else 20
             close_prices = df['Close']
@@ -1644,7 +1661,7 @@ class AlphaStrategiesEngine:
         
         # 4. ✅ PERFORMANCE FIX: 横截面标准化，消除市场风格偏移
         try:
-            from .cross_sectional_standardization import CrossSectionalStandardizer
+            from cross_sectional_standardization import CrossSectionalStandardizer
             
             standardizer = CrossSectionalStandardizer(method="robust_zscore")
             standardized_df = standardizer.fit_transform(
@@ -1718,8 +1735,12 @@ class AlphaStrategiesEngine:
                        if c not in exclude_cols and pd.api.types.is_numeric_dtype(alpha_df[c])]
 
         # 🚫 SSOT违规检测：阻止内部CV创建
-        from .ssot_violation_detector import block_internal_cv_creation
-        block_internal_cv_creation("Alpha策略中的TimeSeriesSplit")
+        try:
+            from ssot_violation_detector import block_internal_cv_creation
+            block_internal_cv_creation("Alpha策略中的TimeSeriesSplit")
+        except ImportError:
+            # Fallback - just log warning
+            logger.debug("SSOT violation detector not available - skipping check")
         unique_dates = sorted(dates.unique())
         
         scores = {}

@@ -96,11 +96,11 @@ class AlphaSummaryProcessor:
         
         # Initialize logging
         logger.info(f"Alpha摘要特征生成器初始化: 目标{self.config.max_alpha_features}个特征")
-        logger.info(f"  - PCA压缩: {self.config.enable_pca_compression}")
-        logger.info(f"  - IC权重压缩: {self.config.enable_ic_compression}")
+        logger.info(f"  - PCA压缩: {self.config.use_pca}")
+        logger.info(f"  - IC权重压缩: {self.config.use_ic_weighted}")
         logger.info(f"  - 统计特征: dispersion={self.config.include_dispersion}, agreement={self.config.include_agreement}, quality={self.config.include_quality}")
-        logger.info(f"  - Alpha策略信号: {self.config.include_alpha_strategy}")
-        logger.info(f"  - 时间违规检查: {self.config.prevent_lookahead}")
+        logger.info(f"  - Alpha策略信号: {self.config.include_alpha_strategy_signal}")
+        logger.info(f"  - 时间违规检查: {self.config.strict_time_validation}")
         logger.info(f"  - 行业中性化: {self.config.neutralize_by_industry}")
         logger.info(f"  - MAD Winsorize: {self.config.use_mad_winsorize}")
         logger.info(f"  - PCA方差阈值: {self.config.pca_variance_explained}")
