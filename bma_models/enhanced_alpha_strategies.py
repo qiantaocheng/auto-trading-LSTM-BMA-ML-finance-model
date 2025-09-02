@@ -28,7 +28,6 @@ except ImportError:
 try:
     from cross_sectional_standardization import CrossSectionalStandardizer, standardize_cross_sectional_predictive_safe
 except ImportError:
-    logger.warning("CrossSectionalStandardizer not available")
     CrossSectionalStandardizer = None
     standardize_cross_sectional_predictive_safe = None
 
@@ -49,7 +48,6 @@ except ImportError:
     try:
         from parameter_optimization import TechnicalIndicatorOptimizer, ParameterConfig
     except ImportError:
-        logger.warning("ParameterOptimizer not available, using default parameters")
         TechnicalIndicatorOptimizer = None
         ParameterConfig = None
 

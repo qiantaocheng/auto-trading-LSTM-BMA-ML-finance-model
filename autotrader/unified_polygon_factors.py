@@ -93,15 +93,8 @@ class UnifiedPolygonFactors:
             'microstructure': 0.00   # 微观结构（暂时禁用）
         }
         
-        # 初始化自适应权重系统
+        # 延迟初始化自适应权重系统（避免重复初始化）
         self.adaptive_weights = None
-        if ADAPTIVE_WEIGHTS_AVAILABLE:
-            try:
-                self.adaptive_weights = AdaptiveFactorWeights()
-                logger.info("自适应权重系统初始化成功")
-            except Exception as e:
-                logger.error(f"自适应权重系统初始化失败: {e}")
-                self.adaptive_weights = None
         
         # 🔥 延迟权重获取：仅在实际需要时才获取权重
         self.factor_weights = None

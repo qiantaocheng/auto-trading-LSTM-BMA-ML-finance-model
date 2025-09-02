@@ -78,10 +78,10 @@ try:
     # Import Learning to Rank module
     from learning_to_rank_bma import LearningToRankBMA
     ML_ENHANCEMENT_AVAILABLE = True
-    print("[INFO] ML增强系统+关键模块导入成功：特征选择+超参数优化+集成学习+OOF+IC计算+专业因子库")
+    print("[INFO] LearningToRankBMA独立导入成功")
 except ImportError as e:
-    print(f"[WARN] ML增强系统+关键模块导入失败: {e}")
-    # 🚨 CRITICAL FIX: 设置缺失变量并添加生产安全检查
+    print(f"[WARN] LearningToRankBMA导入失败: {e}")
+    # Set missing variables for safety
     AdvancedAlphaSystem = None
     EnhancedAlphaConfig = None
     ICWeightedAlphaProcessor = None
@@ -228,10 +228,9 @@ except ImportError as e:
 
 # LTR功能已整合到BMA Enhanced系统中
 # LTR可用性将在运行时检查LearningToRankBMA模块
-# LTR可用性独立于ML增强系统检查
 LTR_AVAILABLE = LearningToRankBMA is not None
 if LTR_AVAILABLE:
-    print("[INFO] LTR功能可用 - LearningToRankBMA模块导入成功")
+    print("[INFO] LTR功能可用")
 else:
     print("[WARN] LTR功能不可用 - LearningToRankBMA模块导入失败")
 
@@ -298,19 +297,9 @@ warnings.filterwarnings('ignore')
 
 # 修复matplotlib版本兼容性问题
 try:
-    import matplotlib
-    if hasattr(matplotlib, '__version__') and matplotlib.__version__ >= '3.4.0':
-        try:
-            plt.style.use('seaborn-v0_8')
-        except OSError:
-            # 如果seaborn-v0_8不可用，使用默认样式
-            plt.style.use('default')
-            print("[WARN] seaborn-v0_8样式不可用，使用默认样式")
-    else:
-        plt.style.use('seaborn')
-except Exception as e:
-    print(f"[WARN] matplotlib样式设置失败: {e}，使用默认样式")
     plt.style.use('default')
+except Exception:
+    pass  # 使用matplotlib默认样式
 
 # 配置日志系统
 def setup_logger():
@@ -1508,7 +1497,6 @@ class UltraEnhancedQuantitativeModel:
     def _init_walk_forward_system(self):
         """初始化Walk-Forward重训练系统"""
         try:
-            # 🔧 修复相对导入问题 - 使用绝对导入
             from walk_forward_retraining import create_walk_forward_system, WalkForwardConfig
             
             wf_config = WalkForwardConfig(
@@ -1520,7 +1508,7 @@ class UltraEnhancedQuantitativeModel:
                 enable_version_control=True
             )
             self.walk_forward_system = create_walk_forward_system(wf_config)
-            logger.info("Walk-Forward重训练系统初始化成功(绝对导入)")
+            logger.info("Walk-Forward重训练系统初始化成功")
             
         except Exception as e:
             logger.warning(f"Walk-Forward重训练系统初始化失败: {e}")
@@ -1529,7 +1517,6 @@ class UltraEnhancedQuantitativeModel:
     def _init_production_validator(self):
         """初始化生产就绪验证器"""
         try:
-            # 🔧 修复相对导入问题 - 使用绝对导入
             from production_readiness_validator import ProductionReadinessValidator, ValidationThresholds, ValidationConfig
             
             thresholds = ValidationThresholds(
@@ -1542,7 +1529,7 @@ class UltraEnhancedQuantitativeModel:
             )
             config = ValidationConfig()
             self.production_validator = ProductionReadinessValidator(config, thresholds)
-            logger.info("生产就绪验证器初始化成功(绝对导入)")
+            logger.info("生产就绪验证器初始化成功")
             
         except Exception as e:
             logger.warning(f"生产就绪验证器初始化失败: {e}")
@@ -1678,13 +1665,11 @@ class UltraEnhancedQuantitativeModel:
             return pd.DataFrame()
     
     def _init_advanced_alpha_system(self):
-        """高级Alpha系统功能已移除（用户要求删除）"""
-        logger.info("高级Alpha系统功能已移除，使用基础Alpha处理")
+        """Advanced Alpha系统已简化"""
         self.advanced_alpha_system = None
     
-    # V5系统初始化函数已删除，功能完全集成到V6系统
-        """🔥 V5新增：初始化立竿见影增强功能"""
-        logger.info("初始化BMA V5立竿见影增强功能")
+        """初始化BMA增强功能"""
+        logger.info("初始化BMA增强功能")
         
         # 1. 排序增强配置
         self.ranking_config = {
@@ -1700,14 +1685,14 @@ class UltraEnhancedQuantitativeModel:
             'early_stopping_rounds': 50      # 早停
         }
         
-        # 2. 严格Purged CV配置 - 🔧 修复：统一使用T10_CONFIG参数
-        from t10_config import T10_CONFIG
+        # 2. 严格Purged CV配置 - 🔧 修复：统一使用timing_registry参数
+        timing_params = self.timing_registry.get_purged_cv_params()
         self.purged_cv_config = {
             'strict_embargo': True,           # 严格禁运
             'embargo_align_target': True,     # 禁运与目标跨度对齐（T+10）
             'validate_integrity': True,      # 验证切分完整性
-            'embargo_days': T10_CONFIG.EMBARGO_DAYS,  # ✅ FIXED: 使用统一配置 (15天)
-            'gap_days': T10_CONFIG.CV_GAP,            # ✅ FIXED: 使用统一配置 (21天)
+            'embargo_days': timing_params['embargo_days'],  # ✅ FIXED: 使用统一配置
+            'gap_days': timing_params['gap_days'],          # ✅ FIXED: 使用统一配置
             'min_train_ratio': 0.6,          # 最小训练集比例
             'enable_group_constraints': True  # 启用组约束
         }
@@ -1753,7 +1738,7 @@ class UltraEnhancedQuantitativeModel:
             'cv_integrity_checks': []
         }
         
-        logger.info("✅ BMA V5立竿见影增强功能初始化完成")
+        logger.info("✅ BMA增强功能初始化完成")
         logger.info(f"   - LightGBM Ranker: {self.ranking_config['use_lightgbm_ranker']}")
         logger.info(f"   - 严格CV: gap={self.purged_cv_config['gap_days']}天, embargo={self.purged_cv_config['embargo_days']}天")
         logger.info(f"   - Isotonic校准: {self.calibration_config['use_isotonic']}")
@@ -1762,10 +1747,9 @@ class UltraEnhancedQuantitativeModel:
     def _init_enhanced_cv_logger(self):
         """初始化增强CV日志记录器"""
         try:
-            # 🔧 修复相对导入问题 - 使用绝对导入
             from enhanced_cv_logging import EnhancedCVLogger
             self.cv_logger = EnhancedCVLogger()
-            logger.info("增强CV日志记录器初始化成功(绝对导入)")
+            logger.info("增强CV日志记录器初始化成功")
             
         except Exception as e:
             logger.warning(f"增强CV日志记录器初始化失败: {e}")
@@ -2043,7 +2027,7 @@ class UltraEnhancedQuantitativeModel:
         """初始化统一特征管道"""
         try:
             logger.info("开始初始化统一特征管道...")
-            from .unified_feature_pipeline import UnifiedFeaturePipeline, FeaturePipelineConfig
+            from bma_models.unified_feature_pipeline import UnifiedFeaturePipeline, FeaturePipelineConfig
             logger.info("统一特征管道模块导入成功")
             
             config = FeaturePipelineConfig(
@@ -2070,17 +2054,7 @@ class UltraEnhancedQuantitativeModel:
             logger.info("开始初始化Alpha摘要特征处理器...")
             
             # 尝试导入
-            try:
-                from .alpha_summary_features import create_alpha_summary_processor, AlphaSummaryConfig
-                logger.info("Alpha摘要特征模块导入成功（相对导入）")
-            except ImportError as e1:
-                logger.warning(f"相对导入失败: {e1}，尝试绝对导入...")
-                try:
-                    from alpha_summary_features import create_alpha_summary_processor, AlphaSummaryConfig
-                    logger.info("Alpha摘要特征模块导入成功（绝对导入）")
-                except ImportError as e2:
-                    logger.error(f"绝对导入也失败: {e2}")
-                    raise e2
+            from bma_models.alpha_summary_features import create_alpha_summary_processor, AlphaSummaryConfig
             
             # 创建Alpha摘要特征配置
             logger.info("创建Alpha摘要特征配置...")
@@ -4896,14 +4870,11 @@ class UltraEnhancedQuantitativeModel:
         for param, (min_val, max_val, default_val) in required_params.items():
             if param not in validated_config:
                 validated_config[param] = default_val
-                logger.warning(f"配置缺失{param}，使用默认值{default_val}")
             else:
                 # 验证数值范围
                 if not isinstance(validated_config[param], (int, float)):
-                    logger.warning(f"配置{param}非数值类型，使用默认值{default_val}")
                     validated_config[param] = default_val
                 elif validated_config[param] < min_val or validated_config[param] > max_val:
-                    logger.warning(f"配置{param}={validated_config[param]}超出范围[{min_val}, {max_val}]，使用默认值{default_val}")
                     validated_config[param] = default_val
         
         # 嵌套配置检查
@@ -6402,19 +6373,83 @@ class UltraEnhancedQuantitativeModel:
             # 创建合并键
             feature_data_copy['merge_key'] = feature_data_copy['date'].astype(str) + '_' + feature_data_copy['ticker'].astype(str)
             
-            # Alpha摘要特征的索引格式处理
+            # Alpha摘要特征的索引格式处理（支持多种索引格式）
             logger.debug(f"Alpha摘要特征索引类型: {type(alpha_summary_features.index)}")
             logger.debug(f"Alpha摘要特征形状: {alpha_summary_features.shape}")
             logger.debug(f"Alpha摘要特征列: {list(alpha_summary_features.columns)}")
             
+            alpha_df_for_merge = None
+            
             if isinstance(alpha_summary_features.index, pd.MultiIndex):
                 logger.debug("使用MultiIndex路径进行合并")
+                # 检查MultiIndex的层级名称
+                index_names = alpha_summary_features.index.names
+                logger.debug(f"MultiIndex层级名称: {index_names}")
+                
                 alpha_df_for_merge = alpha_summary_features.reset_index()
-                alpha_df_for_merge['date'] = pd.to_datetime(alpha_df_for_merge['date'])
+                
+                # 自动识别日期和股票代码列
+                if 'date' in alpha_df_for_merge.columns:
+                    alpha_df_for_merge['date'] = pd.to_datetime(alpha_df_for_merge['date'])
+                elif 'Date' in alpha_df_for_merge.columns:
+                    alpha_df_for_merge['date'] = pd.to_datetime(alpha_df_for_merge['Date'])
+                    alpha_df_for_merge = alpha_df_for_merge.rename(columns={'Date': 'date'})
+                else:
+                    logger.warning("未找到日期列，尝试从索引推断")
+                    
+                if 'ticker' in alpha_df_for_merge.columns:
+                    pass  # 已有ticker列
+                elif 'symbol' in alpha_df_for_merge.columns:
+                    alpha_df_for_merge = alpha_df_for_merge.rename(columns={'symbol': 'ticker'})
+                elif 'Symbol' in alpha_df_for_merge.columns:
+                    alpha_df_for_merge = alpha_df_for_merge.rename(columns={'Symbol': 'ticker'})
+                else:
+                    logger.warning("未找到股票代码列")
+                
+            elif hasattr(alpha_summary_features, 'index') and len(alpha_summary_features.index) > 0:
+                logger.debug("处理普通索引格式")
+                
+                # 尝试从数据中推断日期和ticker信息
+                if 'date' in alpha_summary_features.columns and 'ticker' in alpha_summary_features.columns:
+                    logger.debug("在列中找到date和ticker")
+                    alpha_df_for_merge = alpha_summary_features.copy()
+                    alpha_df_for_merge['date'] = pd.to_datetime(alpha_df_for_merge['date'])
+                    
+                elif 'date' in alpha_summary_features.columns:
+                    logger.debug("只在列中找到date")
+                    alpha_df_for_merge = alpha_summary_features.copy()
+                    alpha_df_for_merge['date'] = pd.to_datetime(alpha_df_for_merge['date'])
+                    # 使用索引作为ticker（假设索引包含ticker信息）
+                    alpha_df_for_merge['ticker'] = alpha_df_for_merge.index.astype(str)
+                    
+                else:
+                    # 如果都没有，尝试将alpha特征与原始feature_data按索引对齐
+                    logger.debug("尝试按索引对齐Alpha特征")
+                    try:
+                        # 确保索引兼容
+                        common_index = feature_data_copy.index.intersection(alpha_summary_features.index)
+                        if len(common_index) > 0:
+                            alpha_aligned = alpha_summary_features.loc[common_index]
+                            feature_data_copy = feature_data_copy.loc[common_index]
+                            
+                            # 直接按列合并
+                            merged_data = pd.concat([feature_data_copy, alpha_aligned], axis=1)
+                            logger.info(f"✅ 按索引成功合并Alpha特征: {len(common_index)} 行")
+                            return merged_data
+                        else:
+                            logger.warning("索引没有交集，无法对齐")
+                    except Exception as e:
+                        logger.warning(f"索引对齐失败: {e}")
+            
+            # 如果成功准备了合并数据
+            if alpha_df_for_merge is not None and 'date' in alpha_df_for_merge.columns and 'ticker' in alpha_df_for_merge.columns:
                 alpha_df_for_merge['merge_key'] = alpha_df_for_merge['date'].astype(str) + '_' + alpha_df_for_merge['ticker'].astype(str)
+                logger.debug(f"成功创建Alpha合并键，样本数: {len(alpha_df_for_merge)}")
             else:
-                logger.warning("Alpha摘要特征索引格式不正确，跳过合并")
-                logger.debug(f"索引详情: {alpha_summary_features.index}")
+                logger.warning("无法创建Alpha摘要特征的合并键，跳过合并")
+                logger.debug(f"alpha_df_for_merge状态: {alpha_df_for_merge is not None}")
+                if alpha_df_for_merge is not None:
+                    logger.debug(f"可用列: {list(alpha_df_for_merge.columns)}")
                 return feature_data
             
             # 执行左连接（以传统特征为主）
@@ -7703,11 +7738,11 @@ class UltraEnhancedQuantitativeModel:
                     except Exception as cv_e:
                         logger.warning(f"⚠️ 安全CV创建失败: {cv_e}，将谨慎使用标准CV")
             
-            # 检查ML增强系统可用性
+            # 检查系统可用性
             if ML_ENHANCEMENT_AVAILABLE:
-                logger.info("ML增强系统可用")
+                logger.info("增强模块可用")
             else:
-                logger.warning("ML增强系统不可用，使用标准训练")
+                logger.warning("增强模块不可用，使用标准训练")
             
             if degraded:
                 # 降级模式：仅输出rank
@@ -7720,10 +7755,9 @@ class UltraEnhancedQuantitativeModel:
                     'reason': 'OOF覆盖率不足'
                 }
             elif len(X) > 50:  # 数据充足，使用TraditionalMLHead内置的强制高级算法
-                # 🔥 TraditionalMLHead已内置完整35+算法，无需重复调用ML增强系统
-                logger.info("🔥 使用TraditionalMLHead内置的强制高级算法栈")
-                logger.info("   - 自动包含：三件套+集成+BMA+超参优化") 
-                logger.info("   - 无需额外配置，TraditionalMLHead将强制启用所有高级功能")
+                # TraditionalMLHead使用内置算法栈
+                logger.info("使用TraditionalMLHead内置算法栈")
+                logger.info("   - 包含：三件套+集成+BMA+超参优化")
                 
                 # 直接调用标准模型训练（TraditionalMLHead内部会强制使用高级算法）
                 return self._train_standard_models(X, y, dates, tickers)
