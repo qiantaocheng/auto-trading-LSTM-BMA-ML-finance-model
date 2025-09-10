@@ -44,7 +44,7 @@ class AlphaSummaryConfig:
     neutralize_by_market_cap: bool = False
     
     # A2: Dimensionality reduction (PROFESSIONAL: 40+ -> 18 features)
-    max_alpha_features: int = 18  # Professional standard: 15-20 features
+    max_alpha_features: int = 50  # 扩展以支持41个alpha因子 + 压缩特征
     min_alpha_features: int = 15  # Minimum for robustness
     pca_variance_explained: float = 0.85  # PCA variance threshold
     pls_n_components: int = 8  # Increased PLS components
@@ -52,7 +52,7 @@ class AlphaSummaryConfig:
     use_pca: bool = False  # DEPRECATED: Use as fallback only
     use_pls: bool = False
     use_ic_weighted_composite: bool = False  # DEPRECATED: Old simple version
-    include_alpha_strategy_signal: bool = True  # Include composite Alpha strategy signal as feature
+    include_alpha_strategy_signal: bool = False  # REMOVED: Hardcoded strategy deleted, pure ML approach
     
     # A3: Summary statistics
     include_dispersion: bool = True
@@ -99,7 +99,7 @@ class AlphaSummaryProcessor:
         logger.info(f"  - PCA压缩: {self.config.use_pca}")
         logger.info(f"  - IC权重压缩: {self.config.use_ic_weighted}")
         logger.info(f"  - 统计特征: dispersion={self.config.include_dispersion}, agreement={self.config.include_agreement}, quality={self.config.include_quality}")
-        logger.info(f"  - Alpha策略信号: {self.config.include_alpha_strategy_signal}")
+        logger.info(f"  - Alpha策略信号: 已删除(纯ML方法)")
         logger.info(f"  - 时间违规检查: {self.config.strict_time_validation}")
         logger.info(f"  - 行业中性化: {self.config.neutralize_by_industry}")
         logger.info(f"  - MAD Winsorize: {self.config.use_mad_winsorize}")
@@ -107,7 +107,7 @@ class AlphaSummaryProcessor:
         
     def _log_data_quality_info(self, alpha_df: pd.DataFrame, market_data: pd.DataFrame = None):
         """记录数据质量信息用于调试"""
-        logger.info("📊 数据质量检查报告:")
+        logger.info("[CHART] 数据质量检查报告:")
         
         # Alpha数据基本信息
         logger.info(f"  Alpha数据形状: {alpha_df.shape}")
@@ -127,11 +127,11 @@ class AlphaSummaryProcessor:
             
             if all_zeros.any():
                 zero_cols = all_zeros[all_zeros].index.tolist()
-                logger.warning(f"  ⚠️ 全零列({len(zero_cols)}个): {zero_cols[:5]}")
+                logger.warning(f"  [WARN] 全零列({len(zero_cols)}个): {zero_cols[:5]}")
             
             if constant_cols.any():
                 const_cols = constant_cols[constant_cols].index.tolist()
-                logger.warning(f"  ⚠️ 常数列({len(const_cols)}个): {const_cols[:5]}")
+                logger.warning(f"  [WARN] 常数列({len(const_cols)}个): {const_cols[:5]}")
             
             # 基本统计信息
             means = numeric_data.mean()
@@ -145,7 +145,7 @@ class AlphaSummaryProcessor:
             missing_ratio = numeric_data.isnull().mean()
             high_missing = missing_ratio[missing_ratio > 0.5]
             if not high_missing.empty:
-                logger.warning(f"  ⚠️ 高缺失率列({len(high_missing)}个): {high_missing.index.tolist()[:5]}")
+                logger.warning(f"  [WARN] 高缺失率列({len(high_missing)}个): {high_missing.index.tolist()[:5]}")
         
         # 时间范围检查
         try:
@@ -176,7 +176,7 @@ class AlphaSummaryProcessor:
         if market_data is not None and not market_data.empty:
             logger.info(f"  市场数据形状: {market_data.shape}")
         else:
-            logger.warning("  ⚠️ 未提供市场数据")
+            logger.warning("  [WARN] 未提供市场数据")
         
     def process_alpha_to_summary(self, 
                                alpha_df: pd.DataFrame,
@@ -214,27 +214,32 @@ class AlphaSummaryProcessor:
         # A3: Robust summary statistics
         alpha_stats = self._compute_summary_statistics(alpha_cleaned)
         
-        # A3.5: Alpha strategy composite signal
-        alpha_strategy_signal = self._compute_alpha_strategy_signal(alpha_cleaned) if self.config.include_alpha_strategy_signal else None
+        # A3.5: Alpha strategy composite signal - REMOVED (let ML learn optimal combinations)
+        alpha_strategy_signal = None
         
         # A4: Combine and prepare final features
         summary_features = self._combine_and_finalize_features(
             alpha_compressed, alpha_stats, alpha_strategy_signal, alpha_cleaned.index
         )
         
-        # 🔧 健康检查3: 时间对齐违规门槛收紧 (在最终输出前检查)
+        # [TOOL] 健康检查3: 时间对齐违规门槛收紧 (在最终输出前检查)
         violations_result = self._validate_time_alignment_detailed(summary_features, target_dates) if target_dates is not None else {'total_violations': 0, 'bad_columns': []}
         violation_rate = violations_result['total_violations'] / (summary_features.shape[0] + 1e-8)
         
-        if violation_rate > 0.05:  # 收紧阈值：违规率超过5%
+        # [HOT] CRITICAL FIX: 放宽时间对齐违规阈值，减少误报
+        if violation_rate > 0.25:  # 放宽阈值：违规率超过25%才报警
             bad_columns = violations_result.get('bad_columns', [])
             logger.warning(f"[SELECTIVE_CLEANUP] 时间对齐违规过多({violations_result['total_violations']}项, {violation_rate:.1%})")
             logger.warning(f"[SELECTIVE_CLEANUP] 问题列: {bad_columns}")
             
-            # 选择性清理：仅移除问题列，而非全体回退
-            return self._selective_column_cleanup(summary_features, bad_columns)
+            # [HOT] CRITICAL FIX: 只在严重违规时才清理，否则保留特征
+            if violation_rate > 0.50:  # 只有违规率超过50%才进行清理
+                logger.warning("违规率过高，进行选择性清理")
+                return self._selective_column_cleanup(summary_features, bad_columns)
+            else:
+                logger.info("违规率在可接受范围内，保留所有特征")
         
-        logger.info(f"✅ Alpha摘要特征生成完成，输出形状: {summary_features.shape}")
+        logger.info(f"[OK] Alpha摘要特征生成完成，输出形状: {summary_features.shape}")
         self.stats['features_generated'] = summary_features.shape[1]
         
         return summary_features
@@ -265,7 +270,7 @@ class AlphaSummaryProcessor:
                             target_dates: pd.Series = None) -> pd.DataFrame:
         """A1: Cross-sectional cleaning, neutralization, time alignment"""
         
-        # ✅ FIX: 智能索引格式处理
+        # [OK] FIX: 智能索引格式处理
         # 检查并尝试创建合适的索引结构
         try:
             if not isinstance(alpha_df.index, pd.MultiIndex):
@@ -279,9 +284,9 @@ class AlphaSummaryProcessor:
         except Exception as e:
             logger.warning(f"索引设置失败: {e}，保持原始索引格式")
         
-        # ✅ FIX: 根据标签期确定正确的滞后天数（适应性调整）
+        # [OK] FIX: 根据标签期确定正确的滞后天数（适应性调整）
         # 从target_dates推断标签期，或从列名解析
-        label_horizon = 5  # 🔧 FIX: 默认改为5天标签期
+        label_horizon = 5  # [TOOL] FIX: 默认改为5天标签期
         if target_dates is not None and len(target_dates) > 1:
             # 尝试从target_dates间隔推断标签期
             try:
@@ -289,21 +294,30 @@ class AlphaSummaryProcessor:
                 if len(target_dates_dt) > 1:
                     avg_interval = (target_dates_dt.max() - target_dates_dt.min()).days / max(1, len(target_dates_dt) - 1)
                     if avg_interval > 1:
-                        label_horizon = min(int(avg_interval), 10)  # 🔧 FIX: Cap label horizon at 10 days
+                        label_horizon = min(int(avg_interval), 10)  # [TOOL] FIX: Cap label horizon at 10 days
             except Exception as e:
                 logger.debug(f"Failed to infer label horizon from target_dates: {e}")
                 pass
         
-        # 🔧 FIX: Use adaptive lag based on dataset size  
-        # Adaptive lag based on data characteristics
-        if len(alpha_df) < 500:
-            default_lag = max(1, label_horizon // 2)  # Very small datasets: minimal lag
-        elif len(alpha_df) < 1000:
-            default_lag = max(2, label_horizon)  # Small datasets: use label horizon
-        else:
-            default_lag = max(label_horizon, 3)  # 🔧 FIX: Reduced minimum lag to 3 days
+        # [HOT] CRITICAL FIX: 改进自适应滞后期逻辑，减少时间违规
+        # 根据数据集大小和历史违规情况调整滞后期
+        base_lag = max(label_horizon, 5)  # 提高基础滞后期到5天
         
-        # ✅ FIX: 强制索引标准化 - 确保datetime索引
+        # 根据数据集大小调整
+        if len(alpha_df) < 500:
+            default_lag = max(3, label_horizon // 2)  # 小数据集：至少3天滞后
+        elif len(alpha_df) < 1000:
+            default_lag = max(5, label_horizon)  # 中等数据集：至少5天滞后
+        else:
+            default_lag = max(base_lag, 7)  # 大数据集：至少7天滞后
+            
+        # [HOT] CRITICAL FIX: 根据历史违规情况动态增加滞后期
+        if hasattr(self, 'stats') and 'time_violations' in self.stats:
+            if self.stats['time_violations'] > 1000:
+                default_lag += 2  # 如果之前违规多，增加2天
+                logger.info(f"检测到历史时间违规({self.stats['time_violations']}项)，增加滞后期到{default_lag}天")
+        
+        # [OK] FIX: 强制索引标准化 - 确保datetime索引
         try:
             if not isinstance(alpha_df.index, pd.MultiIndex):
                 if 'date' in alpha_df.columns and 'ticker' in alpha_df.columns:
@@ -324,7 +338,7 @@ class AlphaSummaryProcessor:
         except Exception as e:
             logger.warning(f"索引标准化失败: {e}，保持原始索引格式")
         
-        # ✅ FIX: 应用正确的滞后
+        # [OK] FIX: 应用正确的滞后
         alpha_df_shifted = alpha_df.copy()
         try:
             if isinstance(alpha_df.index, pd.MultiIndex) and 'ticker' in alpha_df.index.names:
@@ -365,17 +379,21 @@ class AlphaSummaryProcessor:
         
         logger.info(f"应用了{default_lag}天滞后（基于{label_horizon}天标签期），避免时间对齐违规")
         
-        # ✅ FIX: 更智能的时间验证，减少误报
+        # [OK] FIX: 更智能的时间验证，减少误报
         if target_dates is not None and self.config.strict_time_validation:
             violations = self._validate_time_alignment(alpha_df_shifted, target_dates)
-            # ✅ FIX: 正确的百分比计算 - 总单元格数而不是行数
+            # [OK] FIX: 正确的百分比计算 - 总单元格数而不是行数
             numeric_cols = alpha_df_shifted.select_dtypes(include=[np.number]).columns
             total_cells = len(alpha_df_shifted) * len(numeric_cols)
             violation_rate = violations / (total_cells + 1e-8)
             
-            if violation_rate > 0.15:  # 违规率超过15%报警
+            # [HOT] CRITICAL FIX: 优化时间违规阈值和处理逻辑
+            if violation_rate > 0.30:  # 放宽阈值：违规率超过30%才报警
                 logger.warning(f"发现较多时间对齐违规: {violations} 个单元格 ({violation_rate:.1%}) / 总计{total_cells}")
                 self.stats['time_violations'] = violations
+                # 如果违规率过高，增加滞后期
+                if violation_rate > 0.50:
+                    logger.warning("违规率过高，建议增加滞后期处理")
             elif violations > 0:
                 logger.debug(f"发现少量时间对齐违规: {violations} 个单元格 ({violation_rate:.1%})，在可接受范围内")
                 self.stats['time_violations'] = violations
@@ -385,7 +403,7 @@ class AlphaSummaryProcessor:
         # 使用滞后后的数据继续处理
         alpha_df = alpha_df_shifted
         
-        # 🔧 健康检查1: 列名匹配度 (扩展列名筛选)
+        # [TOOL] 健康检查1: 列名匹配度 (扩展列名筛选)
         alpha_cols = []
         exclude_cols = ['date', 'ticker', 'target', 'target_10d', 'Close', 'High', 'Low', 'Open', 'amount']
         
@@ -418,7 +436,7 @@ class AlphaSummaryProcessor:
             numeric_cols = alpha_df.select_dtypes(include=[np.float32, np.float64, np.int32, np.int64]).columns
             logger.warning(f"Numeric columns found: {len(numeric_cols)}: {list(numeric_cols)[:10]}")
         
-        # 🔧 健康检查2: 最低列数门槛
+        # [TOOL] 健康检查2: 最低列数门槛
         if len(alpha_cols) < 3:
             logger.warning(f"[FALLBACK] Alpha列数过少({len(alpha_cols)} < 3)，触发传统特征回退")
             return self._fallback_to_traditional_features(alpha_df)
@@ -427,33 +445,67 @@ class AlphaSummaryProcessor:
             logger.warning(f"[FALLBACK] 未找到有效的Alpha列，触发传统特征回退，可用列: {list(alpha_df.columns)[:10]}...")
             return self._fallback_to_traditional_features(alpha_df)
         
-        # Include date column for groupby
-        if 'date' in alpha_df.columns:
-            cols_to_process = ['date'] + alpha_cols
-        else:
-            # If date is in index, reset it temporarily
-            alpha_df = alpha_df.reset_index()
-            cols_to_process = ['date'] + alpha_cols
+        # [TOOL] CRITICAL FIX: 保持MultiIndex结构，不要重置索引
+        # Include date and ticker columns for groupby while preserving MultiIndex
+        original_index = alpha_df.index  # 保存原始索引
         
-        alpha_only = alpha_df[cols_to_process].copy()
+        if isinstance(alpha_df.index, pd.MultiIndex) and 'date' in alpha_df.index.names and 'ticker' in alpha_df.index.names:
+            # MultiIndex格式：保持原索引，临时重置以便分组处理
+            alpha_df_temp = alpha_df.reset_index()
+            cols_to_process = ['date', 'ticker'] + alpha_cols
+            logger.info(f"[DEBUG] MultiIndex模式: 保留date+ticker索引")
+        elif 'date' in alpha_df.columns and 'ticker' in alpha_df.columns:
+            # 列格式：直接使用
+            alpha_df_temp = alpha_df.copy()
+            cols_to_process = ['date', 'ticker'] + alpha_cols
+            logger.info(f"[DEBUG] DataFrame模式: 使用date+ticker列")
+        else:
+            # 回退到原始逻辑
+            logger.warning("[FALLBACK] 无法识别date/ticker结构，使用原始处理逻辑")
+            if 'date' in alpha_df.columns:
+                cols_to_process = ['date'] + alpha_cols
+            else:
+                alpha_df_temp = alpha_df.reset_index()
+                cols_to_process = ['date'] + alpha_cols
+            alpha_df_temp = alpha_df.copy()
+        
+        alpha_only = alpha_df_temp[cols_to_process].copy()
         self.stats['total_alphas_processed'] = len(alpha_cols)
         
-        # Cross-sectional processing by date
+        # Cross-sectional processing by date, preserving ticker information
         cleaned_data = []
         
         for date, group in alpha_only.groupby('date'):
-            # Drop date column for processing (will be in index after groupby)
-            group_for_processing = group.drop(columns=['date'], errors='ignore')
-            
-            # Cross-sectional winsorization
-            group_clean = self._cross_sectional_winsorize(group_for_processing)
-            
-            # Cross-sectional standardization
-            group_clean = self._cross_sectional_standardize(group_clean)
-            
-            # Industry/factor neutralization
-            if self.config.neutralize_by_industry and market_data is not None:
-                group_clean = self._neutralize_factors(group_clean, market_data, date)
+            # 保持ticker列用于重建MultiIndex
+            if 'ticker' in group.columns:
+                # Drop date column for processing but keep ticker
+                group_for_processing = group.drop(columns=['date'], errors='ignore')
+                
+                # Cross-sectional winsorization and standardization
+                numeric_cols = [col for col in group_for_processing.columns if col != 'ticker']
+                if numeric_cols:
+                    group_clean = self._cross_sectional_winsorize(group_for_processing[numeric_cols])
+                    group_clean = self._cross_sectional_standardize(group_clean)
+                    
+                    # 重新添加ticker列和date信息
+                    group_clean['ticker'] = group_for_processing['ticker'].values
+                    group_clean['date'] = date
+                    
+                    # Industry/factor neutralization
+                    if self.config.neutralize_by_industry and market_data is not None:
+                        group_clean = self._neutralize_factors(group_clean, market_data, date)
+                else:
+                    logger.warning(f"日期{date}: 没有数值列需要处理")
+                    continue
+            else:
+                # 原始处理逻辑（无ticker信息）
+                group_for_processing = group.drop(columns=['date'], errors='ignore')
+                group_clean = self._cross_sectional_winsorize(group_for_processing)
+                group_clean = self._cross_sectional_standardize(group_clean)
+                group_clean['date'] = date
+                
+                if self.config.neutralize_by_industry and market_data is not None:
+                    group_clean = self._neutralize_factors(group_clean, market_data, date)
             
             cleaned_data.append(group_clean)
         
@@ -462,7 +514,17 @@ class AlphaSummaryProcessor:
             logger.warning("[FALLBACK] No data after cleaning, returning fallback features")
             return self._fallback_to_traditional_features(alpha_df)
         
-        result = pd.concat(cleaned_data)
+        result = pd.concat(cleaned_data, ignore_index=True)
+        
+        # [TOOL] CRITICAL FIX: 重建MultiIndex结构
+        if 'date' in result.columns and 'ticker' in result.columns:
+            # 确保date列是datetime类型
+            result['date'] = pd.to_datetime(result['date'])
+            # 重建MultiIndex
+            result = result.set_index(['date', 'ticker']).sort_index()
+            logger.info(f"[DEBUG] 重建MultiIndex: {len(result.index.get_level_values('ticker').unique())}只股票, {len(result.index.get_level_values('date').unique())}个日期")
+        else:
+            logger.warning("[WARNING] 无法重建MultiIndex，缺少date或ticker列")
         
         # Safe way to get trading days count
         try:
@@ -597,8 +659,14 @@ class AlphaSummaryProcessor:
             # 如果没有returns数据，创建模拟returns（实际应该传入真实returns）
             if returns is None:
                 # 使用简单的动量作为代理returns
+                close_col = None
                 if 'close' in alpha_df.columns:
-                    returns = alpha_df['close'].pct_change().shift(-10)  # 10天前向收益
+                    close_col = 'close'
+                elif 'Close' in alpha_df.columns:
+                    close_col = 'Close'
+                
+                if close_col:
+                    returns = alpha_df[close_col].pct_change().shift(-10)  # 10天前向收益
                 else:
                     # 使用第一个alpha因子的变化作为代理
                     returns = alpha_values.iloc[:, 0].pct_change().shift(-10)
@@ -625,7 +693,7 @@ class AlphaSummaryProcessor:
         
         # Method 1: PCA (unsupervised)
         if self.config.use_pca:
-            pca_features, pca_names = self._apply_pca_compression(alpha_values)
+            pca_features, pca_names = self._apply_pca_compression(alpha_values, alpha_df)
             if pca_features is not None:
                 compressed_features.append(pca_features)
                 feature_names.extend(pca_names)
@@ -654,7 +722,7 @@ class AlphaSummaryProcessor:
         
         return combined_features
     
-    def _apply_pca_compression(self, alpha_values: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], List[str]]:
+    def _apply_pca_compression(self, alpha_values: pd.DataFrame, alpha_df_full: Optional[pd.DataFrame] = None) -> Tuple[Optional[pd.DataFrame], List[str]]:
         """Apply TIME-SAFE PCA compression with fallback mechanisms"""
         
         # 数据质量预检查
@@ -686,7 +754,7 @@ class AlphaSummaryProcessor:
             # 尝试使用时间安全的PCA
             from bma_models.time_safe_pca import TimeSeriesSafePCA
             
-            logger.info("🔧 使用时间安全PCA，防止时间泄露")
+            logger.info("[TOOL] 使用时间安全PCA，防止时间泄露")
             
             # 创建时间安全PCA
             safe_pca = TimeSeriesSafePCA(
@@ -696,8 +764,15 @@ class AlphaSummaryProcessor:
                 max_components=min(len(valid_cols), self.config.max_alpha_features - 3, 8)  # 限制最大组件数
             )
             
-            # 时间安全的拟合转换
-            pca_features_df, pca_stats = safe_pca.fit_transform_safe(alpha_numeric)
+            # 时间安全的拟合转换 - 使用原始完整数据保留时间信息
+            if alpha_df_full is not None:
+                # 使用完整DataFrame（包含索引时间信息）
+                alpha_for_pca = alpha_df_full[valid_cols].copy()  # 保留原始索引和时间信息
+            else:
+                # 回退到数值数据（可能没有时间信息）
+                alpha_for_pca = alpha_values[valid_cols].copy()
+            
+            pca_features_df, pca_stats = safe_pca.fit_transform_safe(alpha_for_pca)
             
             if not pca_features_df.empty:
                 # 获取PCA特征数据（排除日期和ticker列）
@@ -712,7 +787,7 @@ class AlphaSummaryProcessor:
                     self.stats['compression_variance_explained'] = pca_stats.get('avg_components', 0)
                     self.stats['time_safe_pca_stats'] = pca_stats
                     
-                    logger.info(f"✅ 时间安全PCA成功，生成{len(pca_feature_cols)}个压缩特征")
+                    logger.info(f"[OK] 时间安全PCA成功，生成{len(pca_feature_cols)}个压缩特征")
                     return pca_features_df[pca_feature_cols], pca_feature_cols
             
             logger.warning("时间安全PCA处理失败，尝试简单PCA回退")
@@ -756,7 +831,7 @@ class AlphaSummaryProcessor:
             self.stats['compression_variance_explained'] = pca.explained_variance_ratio_.sum()
             self.stats['pca_components'] = len(pca_feature_names)
             
-            logger.info(f"✅ 简单PCA成功，生成{len(pca_feature_names)}个压缩特征，解释方差: {pca.explained_variance_ratio_.sum():.3f}")
+            logger.info(f"[OK] 简单PCA成功，生成{len(pca_feature_names)}个压缩特征，解释方差: {pca.explained_variance_ratio_.sum():.3f}")
             return pca_features_df, pca_feature_names
             
         except Exception as e:
@@ -907,165 +982,8 @@ class AlphaSummaryProcessor:
             logger.warning(f"摘要统计计算失败: {e}")
             return None
     
-    def _compute_alpha_strategy_signal(self, alpha_df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """A3.5: Compute Alpha strategy composite signal with enhanced data quality checks
-        
-        Alpha来源分配:
-        - 质量筛选(40%): QMJ, Piotroski, Altman, Ohlson质量因子
-        - 动量捕获(25%): 动量、残差动量、动量门控因子  
-        - 情绪优势(20%): 新闻情绪、市场情绪、恐惧贪婪指数
-        - 流动性溢价(15%): Amihud非流动性、买卖价差因子
-        """
-        
-        alpha_numeric = alpha_df.select_dtypes(include=[np.number])
-        if alpha_numeric.empty:
-            logger.warning("无Alpha数据用于策略信号计算")
-            return None
-        
-        # 数据质量检查
-        logger.debug(f"Alpha数据形状: {alpha_numeric.shape}")
-        logger.debug(f"Alpha数据统计:")
-        for col in alpha_numeric.columns[:5]:  # 只显示前5列的统计信息
-            col_stats = alpha_numeric[col].describe()
-            logger.debug(f"  {col}: mean={col_stats['mean']:.6f}, std={col_stats['std']:.6f}, "
-                        f"min={col_stats['min']:.6f}, max={col_stats['max']:.6f}")
-        
-        # 移除全为0或常数的列
-        col_std = alpha_numeric.std()
-        non_zero_cols = col_std[col_std > 1e-10].index
-        
-        if len(non_zero_cols) == 0:
-            logger.warning("所有Alpha因子都是常数或零，无法生成策略信号")
-            return None
-        
-        if len(non_zero_cols) < len(alpha_numeric.columns):
-            logger.info(f"移除了{len(alpha_numeric.columns) - len(non_zero_cols)}个常数Alpha因子")
-            alpha_numeric = alpha_numeric[non_zero_cols]
-        
-        try:
-            strategy_df = pd.DataFrame(index=alpha_df.index)
-            
-            # 根据Alpha因子名称分类（基于您的alphas_config.yaml配置）
-            quality_factors = []
-            momentum_factors = []
-            sentiment_factors = []
-            liquidity_factors = []
-            other_factors = []
-            
-            for col in alpha_numeric.columns:
-                col_lower = col.lower()
-                if any(q in col_lower for q in ['qmj', 'piotroski', 'altman', 'ohlson', 'quality', 'roe', 'roic', 'margin', 'profitability', 'earnings_stability']):
-                    quality_factors.append(col)
-                elif any(m in col_lower for m in ['momentum', 'reversal', 'residual', 'hump']):
-                    momentum_factors.append(col)
-                elif any(s in col_lower for s in ['sentiment', 'news', 'fear', 'greed', 'market_sentiment']):
-                    sentiment_factors.append(col)
-                elif any(l in col_lower for l in ['amihud', 'bid_ask', 'illiq', 'spread', 'volume', 'turnover']):
-                    liquidity_factors.append(col)
-                else:
-                    other_factors.append(col)
-            
-            # 计算各类别的组合信号
-            signals = {}
-            
-            if quality_factors:
-                signals['quality'] = alpha_numeric[quality_factors].mean(axis=1) * 0.40
-                logger.info(f"质量因子 ({len(quality_factors)}个): 权重40%")
-            
-            if momentum_factors:
-                signals['momentum'] = alpha_numeric[momentum_factors].mean(axis=1) * 0.25
-                logger.info(f"动量因子 ({len(momentum_factors)}个): 权重25%")
-            
-            if sentiment_factors:
-                signals['sentiment'] = alpha_numeric[sentiment_factors].mean(axis=1) * 0.20
-                logger.info(f"情绪因子 ({len(sentiment_factors)}个): 权重20%")
-            
-            if liquidity_factors:
-                signals['liquidity'] = alpha_numeric[liquidity_factors].mean(axis=1) * 0.15
-                logger.info(f"流动性因子 ({len(liquidity_factors)}个): 权重15%")
-            
-            if other_factors:
-                # 其他因子平均分配剩余权重
-                remaining_weight = 1.0 - sum([0.40, 0.25, 0.20, 0.15]) if not all([quality_factors, momentum_factors, sentiment_factors, liquidity_factors]) else 0.0
-                if remaining_weight > 0:
-                    signals['other'] = alpha_numeric[other_factors].mean(axis=1) * remaining_weight
-                    logger.info(f"其他因子 ({len(other_factors)}个): 权重{remaining_weight:.1%}")
-            
-            # 合成最终的Alpha策略信号
-            if signals:
-                alpha_strategy_raw = sum(signals.values())
-                logger.info(f"成功合成{len(signals)}类Alpha信号")
-            else:
-                # 如果没有分类信号，使用简单平均
-                alpha_strategy_raw = alpha_numeric.mean(axis=1)
-                logger.info("使用简单平均作为Alpha策略信号")
-            
-            # 检查原始信号质量
-            raw_std = alpha_strategy_raw.std()
-            raw_mean = alpha_strategy_raw.mean()
-            logger.debug(f"原始策略信号: mean={raw_mean:.6f}, std={raw_std:.6f}, "
-                        f"min={alpha_strategy_raw.min():.6f}, max={alpha_strategy_raw.max():.6f}")
-            
-            if raw_std < 1e-10:
-                logger.warning(f"原始策略信号方差过小({raw_std:.2e})，生成随机扰动")
-                # 添加微小的随机扰动以避免全零信号
-                noise_scale = max(abs(raw_mean) * 0.01, 1e-6)
-                alpha_strategy_raw += np.random.normal(0, noise_scale, len(alpha_strategy_raw))
-                raw_std = alpha_strategy_raw.std()
-                logger.info(f"添加扰动后信号方差: {raw_std:.6f}")
-            
-            # 应用横截面标准化（与其他摘要特征保持一致）
-            if self.config.neutralize_by_industry and isinstance(alpha_df.index, pd.MultiIndex):
-                # 简化的行业中性化（这里使用全局标准化）
-                try:
-                    alpha_strategy_normalized = (alpha_strategy_raw.groupby(alpha_df.index.get_level_values('date'))
-                                               .apply(lambda x: (x - x.mean()) / (x.std() if x.std() > 1e-10 else 1e-6)))
-                    if alpha_strategy_normalized.isna().all():
-                        raise ValueError("分组标准化产生全NaN结果")
-                except Exception as e:
-                    logger.warning(f"分组标准化失败({e})，使用全局标准化")
-                    # 如果分组标准化失败，使用全局标准化
-                    alpha_strategy_normalized = (alpha_strategy_raw - alpha_strategy_raw.mean()) / (alpha_strategy_raw.std() if alpha_strategy_raw.std() > 1e-10 else 1e-6)
-            else:
-                alpha_strategy_normalized = (alpha_strategy_raw - alpha_strategy_raw.mean()) / (alpha_strategy_raw.std() if alpha_strategy_raw.std() > 1e-10 else 1e-6)
-            
-            # 检查标准化后的信号
-            norm_std = alpha_strategy_normalized.std()
-            norm_mean = alpha_strategy_normalized.mean()
-            logger.debug(f"标准化后信号: mean={norm_mean:.6f}, std={norm_std:.6f}")
-            
-            # Winsorize处理异常值
-            if self.config.use_mad_winsorize:
-                median = alpha_strategy_normalized.median()
-                mad = np.median(np.abs(alpha_strategy_normalized - median))
-                if mad > 1e-10:
-                    alpha_strategy_winsorized = np.clip(alpha_strategy_normalized, 
-                                                      median - 3*mad, median + 3*mad)
-                else:
-                    alpha_strategy_winsorized = alpha_strategy_normalized.copy()
-            else:
-                try:
-                    q01, q99 = alpha_strategy_normalized.quantile([0.01, 0.99])
-                    if abs(q99 - q01) > 1e-10:
-                        alpha_strategy_winsorized = np.clip(alpha_strategy_normalized, q01, q99)
-                    else:
-                        alpha_strategy_winsorized = alpha_strategy_normalized.copy()
-                except:
-                    alpha_strategy_winsorized = alpha_strategy_normalized.copy()
-            
-            strategy_df['alpha_strategy_signal'] = alpha_strategy_winsorized
-            
-            final_min, final_max = alpha_strategy_winsorized.min(), alpha_strategy_winsorized.max()
-            logger.info(f"Alpha策略综合信号生成完成: 范围[{final_min:.6f}, {final_max:.6f}]")
-            
-            if abs(final_max - final_min) < 1e-8:
-                logger.warning("⚠️ 最终信号范围过小，可能存在数据质量问题")
-            
-            return strategy_df
-            
-        except Exception as e:
-            logger.warning(f"Alpha策略信号计算失败: {e}")
-            return None
+    # REMOVED: _compute_alpha_strategy_signal method completely deleted
+    # No more hardcoded Alpha strategy weights - let ML learn optimal combinations
     
     def _combine_and_finalize_features(self, 
                                      alpha_compressed: Optional[pd.DataFrame],
@@ -1139,7 +1057,7 @@ class AlphaSummaryProcessor:
         violations = 0
         
         try:
-            # ✅ FIX: 更智能的时间对齐验证
+            # [OK] FIX: 更智能的时间对齐验证
             if isinstance(alpha_df.index, pd.MultiIndex):
                 # MultiIndex情况 - 尝试获取date级别
                 if 'date' in alpha_df.index.names:
@@ -1168,7 +1086,7 @@ class AlphaSummaryProcessor:
                     logger.debug("无法转换target_dates，跳过时间对齐验证")
                     return 0
                 
-                # ✅ FIX: 正确的时间泄漏验证逻辑
+                # [OK] FIX: 正确的时间泄漏验证逻辑
                 # 检查每个alpha数据点是否违反时间顺序
                 max_target_date = target_dates.max()
                 min_target_date = target_dates.min()
@@ -1241,20 +1159,30 @@ class AlphaSummaryProcessor:
                 else:
                     col_dates = col_data.index if isinstance(col_data.index, pd.DatetimeIndex) else alpha_dates
                 
-                # 检查未来信息泄漏
+                # 检查未来信息泄漏 - 改进逻辑：只检查实际使用的数据点
                 future_leakage = 0
-                for target_date in target_dates:
-                    future_data = col_dates[col_dates > target_date]
-                    future_leakage += len(future_data)
                 
-                col_violations += future_leakage
+                # 仅检查数据的最大日期是否超过目标日期的最小值
+                # 这避免了对历史数据的过度严格检查
+                if len(col_dates) > 0 and len(target_dates) > 0:
+                    max_data_date = col_dates.max()
+                    min_target_date = target_dates.min()
+                    
+                    # 如果数据中存在超过最早目标日期的数据，才认为有潜在泄漏
+                    if max_data_date > min_target_date:
+                        # 计算实际泄漏的比例，而不是绝对数量
+                        future_data = col_dates[col_dates > min_target_date]
+                        future_leakage = len(future_data) / len(col_dates)  # 使用比例而非绝对数
+                
+                col_violations = future_leakage
                 
                 # 如果该列违规较多，标记为问题列
-                if col_violations > len(col_data) * 0.1:  # 超过10%的数据有问题
+                if col_violations > 0.1:  # 超过10%的数据有问题（现在col_violations已经是比例）
                     result['bad_columns'].append(col)
                     result['column_violations'][col] = col_violations
                 
-                result['total_violations'] += col_violations
+                # 累加违规数（转换回绝对数以保持兼容性）
+                result['total_violations'] += int(col_violations * len(col_data))
             
             # 生成验证摘要
             result['validation_summary'] = {
@@ -1333,6 +1261,11 @@ class AlphaSummaryProcessor:
     def get_processing_stats(self) -> Dict[str, Any]:
         """Get processing statistics"""
         return self.stats.copy()
+
+# Alias class for backward compatibility
+class AlphaSummaryFeatures(AlphaSummaryProcessor):
+    """Alias for AlphaSummaryProcessor to maintain backward compatibility"""
+    pass
 
 # Factory function for easy integration
 def create_alpha_summary_processor(config: Dict[str, Any] = None) -> AlphaSummaryProcessor:

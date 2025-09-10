@@ -248,8 +248,8 @@ class LeakFreeRegimeDetector:
                 break
         
         if close_col is None:
-            logger.error("Missing 'Close' column in data")
-            logger.error(f"Failed to calculate regime features")
+            logger.error("CRITICAL: Missing 'Close' column in data")
+            logger.error("The data passed to regime detector MUST contain price columns (Close, Open, High, Low)")
             return pd.DataFrame()
         
         close_prices = data[close_col]

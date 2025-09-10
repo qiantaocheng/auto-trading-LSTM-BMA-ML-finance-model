@@ -12,7 +12,10 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from unified_timing_registry import get_global_timing_registry
+try:
+    from unified_timing_registry import get_global_timing_registry
+except ImportError:
+    get_global_timing_registry = lambda: None
 
 logger = logging.getLogger(__name__)
 

@@ -13,17 +13,16 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.decomposition import PCA
+# PCA COMPLETELY REMOVED - NO DIMENSIONALITY REDUCTION
 from sklearn.impute import SimpleImputer
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class FeaturePipelineConfig:
-    """特征管道配置"""
-    enable_alpha_summary: bool = True
-    enable_pca: bool = True
-    pca_variance_threshold: float = 0.95
+    """特征管道配置 - 🚫 NO PCA - DIRECT FEATURE USAGE"""
+    enable_alpha_summary: bool = False
+    # 🚫 PCA COMPLETELY REMOVED - NO DIMENSIONALITY REDUCTION
     enable_scaling: bool = True
     scaler_type: str = 'robust'  # 'standard' or 'robust'
     imputation_strategy: str = 'median'
@@ -48,9 +47,9 @@ class UnifiedFeaturePipeline:
         self.feature_names = None
         self.feature_dim = None
         
-        # 特征处理组件
+        # 特征处理组件 - 🚫 NO PCA
         self.scaler = None
-        self.pca = None
+        # self.pca = None  # 🚫 REMOVED - NO PCA
         self.imputer = None
         self.alpha_summary_generator = None
         
@@ -121,20 +120,11 @@ class UnifiedFeaturePipeline:
         else:
             X_scaled = X_imputed
         
-        # 5. 拟合PCA降维 (如果启用)
-        if self.config.enable_pca and X_scaled.shape[1] > 10:
-            self.pca = PCA(n_components=self.config.pca_variance_threshold)
-            X_pca = self.pca.fit_transform(X_scaled)
-            
-            # 创建PCA特征名称
-            pca_columns = [f'PC_{i+1}' for i in range(X_pca.shape[1])]
-            X_final = pd.DataFrame(X_pca, index=X_scaled.index, columns=pca_columns)
-            
-            logger.info(f"PCA降维完成: {X_scaled.shape[1]} -> {X_final.shape[1]} "
-                       f"(解释方差: {self.pca.explained_variance_ratio_.sum():.3f})")
-        else:
-            X_final = X_scaled
-            logger.info("跳过PCA降维")
+        # 5. 🚫 NO PCA - DIRECT FEATURE USAGE
+        # PCA COMPLETELY REMOVED - USE FEATURES DIRECTLY
+        X_final = X_scaled
+        logger.info(f"🚫 NO PCA - 直接使用特征: {X_scaled.shape[1]} 个特征")
+        logger.info("✅ 特征维度保持完全一致，确保训练预测无差异")
         
         # 6. 保存管道状态
         self.feature_names = list(X_final.columns)
@@ -147,9 +137,9 @@ class UnifiedFeaturePipeline:
             'output_shape': X_final.shape,
             'feature_names': self.feature_names,
             'alpha_summary_enabled': self.config.enable_alpha_summary and alpha_data is not None,
-            'pca_enabled': self.config.enable_pca and hasattr(self, 'pca') and self.pca is not None,
-            'pca_components': getattr(self.pca, 'n_components_', None),
-            'explained_variance_ratio': getattr(self.pca, 'explained_variance_ratio_', None),
+            'pca_enabled': False,  # 🚫 ALWAYS FALSE - NO PCA
+            'pca_components': 0,   # 🚫 NO PCA COMPONENTS
+            'explained_variance_ratio': None,  # 🚫 NO PCA ANALYSIS
             'scaling_enabled': self.config.enable_scaling,
             'scaler_type': self.config.scaler_type if self.config.enable_scaling else None
         }
@@ -209,13 +199,10 @@ class UnifiedFeaturePipeline:
         else:
             X_scaled = X_imputed
         
-        # 5. 应用PCA
-        if self.pca is not None:
-            X_pca = self.pca.transform(X_scaled)
-            pca_columns = [f'PC_{i+1}' for i in range(X_pca.shape[1])]
-            X_final = pd.DataFrame(X_pca, index=X_scaled.index, columns=pca_columns)
-        else:
-            X_final = X_scaled
+        # 5. 🚫 NO PCA - DIRECT FEATURE USAGE
+        # PCA COMPLETELY REMOVED - USE FEATURES DIRECTLY
+        X_final = X_scaled
+        logger.info(f"🚫 NO PCA 转换 - 直接使用 {X_scaled.shape[1]} 个特征")
         
         # 6. 维度一致性检查
         if X_final.shape[1] != self.feature_dim:
@@ -242,50 +229,127 @@ class UnifiedFeaturePipeline:
         return numeric_features
     
     def _generate_alpha_summary_features(self, alpha_data: pd.DataFrame) -> pd.DataFrame:
-        """生成Alpha摘要特征"""
-        # 这里重用现有的Alpha摘要特征生成逻辑
-        # 为了简化，先使用PCA压缩Alpha特征
+        """生成Alpha摘要特征 - 不做PCA预处理，留给统一PCA处理"""
+        # 清洗Alpha数据但不做PCA压缩
         alpha_clean = self._clean_features(alpha_data)
         
-        if alpha_clean.shape[1] > 8:
-            # 使用PCA压缩Alpha特征
-            alpha_pca = PCA(n_components=8)
-            alpha_compressed = alpha_pca.fit_transform(alpha_clean)
-            alpha_columns = [f'alpha_pc{i+1}' for i in range(8)]
-            alpha_summary = pd.DataFrame(
-                alpha_compressed, 
-                index=alpha_clean.index, 
-                columns=alpha_columns
-            )
-        else:
-            alpha_summary = alpha_clean
-        
-        # 添加Alpha统计特征
-        alpha_summary['alpha_mean'] = alpha_clean.mean(axis=1)
-        alpha_summary['alpha_std'] = alpha_clean.std(axis=1)
-        alpha_summary['alpha_max'] = alpha_clean.max(axis=1)
-        alpha_summary['alpha_min'] = alpha_clean.min(axis=1)
-        
-        return alpha_summary
+        # 直接返回清洗后的Alpha特征，让它们与传统特征一起做统一PCA
+        return alpha_clean
     
     def _fuse_features(self, base_features: pd.DataFrame, alpha_features: pd.DataFrame) -> pd.DataFrame:
-        """融合基础特征和Alpha特征"""
-        # 使用索引交集对齐
-        common_index = base_features.index.intersection(alpha_features.index)
-        if len(common_index) == 0:
-            logger.warning("基础特征和Alpha特征无公共索引，使用长度对齐")
-            min_len = min(len(base_features), len(alpha_features))
-            fused = pd.concat([
-                base_features.iloc[:min_len], 
-                alpha_features.iloc[:min_len]
-            ], axis=1)
-        else:
-            fused = pd.concat([
-                base_features.loc[common_index], 
-                alpha_features.loc[common_index]
-            ], axis=1)
+        """融合基础特征和Alpha特征 - 修复索引对齐问题"""
         
+        # 🔥 CRITICAL FIX: 确保两者都是MultiIndex格式
+        logger.info(f"特征合并开始: base_features{base_features.shape}, alpha_features{alpha_features.shape}")
+        logger.info(f"base索引类型: {type(base_features.index)}, alpha索引类型: {type(alpha_features.index)}")
+        
+        # 1. 标准化索引格式
+        base_standardized = self._ensure_multiindex_format(base_features, "base_features")
+        alpha_standardized = self._ensure_multiindex_format(alpha_features, "alpha_features") 
+        
+        if base_standardized is None or alpha_standardized is None:
+            logger.error("❌ 特征标准化失败")
+            return base_features  # 回退到基础特征
+        
+        # 2. 使用智能索引对齐
+        try:
+            common_index = base_standardized.index.intersection(alpha_standardized.index)
+            logger.info(f"公共索引数量: {len(common_index)} / base:{len(base_standardized)} / alpha:{len(alpha_standardized)}")
+            
+            if len(common_index) > 0:
+                # 使用公共索引对齐
+                base_aligned = base_standardized.loc[common_index]
+                alpha_aligned = alpha_standardized.loc[common_index]
+                
+                # 检查列名重叠
+                overlapping_cols = set(base_aligned.columns) & set(alpha_aligned.columns)
+                if overlapping_cols:
+                    logger.warning(f"发现重叠列: {overlapping_cols}")
+                    # 重命名alpha特征以避免冲突
+                    alpha_renamed = alpha_aligned.rename(columns={col: f"alpha_{col}" for col in overlapping_cols})
+                    fused = pd.concat([base_aligned, alpha_renamed], axis=1)
+                else:
+                    fused = pd.concat([base_aligned, alpha_aligned], axis=1)
+                    
+                logger.info(f"✅ 索引对齐合并成功: {fused.shape}")
+                
+            else:
+                # 回退策略：时间戳近似对齐
+                logger.warning("⚠️ 无公共索引，尝试时间戳近似对齐")
+                fused = self._approximate_time_alignment(base_standardized, alpha_standardized)
+                
+                if fused is None:
+                    # 最后回退：长度截断对齐
+                    logger.warning("⚠️ 时间对齐失败，使用长度截断")
+                    min_len = min(len(base_standardized), len(alpha_standardized))
+                    fused = pd.concat([
+                        base_standardized.iloc[:min_len], 
+                        alpha_standardized.iloc[:min_len]
+                    ], axis=1)
+                    logger.info(f"⚠️ 长度对齐完成: {fused.shape}")
+            
+        except Exception as e:
+            logger.error(f"❌ 特征合并失败: {e}")
+            logger.info("🔄 回退到基础特征")
+            return base_features
+        
+        logger.info(f"🎯 特征合并完成: {base_features.shape} + {alpha_features.shape} → {fused.shape}")
         return fused
+    
+    def _ensure_multiindex_format(self, df: pd.DataFrame, data_name: str) -> pd.DataFrame:
+        """确保DataFrame是MultiIndex格式"""
+        if isinstance(df.index, pd.MultiIndex):
+            logger.debug(f"✅ {data_name} 已是MultiIndex格式")
+            return df
+            
+        if 'date' in df.columns and 'ticker' in df.columns:
+            try:
+                dates = pd.to_datetime(df['date'])
+                tickers = df['ticker']
+                multi_idx = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
+                
+                df_multiindex = df.drop(['date', 'ticker'], axis=1).copy()
+                df_multiindex.index = multi_idx
+                
+                logger.info(f"✅ {data_name} 转换为MultiIndex: {df_multiindex.shape}")
+                return df_multiindex
+                
+            except Exception as e:
+                logger.error(f"❌ {data_name} MultiIndex转换失败: {e}")
+                return None
+        else:
+            logger.warning(f"⚠️ {data_name} 缺少date/ticker列，无法创建MultiIndex")
+            return None
+    
+    def _approximate_time_alignment(self, base_df: pd.DataFrame, alpha_df: pd.DataFrame) -> pd.DataFrame:
+        """时间戳近似对齐策略"""
+        try:
+            # 获取日期级别的索引
+            base_dates = base_df.index.get_level_values('date').unique()
+            alpha_dates = alpha_df.index.get_level_values('date').unique()
+            
+            # 找到时间重叠范围
+            date_overlap = pd.Index(base_dates).intersection(pd.Index(alpha_dates))
+            
+            if len(date_overlap) > 0:
+                # 按日期过滤
+                base_filtered = base_df[base_df.index.get_level_values('date').isin(date_overlap)]
+                alpha_filtered = alpha_df[alpha_df.index.get_level_values('date').isin(date_overlap)]
+                
+                # 再次尝试索引交集
+                common_index = base_filtered.index.intersection(alpha_filtered.index)
+                if len(common_index) > 0:
+                    fused = pd.concat([
+                        base_filtered.loc[common_index],
+                        alpha_filtered.loc[common_index]
+                    ], axis=1)
+                    logger.info(f"✅ 时间近似对齐成功: {len(date_overlap)}个重叠日期, 最终{fused.shape}")
+                    return fused
+                    
+        except Exception as e:
+            logger.warning(f"时间近似对齐失败: {e}")
+            
+        return None
     
     def save_pipeline(self, filepath: Optional[str] = None) -> str:
         """保存特征管道"""
@@ -297,7 +361,7 @@ class UnifiedFeaturePipeline:
         pipeline_state = {
             'config': self.config,
             'scaler': self.scaler,
-            'pca': self.pca,
+            # 'pca': None,  # 🚫 REMOVED - NO PCA
             'imputer': self.imputer,
             'feature_names': self.feature_names,
             'feature_dim': self.feature_dim,
@@ -318,7 +382,7 @@ class UnifiedFeaturePipeline:
         
         self.config = pipeline_state['config']
         self.scaler = pipeline_state['scaler']
-        self.pca = pipeline_state['pca']
+        # self.pca = None  # 🚫 REMOVED - NO PCA
         self.imputer = pipeline_state['imputer']
         self.feature_names = pipeline_state['feature_names']
         self.feature_dim = pipeline_state['feature_dim']
@@ -333,8 +397,8 @@ class UnifiedFeaturePipeline:
         """创建生产级特征管道"""
         config = FeaturePipelineConfig(
             enable_alpha_summary=True,
-            enable_pca=True,
-            pca_variance_threshold=0.95,
+            enable_pca=False,  # 🚫 ALWAYS FALSE - NO PCA
+            # pca_variance_threshold=0.95,  # 🚫 REMOVED - NO PCA
             enable_scaling=True,
             scaler_type='robust',
             imputation_strategy='median',
@@ -349,12 +413,12 @@ class UnifiedFeaturePipeline:
             'feature_dim': self.feature_dim,
             'feature_names': self.feature_names[:10] if self.feature_names else None,  # 只显示前10个
             'total_features': len(self.feature_names) if self.feature_names else 0,
-            'has_pca': self.pca is not None,
+            'has_pca': False,  # 🚫 ALWAYS FALSE - NO PCA
             'has_scaler': self.scaler is not None,
             'has_imputer': self.imputer is not None,
             'config': {
                 'enable_alpha_summary': self.config.enable_alpha_summary,
-                'enable_pca': self.config.enable_pca,
+                'enable_pca': False,  # 🚫 ALWAYS FALSE - NO PCA
                 'enable_scaling': self.config.enable_scaling,
                 'scaler_type': self.config.scaler_type
             }

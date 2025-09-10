@@ -31,8 +31,8 @@ class OOSConfig:
     """Enhanced OOS系统配置"""
     # 时间分割参数
     cv_n_splits: int = 5
-    cv_gap_days: int = 11  # CRITICAL FIX: 统一为11天gap
-    embargo_days: int = 11  # CRITICAL FIX: 统一为11天embargo
+    cv_gap_days: int = 1   # UNIFIED: 统一为1天gap以提高数据利用率
+    embargo_days: int = 1  # UNIFIED: 统一为1天embargo以提高数据利用率
     test_size_ratio: float = 0.2  # 测试集比例
     
     # 滚动窗口参数

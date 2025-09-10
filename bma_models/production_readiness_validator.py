@@ -73,22 +73,42 @@ class ProductionReadinessValidator:
     """生产就绪验证器"""
     
 
-    def _align_validation_data(self, predictions: np.ndarray, labels: np.ndarray, dates: pd.Series) -> Tuple[np.ndarray, np.ndarray, pd.Series]:
-        """🔥 CRITICAL FIX: 使用IndexAligner对齐验证数据，解决738 vs 748问题"""
+    def _align_validation_data(self, predictions, labels, dates):
+        """🔥 CRITICAL FIX: 使用IndexAligner对齐验证数据，支持Series和MultiIndex"""
         try:
-            # 转换为numpy数组并展平多维数组
-            predictions = np.asarray(predictions).flatten()
-            labels = np.asarray(labels).flatten()
+            # 检查输入类型，保持Series结构以保留MultiIndex
+            if isinstance(predictions, pd.Series) and isinstance(labels, pd.Series):
+                logger.info("检测到Series输入，保持结构以保留MultiIndex")
+                # 不转换为numpy，保持Series
+                predictions_aligned = predictions
+                labels_aligned = labels
+            else:
+                # 回退到原有逻辑
+                predictions_aligned = np.asarray(predictions).flatten()
+                labels_aligned = np.asarray(labels).flatten()
+                predictions = predictions_aligned
+                labels = labels_aligned
             
-            logger.info(f"🎯 验证数据维度: pred={predictions.shape}, labels={labels.shape}, dates={len(dates)}")
+            # 记录数据维度信息
+            pred_shape = predictions.shape if hasattr(predictions, 'shape') else len(predictions)
+            label_shape = labels.shape if hasattr(labels, 'shape') else len(labels)
+            logger.info(f"🎯 验证数据维度: pred={pred_shape}, labels={label_shape}, dates={len(dates)}")
             
-            # 检查数组维度一致性
-            if predictions.ndim > 1:
-                logger.warning(f"预测数据是多维数组 {predictions.shape}，将展平为一维")
-                predictions = predictions.flatten()
-            if labels.ndim > 1:
-                logger.warning(f"标签数据是多维数组 {labels.shape}，将展平为一维")
-                labels = labels.flatten()
+            # 检查MultiIndex信息
+            if isinstance(predictions, pd.Series) and isinstance(predictions.index, pd.MultiIndex):
+                if 'ticker' in predictions.index.names:
+                    n_tickers = predictions.index.get_level_values('ticker').nunique()
+                    logger.info(f"✅ 检测到MultiIndex: {n_tickers}只股票")
+            
+            # 检查数组维度一致性（仅对numpy数组）
+            if isinstance(predictions, np.ndarray):
+                if predictions.ndim > 1:
+                    logger.warning(f"预测数据是多维数组 {predictions.shape}，将展平为一维")
+                    predictions = predictions.flatten()
+            if isinstance(labels, np.ndarray):
+                if labels.ndim > 1:
+                    logger.warning(f"标签数据是多维数组 {labels.shape}，将展平为一维")
+                    labels = labels.flatten()
             
             # 🔥 CRITICAL: 使用IndexAligner代替简单截断，确保数据完全对齐
             try:
@@ -101,9 +121,16 @@ class ProductionReadinessValidator:
                 common_index = pd.RangeIndex(min_len)
                 
                 # 准备数据用于对齐
-                pred_series = pd.Series(predictions[:min_len], index=common_index)
-                label_series = pd.Series(labels[:min_len], index=common_index)
-                date_series = pd.Series(dates.iloc[:min_len].values, index=common_index)
+                if isinstance(predictions, pd.Series):
+                    # 已经是Series，保持原样但截取到最小长度
+                    pred_series = predictions.iloc[:min_len] if hasattr(predictions, 'iloc') else predictions[:min_len]
+                    label_series = labels.iloc[:min_len] if hasattr(labels, 'iloc') else labels[:min_len]
+                else:
+                    # 转换为Series
+                    pred_series = pd.Series(predictions[:min_len], index=common_index)
+                    label_series = pd.Series(labels[:min_len], index=common_index)
+                
+                date_series = pd.Series(dates.iloc[:min_len].values, index=common_index) if not isinstance(dates, pd.Series) else dates.iloc[:min_len]
                 
                 # 使用IndexAligner对齐
                 aligned_data, alignment_report = validation_aligner.align_all_data(
@@ -112,10 +139,10 @@ class ProductionReadinessValidator:
                     dates=date_series
                 )
                 
-                # 提取对齐后的数据
-                predictions = aligned_data['predictions'].values
-                labels = aligned_data['labels'].values
-                dates = pd.Series(aligned_data['dates'].values)
+                # 提取对齐后的数据 - 保持Series结构
+                predictions = aligned_data['predictions']  # 保持为Series
+                labels = aligned_data['labels']  # 保持为Series
+                dates = aligned_data['dates']  # 保持原有结构
                 
                 logger.info(f"✅ IndexAligner验证数据对齐成功: {len(predictions)} 条, 覆盖率={alignment_report.coverage_rate:.1%}")
                 
@@ -128,10 +155,18 @@ class ProductionReadinessValidator:
                     logger.warning(f"验证数据长度不匹配: pred={len(predictions)}, labels={labels.shape}, dates={len(dates)}")
                     logger.info(f"将对齐到最小长度: {min_len}")
                 
-                # 截取到最小长度
-                predictions = predictions[:min_len]
-                labels = labels[:min_len]
-                dates = pd.Series(dates.iloc[:min_len].values) if hasattr(dates, 'iloc') else pd.Series(dates[:min_len])
+                # 截取到最小长度，保持原有数据结构
+                if isinstance(predictions, pd.Series):
+                    predictions = predictions.iloc[:min_len] if hasattr(predictions, 'iloc') else predictions[:min_len]
+                    labels = labels.iloc[:min_len] if hasattr(labels, 'iloc') else labels[:min_len]
+                else:
+                    predictions = predictions[:min_len]
+                    labels = labels[:min_len]
+                
+                if isinstance(dates, pd.Series):
+                    dates = dates.iloc[:min_len] if hasattr(dates, 'iloc') else dates[:min_len]
+                else:
+                    dates = pd.Series(dates.iloc[:min_len].values) if hasattr(dates, 'iloc') else pd.Series(dates[:min_len])
             
             predictions_aligned = predictions
             labels_aligned = labels  
@@ -139,9 +174,44 @@ class ProductionReadinessValidator:
             
             logger.info(f"数据已对齐到长度: {len(predictions_aligned)}")
             
-            # 检查和移除NaN值
-            if isinstance(predictions_aligned, np.ndarray) and isinstance(labels_aligned, np.ndarray):
-                # 创建有效数据掩码
+            # 检查和移除NaN值 - 支持Series和MultiIndex
+            if isinstance(predictions_aligned, pd.Series) and isinstance(labels_aligned, pd.Series):
+                # 对于Series，使用pandas的dropna方法保持索引结构
+                combined_df = pd.DataFrame({
+                    'predictions': predictions_aligned,
+                    'labels': labels_aligned
+                })
+                
+                # 移除任何包含NaN的行
+                nan_count = combined_df.isnull().any(axis=1).sum()
+                if nan_count > 0:
+                    logger.warning(f"发现{nan_count}个NaN值，将被移除")
+                    combined_df_clean = combined_df.dropna()
+                    
+                    predictions_clean = combined_df_clean['predictions']
+                    labels_clean = combined_df_clean['labels']
+                    
+                    # 使用相同的索引过滤日期
+                    if isinstance(dates_aligned, pd.Series):
+                        dates_clean = dates_aligned.loc[combined_df_clean.index]
+                    else:
+                        # 如果dates不是Series，创建一个
+                        dates_clean = pd.Series(dates_aligned, index=predictions_aligned.index).loc[combined_df_clean.index]
+                    
+                    logger.info(f"验证数据清理完成，最终长度: {len(predictions_clean)}")
+                    
+                    # 如果有MultiIndex，记录股票数量信息
+                    if isinstance(predictions_clean.index, pd.MultiIndex):
+                        if 'ticker' in predictions_clean.index.names:
+                            n_tickers = predictions_clean.index.get_level_values('ticker').nunique()
+                            logger.info(f"保留MultiIndex结构: {n_tickers}只股票")
+                    
+                    return predictions_clean, labels_clean, dates_clean
+                else:
+                    return predictions_aligned, labels_aligned, dates_aligned
+                    
+            elif isinstance(predictions_aligned, np.ndarray) and isinstance(labels_aligned, np.ndarray):
+                # 保留原有的numpy数组处理逻辑作为回退
                 valid_mask = ~(np.isnan(predictions_aligned) | np.isnan(labels_aligned))
                 
                 if not np.any(valid_mask):
@@ -176,8 +246,8 @@ class ProductionReadinessValidator:
         self.thresholds = thresholds or ValidationThresholds()
         
     def validate_bma_production_readiness(self,
-                                        oos_predictions: np.ndarray,
-                                        oos_true_labels: np.ndarray, 
+                                        oos_predictions,  # Union[np.ndarray, pd.Series]
+                                        oos_true_labels,  # Union[np.ndarray, pd.Series]
                                         prediction_dates: pd.Series,
                                         calibration_results: Optional[Dict] = None,
                                         weight_details: Optional[Dict] = None) -> ValidationResult:

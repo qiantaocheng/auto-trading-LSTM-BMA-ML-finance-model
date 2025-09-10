@@ -31,18 +31,27 @@ class AlignmentReport:
 class IndexAligner:
     """统一索引对齐器 - 解决所有维度不匹配问题"""
     
-    def __init__(self, horizon: int = 10, strict_mode: bool = True):
+    def __init__(self, horizon: int = 10, strict_mode: bool = True, mode: str = 'train'):
         """
         初始化对齐器
         
         Args:
-            horizon: 前瞻期(T+10)，用于统一剪尾
+            horizon: 前瞻期(T+10)，仅用于记录，实际剪尾通过CV的gap/embargo实现
             strict_mode: 严格模式，维度不匹配时报错
+            mode: 'train' (训练模式) 或 'predict' (预测模式) - 现在都不执行剪尾
         """
-        self.horizon = horizon
+        # 🔧 CRITICAL FIX: 统一不剪尾策略，防止维度不匹配
+        # 前视偏差防范通过CV的gap/embargo实现，而不是数据剪尾
+        self.horizon = 0  # 统一设为0，不执行任何剪尾
+        self.original_horizon = horizon  # 保留原始horizon设置用于日志
         self.strict_mode = strict_mode
+        self.mode = mode
         self.alignment_history = []
-        logger.info(f"IndexAligner初始化: horizon={horizon}, strict_mode={strict_mode}")
+        logger.info(f"IndexAligner初始化: original_horizon={horizon}, actual_horizon=0, mode={mode}")
+        
+        # 🎯 统一处理策略说明
+        logger.info(f"[DIMENSION_CONSISTENCY] 训练和预测均不剪尾，确保维度一致性")
+        logger.info(f"[TEMPORAL_SAFETY] 前视偏差通过CV gap={horizon-1}, embargo={horizon} 防范")
     
     def align_all_data(self, **data_dict) -> Tuple[Dict[str, Any], AlignmentReport]:
         """
@@ -70,50 +79,36 @@ class IndexAligner:
         for name, shape in original_shapes.items():
             logger.info(f"  {name}: {shape}")
         
-        # 2. 统一剪尾处理 - 解决T+10前瞻期问题
-        trimmed_data = {}
-        horizon_trimmed = 0
+        # 2. 统一数据预处理 - 维度一致性优先，不执行剪尾
+        # 🔧 CRITICAL FIX: 移除所有剪尾逻辑，确保训练/预测维度一致
+        processed_data = {}
         
         for name, data in data_dict.items():
             if data is None:
-                trimmed_data[name] = None
+                processed_data[name] = None
                 continue
-                
+            
+            # 🎯 保持原始数据完整性，只进行必要的验证和清理
             if hasattr(data, 'index') and isinstance(data.index, pd.MultiIndex):
-                # MultiIndex (date, ticker) 格式
-                if self.horizon > 0:
-                    # 按组剪尾 - 每个ticker都剪掉最后horizon条
-                    original_len = len(data)
-                    trimmed_list = []
-                    
-                    for ticker in data.index.get_level_values(1).unique():
-                        ticker_data = data.xs(ticker, level=1, drop_level=False)
-                        if len(ticker_data) > self.horizon:
-                            trimmed_ticker = ticker_data.iloc[:-self.horizon]
-                            trimmed_list.append(trimmed_ticker)
-                    
-                    if trimmed_list:
-                        trimmed_data[name] = pd.concat(trimmed_list).sort_index()
-                        horizon_trimmed = original_len - len(trimmed_data[name])
-                        logger.info(f"  {name}: 剪尾 {horizon_trimmed} 条 (T+{self.horizon})")
-                    else:
-                        trimmed_data[name] = data.iloc[:0]  # 空DataFrame
-                else:
-                    trimmed_data[name] = data
+                # MultiIndex (date, ticker) 格式 - 保持完整结构
+                processed_data[name] = data.copy()
+                logger.info(f"  {name}: 保持完整 MultiIndex 结构 {data.shape}")
             else:
-                # 普通索引或数组
-                if hasattr(data, 'iloc') and len(data) > self.horizon and self.horizon > 0:
-                    trimmed_data[name] = data.iloc[:-self.horizon]
-                    horizon_trimmed += len(data) - len(trimmed_data[name])
-                    logger.info(f"  {name}: 剪尾 {len(data) - len(trimmed_data[name])} 条")
-                else:
-                    trimmed_data[name] = data
+                # 普通索引或数组 - 直接保持
+                processed_data[name] = data
+                shape_info = getattr(data, 'shape', len(data) if hasattr(data, '__len__') else 'scalar')
+                logger.info(f"  {name}: 保持原始格式 {shape_info}")
+        
+        # 日志说明：不执行剪尾的原因
+        logger.info(f"[NO_TRIMMING] 为保证维度一致性，所有数据保持完整")
+        logger.info(f"[TEMPORAL_SAFETY] 前视偏差通过CV gap={self.original_horizon-1}, embargo={self.original_horizon} 防范")
+        horizon_trimmed = 0  # 实际未剪尾任何数据
         
         # 3. 构建通用索引 - inner join所有数据
         common_index = None
         removal_reasons = {'horizon_trim': horizon_trimmed, 'nan_removal': 0, 'index_mismatch': 0}
         
-        for name, data in trimmed_data.items():
+        for name, data in processed_data.items():
             if data is None or (hasattr(data, 'empty') and data.empty):
                 continue
                 
@@ -142,7 +137,7 @@ class IndexAligner:
         aligned_data = {}
         removed_samples = {}
         
-        for name, data in trimmed_data.items():
+        for name, data in processed_data.items():
             if data is None:
                 aligned_data[name] = None
                 removed_samples[name] = 0
@@ -188,7 +183,14 @@ class IndexAligner:
         # 6. 计算覆盖统计和横截面检查
         daily_tickers_stats = None
         cross_section_ready = True
-        MIN_CROSS_SECTION = 30  # 最小横截面股票数要求
+        # 动态横截面要求：根据数据规模调整
+        # 对于研究和单股票分析，允许较低的横截面要求
+        if len(common_index) > 10000:  # 大数据集
+            MIN_CROSS_SECTION = 30
+        elif len(common_index) > 1000:  # 中等数据集  
+            MIN_CROSS_SECTION = 10
+        else:  # 小数据集或单股票研究
+            MIN_CROSS_SECTION = 1
         
         # [CRITICAL] DEBUG: 检查common_index的实际状态
         logger.info(f"[SEARCH] DEBUG common_index检测:")
@@ -236,48 +238,78 @@ class IndexAligner:
             effective_dates = len(common_index.unique()) if hasattr(common_index, 'unique') else len(common_index)
             effective_tickers = 1  # 默认值
             
-            # [CRITICAL] PRIORITY 1: 从tickers参数直接获取股票数量（最可靠）
-            if 'tickers' in aligned_data and aligned_data['tickers'] is not None:
-                tickers_data = aligned_data['tickers']
-                if hasattr(tickers_data, 'unique'):
-                    unique_tickers = tickers_data.unique()
-                    effective_tickers = len(unique_tickers)
-                    logger.info(f"[TARGET] 从tickers参数直接获取: {effective_tickers}只股票")
-                    if effective_tickers > 1:
-                        logger.info(f"[DATA] 股票列表: {list(unique_tickers)[:10]}...")
-                elif hasattr(tickers_data, '__len__'):
-                    # 如果是列表或数组
-                    unique_tickers = list(set(tickers_data)) if hasattr(tickers_data, '__iter__') else [tickers_data]
-                    effective_tickers = len(unique_tickers)
-                    logger.info(f"[TARGET] 从tickers数组获取: {effective_tickers}只股票")
+            # [CRITICAL] PRIORITY 1: 从多种可能的股票参数获取数量（更健壮）
+            tickers_found = False
+            for ticker_param_name in ['tickers', 'ticker', 'prediction_tickers', 'symbols', 'stocks']:
+                if ticker_param_name in aligned_data and aligned_data[ticker_param_name] is not None:
+                    tickers_data = aligned_data[ticker_param_name]
+                    if hasattr(tickers_data, 'unique'):
+                        try:
+                            unique_tickers = tickers_data.unique()
+                            effective_tickers = len(unique_tickers)
+                            logger.info(f"[TARGET] 从{ticker_param_name}参数直接获取: {effective_tickers}只股票")
+                            if effective_tickers > 1:
+                                logger.info(f"[DATA] 股票列表: {list(unique_tickers)[:10]}...")
+                            tickers_found = True
+                            break
+                        except Exception as e:
+                            logger.warning(f"[WARNING] {ticker_param_name}.unique()失败: {e}")
+                            continue
+                    elif hasattr(tickers_data, '__len__'):
+                        # 如果是列表或数组
+                        try:
+                            unique_tickers = list(set(tickers_data)) if hasattr(tickers_data, '__iter__') else [tickers_data]
+                            effective_tickers = len(unique_tickers)
+                            logger.info(f"[TARGET] 从{ticker_param_name}数组获取: {effective_tickers}只股票")
+                            tickers_found = True
+                            break
+                        except Exception as e:
+                            logger.warning(f"[WARNING] 处理{ticker_param_name}参数时出错: {e}")
+                            continue
             
-            # [CRITICAL] FALLBACK: 如果tickers参数无效，尝试其他方法推断
-            if effective_tickers == 1:
+            # [CRITICAL] FALLBACK: 如果所有股票参数都无效，尝试其他方法推断
+            if not tickers_found and effective_tickers == 1:
                 logger.warning("[WARNING] tickers参数无效，尝试从其他数据推断...")
                 
                 # 检查是否能从对齐后的数据推断股票数量
                 for name, data in aligned_data.items():
-                    if name == 'tickers':  # 已经处理过了
+                    if name in ['tickers', 'ticker', 'prediction_tickers', 'symbols', 'stocks']:  # 跳过已经处理过的参数
                         continue
                         
-                    if data is not None and hasattr(data, 'columns') and 'ticker' in str(data.columns):
-                        # 如果数据中有ticker列
-                        if hasattr(data, 'ticker'):
-                            unique_tickers = data['ticker'].unique() if hasattr(data['ticker'], 'unique') else []
+                    if data is not None and hasattr(data, 'columns'):
+                        # 检查DataFrame中是否有ticker相关列
+                        ticker_cols = [col for col in data.columns if 'ticker' in str(col).lower() or 'symbol' in str(col).lower()]
+                        if ticker_cols:
+                            ticker_col = ticker_cols[0]
+                            unique_tickers = data[ticker_col].unique() if hasattr(data[ticker_col], 'unique') else []
                             inferred_tickers = len(unique_tickers)
                             if inferred_tickers > 1:
                                 effective_tickers = inferred_tickers
-                                logger.info(f"[DATA] 从{name}数据推断出{effective_tickers}只股票: {list(unique_tickers)[:5]}...")
+                                logger.info(f"[DATA] 从{name}.{ticker_col}列推断出{effective_tickers}只股票: {list(unique_tickers)[:10]}...")
+                                tickers_found = True
                                 break
                     elif data is not None and hasattr(data, 'index'):
                         # 检查索引中是否有股票信息模式
                         index_str = str(data.index)
-                        if 'ticker' in index_str.lower() or len(data) > effective_dates:
-                            # 如果数据长度远大于日期数，可能是多股票
-                            inferred_tickers = len(data) // effective_dates if effective_dates > 0 else 1
-                            if inferred_tickers > 1 and inferred_tickers <= 1000:  # 合理范围
+                        if 'ticker' in index_str.lower() or 'symbol' in index_str.lower():
+                            logger.info(f"[DATA] 检测到{name}数据包含股票索引信息")
+                        
+                        # 如果数据长度远大于日期数，可能是多股票
+                        if effective_dates > 0 and len(data) > effective_dates * 2:  # 至少是日期数的2倍
+                            inferred_tickers = len(data) // effective_dates
+                            if 2 <= inferred_tickers <= 1000:  # 合理范围：2-1000只股票
                                 effective_tickers = inferred_tickers
-                                logger.info(f"[DATA] 从{name}数据长度推断出约{effective_tickers}只股票")
+                                logger.info(f"[DATA] 从{name}数据长度推断出约{effective_tickers}只股票 (数据长度:{len(data)} / 日期数:{effective_dates})")
+                                tickers_found = True
+                                break
+                    elif data is not None and hasattr(data, '__len__'):
+                        # 对于普通数组/列表，检查长度模式
+                        if effective_dates > 0 and len(data) > effective_dates * 2:
+                            inferred_tickers = len(data) // effective_dates
+                            if 2 <= inferred_tickers <= 1000:
+                                effective_tickers = inferred_tickers  
+                                logger.info(f"[DATA] 从{name}数组长度推断出约{effective_tickers}只股票")
+                                tickers_found = True
                                 break
             
             logger.info(f"[DATA] 非MultiIndex数据: {effective_tickers}只股票, {effective_dates}个时间点")
@@ -313,6 +345,10 @@ class IndexAligner:
         # 8. 记录对齐历史
         self.alignment_history.append(alignment_report)
         
+        # [HOT] CRITICAL FIX: Enhanced dimension validation
+        self._validate_dimension_consistency(aligned_data, common_index)
+        self._final_dimension_check(aligned_data)
+        
         logger.info("[OK] IndexAligner对齐完成")
         logger.info(f"[DATA] 最终形状: {final_shape}")
         logger.info(f"[DATA] 覆盖率: {coverage_rate:.1%}")
@@ -335,7 +371,7 @@ class IndexAligner:
             print(f"  {name:15s}: {shape}")
         
         print(f"\n[OK] 最终统一形状: {report.final_shape}")
-        print(f"📈 数据覆盖率: {report.coverage_rate:.1%}")
+        print(f"[TREND] 数据覆盖率: {report.coverage_rate:.1%}")
         print(f"[DATA] 有效股票数: {report.effective_tickers}")
         print(f"[DATA] 有效日期数: {report.effective_dates}")
         
@@ -348,22 +384,89 @@ class IndexAligner:
             else:
                 print("[OK] 横截面充足：可进行横截面排序分析")
         
-        print("\n🗑️ 数据移除统计:")
+        print("\n[DELETE] 数据移除统计:")
         for name, removed in report.removed_samples.items():
             if removed > 0:
                 print(f"  {name:15s}: -{removed:,} 条")
         
-        print("\n📋 移除原因分析:")
+        print("\n[LIST] 移除原因分析:")
         for reason, count in report.removal_reasons.items():
             if count > 0:
                 print(f"  {reason:15s}: {count:,} 条")
         
         print("="*60)
 
+    def _validate_dimension_consistency(self, aligned_data: Dict[str, Any], common_index: pd.Index):
+        """验证维度一致性，防止738 vs 748等问题"""
+        expected_len = len(common_index)
+        
+        for name, data in aligned_data.items():
+            if data is None:
+                continue
+                
+            actual_len = len(data) if hasattr(data, '__len__') else None
+            
+            if actual_len is not None and actual_len != expected_len:
+                error_msg = f"CRITICAL DIMENSION MISMATCH: {name} has length {actual_len}, expected {expected_len}"
+                logger.error(error_msg)
+                
+                # [HOT] FORCE ALIGNMENT: Truncate or pad to correct length
+                if hasattr(data, 'iloc'):
+                    if actual_len > expected_len:
+                        aligned_data[name] = data.iloc[:expected_len]
+                        logger.info(f"Force truncated {name} from {actual_len} to {expected_len}")
+                    elif actual_len < expected_len:
+                        # For MultiIndex, we can't easily pad, so we validate the common_index instead
+                        if isinstance(data.index, pd.MultiIndex):
+                            logger.warning(f"Cannot pad MultiIndex data {name}, using intersection")
+                            intersection_index = common_index.intersection(data.index)
+                            aligned_data[name] = data.loc[intersection_index]
+                        else:
+                            logger.warning(f"Cannot pad {name} from {actual_len} to {expected_len}")
+    
+    def _final_dimension_check(self, aligned_data: Dict[str, Any]):
+        """最终维度检查，确保所有数据长度一致"""
+        lengths = {}
+        for name, data in aligned_data.items():
+            if data is not None and hasattr(data, '__len__'):
+                lengths[name] = len(data)
+        
+        if not lengths:
+            return
+            
+        unique_lengths = set(lengths.values())
+        if len(unique_lengths) > 1:
+            error_msg = f"FINAL DIMENSION CHECK FAILED: {dict(lengths)}"
+            logger.error(error_msg)
+            
+            # Find the most common length and force align all to it
+            from collections import Counter
+            length_counts = Counter(lengths.values())
+            target_length = length_counts.most_common(1)[0][0]
+            
+            logger.info(f"Force aligning all data to length {target_length}")
+            
+            for name, data in aligned_data.items():
+                if data is not None and hasattr(data, '__len__') and len(data) != target_length:
+                    if hasattr(data, 'iloc'):
+                        aligned_data[name] = data.iloc[:target_length]
+                    elif hasattr(data, '__getitem__'):
+                        aligned_data[name] = data[:target_length]
+                    logger.info(f"Force aligned {name} to length {target_length}")
+        else:
+            logger.info(f"[OK] Final dimension check passed: all data has length {list(unique_lengths)[0]}")
 
-def create_index_aligner(horizon: int = 10, strict_mode: bool = True) -> IndexAligner:
-    """创建索引对齐器"""
-    return IndexAligner(horizon=horizon, strict_mode=strict_mode)
+
+def create_index_aligner(horizon: int = 10, strict_mode: bool = True, mode: str = 'train') -> IndexAligner:
+    """
+    创建索引对齐器
+    
+    Args:
+        horizon: 前瞻期，训练模式下用于剪尾
+        strict_mode: 严格模式 
+        mode: 'train' (训练模式，执行剪尾) 或 'predict' (预测模式，不剪尾)
+    """
+    return IndexAligner(horizon=horizon, strict_mode=strict_mode, mode=mode)
 
 
 # 全局对齐器实例

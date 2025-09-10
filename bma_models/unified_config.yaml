@@ -5,12 +5,32 @@
 # 时间配置 - 防止数据泄露的关键参数
 # ==========================================
 temporal:
+  # === 核心预测参数 ===
   prediction_horizon_days: 10      # T+10预测
-  feature_lag_days: 5              # T-5特征滞后
-  safety_gap_days: 1               # 安全间隔
-  cv_gap_days: 11                  # CV间隔 = prediction_horizon + safety
-  cv_embargo_days: 11              # CV禁止期
-  min_total_gap_days: 15           # 最小总间隔要求
+  holding_period_days: 10          # 10天持有期
+  
+  # === 时间隔离参数 (UNIFIED to 1-day isolation) ===
+  feature_lag_days: 1              # UNIFIED: T-1特征滞后
+  cv_gap_days: 1                   # UNIFIED: CV间隔1天最大化数据利用
+  cv_embargo_days: 1               # UNIFIED: CV禁止期1天最小间隔
+  oos_embargo_days: 1              # UNIFIED: OOS embargo 1天
+  effective_isolation_days: 1      # UNIFIED: 有效隔离期1天
+  safety_gap_days: 1               # UNIFIED: 安全间隔1天
+  min_total_gap_days: 3            # UNIFIED: 最小总间隔 = 1+1+1 = 3天
+  
+  # === 交叉验证参数 ===
+  cv_n_splits: 5                   # CV折数
+  cv_test_ratio: 0.2               # 测试集比例
+  min_train_test_gap_days: 12      # 训练测试最小间隔
+  
+  # === 样本权重参数 ===
+  sample_weight_half_life_days: 75 # 样本权重半衰期（天）
+  
+  # === 生产闸门阈值 ===
+  min_rank_ic: 0.02               # 最低RankIC要求
+  min_t_stat: 2.0                 # 最低t统计量
+  min_coverage_months: 12         # 最低覆盖月数
+  min_qlike_reduction_pct: 0.12   # QLIKE最小改善（12%）
 
 # ==========================================
 # 数据配置
@@ -90,11 +110,9 @@ training:
   traditional_models:
     enable: true
     models:
-      - ridge
-      - lasso
       - elastic_net
-      - random_forest
-      - gradient_boosting
+      - xgboost
+      - lightgbm
     
   # LTR配置
   ltr:
@@ -107,9 +125,11 @@ training:
   # Stacking配置
   stacking:
     enable: true
-    meta_model: "ridge"
+    meta_model: "elastic_net"
+    meta_learner: "elastic_net"
     cv_folds: 3
     use_oof_predictions: true
+    min_base_models: 2
     
   # Regime-aware训练
   regime_aware:

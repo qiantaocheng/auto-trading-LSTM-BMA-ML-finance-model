@@ -71,10 +71,16 @@ class TimeSeriesSafePCA:
         else:
             data = alpha_data.copy()
         
-        # 确保日期列存在且为datetime
+        # 确保日期列存在且为datetime - 支持MultiIndex
         if date_column not in data.columns:
-            logger.error(f"缺少日期列: {date_column}")
-            return pd.DataFrame(), {}
+            # Check if date is in the index (MultiIndex case)
+            if hasattr(data.index, 'names') and date_column in data.index.names:
+                # Reset index to make date a column
+                data = data.reset_index()
+                logger.info(f"从MultiIndex中提取日期列: {date_column}")
+            else:
+                logger.error(f"缺少日期列: {date_column}")
+                return pd.DataFrame(), {}
         
         data[date_column] = pd.to_datetime(data[date_column])
         
@@ -159,11 +165,14 @@ class TimeSeriesSafePCA:
         rename_dict = {col: f'alpha_pca_{i+1}' for i, col in enumerate(pca_cols)}
         final_result = final_result.rename(columns=rename_dict)
         
-        # 设置MultiIndex（如果原数据是MultiIndex）
-        if isinstance(alpha_data.index, pd.MultiIndex):
-            if 'ticker' in final_result.columns:
-                final_result = final_result.set_index([date_column, 'ticker'])
-                final_result.index.names = ['date', 'ticker']
+        # 设置MultiIndex（如果有date和ticker列）
+        if date_column in final_result.columns and 'ticker' in final_result.columns:
+            final_result = final_result.set_index([date_column, 'ticker'])
+            final_result.index.names = ['date', 'ticker']
+            logger.info(f"[DEBUG] TimeSafePCA恢复MultiIndex结构 - 形状: {final_result.shape}")
+        elif isinstance(alpha_data.index, pd.MultiIndex):
+            # 保持原始MultiIndex结构
+            logger.info(f"[DEBUG] TimeSafePCA保持原始MultiIndex结构")
         
         stats['final_shape'] = final_result.shape
         stats['avg_components'] = np.mean([len(self.pca_models[date]['n_components']) 

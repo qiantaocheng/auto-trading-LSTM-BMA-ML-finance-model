@@ -1,65 +1,290 @@
 alphas:
-  - name: "momentum_1d"
-    function: "momentum"
-    period: 1
-    weight_hint: 0.15
-    decay: 10
-    enabled: true
-  
   - name: "momentum_5d" 
     function: "momentum"
     period: 5
-    weight_hint: 0.12
     decay: 15
     enabled: true
     
   - name: "momentum_20d"
     function: "momentum" 
     period: 20
-    weight_hint: 0.08
     decay: 20
     enabled: true
     
-  - name: "mean_reversion_5d"
+  - name: "mean_reversion_10d"
     function: "mean_reversion"
-    period: 5
-    weight_hint: 0.18
-    decay: 12
+    period: 10
+    decay: 20
     enabled: true
     
   - name: "mean_reversion_20d"
     function: "mean_reversion"
     period: 20
-    weight_hint: 0.15
     decay: 18
     enabled: true
     
   - name: "volatility_5d"
     function: "volatility"
     period: 5
-    weight_hint: 0.10
     decay: 8
     enabled: true
     
   - name: "volume_ratio"
     function: "volume_ratio"
     period: 20
-    weight_hint: 0.08
     decay: 10
     enabled: true
     
   - name: "rsi_14d"
     function: "rsi"
     period: 14
-    weight_hint: 0.06
     decay: 14
     enabled: true
     
   - name: "price_position"
     function: "price_position"
     period: 20
-    weight_hint: 0.08
     decay: 15
+    enabled: true
+
+  # 基本面因子
+  - name: "earnings_yield"
+    function: "earnings_yield"
+    period: 252
+    decay: 60
+    enabled: true
+
+  - name: "book_to_market"
+    function: "pb_ratio"
+    period: 252
+    decay: 60
+    enabled: true
+
+  - name: "roe_factor"
+    function: "roe_neutralized"
+    period: 252
+    decay: 60
+    enabled: true
+
+  - name: "sales_yield"
+    function: "sales_yield"
+    period: 252
+    decay: 60
+    enabled: true
+
+  # 质量因子
+  - name: "piotroski_score"
+    function: "piotroski_score"
+    period: 252
+    decay: 90
+    enabled: true
+
+  - name: "altman_score"
+    function: "altman_score"
+    period: 252
+    decay: 90
+    enabled: true
+
+  # 流动性因子
+  # amihud_illiquidity removed - too short-term for T+10
+
+  # 动量因子扩展
+  - name: "reversal_10d"
+    function: "reversal_10"
+    period: 10
+    decay: 15
+    enabled: true
+
+  - name: "momentum_6_1"
+    function: "momentum_6_1"
+    period: 21
+    decay: 15
+    enabled: true
+
+  - name: "residual_momentum"
+    function: "residual_momentum"
+    period: 60
+    decay: 20
+    enabled: true
+
+  - name: "new_high_proximity"
+    function: "new_high_proximity"
+    period: 252
+    decay: 30
+    enabled: true
+
+  # 技术指标因子
+  - name: "technical_sma_20"
+    function: "technical_sma_20"
+    period: 20
+    decay: 15
+    enabled: true
+
+  - name: "technical_macd_10d"
+    function: "technical_macd_10d"
+    period: 10
+    decay: 20
+    enabled: true
+
+  - name: "technical_bb_position_10d"
+    function: "technical_bb_position_10d"
+    period: 10
+    decay: 18
+    enabled: true
+
+  # 风险因子
+  - name: "low_beta"
+    function: "low_beta"
+    period: 252
+    decay: 60
+    enabled: true
+
+  - name: "idiosyncratic_vol"
+    function: "idiosyncratic_vol"
+    period: 60
+    decay: 20
+    enabled: true
+
+  - name: "risk_max_drawdown"
+    function: "risk_max_drawdown"
+    period: 252
+    decay: 30
+    enabled: true
+
+  # 盈利能力因子
+  - name: "gross_margin"
+    function: "gross_margin"
+    period: 252
+    decay: 90
+    enabled: true
+
+  - name: "operating_profitability"
+    function: "operating_profitability"
+    period: 252
+    decay: 90
+    enabled: true
+
+  - name: "roic_neutralized"
+    function: "roic_neutralized"
+    period: 252
+    decay: 90
+    enabled: true
+
+  # 应计项目因子
+  - name: "total_accruals"
+    function: "total_accruals"
+    period: 252
+    decay: 120
+    enabled: true
+
+  - name: "asset_growth"
+    function: "asset_growth"
+    period: 252
+    decay: 120
+    enabled: true
+
+  # 质量因子扩展
+  - name: "ohlson_score"
+    function: "ohlson_score"
+    period: 252
+    decay: 90
+    enabled: true
+
+  - name: "qmj_score"
+    function: "qmj_score"
+    period: 252
+    decay: 90
+    enabled: true
+
+  # 情绪因子
+  - name: "market_sentiment_10d"
+    function: "market_sentiment_10d"
+    period: 10
+    decay: 25
+    enabled: true
+
+  - name: "sentiment_momentum_10d"
+    function: "sentiment_momentum_10d"
+    period: 10
+    decay: 30
+    enabled: true
+
+  # 估值因子扩展
+  - name: "ebit_ev"
+    function: "ebit_ev"
+    period: 252
+    decay: 60
+    enabled: true
+
+  - name: "fcf_ev"
+    function: "fcf_ev"
+    period: 252
+    decay: 60
+    enabled: true
+
+  # 流动性扩展
+  # bid_ask_spread and volume_turnover removed - too short-term for T+10
+
+  # 投资因子
+  - name: "investment_factor"
+    function: "investment_factor"
+    period: 252
+    decay: 120
+    enabled: true
+
+  - name: "net_equity_issuance"
+    function: "net_equity_issuance"
+    period: 252
+    decay: 120
+    enabled: true
+
+  # 更多基本面因子
+  - name: "earnings_surprise"
+    function: "earnings_surprise"
+    period: 63
+    decay: 30
+    enabled: true
+
+  - name: "analyst_revision"
+    function: "analyst_revision"
+    period: 63
+    decay: 30
+    enabled: true
+
+  - name: "net_margin"
+    function: "net_margin"
+    period: 252
+    decay: 90
+    enabled: true
+
+  - name: "cash_yield"
+    function: "cash_yield"
+    period: 252
+    decay: 90
+    enabled: true
+
+  - name: "shareholder_yield"
+    function: "shareholder_yield"
+    period: 252
+    decay: 90
+    enabled: true
+
+  - name: "working_capital_accruals"
+    function: "working_capital_accruals"
+    period: 252
+    decay: 120
+    enabled: true
+
+  - name: "net_operating_assets"
+    function: "net_operating_assets"
+    period: 252
+    decay: 120
+    enabled: true
+
+  - name: "earnings_stability"
+    function: "earnings_stability"
+    period: 252
+    decay: 90
     enabled: true
 
 # Alpha processing settings

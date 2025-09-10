@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple, Any, Callable
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import RobustScaler
-from sklearn.model_selection import TimeSeriesSplit
+from bma_models.unified_purged_cv_factory import create_unified_cv
 
 # Configure logging first
 import logging
@@ -51,15 +51,7 @@ except ImportError:
         TechnicalIndicatorOptimizer = None
         ParameterConfig = None
 
-try:
-    from .dynamic_factor_weighting import DynamicFactorWeighter, calculate_dynamic_factor_weights_predictive_safe
-except ImportError:
-    try:
-        from dynamic_factor_weighting import DynamicFactorWeighter, calculate_dynamic_factor_weights_predictive_safe
-    except ImportError:
-        logger.warning("DynamicFactorWeighter not available, using equal weights")
-        DynamicFactorWeighter = None
-        calculate_dynamic_factor_weights_predictive_safe = None
+# Dynamic factor weighting removed - using pure PCA approach
 
 # 为了兼容性，创建别名
 cross_sectional_standardize = standardize_cross_sectional_predictive_safe
@@ -69,13 +61,22 @@ cross_sectional_standardize = standardize_cross_sectional_predictive_safe
 class AlphaStrategiesEngine:
     """Alpha Strategy Engine: Unified computation, neutralization, ranking, gating"""
     
-    def __init__(self, config_path: str = "alphas_config.yaml"):
+    def __init__(self, config_path: str = None):
         """
         Initialize Alpha Strategy Engine
         
         Args:
-            config_path: Configuration file path
+            config_path: Configuration file path (auto-detect if None)
         """
+        # Auto-detect data availability and choose appropriate config
+        if config_path is None:
+            self.data_availability = self._detect_data_availability()
+            if self.data_availability['has_fundamental_data']:
+                config_path = "alphas_config.yaml"
+            else:
+                config_path = "alphas_config_delayed_data.yaml"
+                logger.info("🟡 检测到无基本面数据访问权限，自动切换到延迟数据配置")
+        
         self.config = self._load_config(config_path)
         self.alpha_functions = self._register_alpha_functions()
             
@@ -84,7 +85,7 @@ class AlphaStrategiesEngine:
         # All factors integrated into this module, no external dependencies needed
         logger.info("All Alpha factors integrated into this module")
         
-        # ✅ NEW: 导入因子滞后配置
+        # [OK] NEW: 导入因子滞后配置
         try:
             from factor_lag_config import factor_lag_manager
             self.lag_manager = factor_lag_manager
@@ -93,30 +94,85 @@ class AlphaStrategiesEngine:
             logger.warning("因子滞后配置未找到，使用默认全局滞后")
             self.lag_manager = None
         
-        # ✅ PERFORMANCE FIX: Initialize parameter optimizer
+        # [OK] PERFORMANCE FIX: Initialize parameter optimizer
         if TechnicalIndicatorOptimizer is not None:
             self.parameter_optimizer = TechnicalIndicatorOptimizer()
         else:
             self.parameter_optimizer = None
         self.optimized_parameters = {}
         
-        # ✅ PERFORMANCE FIX: Initialize dynamic factor weighter
-        if DynamicFactorWeighter is not None:
-            self.factor_weighter = DynamicFactorWeighter()
-        else:
-            self.factor_weighter = None
-        self.dynamic_weights = {}
+        # Dynamic factor weighting removed
         
         # Statistics
         self.stats = {
             'computation_times': {},
             'cache_hits': 0,
             'cache_misses': 0,
-            'neutralization_stats': {},
-            'ic_stats': {}
+            'neutralization_stats': {}
         }
         
+        # Initialize data providers for fundamental data
+        self._init_data_providers()
+        
         logger.info(f"Alpha Strategy Engine initialized, loaded {len(self.config['alphas'])} factors")
+    
+    def _safe_groupby_apply(self, df: pd.DataFrame, groupby_col: str, apply_func, *args, **kwargs) -> pd.Series:
+        """
+        🔧 CRITICAL FIX: MultiIndex安全的groupby操作
+        统一处理groupby.apply，避免reset_index破坏MultiIndex结构
+        """
+        if isinstance(df.index, pd.MultiIndex) and groupby_col in df.index.names:
+            # MultiIndex情况：按指定level进行groupby
+            result = df.groupby(level=groupby_col).apply(apply_func, *args, **kwargs)
+            # 清理多余的索引层级
+            if hasattr(result, 'index') and result.index.nlevels > df.index.nlevels:
+                result = result.droplevel(0)
+            return result
+        elif groupby_col in df.columns:
+            # 普通DataFrame情况：按列进行groupby
+            if isinstance(df.index, pd.MultiIndex):
+                # 如果原来是MultiIndex，尽量保持结构
+                result = df.groupby(groupby_col).apply(apply_func, *args, **kwargs)
+                return result  # 保持结果的索引结构
+            else:
+                # 完全普通的情况
+                result = df.groupby(groupby_col).apply(apply_func, *args, **kwargs)
+                if hasattr(result, 'reset_index'):
+                    return result.reset_index(level=0, drop=True)
+                return result
+        else:
+            # 兼容原有逻辑
+            logger.warning(f"⚠️ groupby列 '{groupby_col}' 不在索引或列中，使用原始数据")
+            return apply_func(df, *args, **kwargs)
+    
+    def _detect_data_availability(self) -> Dict:
+        """检测可用的数据类型和API访问权限"""
+        availability = {
+            'has_fundamental_data': False,
+            'has_options_data': False,
+            'has_news_data': False,
+            'has_realtime_data': False
+        }
+        
+        try:
+            # 尝试获取一个测试股票的基本面数据
+            from bma_models.polygon_client import polygon_client
+            test_data = polygon_client.get_financials('AAPL', limit=1)
+            
+            # 如果没有错误且有数据，则有基本面数据访问权限
+            if test_data and 'results' in test_data and test_data['results']:
+                availability['has_fundamental_data'] = True
+                logger.info("[OK] 检测到基本面数据访问权限")
+            else:
+                logger.info("[ERROR] 无基本面数据访问权限 - 使用技术因子模式")
+            
+            # 可以添加其他数据类型的检测
+            # TODO: 检测期权数据、新闻数据等
+            
+        except Exception as e:
+            logger.warning(f"数据可用性检测失败: {e}")
+        
+        return availability
     
     def decay_linear(self, series: pd.Series, decay: int) -> pd.Series:
         """
@@ -146,11 +202,11 @@ class AlphaStrategiesEngine:
                     if len(window_data) == decay:
                         result.iloc[i] = float((window_data.values * weights).sum())
             
-            return result.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(result, df)
             
         except Exception as e:
             logger.warning(f"线性衰减计算失败: {e}")
-            return series.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(series, df)
     
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration file"""
@@ -181,94 +237,203 @@ class AlphaStrategiesEngine:
         }
     
     def _register_alpha_functions(self) -> Dict[str, Callable]:
-        """Register Alpha computation functions - All factors integrated"""
+        """Register FOCUSED 25 Alpha computation functions - Only selected high-value factors"""
         return {
-            # Technical factors
-            'momentum': self._compute_momentum,
-            'momentum_6_1': self._compute_momentum_6_1,
-            'reversal': self._compute_reversal,
-            'reversal_5': self._compute_reversal_5,
-            'mean_reversion': self._compute_mean_reversion,
-            'volume_ratio': self._compute_volume_ratio,
+            # FOCUSED 25 FACTORS - All others commented out
+            
+            # Momentum factors (3/25)
+            'momentum_10d': self._compute_momentum_10d,
+            'momentum_20d': self._compute_momentum_20d,
+            'momentum_reversal_short': self._compute_momentum_reversal_short,
+            
+            # Mean reversion factors (4/25)
             'rsi': self._compute_rsi,
-            'price_position': self._compute_price_position,
-            'volatility': self._compute_volatility,
-            'volume_turnover': self._compute_volume_turnover,
-            'amihud': self._compute_amihud_illiquidity,
-            'amihud_illiq': self._compute_amihud_illiquidity_new,
-            'bid_ask_spread': self._compute_bid_ask_spread,
-            'residual_momentum': self._compute_residual_momentum,
-            'pead': self._compute_pead,
+            'bollinger_position': self._compute_bollinger_position,
+            'price_to_ma20': self._compute_price_to_ma20,
+            'bollinger_squeeze': self._compute_bollinger_squeeze,
             
-            # Extended momentum factors
-            'new_high_proximity': self._compute_52w_new_high_proximity,
-            'low_beta': self._compute_low_beta_anomaly,
-            'idiosyncratic_vol': self._compute_idiosyncratic_volatility,
+            # Volume factors (2/25)
+            'obv_momentum': self._compute_obv_momentum,
+            'ad_line': self._compute_ad_line,
             
-            # Fundamental factors
-            'earnings_surprise': self._compute_earnings_surprise,
-            'analyst_revision': self._compute_analyst_revision,
-            'ebit_ev': self._compute_ebit_ev,
-            'fcf_ev': self._compute_fcf_ev,
-            'earnings_yield': self._compute_earnings_yield,
-            'sales_yield': self._compute_sales_yield,
+            # Volatility factors (2/25)
+            'atr_20d': self._compute_atr_20d,
+            'atr_ratio': self._compute_atr_ratio,
             
-            # Profitability factors
-            'gross_margin': self._compute_gross_margin,
-            'operating_profitability': self._compute_operating_profitability,
-            'roe_neutralized': self._compute_roe_neutralized,
-            'roic_neutralized': self._compute_roic_neutralized,
-            'net_margin': self._compute_net_margin,
-            'cash_yield': self._compute_cash_yield,
-            'shareholder_yield': self._compute_shareholder_yield,
+            # Technical factors (4/25)
+            'macd_histogram': self._compute_macd_histogram,
+            'stoch_k': self._compute_stoch_k,
+            'cci': self._compute_cci,
+            'mfi': self._compute_mfi,
             
-            # Accrual factors
-            'total_accruals': self._compute_total_accruals,
-            'working_capital_accruals': self._compute_working_capital_accruals,
-            'net_operating_assets': self._compute_net_operating_assets,
-            'asset_growth': self._compute_asset_growth,
-            'net_equity_issuance': self._compute_net_equity_issuance,
-            'investment_factor': self._compute_investment_factor,
+            # Fundamental factors (10/25)
+            'market_cap_proxy': self._compute_market_cap_proxy,
+            'value_proxy': self._compute_value_proxy,
+            'quality_proxy': self._compute_quality_proxy,
+            'profitability_proxy': self._compute_profitability_proxy,
+            'liquidity_factor': self._compute_liquidity_factor,
+            'growth_proxy': self._compute_growth_proxy,
+            'profitability_momentum': self._compute_profitability_momentum,
+            'growth_acceleration': self._compute_growth_acceleration,
+            'quality_consistency': self._compute_quality_consistency,
+            'financial_resilience': self._compute_financial_resilience,
             
-            # Quality score factors
-            'piotroski_score': self._compute_piotroski_score,
-            'ohlson_score': self._compute_ohlson_score,
-            'altman_score': self._compute_altman_score,
-            'qmj_score': self._compute_qmj_score,
-            'earnings_stability': self._compute_earnings_stability,
+            # ===== ALL OTHER FACTORS COMMENTED OUT =====
             
-            # Sentiment factors (独立的机器学习特征，无硬编码权重)
-            'news_sentiment': self._compute_news_sentiment,
-            'market_sentiment': self._compute_market_sentiment,
-            'fear_greed_sentiment': self._compute_fear_greed_sentiment,
-            'sentiment_momentum': self._compute_sentiment_momentum,
+            # OLD Technical factors - COMMENTED OUT
+            # 'momentum': self._compute_momentum,
+            # 'momentum_6_1': self._compute_momentum_6_1,
+            # 'reversal': self._compute_reversal,
+            # 'reversal_10': self._compute_reversal_10,
+            # 'mean_reversion': self._compute_mean_reversion,
+            # 'volume_ratio': self._compute_volume_ratio,
+            # 'price_position': self._compute_price_position,
+            # 'volatility': self._compute_volatility,
+            # 'residual_momentum': self._compute_residual_momentum,
+            # 'pead': self._compute_pead,
             
-            # 🔥 NEW: Real Polygon Training技术指标集成
-            'technical_sma_10': self._compute_sma_10,
-            'technical_sma_20': self._compute_sma_20,
-            'technical_sma_50': self._compute_sma_50,
-            'technical_rsi': self._compute_rsi,
-            'technical_bb_position': self._compute_bb_position,
-            'technical_macd': self._compute_macd,
-            'technical_macd_signal': self._compute_macd_signal,
-            'technical_macd_histogram': self._compute_macd_histogram,
-            'technical_price_momentum_5d': self._compute_price_momentum_5d,
-            'technical_price_momentum_20d': self._compute_price_momentum_20d,
-            'technical_volume_ratio': self._compute_volume_ratio,
+            # OLD Extended momentum factors - COMMENTED OUT
+            # 'new_high_proximity': self._compute_52w_new_high_proximity,
+            # 'low_beta': self._compute_low_beta_anomaly,
+            # 'idiosyncratic_vol': self._compute_idiosyncratic_volatility,
             
-            # 🔥 NEW: Real Polygon Training风险指标集成
-            'risk_max_drawdown': self._compute_max_drawdown,
-            'risk_sharpe_ratio': self._compute_sharpe_ratio,
-            'risk_var_95': self._compute_var_95,
+            # OLD Fundamental factors - COMMENTED OUT
+            # 'earnings_surprise': self._compute_earnings_surprise,
+            # 'analyst_revision': self._compute_analyst_revision,
+            # 'ebit_ev': self._compute_ebit_ev,
+            # 'fcf_ev': self._compute_fcf_ev,
+            # 'earnings_yield': self._compute_earnings_yield,
+            # 'sales_yield': self._compute_sales_yield,
+            # 'pb_ratio': self._compute_pb_ratio,
             
-            # REMOVED: Low-performance factors
-            # 'sentiment_volatility': self._compute_sentiment_volatility,  # 数据质量差
-            # 'retail_herding_effect': self._compute_retail_herding_effect,  # 计算成本高
-            # 'apm_momentum_reversal': self._compute_apm_momentum_reversal,  # 过度工程化
+            # OLD Profitability factors - COMMENTED OUT
+            # 'gross_margin': self._compute_gross_margin,
+            # 'operating_profitability': self._compute_operating_profitability,
+            # 'roe_neutralized': self._compute_roe_neutralized,
+            # 'roic_neutralized': self._compute_roic_neutralized,
+            # 'net_margin': self._compute_net_margin,
+            # 'cash_yield': self._compute_cash_yield,
+            # 'shareholder_yield': self._compute_shareholder_yield,
+            
+            # OLD Accrual factors - COMMENTED OUT
+            # 'total_accruals': self._compute_total_accruals,
+            # 'working_capital_accruals': self._compute_working_capital_accruals,
+            # 'net_operating_assets': self._compute_net_operating_assets,
+            # 'asset_growth': self._compute_asset_growth,
+            # 'net_equity_issuance': self._compute_net_equity_issuance,
+            # 'investment_factor': self._compute_investment_factor,
+            
+            # OLD Quality score factors - COMMENTED OUT
+            # 'piotroski_score': self._compute_piotroski_score,
+            # 'ohlson_score': self._compute_ohlson_score,
+            # 'altman_score': self._compute_altman_score,
+            # 'qmj_score': self._compute_qmj_score,
+            # 'earnings_stability': self._compute_earnings_stability,
+            
+            # OLD Sentiment factors - COMMENTED OUT
+            # 'news_sentiment': self._compute_news_sentiment,
+            # 'market_sentiment_10d': self._compute_market_sentiment_10d,
+            # 'fear_greed_sentiment': self._compute_fear_greed_sentiment,
+            # 'sentiment_momentum_10d': self._compute_sentiment_momentum_10d,
+            
+            # OLD Technical indicators - COMMENTED OUT
+            # 'technical_sma_10': self._compute_sma_10,
+            # 'technical_sma_20': self._compute_sma_20,
+            # 'technical_sma_50': self._compute_sma_50,
+            # 'technical_rsi': self._compute_rsi,
+            # 'technical_bb_position_10d': self._compute_bb_position_10d,
+            # 'technical_macd_10d': self._compute_macd_10d,
+            # 'technical_price_momentum_5d': self._compute_price_momentum_5d,
+            # 'technical_volume_ratio': self._compute_volume_ratio,
+            
+            # OLD Missing alpha types - COMMENTED OUT
+            # 'volume_trend': self._compute_volume_trend,
+            # 'gap_momentum': self._compute_gap_momentum,
+            # 'intraday_momentum': self._compute_intraday_momentum,
+            
+            # OLD Risk indicators - COMMENTED OUT
+            # 'risk_max_drawdown': self._compute_max_drawdown,
+            # 'risk_sharpe_ratio': self._compute_sharpe_ratio,
+            # 'risk_var_95': self._compute_var_95,
             
             'hump': None,  # Special handling
         }
     
+    # ========== Fundamental Data Provider ==========
+    
+    def _init_data_providers(self):
+        """Initialize data providers for fundamental data"""
+        try:
+            # Try to import Polygon client
+            from bma_models.polygon_client import polygon_client as pc
+            self.polygon_client = pc
+            logger.info("[OK] Polygon客户端初始化成功")
+        except ImportError:
+            logger.warning("[WARN] Polygon客户端不可用，基本面因子将使用模拟数据")
+            self.polygon_client = None
+            
+        # Initialize data provider
+        self.fundamental_cache = {}
+    
+    def get_fundamental_data(self, ticker: str, as_of_date: str = None) -> Dict:
+        """
+        获取基本面数据 - 统一数据源
+        
+        Args:
+            ticker: 股票代码
+            as_of_date: 数据截止日期
+            
+        Returns:
+            Dict: 包含基本面数据的字典
+        """
+        cache_key = f"{ticker}_{as_of_date}"
+        if cache_key in self.fundamental_cache:
+            return self.fundamental_cache[cache_key]
+            
+        fundamental_data = {}
+        
+        try:
+            if self.polygon_client:
+                # 使用真实的Polygon API获取数据
+                try:
+                    # 获取财务数据
+                    financials = self.polygon_client.get_financials(ticker)
+                    if financials and 'results' in financials:
+                        latest_financial = financials['results'][0]
+                        
+                        # 提取关键财务指标
+                        fundamental_data.update({
+                            'market_cap': latest_financial.get('market_capitalization'),
+                            'enterprise_value': latest_financial.get('enterprise_value'),
+                            'pe_ratio': latest_financial.get('price_earnings_ratio'),
+                            'pb_ratio': latest_financial.get('price_book_ratio'),
+                            'debt_to_equity': latest_financial.get('debt_to_equity_ratio'),
+                            'roe': latest_financial.get('return_on_equity'),
+                            'roa': latest_financial.get('return_on_assets'),
+                            'revenue': latest_financial.get('revenues'),
+                            'net_income': latest_financial.get('net_income_loss'),
+                            'total_assets': latest_financial.get('assets'),
+                            'total_debt': latest_financial.get('liabilities'),
+                            'book_value': latest_financial.get('equity'),
+                            'free_cash_flow': latest_financial.get('net_cash_flow_operating_activities'),
+                            'dividend_yield': latest_financial.get('dividend_yield')
+                        })
+                        
+                except Exception as api_error:
+                    logger.warning(f"Polygon API获取{ticker}数据失败: {api_error}")
+            
+            # 如果没有获取到数据，使用模拟数据
+            if not fundamental_data:
+                fundamental_data = self._get_simulated_fundamental_data(ticker)
+                
+        except Exception as e:
+            logger.error(f"获取{ticker}基本面数据失败: {e}")
+            fundamental_data = self._get_simulated_fundamental_data(ticker)
+        
+        # 缓存结果
+        self.fundamental_cache[cache_key] = fundamental_data
+        return fundamental_data
+
     # ========== Basic Utility Functions ==========
     
     def winsorize_series(self, s: pd.Series, k: float = 2.5) -> pd.Series:
@@ -353,9 +518,19 @@ class AlphaStrategiesEngine:
                     logger.warning(f"Point {idx} neutralization failed: {e}")
                     result.loc[idx] = hist_y.loc[idx] - hist_y.mean()
             
-            return result.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(result, df)
         
-        return df.groupby('date').apply(_neutralize_cross_section_safe).reset_index(level=0, drop=True)
+        # 🔧 CRITICAL FIX: 保持MultiIndex结构，避免索引错位
+        if isinstance(df.index, pd.MultiIndex) and 'date' in df.index.names:
+            # MultiIndex情况：按date level进行groupby，保持索引结构
+            result = df.groupby(level='date').apply(_neutralize_cross_section_safe)
+            # 移除groupby产生的额外层级，但保持原有MultiIndex结构
+            if result.index.nlevels > df.index.nlevels:
+                result = result.droplevel(0)
+            return result
+        else:
+            # 非MultiIndex情况：保持原有逻辑
+            return df.groupby('date').apply(_neutralize_cross_section_safe).reset_index(level=0, drop=True)
     
     def hump_transform(self, z: pd.Series, hump: float = 0.003) -> pd.Series:
         """Gating transformation: Set small signals to zero"""
@@ -367,11 +542,11 @@ class AlphaStrategiesEngine:
     
     def ema_decay(self, s: pd.Series, span: int) -> pd.Series:
         """Time-safe exponential moving average decay - Only use historical data"""
-        # ✅ PERFORMANCE FIX: 移除过度保守的shift(1)
+        # [OK] PERFORMANCE FIX: 移除过度保守的shift(1)
         # 差异化滞后已在因子级别应用，此处不需要额外滞后
         # Use expanding window to ensure each time point only uses historical data
         result = s.ewm(span=span, adjust=False).mean()
-        # ❌ REMOVED: 移除额外shift(1)以保持信号及时性和强度
+        # [ERROR] REMOVED: 移除额外shift(1)以保持信号及时性和强度
         # return result.shift(1)
         return result
     
@@ -396,8 +571,8 @@ class AlphaStrategiesEngine:
             from global_nan_config import unified_nan_handler
             return unified_nan_handler(data, df, date_col, 'cross_sectional_median')
         except ImportError:
-            # FALLBACK: 如果global_nan_config不可用，使用本地逻辑
-            logger.warning("使用本地NaN处理fallback逻辑")
+            # 如果global_nan_config不可用，使用本地逻辑
+            logger.warning("global_nan_config不可用，使用本地NaN处理")
             if df is not None and date_col in df.columns:
                 # 使用横截面中位数填充
                 temp_df = pd.DataFrame({
@@ -427,7 +602,7 @@ class AlphaStrategiesEngine:
                                     target_col: str = 'future_return_10d',
                                     force_reoptimize: bool = False) -> Dict[str, int]:
         """
-        ✅ PERFORMANCE FIX: 优化技术指标参数
+        [OK] PERFORMANCE FIX: 优化技术指标参数
         基于滚动IC选择最优窗口参数，提升预测性能
         
         Args:
@@ -492,7 +667,7 @@ class AlphaStrategiesEngine:
                 
                 if result and 'best_parameter' in result:
                     optimized_params[target['name']] = result['best_parameter']
-                    logger.info(f"✅ {target['name']}最优参数: {result['best_parameter']} "
+                    logger.info(f"[OK] {target['name']}最优参数: {result['best_parameter']} "
                               f"(IC均值: {result['optimization_summary'].get('best_ic_mean', 0):.4f})")
                 
             except Exception as e:
@@ -501,7 +676,7 @@ class AlphaStrategiesEngine:
         
         # 缓存结果
         self.optimized_parameters = optimized_params
-        logger.info(f"✅ 技术指标参数优化完成，优化了{len(optimized_params)}个指标")
+        logger.info(f"[OK] 技术指标参数优化完成，优化了{len(optimized_params)}个指标")
         
         return optimized_params
     
@@ -522,49 +697,13 @@ class AlphaStrategiesEngine:
                                 alpha_cols: List[str],
                                 target_col: str = 'future_return_10d',
                                 force_rebalance: bool = False) -> Dict[str, float]:
-        """
-        ✅ PERFORMANCE FIX: 计算基于IC的动态因子权重
-        根据历史IC表现动态调整权重，提升预测性能
-        
-        Args:
-            df: 历史数据
-            alpha_cols: Alpha因子列名
-            target_col: 目标变量列名
-            force_rebalance: 强制重新平衡
-            
-        Returns:
-            动态权重字典
-        """
-        if not alpha_cols or target_col not in df.columns:
-            logger.warning("无法计算动态权重，使用等权重")
-            return {col: 1.0/len(alpha_cols) for col in alpha_cols}
-        
-        try:
-            weights = self.factor_weighter.calculate_dynamic_weights(
-                data=df,
-                factor_cols=alpha_cols,
-                target_col=target_col,
-                force_rebalance=force_rebalance
-            )
-            
-            # 缓存权重
-            self.dynamic_weights = weights
-            
-            # 记录权重摘要
-            sorted_weights = sorted(weights.items(), key=lambda x: x[1], reverse=True)
-            logger.info("✅ 动态权重计算完成:")
-            for factor, weight in sorted_weights:
-                logger.info(f"   {factor}: {weight:.3f}")
-                
-            return weights
-            
-        except Exception as e:
-            logger.warning(f"动态权重计算失败，使用等权重: {e}")
-            return {col: 1.0/len(alpha_cols) for col in alpha_cols}
+        # Method removed - using equal weights for PCA preprocessing
+        return {col: 1.0/len(alpha_cols) for col in alpha_cols}
     
     def apply_dynamic_weights(self, df: pd.DataFrame, 
                             alpha_cols: List[str],
                             weights: Dict[str, float]) -> pd.Series:
+        # Method removed - return simple average
         """
         应用动态权重合成最终Alpha
         
@@ -593,18 +732,37 @@ class AlphaStrategiesEngine:
     
     def _compute_momentum(self, df: pd.DataFrame, windows: List[int], 
                          decay: int = 6) -> pd.Series:
-        """DEPRECATED: 动量因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
-        logger.debug("动量因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
-        return pd.Series(0.0, index=df.index, name='momentum')
+        """Lightweight momentum factor - optimized version avoiding duplication with Polygon"""
+        # Keep this for Alpha engine, but use simpler calculation to avoid exact duplication
+        try:
+            results = []
+            for window in windows:
+                g = df.groupby('ticker')['Close']
+                # Simple momentum: current/past - 1, shifted by 1 day to align with unified T-1 lag
+                momentum = (g.shift(1) / g.shift(window + 1) - 1.0).fillna(0.0)
+                
+                # Apply decay
+                result = momentum.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+                results.append(result)
+            
+            if results:
+                combined = pd.concat(results, axis=1).mean(axis=1)
+                return combined.fillna(0.0)
+            else:
+                return pd.Series(0.0, index=df.index)
+                
+        except Exception as e:
+            logger.warning(f"Lightweight momentum computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
     
     def _compute_reversal(self, df: pd.DataFrame, windows: List[int], 
                          decay: int = 6) -> pd.Series:
         """Reversal factor: Short-term price reversal - 数值稳定性增强"""
-        # 🔥 CRITICAL FIX: 导入数值稳定性保护
+        # [HOT] CRITICAL FIX: 导入数值稳定性保护
         try:
             from numerical_stability import safe_log, safe_divide
         except ImportError:
-            # Fallback implementations
+            # 简化实现
             def safe_log(x, epsilon=1e-10):
                 return np.log(np.maximum(x, epsilon))
             def safe_divide(a, b, epsilon=1e-10):
@@ -641,9 +799,25 @@ class AlphaStrategiesEngine:
     
     def _compute_volatility(self, df: pd.DataFrame, windows: List[int], 
                            decay: int = 6) -> pd.Series:
-        """DEPRECATED: 波动率因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
-        logger.debug("波动率因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
-        return pd.Series(0.0, index=df.index, name='volatility')
+        """Lightweight volatility factor - optimized version avoiding duplication with Polygon"""
+        try:
+            window = windows[0] if windows else 20
+            g = df.groupby('ticker')['Close']
+            
+            # Simple volatility: rolling std of returns, shifted to avoid lookahead
+            returns = g.pct_change().shift(1)  # T-1 returns to avoid lookahead
+            volatility = returns.rolling(window).std().fillna(0.0)
+            
+            # Invert volatility (low vol = high score)
+            vol_factor = -volatility  
+            
+            # Apply decay
+            result = vol_factor.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return result.fillna(0.0)
+            
+        except Exception as e:
+            logger.warning(f"Lightweight volatility computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
         results = []
         
         for window in windows:
@@ -651,7 +825,7 @@ class AlphaStrategiesEngine:
             try:
                 from numerical_stability import safe_log, safe_divide
             except ImportError:
-                # Fallback implementations
+                # 简化实现
                 def safe_log(x, epsilon=1e-10):
                     return np.log(np.maximum(x, epsilon))
                 def safe_divide(a, b, epsilon=1e-10):
@@ -678,7 +852,7 @@ class AlphaStrategiesEngine:
             try:
                 from numerical_stability import safe_divide
             except ImportError:
-                # Fallback implementation
+                # 简化实现
                 def safe_divide(a, b, epsilon=1e-10):
                     return a / np.maximum(np.abs(b), epsilon)
             inv_volatility = safe_divide(1.0, volatility, fill_value=0.0)
@@ -711,8 +885,13 @@ class AlphaStrategiesEngine:
                         lambda x: x / (x.rolling(window=window, min_periods=max(1, window//2)).mean() + 1e-9)
                     )
                 else:
-                    # Create synthetic volume using price * constant
-                    synthetic_volume = df['Close'] * 1000000  # Assume 1M shares
+                    # Create synthetic volume using price * dynamic multiplier
+                    # Use median volume when available, otherwise use conservative estimate
+                    if 'Volume' in df.columns and not df['Volume'].isna().all():
+                        median_vol = df['Volume'].median()
+                        synthetic_volume = df['Close'] * (median_vol / df['Close'].median())
+                    else:
+                        synthetic_volume = df['Close'] * 100000  # Conservative estimate
                     volume_ma = synthetic_volume.groupby(df['ticker']).transform(
                         lambda x: x.rolling(window=window, min_periods=max(1, window//2)).mean()
                     )
@@ -737,7 +916,7 @@ class AlphaStrategiesEngine:
             try:
                 from numerical_stability import safe_log, safe_divide
             except ImportError:
-                # Fallback implementations
+                # 简化实现
                 def safe_log(x, epsilon=1e-10):
                     return np.log(np.maximum(x, epsilon))
                 def safe_divide(a, b, epsilon=1e-10):
@@ -764,8 +943,12 @@ class AlphaStrategiesEngine:
                 volume_value = df['Close'] * df['volume']
                 amihud = safe_divide(returns, volume_value, fill_value=0.0)
             else:
-                # Use synthetic volume
-                synthetic_volume = df['Close'] * 1000000
+                # Use synthetic volume with dynamic calculation
+                if 'Volume' in df.columns and not df['Volume'].isna().all():
+                    median_vol = df['Volume'].median()
+                    synthetic_volume = df['Close'] * (median_vol / df['Close'].median())
+                else:
+                    synthetic_volume = df['Close'] * 100000  # Conservative estimate
                 amihud = safe_divide(returns, synthetic_volume, fill_value=0.0)
             
             # Rolling average
@@ -881,8 +1064,8 @@ class AlphaStrategiesEngine:
         """Time-safe short-term reversal (1-5 days), with safety margin"""
         try:
             g = df.groupby('ticker')['Close']
-            # Using T-2 to T-7 data, with safety margin
-            rev = -(g.shift(2) / g.shift(7) - 1.0)
+            # Using T-1 to T-6 data, aligned with unified lag
+            rev = -(g.shift(1) / g.shift(6) - 1.0)
             rev_ema = rev.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
             return rev_ema.fillna(0.0)
         except Exception as e:
@@ -893,7 +1076,8 @@ class AlphaStrategiesEngine:
         """Improved Amihud illiquidity: More robust rolling median with EMA decay"""
         try:
             window = windows[0] if windows else 22
-            returns_abs = df.groupby('ticker')['Close'].apply(lambda s: (s / s.shift(1) - 1).abs()).reset_index(level=0, drop=True)
+            # 🔧 CRITICAL FIX: 使用安全的groupby方法，保持MultiIndex结构
+            returns_abs = self._safe_groupby_apply(df, 'ticker', lambda s: (s['Close'] / s['Close'].shift(1) - 1).abs())
             if 'amount' in df.columns:
                 volume_dollar = df['amount'].replace(0, np.nan)
             elif 'volume' in df.columns:
@@ -969,31 +1153,24 @@ class AlphaStrategiesEngine:
             return pd.Series(0.0, index=df.index)
     
     def _compute_mean_reversion(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
-        """DEPRECATED: 均值回归因子计算已整合到UnifiedPolygonFactors - 避免重复计算"""
-        logger.debug("均值回归因子计算已迁移到UnifiedPolygonFactors，避免重复计算")
-        return pd.Series(0.0, index=df.index, name='mean_reversion')
+        """Lightweight mean reversion factor - optimized version avoiding duplication with Polygon"""
         try:
-            try:
-                from numerical_stability import safe_divide
-            except ImportError:
-                # Fallback implementation
-                def safe_divide(a, b, epsilon=1e-10):
-                    return a / np.maximum(np.abs(b), epsilon)
+            window = windows[0] if windows else 20
+            g = df.groupby('ticker')['Close']
             
-            window = windows[0] if windows else 5
-            close_prices = df['Close']
-            
-            # Calculate rolling mean
-            rolling_mean = close_prices.rolling(window=window, min_periods=1).mean()
+            # Simple mean reversion: (mean - current) / mean, shifted to avoid lookahead
+            close_prices = g.shift(1)  # T-1 to align with unified lag
+            rolling_mean = close_prices.rolling(window).mean()
             
             # Mean reversion signal: (mean - current) / mean
-            mean_reversion = safe_divide(rolling_mean - close_prices, rolling_mean, fill_value=0.0)
+            mean_reversion = ((rolling_mean - close_prices) / rolling_mean).fillna(0.0)
             
             # Apply decay
             result = mean_reversion.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
-            return pd.Series(result.values, index=df.index, name='mean_reversion').fillna(0.0)
+            return result.fillna(0.0)
+            
         except Exception as e:
-            logger.warning(f"Mean reversion computation failed: {e}")
+            logger.warning(f"Lightweight mean reversion computation failed: {e}")
             return pd.Series(0.0, index=df.index)
     
     def _compute_volume_ratio(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
@@ -1002,7 +1179,7 @@ class AlphaStrategiesEngine:
             try:
                 from numerical_stability import safe_divide
             except ImportError:
-                # Fallback implementation
+                # 简化实现
                 def safe_divide(a, b, epsilon=1e-10):
                     return a / np.maximum(np.abs(b), epsilon)
             
@@ -1029,7 +1206,7 @@ class AlphaStrategiesEngine:
             try:
                 from numerical_stability import safe_divide
             except ImportError:
-                # Fallback implementation
+                # 简化实现
                 def safe_divide(a, b, epsilon=1e-10):
                     return a / np.maximum(np.abs(b), epsilon)
             
@@ -1067,7 +1244,7 @@ class AlphaStrategiesEngine:
             try:
                 from numerical_stability import safe_divide
             except ImportError:
-                # Fallback implementation
+                # 简化实现
                 def safe_divide(a, b, epsilon=1e-10):
                     return a / np.maximum(np.abs(b), epsilon)
             
@@ -1175,7 +1352,7 @@ class AlphaStrategiesEngine:
                 enterprise_value = df['Close'] * df['volume']  # SimplifiedEV proxy
                 ebit_proxy = df.groupby('ticker')['Close'].pct_change(252).abs()  # Annualized return asEBIT proxy
                 ebit_ev = ebit_proxy / (enterprise_value / enterprise_value.rolling(252).mean())
-                return ebit_ev.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).apply(lambda x: self.safe_fillna(x, df))
+                return self.safe_fillna(ebit_ev.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)), df)
             else:
                 return pd.Series(0.0, index=df.index)
         except Exception as e:
@@ -1191,7 +1368,12 @@ class AlphaStrategiesEngine:
                 if 'volume' in df.columns:
                     ev_proxy = df['Close'] * df['volume']
                 else:
-                    ev_proxy = df['Close'] * 1000000  # synthetic volume
+                    # Create enterprise value proxy with dynamic calculation
+                    if 'Volume' in df.columns and not df['Volume'].isna().all():
+                        median_vol = df['Volume'].median()
+                        ev_proxy = df['Close'] * (median_vol / df['Close'].median())
+                    else:
+                        ev_proxy = df['Close'] * 100000  # Conservative estimate
                 fcf_ev = fcf_proxy / (ev_proxy + 1e-9)
             elif 'volume' in df.columns:
                 fcf_proxy = df['volume'] * df['Close'] / df['Close']  # volume as proxy
@@ -1200,7 +1382,7 @@ class AlphaStrategiesEngine:
                 fcf_ev = fcf_ev.groupby(df['ticker']).transform(
                     lambda x: (x - x.rolling(252).mean()) / (x.rolling(252).std() + 1e-8)
                 )
-                return fcf_ev.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).apply(lambda x: self.safe_fillna(x, df))
+                return self.safe_fillna(fcf_ev.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)), df)
             else:
                 return pd.Series(0.0, index=df.index)
         except Exception as e:
@@ -1208,16 +1390,83 @@ class AlphaStrategiesEngine:
             return pd.Series(0.0, index=df.index)
     
     def _compute_earnings_yield(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
-        """Earnings yieldE/P（市盈率倒数的 proxy）"""
+        """真实的Earnings Yield (E/P) - 使用基本面数据"""
         try:
-            # Usingreturn率历史data作为E/P proxy
-            annual_return = df.groupby('ticker')['Close'].pct_change(252)
-            earnings_yield = annual_return / df['Close'] * 100  # Standardize
-            return earnings_yield.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).apply(lambda x: self.safe_fillna(x, df))
+            results = []
+            for ticker in df['ticker'].unique():
+                ticker_data = df[df['ticker'] == ticker].copy()
+                
+                # 获取基本面数据
+                fundamental_data = self.get_fundamental_data(ticker)
+                
+                if fundamental_data.get('pe_ratio') and fundamental_data['pe_ratio'] > 0:
+                    # E/P = 1/PE
+                    earnings_yield = 1.0 / fundamental_data['pe_ratio']
+                else:
+                    # 回退到价格代理方法
+                    close_col = 'Close' if 'Close' in ticker_data.columns else 'close'
+                    annual_return = ticker_data[close_col].pct_change(252).iloc[-1]
+                    earnings_yield = annual_return / ticker_data[close_col].iloc[-1] * 100 if not pd.isna(annual_return) else 0
+                
+                # 为该ticker的所有行设置相同的值
+                ticker_results = pd.Series(earnings_yield, index=ticker_data.index)
+                results.append(ticker_results)
+            
+            combined_results = pd.concat(results) if results else pd.Series(0, index=df.index)
+            return self.safe_fillna(combined_results.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)), df)            
         except Exception as e:
-            logger.warning(f"Earnings yieldE/P computation failed: {e}")
-            return pd.Series(0.0, index=df.index)
+            logger.warning(f"真实Earnings yield计算失败，使用回退方法: {e}")
+            try:
+                # 回退到原始方法 - 修复类型错误
+                close_col = 'Close' if 'Close' in df.columns else 'close'
+                annual_return = df.groupby('ticker')[close_col].pct_change(252)
+                earnings_yield = (annual_return / df[close_col] * 100).fillna(0)
+                return self.safe_fillna(earnings_yield.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)), df)
+            except Exception as backup_e:
+                logger.warning(f"备用方法也失败: {backup_e}")
+                return pd.Series(0.0, index=df.index)
     
+    def _compute_pb_ratio(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """真实的Price-to-Book比率 - 使用基本面数据"""
+        try:
+            results = []
+            for ticker in df['ticker'].unique():
+                ticker_data = df[df['ticker'] == ticker].copy()
+                
+                # 获取基本面数据
+                fundamental_data = self.get_fundamental_data(ticker)
+                
+                if fundamental_data.get('pb_ratio') and fundamental_data['pb_ratio'] > 0:
+                    pb_ratio = fundamental_data['pb_ratio']
+                else:
+                    # 回退：使用市值/账面价值估算
+                    close_col = 'Close' if 'Close' in ticker_data.columns else 'close'
+                    volume_col = 'volume' if 'volume' in ticker_data.columns else 'Volume'
+                    
+                    if volume_col in ticker_data.columns:
+                        market_cap = ticker_data[close_col].iloc[-1] * ticker_data[volume_col].iloc[-1]
+                        book_value = fundamental_data.get('book_value', market_cap * 0.5)  # 估算账面价值
+                        pb_ratio = market_cap / book_value if book_value > 0 else 1.0
+                    else:
+                        pb_ratio = 1.0
+                
+                # 为该ticker的所有行设置相同的值
+                ticker_results = pd.Series(pb_ratio, index=ticker_data.index)
+                results.append(ticker_results)
+            
+            combined_results = pd.concat(results) if results else pd.Series(1.0, index=df.index)
+            return self.safe_fillna(combined_results.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)), df)            
+        except Exception as e:
+            logger.warning(f"PB比率计算失败: {e}")
+            try:
+                # 回退方法 - 使用简单估算
+                close_col = 'Close' if 'Close' in df.columns else 'close'  
+                pb_estimate = (df[close_col] / df[close_col].rolling(252).mean()).fillna(1.0)
+                return self.safe_fillna(pb_estimate.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)), df)
+            except Exception as backup_e:
+                logger.warning(f"PB比率备用方法失败: {backup_e}")
+                return pd.Series(1.0, index=df.index)
+
     def _compute_sales_yield(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """Sales yieldS/P（市销率倒数的 proxy）"""
         try:
@@ -1228,7 +1477,7 @@ class AlphaStrategiesEngine:
                 sales_yield = sales_yield.groupby(df['ticker']).transform(
                     lambda x: (x - x.rolling(252).mean()) / (x.rolling(252).std() + 1e-8)
                 )
-                return sales_yield.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)).apply(lambda x: self.safe_fillna(x, df))
+                return self.safe_fillna(sales_yield.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay)), df)
             else:
                 return pd.Series(0.0, index=df.index)
         except Exception as e:
@@ -1241,7 +1490,7 @@ class AlphaStrategiesEngine:
         """Gross marginGP/Assets（简化implementation）"""
         try:
             annual_return = df.groupby('ticker')['Close'].pct_change(252)
-            return annual_return.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(annual_return, df)
         except Exception as e:
             logger.warning(f"Gross margin computation failed: {e}")
             return pd.Series(0.0, index=df.index)
@@ -1251,7 +1500,7 @@ class AlphaStrategiesEngine:
         try:
             if 'volume' in df.columns:
                 efficiency = df['volume'] / (df['Close'] + 1e-9)
-                return efficiency.apply(lambda x: self.safe_fillna(x, df))
+                return self.safe_fillna(efficiency, df)
             else:
                 return pd.Series(0.0, index=df.index)
         except Exception as e:
@@ -1263,7 +1512,7 @@ class AlphaStrategiesEngine:
         """ROEneutralize（简化implementation）"""
         try:
             returns = df.groupby('ticker')['Close'].pct_change(252)
-            return returns.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(returns, df)
         except:
             return pd.Series(0.0, index=df.index)
     
@@ -1271,7 +1520,7 @@ class AlphaStrategiesEngine:
         """ROICneutralize（简化implementation）"""
         try:
             returns = df.groupby('ticker')['Close'].pct_change(126)
-            return returns.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(returns, df)
         except:
             return pd.Series(0.0, index=df.index)
     
@@ -1279,7 +1528,7 @@ class AlphaStrategiesEngine:
         """Net margin（简化implementation）"""
         try:
             returns = df.groupby('ticker')['Close'].pct_change(63)
-            return returns.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(returns, df)
         except:
             return pd.Series(0.0, index=df.index)
     
@@ -1288,10 +1537,10 @@ class AlphaStrategiesEngine:
         try:
             if 'amount' in df.columns:
                 cash_yield = df['amount'] / (df['Close'] + 1e-9)
-                return cash_yield.apply(lambda x: self.safe_fillna(x, df))
+                return self.safe_fillna(cash_yield, df)
             elif 'volume' in df.columns:
                 cash_yield = (df['volume'] * df['Close']) / (df['Close'] + 1e-9)
-                return cash_yield.apply(lambda x: self.safe_fillna(x, df))
+                return self.safe_fillna(cash_yield, df)
             else:
                 return pd.Series(0.0, index=df.index)
         except:
@@ -1303,7 +1552,7 @@ class AlphaStrategiesEngine:
             if 'volume' in df.columns:
                 volume_ma = df.groupby('ticker')['volume'].rolling(22).mean()
                 ratio = df['volume'] / (volume_ma + 1e-9)
-                return ratio.apply(lambda x: self.safe_fillna(x, df))
+                return self.safe_fillna(ratio, df)
             else:
                 return pd.Series(0.0, index=df.index)
         except:
@@ -1388,7 +1637,7 @@ class AlphaStrategiesEngine:
     def _compute_ohlson_score(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """OhlsonScore（简化implementation）"""
         try:
-            # ✅ FIX: 兼容'Close'和'close'列名
+            # [OK] FIX: 兼容'Close'和'close'列名
             close_col = 'Close' if 'Close' in df.columns else 'close'
             price_vol = df.groupby('ticker')[close_col].rolling(126).std() / df[close_col]
             return -price_vol.apply(lambda x: self.safe_fillna(x, df))  # Take negative，lower risk is better
@@ -1398,33 +1647,33 @@ class AlphaStrategiesEngine:
     def _compute_altman_score(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """AltmanScore（简化implementation）"""
         try:
-            # ✅ FIX: 兼容'Close'和'close'列名
+            # [OK] FIX: 兼容'Close'和'close'列名
             close_col = 'Close' if 'Close' in df.columns else 'close'
             returns = df.groupby('ticker')[close_col].pct_change()
             stability = -returns.rolling(126).std()  # Stability
-            return stability.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(stability, df)
         except:
             return pd.Series(0.0, index=df.index)
     
     def _compute_qmj_score(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """QMJ质量Score（简化implementation）"""
         try:
-            # ✅ FIX: 兼容'Close'和'close'列名
+            # [OK] FIX: 兼容'Close'和'close'列名
             close_col = 'Close' if 'Close' in df.columns else 'close'
             returns = df.groupby('ticker')[close_col].pct_change()
             quality = returns.rolling(252).mean() / (returns.rolling(252).std() + 1e-8)
-            return quality.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(quality, df)
         except:
             return pd.Series(0.0, index=df.index)
     
     def _compute_earnings_stability(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
         """盈利Stability（简化implementation）"""
         try:
-            # ✅ FIX: 兼容'Close'和'close'列名
+            # [OK] FIX: 兼容'Close'和'close'列名
             close_col = 'Close' if 'Close' in df.columns else 'close'
             returns = df.groupby('ticker')[close_col].pct_change()
             stability = -returns.rolling(252).std()  # lower volatility is better
-            return stability.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(stability, df)
         except:
             return pd.Series(0.0, index=df.index)
  
@@ -1442,7 +1691,7 @@ class AlphaStrategiesEngine:
         """
         logger.info(f"Starting computation of{len(self.config['alphas'])} Alpha factors")
         
-        # 🔧 修复数据格式问题：确保输入是DataFrame
+        # [TOOL] 修复数据格式问题：确保输入是DataFrame
         if isinstance(df, dict):
             # 如果输入是dict，尝试转换为DataFrame
             try:
@@ -1475,6 +1724,10 @@ class AlphaStrategiesEngine:
         computation_times = {}
         
         for alpha_config in self.config['alphas']:
+            # Check if alpha is enabled
+            if not alpha_config.get('enabled', True):
+                continue
+                
             alpha_name = alpha_config['name']
             alpha_kind = alpha_config.get('kind', alpha_config.get('function', 'momentum'))
             
@@ -1486,7 +1739,7 @@ class AlphaStrategiesEngine:
                 decay = alpha_config.get('decay', 6)
                 delay = alpha_config.get('delay', 1)  # 配置文件中的delay参数
                 
-                # ✅ NEW: 获取因子特定的滞后配置
+                # [OK] NEW: 获取因子特定的滞后配置
                 factor_specific_lag = 0
                 if self.lag_manager:
                     factor_specific_lag = self.lag_manager.get_lag(alpha_name)
@@ -1524,7 +1777,7 @@ class AlphaStrategiesEngine:
                     alpha_name=alpha_name
                 )
                 
-                # ✅ NEW: 应用差异化滞后策略
+                # [OK] NEW: 应用差异化滞后策略
                 if self.lag_manager and factor_specific_lag > 0:
                     # 使用因子特定的滞后
                     alpha_factor = alpha_factor.groupby(df_work['ticker']).shift(factor_specific_lag)
@@ -1533,7 +1786,7 @@ class AlphaStrategiesEngine:
                     # 回退到配置文件中的delay
                     alpha_factor = alpha_factor.groupby(df_work['ticker']).shift(delay)
                 
-                # ✅ REMOVED: 不再使用全局统一的lag，改为差异化滞后
+                # [OK] REMOVED: 不再使用全局统一的lag，改为差异化滞后
                 # 原有的global_lag逻辑已被差异化滞后替代
                 
                 alpha_results[alpha_name] = alpha_factor
@@ -1556,7 +1809,7 @@ class AlphaStrategiesEngine:
         if alpha_results:
             logger.info(f"Alpha computation completed，共{len(alpha_results)} factors")
             
-            # ✅ PERFORMANCE FIX: Apply factor orthogonalization to remove redundancy
+            # [OK] PERFORMANCE FIX: Apply factor orthogonalization to remove redundancy
             try:
                 # Get all alpha factor columns
                 alpha_cols = [col for col in result_df.columns if col.startswith('alpha_')]
@@ -1587,7 +1840,7 @@ class AlphaStrategiesEngine:
                     
                     retained_count = len(orthogonalizer.retained_factors or alpha_cols)
                     removed_count = len(alpha_cols) - retained_count
-                    logger.info(f"✅ 因子正交化完成: 保留{retained_count}个, 移除{removed_count}个冗余因子")
+                    logger.info(f"[OK] 因子正交化完成: 保留{retained_count}个, 移除{removed_count}个冗余因子")
                     
                     # Get factor importance if available
                     importance = orthogonalizer.get_factor_importance()
@@ -1597,7 +1850,7 @@ class AlphaStrategiesEngine:
             except Exception as e:
                 logger.warning(f"因子正交化失败，继续使用原始因子: {e}")
             
-            # ✅ PERFORMANCE FIX: Apply dynamic factor weighting
+            # [OK] PERFORMANCE FIX: Apply dynamic factor weighting
             try:
                 final_alpha_cols = [col for col in result_df.columns if col.startswith('alpha_')]
                 
@@ -1611,24 +1864,63 @@ class AlphaStrategiesEngine:
                         target_col='future_return_10d'
                     )
                     
-                    # Apply dynamic weights to create a composite alpha
-                    if dynamic_weights:
-                        composite_alpha = self.apply_dynamic_weights(
-                            df=result_df,
-                            alpha_cols=final_alpha_cols,
-                            weights=dynamic_weights
-                        )
-                        
-                        # Add composite alpha to result
-                        result_df['alpha_composite_dynamic'] = composite_alpha
-                        
-                        logger.info("✅ 动态权重合成Alpha创建成功")
+                    # Dynamic weighting removed - all alpha factors used equally
                 
             except Exception as e:
                 logger.warning(f"动态权重应用失败: {e}")
                 
         else:
             logger.error("所有Alphafactor computation failed")
+        
+        # 🔧 CRITICAL FIX: 强化MultiIndex处理逻辑，防止索引错位
+        if not isinstance(result_df.index, pd.MultiIndex):
+            logger.warning("⚠️ 结果不是MultiIndex格式，尝试重建...")
+            
+            # 方法1：如果有date和ticker列，尝试重建MultiIndex
+            if 'date' in result_df.columns and 'ticker' in result_df.columns:
+                try:
+                    # 📊 数据验证：确保date和ticker数量匹配
+                    if len(result_df) != len(result_df['date']) or len(result_df) != len(result_df['ticker']):
+                        raise ValueError("日期或股票代码数据不完整")
+                    
+                    # 🎯 安全的MultiIndex重建
+                    dates = pd.to_datetime(result_df['date'])
+                    tickers = result_df['ticker'].astype(str)
+                    
+                    # 验证数据完整性
+                    if dates.isnull().any():
+                        raise ValueError(f"发现{dates.isnull().sum()}个空日期")
+                    if tickers.isnull().any():
+                        raise ValueError(f"发现{tickers.isnull().sum()}个空股票代码")
+                    
+                    # 创建MultiIndex
+                    multi_idx = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
+                    
+                    # 重建DataFrame，保留所有alpha列
+                    result_clean = result_df.copy()
+                    result_clean.index = multi_idx
+                    
+                    # 移除重复的索引列，保留所有特征列
+                    cols_to_keep = [col for col in result_clean.columns 
+                                  if col not in ['date', 'ticker'] and not col.startswith('level_')]
+                    
+                    if cols_to_keep:
+                        final_result = result_clean[cols_to_keep]
+                        logger.info(f"✅ MultiIndex重建成功: {final_result.shape} 包含列: {list(final_result.columns)[:5]}...")
+                        return final_result
+                    else:
+                        logger.error("❌ 重建后没有可用的特征列")
+                        
+                except Exception as rebuild_error:
+                    logger.error(f"❌ MultiIndex重建失败: {rebuild_error}")
+                    logger.info(f"原始DataFrame信息: shape={result_df.shape}, columns={list(result_df.columns)[:10]}...")
+            
+            # 方法2：如果原始输入是MultiIndex，尝试恢复
+            logger.warning("⚠️ MultiIndex重建失败，返回原格式")
+            logger.warning("⚠️ 这可能导致后续特征合并时的索引对齐问题")
+        else:
+            logger.info(f"✅ 结果已是MultiIndex格式: {result_df.shape}")
+            return result_df
         
         return result_df
     
@@ -1659,7 +1951,7 @@ class AlphaStrategiesEngine:
                     )
                     temp_df[alpha_name] = alpha_factor
         
-        # 4. ✅ PERFORMANCE FIX: 横截面标准化，消除市场风格偏移
+        # 4. [OK] PERFORMANCE FIX: 横截面标准化，消除市场风格偏移
         try:
             from cross_sectional_standardization import CrossSectionalStandardizer
             
@@ -1739,7 +2031,7 @@ class AlphaStrategiesEngine:
             from ssot_violation_detector import block_internal_cv_creation
             block_internal_cv_creation("Alpha策略中的TimeSeriesSplit")
         except ImportError:
-            # Fallback - just log warning
+            # 备用处理 - 仅记录警告
             logger.debug("SSOT violation detector not available - skipping check")
         unique_dates = sorted(dates.unique())
         
@@ -1791,64 +2083,42 @@ class AlphaStrategiesEngine:
             
             scores[col] = np.nanmean(col_scores) if col_scores else 0.0
         
-        # 更新Statistics
-        self.stats['ic_stats'] = scores
-        
+        # IC stats removed - using direct scores
         result = pd.Series(scores, name=f'oof_{metric}')
-        logger.info(f"OOFScorecompleted，average{metric}: {result.mean():.4f}")
+        logger.info(f"OOFScore completed, average {metric}: {result.mean():.4f}")
         
         return result
     
-    def compute_bma_weights(self, scores: pd.Series, temperature: float = None, use_weight_hints: bool = True) -> pd.Series:
+    def compute_bma_weights(self, scores: pd.Series, temperature: float = None) -> pd.Series:
         """
-        基于ScorecomputationBMA weights，支持weight_hint prior
+        Pure ML-based BMA weights computation - NO hardcoded weights
         
         Args:
-            scores: OOFScore
+            scores: OOF scores from cross-validation
             temperature: Temperature coefficient, controls weight concentration
-            use_weight_hints: 是否Usingweight_hint作为 priorweight
             
         Returns:
-            BMA weights
+            BMA weights based purely on performance scores
         """
         if temperature is None:
             temperature = self.config.get('temperature', 1.2)
         
-        # Getweight_hint priorweight
-        weight_hints = {}
-        if use_weight_hints:
-            for alpha_config in self.config.get('alphas', []):
-                alpha_name = alpha_config['name']
-                if alpha_name in scores.index:
-                    weight_hints[alpha_name] = alpha_config.get('weight_hint', 0.05)
-        
-        # StandardizeScore
+        # Standardize scores
         scores_std = (scores - scores.mean()) / (scores.std(ddof=0) + 1e-12)
         scores_scaled = scores_std / max(temperature, 1e-3)
         
-        # Log-sum-exp softmax（numerically stable）
+        # Log-sum-exp softmax (numerically stable)
         max_score = scores_scaled.max()
         exp_scores = np.exp(scores_scaled - max_score)
         
-        # Combineweight_hint prior
-        if weight_hints and use_weight_hints:
-            hint_weights = pd.Series(weight_hints).reindex(scores.index, fill_value=0.05)
-            hint_weights = hint_weights / hint_weights.sum()  # Standardize
-            
-            # 贝叶斯更新： prior * likelihood
-            posterior_weights = hint_weights * exp_scores
-            weights = posterior_weights / posterior_weights.sum()
-            
-            logger.info("Usingweight_hint prior进行贝叶斯weight更新")
-        else:
-            # Regular softmax
-            eps = 1e-6
-            weights = (exp_scores + eps) / (exp_scores.sum() + eps * len(exp_scores))
+        # Pure softmax - no hardcoded priors
+        eps = 1e-6
+        weights = (exp_scores + eps) / (exp_scores.sum() + eps * len(exp_scores))
         
         weights_series = pd.Series(weights, index=scores.index, name='bma_weights')
         
-        logger.info(f"BMA weights computation completed，weight分布: max={weights.max():.3f}, min={weights.min():.3f}")
-        logger.info(f"Main factor weights: {weights_series.nlargest(5).to_dict()}")
+        logger.info(f"Pure ML BMA weights computed, distribution: max={weights.max():.3f}, min={weights.min():.3f}")
+        logger.info(f"Top factor weights: {weights_series.nlargest(5).to_dict()}")
         
         return weights_series
     
@@ -1959,16 +2229,15 @@ class AlphaStrategiesEngine:
                 # 计算复合新闻情绪因子（不使用硬编码权重，让模型学习）
                 sentiment_factor = pd.Series(0, index=df.index)
                 for col in available_cols:
-                    col_factor = df[col].apply(lambda x: self.safe_fillna(x, df))
-                    # 应用时间衰减
+                    col_factor = df[col]                    # 应用时间衰减
                     col_factor = self.decay_linear(col_factor, decay)
                     sentiment_factor += col_factor / len(available_cols)  # 简单平均而非硬编码权重
                 
-                return sentiment_factor.apply(lambda x: self.safe_fillna(x, df))
+                return sentiment_factor
             else:
                 # 使用第一个可用的新闻情绪列
                 col = news_cols[0]
-                sentiment_factor = df[col].apply(lambda x: self.safe_fillna(x, df))
+                sentiment_factor = df[col]
                 return self.decay_linear(sentiment_factor, decay)
                 
         except Exception as e:
@@ -1994,15 +2263,15 @@ class AlphaStrategiesEngine:
                 # 计算复合市场情绪因子
                 sentiment_factor = pd.Series(0, index=df.index)
                 for col in priority_cols[:3]:  # 限制最多3个因子避免过度拟合
-                    col_factor = df[col].apply(lambda x: self.safe_fillna(x, df))
+                    col_factor = df[col]
                     col_factor = self.decay_linear(col_factor, decay)
                     sentiment_factor += col_factor / min(3, len(priority_cols))
                 
-                return sentiment_factor.apply(lambda x: self.safe_fillna(x, df))
+                return sentiment_factor
             else:
                 # 使用第一个可用的市场情绪列
                 col = market_cols[0]
-                sentiment_factor = df[col].apply(lambda x: self.safe_fillna(x, df))
+                sentiment_factor = df[col]
                 return self.decay_linear(sentiment_factor, decay)
                 
         except Exception as e:
@@ -2028,16 +2297,15 @@ class AlphaStrategiesEngine:
                 # 计算复合恐惧贪婪因子
                 sentiment_factor = pd.Series(0, index=df.index)
                 for col in available_cols:
-                    col_factor = df[col].apply(lambda x: self.safe_fillna(x, df))
+                    col_factor = df[col]
                     col_factor = self.decay_linear(col_factor, decay)
                     sentiment_factor += col_factor / len(available_cols)
                 
-                return sentiment_factor.apply(lambda x: self.safe_fillna(x, df))
+                return sentiment_factor
             else:
                 # 使用第一个可用的恐惧贪婪列
                 col = fg_cols[0]
-                sentiment_factor = df[col].apply(lambda x: self.safe_fillna(x, df))
-                # 如果是原始值，进行归一化
+                sentiment_factor = df[col]                # 如果是原始值，进行归一化
                 if 'value' in col.lower():
                     sentiment_factor = (sentiment_factor - 50) / 50  # 归一化到[-1,1]
                 return self.decay_linear(sentiment_factor, decay)
@@ -2062,8 +2330,7 @@ class AlphaStrategiesEngine:
                     # 计算短期情绪动量
                     sentiment_factor = pd.Series(0, index=df.index)
                     for col in sentiment_cols[:2]:  # 最多使用2个基础情绪因子
-                        col_data = df[col].apply(lambda x: self.safe_fillna(x, df))
-                        # 计算短期动量（3天）
+                        col_data = df[col]                        # 计算短期动量（3天）
                         momentum = col_data.groupby(df['ticker']).diff(3)
                         sentiment_factor += momentum / len(sentiment_cols[:2])
                     
@@ -2072,7 +2339,7 @@ class AlphaStrategiesEngine:
                     return pd.Series(0, index=df.index)
             else:
                 # 使用现成的情绪动量列
-                sentiment_factor = df[momentum_cols[0]].apply(lambda x: self.safe_fillna(x, df))
+                sentiment_factor = df[momentum_cols[0]]
                 return self.decay_linear(sentiment_factor, decay)
                 
         except Exception as e:
@@ -2098,11 +2365,11 @@ class AlphaStrategiesEngine:
         """DEPRECATED: APM动量反转因子已删除 - 过度工程化，实际效果有限"""
         return pd.Series(0, index=df.index)
     
-    # ========== 🔥 NEW: Real Polygon Training技术指标集成 ==========
+    # ========== [HOT] NEW: Real Polygon Training技术指标集成 ==========
     
     def _compute_sma_10(self, df: pd.DataFrame, window: int = None, **kwargs) -> pd.Series:
         """简单移动平均线(可优化参数)"""
-        # ✅ PERFORMANCE FIX: 使用优化后的窗口参数
+        # [OK] PERFORMANCE FIX: 使用优化后的窗口参数
         optimal_window = window or self.get_optimized_window('sma_10', 10)
         
         if 'Close' not in df.columns or len(df) < optimal_window:
@@ -2111,13 +2378,13 @@ class AlphaStrategiesEngine:
         try:
             sma = df['Close'].rolling(optimal_window).mean()
             # 转换为相对强度信号：当前价格相对均线的偏离度
-            return ((df['Close'] / sma) - 1).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(((df['Close'] / sma) - 1), df)
         except:
             return pd.Series(0, index=df.index)
     
     def _compute_sma_20(self, df: pd.DataFrame, window: int = None, **kwargs) -> pd.Series:
         """简单移动平均线(可优化参数)"""
-        # ✅ PERFORMANCE FIX: 使用优化后的窗口参数
+        # [OK] PERFORMANCE FIX: 使用优化后的窗口参数
         optimal_window = window or self.get_optimized_window('sma_20', 20)
         
         if 'Close' not in df.columns or len(df) < optimal_window:
@@ -2125,13 +2392,13 @@ class AlphaStrategiesEngine:
         
         try:
             sma = df['Close'].rolling(optimal_window).mean()
-            return ((df['Close'] / sma) - 1).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(((df['Close'] / sma) - 1), df)
         except:
             return pd.Series(0, index=df.index)
     
     def _compute_sma_50(self, df: pd.DataFrame, window: int = None, **kwargs) -> pd.Series:
         """简单移动平均线(可优化参数)"""
-        # ✅ PERFORMANCE FIX: 使用优化后的窗口参数
+        # [OK] PERFORMANCE FIX: 使用优化后的窗口参数
         optimal_window = window or self.get_optimized_window('sma_50', 50)
         
         if 'Close' not in df.columns or len(df) < optimal_window:
@@ -2139,18 +2406,19 @@ class AlphaStrategiesEngine:
             available_days = min(20, len(df))
             if available_days >= 10:
                 sma = df['Close'].rolling(available_days).mean()
-                return ((df['Close'] / sma) - 1).apply(lambda x: self.safe_fillna(x, df))
-            return pd.Series(0, index=df.index)
+                return ((df['Close'] / sma) - 1)
+            else:
+                return pd.Series(0, index=df.index)
         
         try:
             sma = df['Close'].rolling(optimal_window).mean()
-            return ((df['Close'] / sma) - 1).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(((df['Close'] / sma) - 1), df)
         except:
             return pd.Series(0, index=df.index)
     
     def _compute_rsi(self, df: pd.DataFrame, window: int = None, **kwargs) -> pd.Series:
         """相对强弱指数(RSI,可优化参数)"""
-        # ✅ PERFORMANCE FIX: 使用优化后的窗口参数
+        # [OK] PERFORMANCE FIX: 使用优化后的窗口参数
         optimal_window = window or self.get_optimized_window('rsi', 14)
         
         if 'Close' not in df.columns or len(df) < optimal_window + 1:
@@ -2166,7 +2434,7 @@ class AlphaStrategiesEngine:
             
             # 转换为标准化信号：-1到1范围
             rsi_normalized = (rsi - 50) / 50
-            return rsi_normalized.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(rsi_normalized, df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2185,7 +2453,7 @@ class AlphaStrategiesEngine:
             bb_position = (df['Close'] - lower_band) / (upper_band - lower_band)
             
             # 转换为标准化信号：-1到1范围 (0.5映射到0)
-            return ((bb_position - 0.5) * 2).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(((bb_position - 0.5) * 2), df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2200,7 +2468,7 @@ class AlphaStrategiesEngine:
             macd = exp1 - exp2
             
             # 标准化MACD值
-            return (macd / df['Close']).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna((macd / df['Close']), df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2215,7 +2483,7 @@ class AlphaStrategiesEngine:
             macd = exp1 - exp2
             signal = macd.ewm(span=9).mean()
             
-            return (signal / df['Close']).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna((signal / df['Close']), df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2231,7 +2499,7 @@ class AlphaStrategiesEngine:
             signal = macd.ewm(span=9).mean()
             histogram = macd - signal
             
-            return (histogram / df['Close']).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna((histogram / df['Close']), df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2242,7 +2510,7 @@ class AlphaStrategiesEngine:
         
         try:
             momentum_5d = df['Close'].pct_change(5)
-            return momentum_5d.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(momentum_5d, df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2254,7 +2522,7 @@ class AlphaStrategiesEngine:
         
         try:
             momentum_20d = df['Close'].pct_change(20)
-            return momentum_20d.apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(momentum_20d, df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2268,11 +2536,61 @@ class AlphaStrategiesEngine:
             volume_ratio = df['Volume'] / volume_ma.replace(0, np.nan)
             
             # 对数变换以标准化极端值
-            return np.log1p(volume_ratio - 1).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(np.log1p(volume_ratio - 1), df)
         except:
             return pd.Series(0, index=df.index)
     
-    # ========== 🔥 NEW: Real Polygon Training风险指标集成 ==========
+    def _compute_volume_trend(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """成交量趋势因子"""
+        if 'Volume' not in df.columns or len(df) < 10:
+            return pd.Series(0, index=df.index)
+        
+        try:
+            # 计算成交量的移动平均和趋势
+            period = kwargs.get('period', 10)
+            volume_ma_short = df['Volume'].rolling(period//2).mean()
+            volume_ma_long = df['Volume'].rolling(period).mean()
+            
+            # 成交量趋势 = 短期均量/长期均量 - 1
+            volume_trend = (volume_ma_short / volume_ma_long.replace(0, np.nan)) - 1
+            return self.safe_fillna(volume_trend, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_gap_momentum(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """跳空动量因子"""
+        if 'Open' not in df.columns or 'Close' not in df.columns or len(df) < 2:
+            return pd.Series(0, index=df.index)
+        
+        try:
+            # 计算跳空：今日开盘价 vs 昨日收盘价
+            prev_close = df['Close'].shift(1)
+            gap = (df['Open'] - prev_close) / prev_close.replace(0, np.nan)
+            
+            # 累计跳空动量
+            period = kwargs.get('period', 10)
+            gap_momentum = gap.rolling(period).sum()
+            return self.safe_fillna(gap_momentum, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_intraday_momentum(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """日内动量因子"""
+        if 'Open' not in df.columns or 'Close' not in df.columns or len(df) < 1:
+            return pd.Series(0, index=df.index)
+        
+        try:
+            # 日内动量 = (收盘价 - 开盘价) / 开盘价
+            intraday_return = (df['Close'] - df['Open']) / df['Open'].replace(0, np.nan)
+            
+            # 移动平均平滑
+            period = kwargs.get('period', 5)
+            intraday_momentum = intraday_return.rolling(period).mean()
+            return self.safe_fillna(intraday_momentum, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    # ========== [HOT] NEW: Real Polygon Training风险指标集成 ==========
     
     def _compute_max_drawdown(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """最大回撤"""
@@ -2280,7 +2598,7 @@ class AlphaStrategiesEngine:
             return pd.Series(0, index=df.index)
         
         try:
-            returns = df['Close'].pct_change().apply(lambda x: self.safe_fillna(x, df))
+            returns = df['Close'].pct_change()
             cumulative = (1 + returns).cumprod()
             rolling_max = cumulative.expanding().max()
             drawdown = (cumulative - rolling_max) / rolling_max
@@ -2289,7 +2607,7 @@ class AlphaStrategiesEngine:
             max_drawdown = drawdown.rolling(20, min_periods=5).min()
             
             # 返回回撤的绝对值作为风险信号
-            return abs(max_drawdown).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(abs(max_drawdown), df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2299,8 +2617,7 @@ class AlphaStrategiesEngine:
             return pd.Series(0, index=df.index)
         
         try:
-            returns = df['Close'].pct_change().apply(lambda x: self.safe_fillna(x, df))
-            
+            returns = df['Close'].pct_change()            
             # 滚动计算夏普比率 (假设无风险利率为年化2%)
             risk_free_daily = 0.02 / 252
             excess_returns = returns - risk_free_daily
@@ -2311,7 +2628,7 @@ class AlphaStrategiesEngine:
             sharpe = rolling_mean / rolling_std.replace(0, np.nan) * np.sqrt(252)
             
             # 标准化夏普比率到合理范围
-            return np.tanh(sharpe / 2).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(np.tanh(sharpe / 2), df)
         except:
             return pd.Series(0, index=df.index)
     
@@ -2321,12 +2638,434 @@ class AlphaStrategiesEngine:
             return pd.Series(0, index=df.index)
         
         try:
-            returns = df['Close'].pct_change().apply(lambda x: self.safe_fillna(x, df))
-            
+            returns = df['Close'].pct_change()            
             # 滚动计算95% VaR
             var_95 = returns.rolling(20, min_periods=10).quantile(0.05)
             
             # 返回VaR的绝对值作为风险指标
-            return abs(var_95).apply(lambda x: self.safe_fillna(x, df))
+            return self.safe_fillna(abs(var_95), df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    # ========== T+10 Adapted Factors ==========
+    
+    def _compute_reversal_10(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """10-day reversal adapted for T+10 prediction"""
+        try:
+            g = df.groupby('ticker')['Close']
+            # Using T-1 to T-11 data for 10-day reversal, adapted for T+10 prediction
+            rev = -(g.shift(1) / g.shift(11) - 1.0)
+            rev_ema = rev.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
+            return rev_ema.fillna(0.0)
+        except Exception as e:
+            logger.warning(f"10-day reversal computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_market_sentiment_10d(self, df: pd.DataFrame, windows: List[int] = [10, 22], 
+                                     decay: int = 25) -> pd.Series:
+        """Market sentiment adapted for T+10 prediction"""
+        try:
+            # Create synthetic sentiment based on price momentum and volatility
+            # Longer window for T+10 prediction
+            window = windows[0] if windows else 10
+            
+            g = df.groupby('ticker')['Close']
+            returns = g.pct_change().shift(1)  # T-1 returns
+            
+            # Sentiment = momentum (positive) - volatility (negative)  
+            momentum = returns.rolling(window).mean()
+            volatility = returns.rolling(window).std()
+            
+            sentiment = momentum - 0.5 * volatility
+            sentiment_ema = sentiment.groupby(df['ticker']).transform(
+                lambda x: self.ema_decay(x, span=decay)
+            )
+            
+            return sentiment_ema.fillna(0.0)
+        except Exception as e:
+            logger.warning(f"Market sentiment 10d computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_sentiment_momentum_10d(self, df: pd.DataFrame, windows: List[int] = [10, 22],
+                                       decay: int = 30) -> pd.Series:
+        """Sentiment momentum adapted for T+10 prediction"""
+        try:
+            # Sentiment momentum = change in sentiment over 10-day period
+            window = windows[0] if windows else 10
+            
+            g = df.groupby('ticker')['Close']
+            returns = g.pct_change().shift(1)  # T-1 returns
+            
+            # Calculate base sentiment
+            momentum = returns.rolling(window).mean()
+            volatility = returns.rolling(window).std()
+            sentiment = momentum - 0.5 * volatility
+            
+            # Sentiment momentum = current sentiment - past sentiment
+            sentiment_momentum = sentiment - sentiment.shift(window)
+            sentiment_momentum_ema = sentiment_momentum.groupby(df['ticker']).transform(
+                lambda x: self.ema_decay(x, span=decay)
+            )
+            
+            return sentiment_momentum_ema.fillna(0.0)
+        except Exception as e:
+            logger.warning(f"Sentiment momentum 10d computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_macd_10d(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """MACD adapted for T+10 prediction with longer periods"""
+        try:
+            g = df.groupby('ticker')['Close']
+            close_prices = g.shift(1)  # T-1 prices
+            
+            # Longer periods for T+10 prediction: 10 and 20 days instead of 12,26
+            fast_period = 10
+            slow_period = 20
+            signal_period = 9
+            
+            # Calculate EMAs
+            ema_fast = close_prices.ewm(span=fast_period).mean()
+            ema_slow = close_prices.ewm(span=slow_period).mean()
+            
+            # MACD line
+            macd_line = ema_fast - ema_slow
+            
+            # Signal line
+            signal_line = macd_line.ewm(span=signal_period).mean()
+            
+            # MACD histogram (final signal)
+            macd_histogram = macd_line - signal_line
+            
+            # Apply decay
+            macd_result = macd_histogram.groupby(df['ticker']).transform(
+                lambda x: self.ema_decay(x, span=decay)
+            )
+            
+            return macd_result.fillna(0.0)
+        except Exception as e:
+            logger.warning(f"MACD 10d computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    def _compute_bb_position_10d(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
+        """Bollinger Band position adapted for T+10 prediction"""
+        try:
+            window = windows[0] if windows else 10
+            g = df.groupby('ticker')['Close']
+            close_prices = g.shift(1)  # T-1 prices
+            
+            # Calculate Bollinger Bands with longer period
+            sma = close_prices.rolling(window).mean()
+            std = close_prices.rolling(window).std()
+            
+            upper_band = sma + (2.0 * std)
+            lower_band = sma - (2.0 * std)
+            
+            # Position within bands: 0.5 = middle, 1.0 = upper, 0.0 = lower
+            bb_position = (close_prices - lower_band) / (upper_band - lower_band)
+            bb_position = bb_position.clip(0, 1)  # Clamp to [0,1] range
+            
+            # Center around 0 for factor signal: -0.5 to +0.5
+            bb_signal = bb_position - 0.5
+            
+            # Apply decay
+            bb_result = bb_signal.groupby(df['ticker']).transform(
+                lambda x: self.ema_decay(x, span=decay)
+            )
+            
+            return bb_result.fillna(0.0)
+        except Exception as e:
+            logger.warning(f"Bollinger Band position 10d computation failed: {e}")
+            return pd.Series(0.0, index=df.index)
+    
+    # ========== FOCUSED 25 FACTORS COMPUTATION METHODS ==========
+    
+    # Momentum factors (3/25)
+    def _compute_momentum_10d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """10-day price momentum"""
+        if 'Close' not in df.columns or len(df) < 11:
+            return pd.Series(0, index=df.index)
+        try:
+            momentum_10d = df['Close'].pct_change(10)
+            return self.safe_fillna(momentum_10d, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_momentum_20d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """20-day price momentum"""
+        if 'Close' not in df.columns or len(df) < 21:
+            return pd.Series(0, index=df.index)
+        try:
+            momentum_20d = df['Close'].pct_change(20)
+            return self.safe_fillna(momentum_20d, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_momentum_reversal_short(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Short-term momentum reversal signal"""
+        if 'Close' not in df.columns or len(df) < 6:
+            return pd.Series(0, index=df.index)
+        try:
+            momentum_1d = df['Close'].pct_change(1)
+            momentum_5d = df['Close'].pct_change(5)
+            reversal_signal = -momentum_1d * momentum_5d
+            return self.safe_fillna(reversal_signal, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    # Mean reversion factors (4/25)
+    def _compute_bollinger_position(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Position within Bollinger Bands"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            sma_20 = df['Close'].rolling(20).mean()
+            std_20 = df['Close'].rolling(20).std()
+            upper_band = sma_20 + (2 * std_20)
+            lower_band = sma_20 - (2 * std_20)
+            position = (df['Close'] - lower_band) / (upper_band - lower_band + 1e-8)
+            position = position.clip(0, 1) - 0.5  # Center around 0
+            return self.safe_fillna(position, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_price_to_ma20(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Price relative to 20-day moving average"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            ma20 = df['Close'].rolling(20).mean()
+            price_to_ma = (df['Close'] / ma20) - 1
+            return self.safe_fillna(price_to_ma, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_bollinger_squeeze(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Bollinger Band volatility squeeze"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            std_20 = df['Close'].rolling(20).std()
+            std_5 = df['Close'].rolling(5).std()
+            squeeze = std_5 / (std_20 + 1e-8)
+            return self.safe_fillna(squeeze, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    # Volume factors (2/25)
+    def _compute_obv_momentum(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """On-Balance Volume momentum"""
+        if 'Close' not in df.columns or 'Volume' not in df.columns or len(df) < 10:
+            return pd.Series(0, index=df.index)
+        try:
+            price_change = df['Close'].diff()
+            obv = (price_change.apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0)) * df['Volume']).cumsum()
+            obv_momentum = obv.pct_change(10)
+            return self.safe_fillna(obv_momentum, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_ad_line(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Accumulation/Distribution Line"""
+        if not all(col in df.columns for col in ['High', 'Low', 'Close', 'Volume']) or len(df) < 5:
+            return pd.Series(0, index=df.index)
+        try:
+            clv = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'] + 1e-8)
+            ad_line = (clv * df['Volume']).cumsum()
+            ad_momentum = ad_line.pct_change(5)
+            return self.safe_fillna(ad_momentum, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    # Volatility factors (2/25)
+    def _compute_atr_20d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """20-day Average True Range"""
+        if not all(col in df.columns for col in ['High', 'Low', 'Close']) or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            tr1 = df['High'] - df['Low']
+            tr2 = abs(df['High'] - df['Close'].shift(1))
+            tr3 = abs(df['Low'] - df['Close'].shift(1))
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = true_range.rolling(20).mean()
+            atr_normalized = atr / (df['Close'] + 1e-8)
+            return self.safe_fillna(atr_normalized, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_atr_ratio(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """ATR ratio (5d/20d expansion/contraction)"""
+        if not all(col in df.columns for col in ['High', 'Low', 'Close']) or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            tr1 = df['High'] - df['Low']
+            tr2 = abs(df['High'] - df['Close'].shift(1))
+            tr3 = abs(df['Low'] - df['Close'].shift(1))
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr_5 = true_range.rolling(5).mean()
+            atr_20 = true_range.rolling(20).mean()
+            atr_ratio = atr_5 / (atr_20 + 1e-8)
+            return self.safe_fillna(atr_ratio, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    # Technical factors (4/25) - stoch_k, cci, mfi already exist, just need to add them
+    def _compute_stoch_k(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Stochastic %K oscillator"""
+        if not all(col in df.columns for col in ['High', 'Low', 'Close']) or len(df) < 14:
+            return pd.Series(0, index=df.index)
+        try:
+            lowest_low = df['Low'].rolling(14).min()
+            highest_high = df['High'].rolling(14).max()
+            stoch_k = 100 * (df['Close'] - lowest_low) / (highest_high - lowest_low + 1e-8)
+            stoch_k_normalized = (stoch_k - 50) / 50
+            return self.safe_fillna(stoch_k_normalized, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_cci(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Commodity Channel Index"""
+        if not all(col in df.columns for col in ['High', 'Low', 'Close']) or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+            sma_tp = typical_price.rolling(20).mean()
+            mad = typical_price.rolling(20).apply(lambda x: abs(x - x.mean()).mean())
+            cci = (typical_price - sma_tp) / (0.015 * mad + 1e-8)
+            cci_normalized = cci / 100
+            return self.safe_fillna(cci_normalized, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_mfi(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Money Flow Index"""
+        if not all(col in df.columns for col in ['High', 'Low', 'Close', 'Volume']) or len(df) < 14:
+            return pd.Series(0, index=df.index)
+        try:
+            typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+            money_flow = typical_price * df['Volume']
+            price_change = typical_price.diff()
+            positive_flow = (money_flow * (price_change > 0)).rolling(14).sum()
+            negative_flow = (money_flow * (price_change < 0)).rolling(14).sum()
+            money_ratio = positive_flow / (negative_flow + 1e-8)
+            mfi = 100 - (100 / (1 + money_ratio))
+            mfi_normalized = (mfi - 50) / 50
+            return self.safe_fillna(mfi_normalized, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    # Fundamental factors (10/25)
+    def _compute_market_cap_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Market capitalization proxy"""
+        if 'Close' not in df.columns:
+            return pd.Series(0, index=df.index)
+        try:
+            # Use price as proxy for market cap (relative sizing)
+            market_cap_proxy = np.log(df['Close'] + 1)
+            return self.safe_fillna(market_cap_proxy, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_value_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Value factor from mean reversion"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            ma_20 = df['Close'].rolling(20).mean()
+            value_proxy = (ma_20 - df['Close']) / (ma_20 + 1e-8)
+            return self.safe_fillna(value_proxy, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_quality_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Quality factor from low volatility"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            volatility = df['Close'].pct_change().rolling(20).std()
+            quality_proxy = -volatility  # Low volatility = high quality
+            return self.safe_fillna(quality_proxy, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_profitability_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Profitability from price-volume"""
+        if 'Close' not in df.columns or 'Volume' not in df.columns or len(df) < 10:
+            return pd.Series(0, index=df.index)
+        try:
+            price_change = df['Close'].pct_change(10)
+            volume_avg = df['Volume'].rolling(10).mean()
+            profitability_proxy = price_change * np.log(volume_avg + 1)
+            return self.safe_fillna(profitability_proxy, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_liquidity_factor(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Liquidity from volume patterns"""
+        if 'Volume' not in df.columns or len(df) < 10:
+            return pd.Series(0, index=df.index)
+        try:
+            volume_ma = df['Volume'].rolling(10).mean()
+            volume_std = df['Volume'].rolling(10).std()
+            liquidity_factor = np.log(volume_ma + 1) / (volume_std + 1e-8)
+            return self.safe_fillna(liquidity_factor, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_growth_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Growth factor from momentum"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            momentum_5d = df['Close'].pct_change(5)
+            momentum_20d = df['Close'].pct_change(20)
+            growth_proxy = momentum_5d + momentum_20d
+            return self.safe_fillna(growth_proxy, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_profitability_momentum(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Profitability momentum"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            returns = df['Close'].pct_change()
+            cumulative_returns = (1 + returns).rolling(20).apply(lambda x: x.prod()) - 1
+            profitability_momentum = cumulative_returns
+            return self.safe_fillna(profitability_momentum, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_growth_acceleration(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Growth acceleration"""
+        if 'Close' not in df.columns or len(df) < 10:
+            return pd.Series(0, index=df.index)
+        try:
+            momentum_5d = df['Close'].pct_change(5)
+            momentum_acceleration = momentum_5d.diff(5)
+            return self.safe_fillna(momentum_acceleration, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_quality_consistency(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Quality consistency measure"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            returns = df['Close'].pct_change()
+            rolling_sharpe = returns.rolling(20).mean() / (returns.rolling(20).std() + 1e-8)
+            quality_consistency = rolling_sharpe
+            return self.safe_fillna(quality_consistency, df)
+        except:
+            return pd.Series(0, index=df.index)
+    
+    def _compute_financial_resilience(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Financial resilience (5th percentile return)"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            returns = df['Close'].pct_change()
+            rolling_5th_percentile = returns.rolling(20).quantile(0.05)
+            financial_resilience = -rolling_5th_percentile  # Higher is better
+            return self.safe_fillna(financial_resilience, df)
         except:
             return pd.Series(0, index=df.index)

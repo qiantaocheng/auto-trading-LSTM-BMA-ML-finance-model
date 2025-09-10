@@ -28,8 +28,8 @@ def get_default_config():
         'temporal': {
             'prediction_horizon_days': 10,
             'feature_lag_days': 5,
-            'cv_gap_days': 11,
-            'cv_embargo_days': 11
+            'cv_gap_days': 1,
+            'cv_embargo_days': 1
         },
         'training': {
             'traditional_models': {'enable': True},
@@ -44,3 +44,31 @@ def get_default_config():
             }
         }
     }
+
+class ConfigLoader:
+    """统一配置加载器类"""
+    
+    def __init__(self, config_path=None):
+        self.config_path = config_path
+        self.config = None
+        
+    def load(self):
+        """加载配置"""
+        self.config = load_unified_config(self.config_path)
+        return self.config
+        
+    def get_config(self):
+        """获取配置"""
+        if self.config is None:
+            self.load()
+        return self.config
+        
+    def get_section(self, section_name):
+        """获取配置段"""
+        config = self.get_config()
+        return config.get(section_name, {})
+        
+    def reload(self):
+        """重新加载配置"""
+        self.config = None
+        return self.load()

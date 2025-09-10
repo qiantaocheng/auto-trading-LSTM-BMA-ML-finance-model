@@ -11,12 +11,16 @@ import pandas as pd
 from typing import Dict, Any, Optional, Union
 from datetime import datetime, timedelta
 
-from unified_timing_registry import get_global_timing_registry, TimingEnforcer
+try:
+    from unified_timing_registry import get_global_timing_registry, TimingEnforcer
+except ImportError:
+    get_global_timing_registry = lambda: None
+    TimingEnforcer = None
 
 logger = logging.getLogger(__name__)
 
 
-class SampleWeightUnifier:
+class SampleWeightUnificator:
     """
     样本权重统一化器
     
@@ -247,7 +251,7 @@ def unify_sample_weights_globally(module_configs: Dict[str, Dict[str, Any]]) -> 
     Returns:
         统一后的配置字典
     """
-    unifier = SampleWeightUnifier()
+    unifier = SampleWeightUnificator()
     unified_configs = {}
     
     logger.info("开始全局样本权重统一化")
@@ -277,7 +281,7 @@ def create_weight_validation_report(dates: pd.DatetimeIndex,
     Returns:
         权重验证报告DataFrame
     """
-    unifier = SampleWeightUnifier()
+    unifier = SampleWeightUnificator()
     standard_weights = unifier.create_unified_sample_weights(dates)
     
     report_data = []
@@ -320,7 +324,7 @@ def create_weight_validation_report(dates: pd.DatetimeIndex,
 
 if __name__ == "__main__":
     # 测试样本权重统一化
-    unifier = SampleWeightUnifier()
+    unifier = SampleWeightUnificator()
     
     # 创建测试日期
     test_dates = pd.date_range('2023-01-01', '2024-01-01', freq='D')
