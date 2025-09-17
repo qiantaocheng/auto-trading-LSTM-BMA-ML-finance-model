@@ -2,23 +2,28 @@
 
 ### Overview
 
-This repository contains a production‑oriented equity research and auto‑trading stack for US stocks, centered on the BMA Ultra Enhanced model with Polygon.io market data and an IBKR (ib_insync) trading engine. It includes:
+This repository contains a **production-grade** equity research and auto-trading stack for US stocks, featuring a streamlined codebase with institutional-quality components. The system is centered on the BMA Ultra Enhanced model with Polygon.io market data and IBKR trading integration.
 
-- Enhanced alpha engine with strict time‑leakage controls
-- Risk model with T‑1 Size factor and robust portfolio optimization
-- Unified Polygon factor library integration
-- GUI for running models and operating auto‑trading
-- Robust Polygon client with pagination and rate‑limit handling
-- Unified configuration, event, and execution infrastructure
+**Recent Major Update (September 2025):** The codebase has undergone comprehensive cleanup and reorganization, removing over 100,000 lines of deprecated code while adding enhanced monitoring and quality control systems.
+
+### Core Components
+
+- **Enhanced BMA Model**: Institutional-grade factor engine with strict temporal controls
+- **Risk Management**: T-1 Size factor model with robust portfolio optimization
+- **Market Data**: Unified Polygon.io integration with comprehensive factor library
+- **Trading Engine**: IBKR auto-trader with advanced execution and monitoring
+- **Quality Control**: Production-ready validation and monitoring systems
+- **Configuration**: Unified config management with hot-reload capabilities
 
 ### Key Features
 
-- Time‑safe factor engineering (no look‑ahead) and purged CV
-- Regime‑aware model blending; fallback heuristics to avoid degenerate weights
-- Professional risk model artifacts (factor loadings/covariance/specific risk)
-- IBKR auto‑trader with SMART routing, bracket orders, dynamic stops (optional)
-- Unified config manager merging defaults, files, DB and runtime edits
-- Reliable Polygon API client with full error logging, next_url pagination, 429/503 backoff, and reasonable pacing
+- **Temporal Safety**: Strict time-leakage controls with purged cross-validation
+- **Institutional Monitoring**: Alpha quality monitoring and evaluation integrity systems
+- **Production Ready**: Enhanced exception handling and robust numerical methods
+- **Risk Management**: Professional risk model with factor loadings and covariance estimation
+- **Advanced Execution**: IBKR integration with SMART routing and bracket orders
+- **Data Infrastructure**: Reliable Polygon API client with pagination and backoff
+- **Quality Assurance**: Comprehensive validation and monitoring dashboard
 
 ## Quick Start
 
@@ -81,11 +86,32 @@ Environment overrides (optional): `BMA_START_DATE`, `BMA_END_DATE`, `BMA_EXTRA_A
 
 ### BMA Ultra Enhanced Model
 
-- File: `量化模型_bma_ultra_enhanced.py`
-- Learning‑to‑rank models, traditional ML baselines, and regime‑aware fusion
-- Risk model: professional artifacts (factor loadings/covariance/specific risk)
-- Optimizer fallbacks to avoid flat/degenerate portfolios
-- Output: Excel/CSV recommendations and JSON short lists under `result/`
+- **File**: `bma_models/量化模型_bma_ultra_enhanced.py`
+- **Architecture**: Learning-to-rank models with traditional ML baselines and regime-aware fusion
+- **Risk Model**: Professional-grade factor loadings, covariance matrices, and specific risk estimation
+- **Quality Control**: Integrated alpha quality monitoring and evaluation integrity systems
+- **Robust Methods**: Enhanced numerical stability and exception handling
+- **Output**: Excel/CSV recommendations with comprehensive analysis reports
+
+## Recent Improvements (September 2025)
+
+### Codebase Modernization
+- **Massive Cleanup**: Removed over 100,000 lines of deprecated code and temporary files
+- **Streamlined Architecture**: Consolidated core functionality into `autotrader/` and `bma_models/` packages
+- **Enhanced .gitignore**: Comprehensive exclusions for virtual environments and temporary data
+
+### New Production-Grade Components
+- **Alpha Quality Monitoring**: `alpha_factor_quality_monitor.py` and `enhanced_alpha_quality_monitor.py`
+- **Institutional Dashboard**: `institutional_monitoring_dashboard.py` for comprehensive system oversight
+- **Evaluation Integrity**: `evaluation_integrity_monitor.py` for validation and quality assurance
+- **Robust Numerical Methods**: `robust_numerical_methods.py` for enhanced stability
+- **Optimized Factor Engine**: `optimized_factor_engine.py` with improved performance
+
+### Enhanced Infrastructure
+- **Unified Configuration**: Streamlined config loading with `unified_config_loader.py`
+- **Exception Handling**: Enhanced error management with `enhanced_exception_handler.py`
+- **Training Monitoring**: `unified_training_monitor.py` for ML pipeline oversight
+- **Cross-sectional Standardization**: Improved normalization with `cross_sectional_standardizer.py`
 
 ## Algorithm Details
 
