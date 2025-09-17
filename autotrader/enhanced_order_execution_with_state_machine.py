@@ -16,6 +16,8 @@ import logging
 import time
 import json
 import asyncio
+import threading
+import hashlib
 from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -75,8 +77,8 @@ class OrderSnapshot:
     strategy: Optional[str] = None
 
 class OrderStateMachine:
-    """订单状态机 - 管理单个订单完整生命周期"""
-    
+    """订单状态机 - 管理单个订单完整生命周期（增强并发安全版本）"""
+
     # 定义有效状态转换
     VALID_TRANSITIONS = {
         OrderState.PENDING: [OrderState.SUBMITTED, OrderState.FAILED, OrderState.REJECTED],
@@ -89,11 +91,11 @@ class OrderStateMachine:
         OrderState.EXPIRED: [],   # 终态
         OrderState.FAILED: []     # 终态
     }
-    
+
     TERMINAL_STATES = {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED, OrderState.EXPIRED, OrderState.FAILED}
-    
-    def __init__(self, order_id: int, symbol: str, side: str, quantity: int, 
-                 order_type: OrderType, price: Optional[float] = None, 
+
+    def __init__(self, order_id: int, symbol: str, side: str, quantity: int,
+                 order_type: OrderType, price: Optional[float] = None,
                  strategy: Optional[str] = None, parent_id: Optional[int] = None,
                  state_change_callback: Optional[Callable] = None):
         self.order_id = order_id
@@ -104,37 +106,46 @@ class OrderStateMachine:
         self.price = price
         self.strategy = strategy
         self.parent_id = parent_id
-        
-        # 状态管理
+
+        # 状态管理 - 增强并发安全
         self.state = OrderState.PENDING
+        self._last_verified_state = OrderState.PENDING  # 用于双重检查
+        self._transition_sequence = 0  # 状态转换序列号
         self.state_history: List[OrderTransition] = []
         self.timestamps: Dict[str, float] = {}
-        
+
         # 执行信息
         self.filled_quantity = 0
         self.avg_fill_price: Optional[float] = None
         self.remaining_quantity = quantity
-        
-        # 同步锁
-        self._lock = Lock()
-        
+
+        # 增强同步控制 - 使用RLock支持重入
+        self._lock = threading.RLock()
+        self._state_lock = threading.Lock()  # 专用状态锁
+        self._callback_lock = threading.Lock()  # 回调专用锁
+
+        # 状态一致性检查
+        self._state_checksum = 0  # 状态校验和
+
         # 回调函数
         self.state_change_callback = state_change_callback
-        
+
         # 日志
         self.logger = logging.getLogger(f"OrderSM.{order_id}")
-        
+
         # 初始化
         self.submit_time = time.time()
         self.last_update = self.submit_time
         self.timestamps[OrderState.PENDING.value] = self.submit_time
-        
+        self._update_state_checksum()
+
         self.logger.info(f"订单状态机创建: {self._basic_info()}")
-        
-        # 触发创建回调
+
+        # 触发创建回调（使用独立锁）
         if self.state_change_callback:
             try:
-                self.state_change_callback(self, None, OrderState.PENDING, metadata={'action': 'created'})
+                with self._callback_lock:
+                    self.state_change_callback(self, None, OrderState.PENDING, metadata={'action': 'created'})
             except Exception as e:
                 self.logger.warning(f"状态回调失败: {e}")
     
@@ -142,44 +153,89 @@ class OrderStateMachine:
         """基本订单信息"""
         return f"{self.symbol} {self.side} {self.quantity}@{self.price or 'MKT'}"
     
-    def transition(self, new_state: OrderState, metadata: Optional[Dict[str, Any]] = None, 
+    def _update_state_checksum(self):
+        """更新状态校验和"""
+        state_str = f"{self.state.value}:{self._transition_sequence}:{self.filled_quantity}"
+        self._state_checksum = hash(state_str) & 0xFFFFFFFF  # 32位哈希
+
+    def _verify_state_consistency(self) -> bool:
+        """验证状态一致性"""
+        expected_checksum = hash(f"{self.state.value}:{self._transition_sequence}:{self.filled_quantity}") & 0xFFFFFFFF
+        return self._state_checksum == expected_checksum
+
+    def transition(self, new_state: OrderState, metadata: Optional[Dict[str, Any]] = None,
                   reason: Optional[str] = None) -> bool:
-        """状态转换"""
-        with self._lock:
+        """增强并发安全的状态转换"""
+        # 使用专用状态锁确保状态转换的原子性
+        with self._state_lock:
+            # 双重检查状态一致性
+            if not self._verify_state_consistency():
+                self.logger.error(f"状态一致性校验失败: {self.order_id}")
+                return False
+
+            # 检查是否与最后验证的状态一致
+            if self.state != self._last_verified_state:
+                self.logger.warning(f"状态不匹配，重新验证: expected={self._last_verified_state}, actual={self.state}")
+                # 可能需要重新同步状态
+                return False
+
             if not self._is_valid_transition(self.state, new_state):
                 self.logger.warning(f"无效状态转换: {self.state.value} -> {new_state.value}")
                 return False
-            
+
+            # 增加转换序列号
+            self._transition_sequence += 1
+
             # 记录转换
             transition = OrderTransition(
                 from_state=self.state.value,
                 to_state=new_state.value,
                 timestamp=time.time(),
-                metadata=metadata,
+                metadata={
+                    **(metadata or {}),
+                    'transition_seq': self._transition_sequence,
+                    'thread_id': threading.get_ident()
+                },
                 reason=reason
             )
-            
-            self.state_history.append(transition)
-            
-            # 更新状态
-            old_state = self.state
-            self.state = new_state
-            self.last_update = transition.timestamp
-            self.timestamps[new_state.value] = transition.timestamp
-            
-            self.logger.info(f"状态转换: {old_state.value} -> {new_state.value} ({reason or 'N/A'})")
-            
-            # 触发状态变化回调
-            if self.state_change_callback:
-                try:
-                    self.state_change_callback(self, old_state, new_state, metadata=metadata, reason=reason)
-                except Exception as e:
-                    self.logger.warning(f"状态变化回调失败: {e}")
-            
-            # 处理特定状态逻辑
-            self._handle_state_entry(new_state, metadata)
-            
-            return True
+
+            try:
+                # 原子性状态更新
+                old_state = self.state
+                self.state = new_state
+                self._last_verified_state = new_state
+                self.last_update = transition.timestamp
+                self.timestamps[new_state.value] = transition.timestamp
+
+                # 更新状态校验和
+                self._update_state_checksum()
+
+                # 添加到历史记录
+                self.state_history.append(transition)
+
+                self.logger.info(f"状态转换[#{self._transition_sequence}]: {old_state.value} -> {new_state.value} ({reason or 'N/A'})")
+
+                # 触发状态变化回调（使用独立锁避免死锁）
+                if self.state_change_callback:
+                    try:
+                        with self._callback_lock:
+                            self.state_change_callback(self, old_state, new_state, metadata=metadata, reason=reason)
+                    except Exception as e:
+                        self.logger.warning(f"状态变化回调失败: {e}")
+
+                # 处理特定状态逻辑
+                self._handle_state_entry(new_state, metadata)
+
+                return True
+
+            except Exception as e:
+                # 回滚状态（如果发生异常）
+                self.logger.error(f"状态转换异常，回滚: {e}")
+                self.state = old_state
+                self._last_verified_state = old_state
+                self._transition_sequence -= 1
+                self._update_state_checksum()
+                return False
     
     def _is_valid_transition(self, from_state: OrderState, to_state: OrderState) -> bool:
         """检查状态转换是否有效"""

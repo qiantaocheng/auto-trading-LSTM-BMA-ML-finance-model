@@ -1,76 +1,35 @@
-# Python
+/.vscode
+/trading_env/
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual Environment
-trading_env/
-venv/
 env/
-ENV/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-audit_logs/
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
-# Trading specific
-*.csv
-*.xlsx
-*.xls
-*.json
-!requirements.txt
-
-# Temporary files
-*.tmp
-*.temp
-nul
-
-# IBKR specific
-*.ibkr
-*.tws
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Testing
-.coverage
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
 .pytest_cache/
+.coverage
 htmlcov/
-
-# Documentation
-docs/_build/ 
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesis
+*.db
+*.sqlite3
+logs/
+cache/
+data/
+results/
+predictions/
+production_results/
+nul

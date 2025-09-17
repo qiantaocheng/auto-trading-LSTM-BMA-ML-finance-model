@@ -1,0 +1,40 @@
+# BMA model default stock pool configuration
+# One stock ticker per line, lines starting with # are comments
+# Recommended: liquid, data-complete large-cap stocks
+
+# Technology stocks
+AAPL
+MSFT
+GOOGL
+NVDA
+META
+
+# Consumer stocks
+AMZN
+TSLA
+WMT
+PG
+
+# Financial stocks
+JPM
+BRK-B
+V
+MA
+
+# Healthcare stocks
+JNJ
+UNH
+PFE
+
+# Industrial stocks
+BA
+CAT
+
+# Energy stocks
+XOM
+CVX
+
+# ETF as market benchmark
+SPY
+QQQ
+IWM

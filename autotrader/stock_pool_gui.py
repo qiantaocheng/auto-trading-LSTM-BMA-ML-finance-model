@@ -454,7 +454,13 @@ class StockPoolWindow:
     
     def add_ticker(self):
         """添加股票"""
-        ticker = self.add_ticker_var.get().upper().strip()
+        raw = self.add_ticker_var.get()
+        try:
+            from stock_pool_manager import StockPoolManager
+            ticker = StockPoolManager._sanitize_ticker(raw) or ''
+        except Exception:
+            ticker = (raw or '').upper().strip().replace('"','').replace("'",'')
+            ticker = ''.join(c for c in ticker if not c.isspace())
         if not ticker:
             return
         
@@ -656,17 +662,38 @@ class NewPoolDialog:
     def create(self):
         """创建股票池"""
         name = self.name_var.get().strip()
+        
+        # 解析股票列表（先解析股票，若名称为空则根据股票自动生成）
+        tickers_text = self.tickers_text.get('1.0', tk.END).strip()
+        tickers = []
+        seen = set()
+        for token in tickers_text.replace(',', ' ').split():
+            try:
+                from stock_pool_manager import StockPoolManager
+                t = StockPoolManager._sanitize_ticker(token)
+            except Exception:
+                t = (token or '').upper().strip().replace('"','').replace("'",'')
+                t = ''.join(c for c in t if not c.isspace())
+            if t and t not in seen:
+                tickers.append(t)
+                seen.add(t)
+        
+        # 若名称为空且存在有效股票，自动生成名称
+        if not name and len(tickers) > 0:
+            from datetime import datetime
+            preview = '-'.join(tickers[:3])
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            name = f"自定义股票池_{preview}_{ts}"
+        
+        # 校验名称
         if not name:
             messagebox.showwarning("警告", "请输入股票池名称")
             return
         
-        # 解析股票列表
-        tickers_text = self.tickers_text.get('1.0', tk.END).strip()
-        tickers = []
-        for ticker in tickers_text.replace(',', ' ').split():
-            ticker = ticker.strip().upper()
-            if ticker:
-                tickers.append(ticker)
+        # 校验股票
+        if len(tickers) == 0:
+            messagebox.showwarning("警告", "请输入股票代码")
+            return
         
         # 解析标签
         tags_text = self.tags_var.get()
@@ -723,12 +750,24 @@ class BatchAddDialog:
         
         # 解析输入
         for line in text.split('\n'):
-            for ticker in line.replace(',', ' ').split():
-                ticker = ticker.strip().upper()
-                if ticker:
-                    tickers.append(ticker)
+            for token in line.replace(',', ' ').split():
+                try:
+                    from stock_pool_manager import StockPoolManager
+                    t = StockPoolManager._sanitize_ticker(token)
+                except Exception:
+                    t = (token or '').upper().strip().replace('"','').replace("'",'')
+                    t = ''.join(c for c in t if not c.isspace())
+                if t:
+                    tickers.append(t)
         
-        self.result = list(set(tickers))  # 去重
+        # 去重并保持输入顺序
+        seen = set()
+        ordered = []
+        for t in tickers:
+            if t not in seen:
+                ordered.append(t)
+                seen.add(t)
+        self.result = ordered
         self.dialog.destroy()
     
     def cancel(self):

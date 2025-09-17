@@ -1,0 +1,170 @@
+{
+    "system": {
+        "version": "1.0",
+        "created_by": "conflict_fixer",
+        "description": "AutoTrader统一配置"
+    },
+    "connection": {
+        "host": "127.0.0.1",
+        "port": 4002,
+        "client_id": 3130,
+        "timeout": 10,
+        "max_reconnect_attempts": 5,
+        "reconnect_interval": 5.0
+    },
+    "trading": {
+        "alloc_pct": 0.03,
+        "poll_interval": 10.0,
+        "fixed_quantity": 0,
+        "auto_sell_removed": true,
+        "max_daily_orders": 50,
+        "min_order_value_usd": 1000.0,
+        "default_order_type": "LIMIT",
+        "execution_timeout_seconds": 30,
+        "max_slippage_pct": 0.01,
+        "enable_smart_routing": true,
+        "enable_fractional_shares": false,
+        "default_time_in_force": "DAY",
+        "enable_pre_market": false,
+        "enable_after_hours": false,
+        "default_stop_loss_pct": 0.02,
+        "default_take_profit_pct": 0.05
+    },
+    "risk": {
+        "max_position_pct": 0.15,
+        "per_trade_risk_pct": 0.02,
+        "max_portfolio_exposure": 0.95,
+        "cash_reserve_pct": 0.1,
+        "require_account_ready": true,
+        "max_single_position_pct": 0.20,
+        "max_sector_exposure_pct": 0.30,
+        "max_orders_per_5min": 10,
+        "max_orders_per_hour": 25,
+        "max_drawdown_pct": 0.05,
+        "verify_tolerance_usd": 100.0,
+        "enable_sector_limits": true,
+        "enable_correlation_check": true,
+        "max_correlation": 0.7
+    },
+    "risk_management": {
+        "default_stop_pct": 0.02,
+        "default_target_pct": 0.05,
+        "use_atr_stops": false,
+        "atr_multiplier_stop": 2.0,
+        "atr_multiplier_target": 3.0,
+        "use_bracket_on_removed": false,
+        "enable_local_dynamic_stop_for_bracket": false,
+        "atr_risk_scale": 5.0,
+        "webhook_url": "",
+        "realtime_alloc_pct": 0.03,
+        "symbol_overrides": {},
+        "strategy_settings": {
+            "scalping": {"stop_pct": 0.005, "target_pct": 0.01},
+            "swing": {"stop_pct": 0.03, "target_pct": 0.08},
+            "position": {"stop_pct": 0.05, "target_pct": 0.15}
+        },
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.05,
+        "max_daily_orders": 50
+    },
+    "data": {
+        "primary_source": "polygon",
+        "fallback_source": "polygon",
+        "max_data_age_minutes": 30,
+        "enable_data_validation": true
+    },
+    "logging": {
+        "level": "INFO",
+        "enable_debug": false,
+        "log_trades": true,
+        "log_errors": true
+    },
+    "signals": {
+        "acceptance_threshold": 0.6
+    },
+    "sizing": {
+        "target_pct": 0.05,
+        "min_pct": 0.04,
+        "max_pct": 0.10,
+        "min_position_usd": 1000,
+        "min_shares": 1,
+        "per_trade_risk_pct": 0.02,
+        "max_position_pct_of_equity": 0.15,
+        "notional_round_lots": true
+    },
+    "capital": {
+        "max_new_positions_per_day": 10,
+        "cash_reserve_pct": 0.10,
+        "max_portfolio_exposure": 0.95,
+        "require_account_ready": true,
+        "max_single_position_pct": 0.15
+    },
+    "scanner": {
+        "universe": ["SPY", "QQQ", "IWM"]
+    },
+    "orders": {
+        "smart_price_mode": "market"
+    },
+    "frequency_control": {
+        "enable_frequency_control": true,
+        "cost_gatekeeper": {
+            "min_win_rate": 0.55,
+            "min_hold_minutes": 15,
+            "cost_buffer_bp": 8,
+            "intraday_threshold_bp": 10,
+            "overnight_threshold_bp": 18
+        },
+        "no_trade_band": {
+            "band_width_pct": 0.02,
+            "trigger_threshold_pct": 0.045,
+            "rebalance_threshold_pct": 0.03
+        },
+        "cooldown": {
+            "per_symbol_cooldown_minutes": 120,
+            "min_holding_period_hours": 4,
+            "global_rate_limit_5min": 3,
+            "global_rate_limit_1hour": 6
+        },
+        "batching": {
+            "batch_window_minutes": 60,
+            "min_batch_size": 2,
+            "max_queue_size": 20
+        },
+        "liquidity": {
+            "max_spread_percentile": 75,
+            "max_volatility_percentile": 60,
+            "min_order_size_usd": 2500,
+            "fragile_time_buffer_bp": 10
+        },
+        "quotas": {
+            "max_daily_orders_per_symbol": 6,
+            "max_cancel_rate": 0.20,
+            "enable_cancel_penalty": true
+        }
+    },
+    "price_validation": {
+        "min_price": 0.01,
+        "max_price": 50000.0,
+        "max_daily_change_pct": 0.30,
+        "max_tick_change_pct": 0.05,
+        "max_data_age_seconds": 180.0,
+        "stale_warning_seconds": 30.0,
+        "outlier_std_multiplier": 3.0,
+        "allow_avgcost_fallback": true,
+        "allow_last_known_fallback": true,
+        "fallback_max_age_hours": 24.0
+    },
+    "risk_controls": {
+        "daily_order_limit": 20,
+        "sector_exposure_limit": 0.30,
+        "max_correlation": 0.70
+    },
+    "monitoring": {
+        "enable_monitoring": true,
+        "alert_thresholds": {
+            "order_latency_ms": 1000,
+            "rejection_rate_pct": 5.0,
+            "data_staleness_minutes": 10
+        }
+    }
+}

@@ -47,7 +47,7 @@ class DynamicClientIDManager:
         
         # ClientID范围配置
         try:
-            from .config_manager import get_config_manager
+            from bma_models.unified_config_loader from bma_models.unified_config_loader import get_unified_config
             config = get_config_manager()
             self.min_client_id = config.get('ibkr.min_client_id', 1000)
             self.max_client_id = config.get('ibkr.max_client_id', 9999)
@@ -76,7 +76,7 @@ class DynamicClientIDManager:
             try:
                 # Use defaults from config if not provided
                 try:
-                    from .config_manager import get_config_manager
+                    from bma_models.unified_config_loader from bma_models.unified_config_loader import get_unified_config
                     config = get_config_manager()
                     host = host or config.get('ibkr.host', '127.0.0.1')
                     port = port or config.get('ibkr.port', 7497)

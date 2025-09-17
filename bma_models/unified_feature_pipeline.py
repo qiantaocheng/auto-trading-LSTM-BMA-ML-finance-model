@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from sklearn.preprocessing import StandardScaler, RobustScaler
 # PCA COMPLETELY REMOVED - NO DIMENSIONALITY REDUCTION
 from sklearn.impute import SimpleImputer
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -95,13 +96,31 @@ class UnifiedFeaturePipeline:
             X_fused = X_clean
             logger.info("跳过Alpha摘要特征，使用基础特征")
         
-        # 3. 拟合数据插补器
+        # 3. LEAK-FREE IMPUTATION: Use per-date cross-sectional median (no temporal leakage)
+        # DO NOT use global SimpleImputer.fit_transform - it leaks future information
+        X_imputed = X_fused.copy()
+
+        # Forward-fill first (temporal, no leakage), then cross-sectional median per date
+        numeric_cols = X_imputed.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            # Step 1: Forward-fill within each ticker (no future leakage)
+            if hasattr(X_imputed.index, 'get_level_values') and 'ticker' in X_imputed.index.names:
+                X_imputed[col] = X_imputed.groupby(level='ticker')[col].fillna(method='ffill', limit=5)
+            else:
+                X_imputed[col] = X_imputed[col].fillna(method='ffill', limit=5)
+
+            # Step 2: Cross-sectional median per date (no temporal leakage)
+            if X_imputed[col].isna().any():
+                if hasattr(X_imputed.index, 'get_level_values') and 'date' in X_imputed.index.names:
+                    X_imputed[col] = X_imputed.groupby(level='date')[col].transform(
+                        lambda x: x.fillna(x.median()) if not x.isna().all() else x
+                    )
+                else:
+                    # For non-MultiIndex, use global median as last resort
+                    X_imputed[col] = X_imputed[col].fillna(X_imputed[col].median())
+
+        # Store dummy imputer for compatibility (not actually used for fitting)
         self.imputer = SimpleImputer(strategy=self.config.imputation_strategy)
-        X_imputed = pd.DataFrame(
-            self.imputer.fit_transform(X_fused),
-            index=X_fused.index,
-            columns=X_fused.columns
-        )
         logger.info(f"数据插补完成，NaN处理策略: {self.config.imputation_strategy}")
         
         # 4. 拟合标准化器
@@ -233,7 +252,7 @@ class UnifiedFeaturePipeline:
         # 清洗Alpha数据但不做PCA压缩
         alpha_clean = self._clean_features(alpha_data)
         
-        # 直接返回清洗后的Alpha特征，让它们与传统特征一起做统一PCA
+        # 直接返回清洗后的Alpha特征，准备统一PCA处理
         return alpha_clean
     
     def _fuse_features(self, base_features: pd.DataFrame, alpha_features: pd.DataFrame) -> pd.DataFrame:

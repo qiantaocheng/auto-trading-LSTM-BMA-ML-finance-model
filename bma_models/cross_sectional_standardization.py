@@ -131,7 +131,7 @@ class CrossSectionalStandardizer:
         
         # 合并结果
         if standardized_sections:
-            result_data = pd.concat(standardized_sections, ignore_index=True)
+            result_data = pd.concat(standardized_sections, ignore_index=False)  # 保持MultiIndex结构
             self.standardization_stats = stats_by_date
             logger.info(f"✅ 横截面标准化完成，处理{len(stats_by_date)}个时间截面")
             

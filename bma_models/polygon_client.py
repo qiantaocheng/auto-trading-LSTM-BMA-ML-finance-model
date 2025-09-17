@@ -138,7 +138,10 @@ class PolygonClient:
     def get_ticker_details(self, symbol: str) -> Dict:
         """Get ticker details (replaces yf.Ticker().info)"""
         url = f"{self.base_url}/v3/reference/tickers/{symbol}"
-        params = {'apikey': self.api_key}
+        params = {
+            'ticker': symbol,
+            'apikey': self.api_key
+        }
         
         try:
             response = self.session.get(url, params=params)
@@ -146,7 +149,7 @@ class PolygonClient:
             data = response.json()
             
             if data.get('status') == 'OK' and data.get('results'):
-                result = data['results']
+                result = data['results'] if isinstance(data['results'], dict) else (data['results'][0] if isinstance(data['results'], list) and data['results'] else {})
                 # Convert to compatible format with fallbacks
                 return {
                     'symbol': result.get('ticker', symbol),
@@ -161,24 +164,24 @@ class PolygonClient:
                     'description': result.get('description', ''),
                     'homepage_url': result.get('homepage_url', ''),
                     'total_employees': result.get('total_employees', 0),
-                    'market_cap': result.get('market_cap', 1000000000),  # Default 1B
-                    'share_class_shares_outstanding': result.get('share_class_shares_outstanding', 1000000),
-                    'weighted_shares_outstanding': result.get('weighted_shares_outstanding', 1000000),
-                    # Add common yfinance fields with defaults
-                    'marketCap': result.get('market_cap', 1000000000),
-                    'sector': 'Technology',  # Default sector since Polygon doesn't provide
-                    'industry': 'Software',  # Default industry
+                    'market_cap': result.get('market_cap') if result.get('market_cap') is not None else np.nan,
+                    'share_class_shares_outstanding': result.get('share_class_shares_outstanding') if result.get('share_class_shares_outstanding') is not None else np.nan,
+                    'weighted_shares_outstanding': result.get('weighted_shares_outstanding') if result.get('weighted_shares_outstanding') is not None else np.nan,
+                    # Add common yfinance fields without hardcoded defaults
+                    'marketCap': result.get('market_cap') or np.nan,
+                    'sector': 'Technology',
+                    'industry': 'Software',
                     'country': result.get('locale', 'us').upper()
                 }
             else:
                 logger.warning(f"No data found for {symbol} in Polygon response")
-                return self._get_fallback_info(symbol)
+                return self._get_backup_info(symbol)
         except Exception as e:
             logger.error(f"Error fetching ticker details for {symbol}: {e}")
-            return self._get_fallback_info(symbol)
+            return self._get_backup_info(symbol)
             
-    def _get_fallback_info(self, symbol: str) -> Dict:
-        """Provide fallback info when API fails"""
+    def _get_backup_info(self, symbol: str) -> Dict:
+        """Provide backup info when API fails"""
         return {
             'symbol': symbol,
             'shortName': symbol,
@@ -192,10 +195,10 @@ class PolygonClient:
             'description': '',
             'homepage_url': '',
             'total_employees': 0,
-            'market_cap': 1000000000,
-            'share_class_shares_outstanding': 1000000,
-            'weighted_shares_outstanding': 1000000,
-            'marketCap': 1000000000,
+            'market_cap': np.nan,
+            'share_class_shares_outstanding': np.nan,
+            'weighted_shares_outstanding': np.nan,
+            'marketCap': np.nan,
             'sector': 'Technology',
             'industry': 'Software',
             'country': 'US'
@@ -323,9 +326,11 @@ class PolygonClient:
             return {}
             
     def get_last_trade(self, symbol: str) -> Dict:
-        """Get last trade data (current price) with fallback strategy"""
+        """Get last trade data (current price) with backup strategy"""
         url = f"{self.base_url}/v2/last/trade/{symbol}"
-        params = {'apikey': self.api_key}
+        params = {
+            'apikey': self.api_key
+        }
         
         try:
             response = self.session.get(url, params=params)
@@ -347,15 +352,15 @@ class PolygonClient:
         except requests.exceptions.HTTPError as http_err:
             if http_err.response.status_code == 403:
                 logger.warning(f"403 Forbidden for last trade {symbol}. 订阅计划可能不支持实时数据，尝试使用历史数据替代")
-                return self._fallback_to_historical_price(symbol)
+                return self._get_historical_price(symbol)
             else:
                 logger.error(f"HTTP error fetching last trade for {symbol}: {http_err}")
-                return self._fallback_to_historical_price(symbol)
+                return self._get_historical_price(symbol)
         except Exception as e:
             logger.error(f"Error fetching last trade for {symbol}: {e}")
-            return self._fallback_to_historical_price(symbol)
+            return self._get_historical_price(symbol)
     
-    def _fallback_to_historical_price(self, symbol: str) -> Dict:
+    def _get_historical_price(self, symbol: str) -> Dict:
         """使用历史数据作为实时价格的替代方案"""
         try:
             logger.info(f"使用历史数据获取 {symbol} 的最新价格")
@@ -376,12 +381,12 @@ class PolygonClient:
                 }
             else:
                 logger.warning(f"历史数据也无法获取 {symbol} 价格，尝试yfinance")
-                return self._fallback_to_yfinance(symbol)
+                return self._get_yfinance_data(symbol)
         except Exception as e:
             logger.error(f"历史数据替代方案失败 {symbol}: {e}")
-            return self._fallback_to_yfinance(symbol)
+            return self._get_yfinance_data(symbol)
     
-    def _fallback_to_yfinance(self, symbol: str) -> Dict:
+    def _get_yfinance_data(self, symbol: str) -> Dict:
         """使用yfinance作为最终替代方案"""
         try:
             import yfinance as yf
@@ -409,6 +414,95 @@ class PolygonClient:
         """Get current price for a symbol"""
         trade_data = self.get_last_trade(symbol)
         return trade_data.get('price', 0.0)
+    
+    def get_aggregates(self, ticker: str, multiplier: int, timespan: str, 
+                      from_date: str, to_date: str, adjusted: bool = True,
+                      sort: str = "asc", limit: int = 50000) -> pd.DataFrame:
+        """
+        Get aggregate bars for a stock over a given date range.
+        Uses delayed data (not real-time) as specified by user.
+        This is an alias for get_historical_bars with proper parameter mapping.
+        """
+        return self.get_historical_bars(
+            symbol=ticker,
+            start_date=from_date, 
+            end_date=to_date,
+            timespan=timespan,
+            multiplier=multiplier
+        )
+    
+    def get_market_data(self, symbols: List[str], start_date: str, end_date: str,
+                       timespan: str = "day", multiplier: int = 1) -> pd.DataFrame:
+        """
+        Get market data for multiple symbols and combine into MultiIndex DataFrame.
+        Uses delayed data (not real-time).
+        
+        Args:
+            symbols: List of stock tickers
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD) 
+            timespan: Size of the time window (day, minute, hour)
+            multiplier: Size of the timespan multiplier
+            
+        Returns:
+            DataFrame with MultiIndex (date, ticker) and OHLCV data
+        """
+        all_data = []
+        
+        for symbol in symbols:
+            try:
+                logger.info(f"Fetching data for {symbol}...")
+                df = self.get_historical_bars(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    timespan=timespan,
+                    multiplier=multiplier
+                )
+                
+                if not df.empty:
+                    # Add ticker column
+                    df['ticker'] = symbol
+                    # Reset index to make date a column
+                    df = df.reset_index()
+                    all_data.append(df)
+                    logger.info(f"✅ {symbol}: {len(df)} rows")
+                else:
+                    logger.warning(f"⚠️ {symbol}: No data retrieved")
+                    
+                # Rate limiting to avoid 429 errors
+                time.sleep(0.2)
+                
+            except Exception as e:
+                logger.error(f"❌ {symbol}: Failed to fetch data - {e}")
+                continue
+        
+        if not all_data:
+            logger.error("❌ No data retrieved for any symbols")
+            return pd.DataFrame()
+        
+        # Combine all data
+        combined_df = pd.concat(all_data, ignore_index=True)
+        
+        # Ensure 'date' column exists before indexing
+        if 'date' not in combined_df.columns:
+            logger.error("❌ 'date' column missing from combined DataFrame")
+            logger.info(f"Available columns: {list(combined_df.columns)}")
+            # If date is in index, reset it
+            if hasattr(combined_df.index, 'names') and 'date' in combined_df.index.names:
+                combined_df = combined_df.reset_index()
+            else:
+                logger.error("Cannot find date information in DataFrame")
+                return pd.DataFrame()
+        
+        # Create MultiIndex
+        combined_df = combined_df.set_index(['date', 'ticker'])
+        
+        # Sort by date and ticker
+        combined_df = combined_df.sort_index()
+        
+        logger.info(f"✅ Combined data: {len(combined_df)} total rows for {len(symbols)} symbols")
+        return combined_df
         
     def get_historical_bars(self, symbol: str, start_date: str, end_date: str, 
                            timespan: str = "day", multiplier: int = 1) -> pd.DataFrame:
@@ -547,7 +641,9 @@ class PolygonClient:
     def get_real_time_quote(self, symbol: str) -> Dict:
         """Get real-time quote data"""
         url = f"{self.base_url}/v2/last/nbbo/{symbol}"
-        params = {'apikey': self.api_key}
+        params = {
+            'apikey': self.api_key
+        }
         
         try:
             response = self.session.get(url, params=params)
@@ -573,7 +669,11 @@ class PolygonClient:
     def get_market_status(self) -> Dict:
         """Get market status"""
         url = f"{self.base_url}/v1/marketstatus/now"
-        params = {'apikey': self.api_key}
+        params = {
+            'ticker': symbol,  # 正确参数名
+            'apikey': self.api_key,
+            'limit': limit
+        }
         
         try:
             response = self.session.get(url, params=params)
@@ -630,7 +730,7 @@ class PolygonClient:
             
     def get_financials(self, symbol: str, limit: int = 4) -> Dict:
         """Get financial data for a symbol"""
-        url = f"{self.base_url}/v3/reference/tickers/{symbol}/financials"
+        url = f"{self.base_url}/vX/reference/financials"
         params = {
             'apikey': self.api_key,
             'limit': limit

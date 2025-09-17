@@ -72,7 +72,7 @@ class TradingSystemLauncher:
         try:
             print("Starting strategy engine mode...")
             
-            from autotrader.config_manager import get_config_manager
+            from bma_models.unified_config_loader import get_unified_config
             from autotrader.engine import Engine
             from autotrader.ibkr_auto_trader import IbkrAutoTrader
             
@@ -101,7 +101,7 @@ class TradingSystemLauncher:
         try:
             print(" start直接交易模式...")
             from autotrader.ibkr_auto_trader import IbkrAutoTrader
-            from autotrader.config_manager import get_config_manager
+            from bma_models.unified_config_loader import get_unified_config
             
             # 修复：使use统一配置管理器创建交易器
             config_manager = get_config_manager()
@@ -130,7 +130,7 @@ class TradingSystemLauncher:
                 from autotrader.ibkr_auto_trader import IbkrAutoTrader
                 from autotrader.app import AutoTraderGUI
                 from autotrader.engine import Engine
-                from autotrader.config_manager import get_config_manager
+                from bma_models.unified_config_loader import get_unified_config
                 test_results['imports'] = True
                 print("  [OK] 核心模块导入success")
             except Exception as e:
@@ -152,7 +152,7 @@ class TradingSystemLauncher:
             print(" 组件创建测试...")
             try:
                 # 修复：使use正确初始化参数（config_manager）
-                from autotrader.config_manager import get_config_manager
+                from bma_models.unified_config_loader import get_unified_config
                 config_manager = get_config_manager()
                 trader = IbkrAutoTrader(config_manager=config_manager)
                 test_results['trader'] = True

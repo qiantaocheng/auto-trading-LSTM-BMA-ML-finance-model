@@ -7,9 +7,33 @@ import time
 import functools
 import logging
 from typing import Callable, Optional, Any
-from .enhanced_monitoring import get_enhanced_monitor, AlertLevel, MetricType
 
 logger = logging.getLogger(__name__)
+
+# 简化的监控实现，不依赖external模块
+class AlertLevel:
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+class MetricType:
+    COUNTER = "counter"
+    TIMER = "timer"
+    GAUGE = "gauge"
+
+class SimpleMonitor:
+    def track_performance(self, name, duration, success):
+        logger.info(f"Performance: {name} took {duration:.2f}s, success={success}")
+
+    def record_metric(self, name, value, metric_type):
+        logger.debug(f"Metric: {name}={value}")
+
+    def emit_alert(self, title, message, level, category):
+        logger.warning(f"Alert [{level}]: {title} - {message}")
+
+def get_enhanced_monitor():
+    return SimpleMonitor()
 
 def monitor_performance(operation_name: Optional[str] = None, 
                        alert_on_error: bool = True,

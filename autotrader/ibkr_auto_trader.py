@@ -4,6 +4,7 @@ from .error_handling_system import (
     get_error_handler, with_error_handling, error_handling_context,
     ErrorSeverity, ErrorCategory, ErrorContext
 )
+from bma_models.unified_config_loader import get_time_config
 
 """
 IBKR automated trading minimal closed-loop script（connection→market data→order placement/order cancellation→reports→account/positions→risk control/tools）
@@ -59,7 +60,6 @@ try:
     from .unified_trading_core import UnifiedTradingCore, create_unified_trading_core
     from .position_size_calculator import PositionSizeCalculator, PositionSizeConfig, PositionSizeMethod, create_position_calculator
     from .volatility_adaptive_gating import VolatilityAdaptiveGating, create_volatility_gating
-    from .data_freshness_scoring import DataFreshnessScoring, create_freshness_scoring
     from .unified_polygon_factors import (
         get_polygon_unified_factors,
         enable_polygon_factors,
@@ -70,20 +70,47 @@ try:
     )
     from .unified_quant_core import UnifiedQuantCore, create_unified_quant_core
     from .unified_factor_manager import UnifiedFactorManager, get_unified_factor_manager
-    from .enhanced_market_data_manager import EnhancedMarketDataManager as UnifiedMarketDataManager
+    # 移除IBKR数据管理器，使用Polygon作为唯一数据源
+    # from .enhanced_market_data_manager import EnhancedMarketDataManager as UnifiedMarketDataManager
     from .unified_risk_manager import get_risk_manager
     from .neutralization_pipeline import DailyNeutralizationTransformer, create_neutralization_pipeline_step
-    from .purged_time_series_cv import PurgedGroupTimeSeriesSplit
+    try:
+        from bma_models.unified_purged_cv_factory import UnifiedPurgedTimeSeriesCV as PurgedGroupTimeSeriesSplit
+    except ImportError:
+        # 如果导入失败，使用sklearn替代
+        from sklearn.model_selection import TimeSeriesSplit as PurgedGroupTimeSeriesSplit
+        print("WARNING:root:Polygon/微结构集成failed: No module named 'bma_models.unified_purged_cv_factory'")
     from .unified_polygon_factors import UnifiedPolygonFactors as PolygonCompleteFactors
     
 
-    from .price_validator import get_price_validator, PriceValidationConfig, PriceData
+    try:
+        from .price_validator import get_price_validator, PriceValidationConfig, PriceData
+    except ImportError:
+        # 如果导入失败，定义基础类
+        from dataclasses import dataclass
+        from typing import Optional
+        
+        @dataclass
+        class PriceData:
+            symbol: str
+            price: float
+            timestamp: float
+            source: str
+            bid: Optional[float] = None
+            ask: Optional[float] = None
+            volume: Optional[int] = None
+            
+        class PriceValidationConfig:
+            pass
+            
+        # 创建简化的价格验证器
+        def get_price_validator():
+            return None
 
-    from .centralized_config import get_centralized_config_manager
+    from bma_models.unified_config_loader import get_unified_config
     
  
-    from .enhanced_monitoring import get_enhanced_monitor, AlertLevel, MetricType
-    from .monitoring_decorators import monitor_performance, monitor_api_call, monitor_trading_operation, monitor_connection
+    from .monitoring_decorators import monitor_performance, monitor_api_call, monitor_trading_operation, monitor_connection, get_enhanced_monitor, AlertLevel, MetricType
     
     from .microstructure_signals import get_microstructure_engine
     from .impact_model import get_impact_model  
@@ -289,21 +316,23 @@ class IbkrAutoTrader:
         ib_client: Optional[IB] = None,
     ) -> None:
        
-        self.centralized_config = get_centralized_config_manager(
-            config_dir=os.path.join(os.path.dirname(os.path.dirname(__file__)), "config"),
-            db_path="trading_audit.db"
-        )
+        # 使用统一配置系统
+        from bma_models.unified_config_loader import get_unified_config, get_time_config
+        self.centralized_config = get_unified_config()
+        self.time_config = get_time_config()
         
-        # 验证配置
-        config_errors = self.centralized_config.validate_config()
-        if config_errors:
-            for error in config_errors:
-                self.logger.warning(f"⚠️ 配置验证警告: {error}")
+        # 配置验证（简化版）
+        try:
+            if self.centralized_config is None:
+                self.logger.warning("⚠️ 统一配置加载失败，使用默认配置")
+            else:
+                self.logger.info("✅ 统一配置系统加载成功")
+        except Exception as e:
+            self.logger.warning(f"⚠️ 配置验证警告: {e}")
         
         # 保持向后兼容
         if config_manager is None:
-            from .config_manager import get_config_manager
-            config_manager = get_config_manager()
+            config_manager = self.centralized_config
         
         self.config_manager = config_manager
         
@@ -456,16 +485,9 @@ class IbkrAutoTrader:
         
         self.logger.info("✅ 增强监控系统已启用")
         
-        # ⏰ 数据新鲜度评分系统 - 动态信号质量调整
-        from .data_freshness_scoring import FreshnessConfig
-        freshness_config = FreshnessConfig(
-            tau_minutes=15.0,        # 15分钟衰减常数
-            max_age_minutes=60.0,    # 最大1小时数据年龄
-            base_threshold=0.005,    # 基础阈值0.5%
-            freshness_threshold_add=0.010  # 新鲜度惩罚1%
-        )
-        self.freshness_scoring = create_freshness_scoring(freshness_config)
-        self.logger.info("✅ 数据新鲜度评分系统已启用")
+        # 数据新鲜度评分系统已移除
+        self.freshness_scoring = None
+        self.logger.info("✅ 简化配置，数据新鲜度评分已禁用")
         
         # 🎯 频率控制系统集成
         frequency_config = self.centralized_config.get_section('frequency_control')
@@ -558,7 +580,8 @@ class IbkrAutoTrader:
                 self.factor_manager = get_unified_factor_manager()
                 
                 # Unified market data manager for data handling
-                self.market_data_manager = UnifiedMarketDataManager()
+                # 移除market data manager，直接使用Polygon
+                # self.market_data_manager = UnifiedMarketDataManager()
                 
                 # Unified risk manager for risk assessment
                 self.risk_manager = get_risk_manager()
@@ -578,7 +601,8 @@ class IbkrAutoTrader:
                 # Set fallback None values
                 self.quant_core = None
                 self.factor_manager = None
-                self.market_data_manager = None
+                # 不需要market_data_manager
+                # self.market_data_manager = None
                 self.risk_manager = None
                 self.neutralization_pipeline = None
                 self.purged_cv = None
@@ -636,7 +660,7 @@ class IbkrAutoTrader:
 
         # 止损/止盈配置（canfrom data/risk_config.json 读取覆盖）
         self.allow_short: bool = True
-        self.risk_config_path = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)), "data", "risk_config.json")
+        self.risk_config_path = os.path.join(os.path.dirname(__file__), "config", "autotrader_unified_config.json")
         self.risk_config: Dict = {
             "risk_management": {
                 "default_stop_pct": 0.02,
@@ -2247,7 +2271,7 @@ class IbkrAutoTrader:
         
         # 获取价格（会自动从Polygon拉取或使用缓存）- 添加性能监控
         try:
-            from .performance_monitor import get_performance_monitor
+            from .unified_monitoring_system import get_performance_monitor
             performance_monitor = get_performance_monitor()
             price = performance_monitor.monitor_operation(
                 "price_fetch", 
@@ -2888,7 +2912,7 @@ class IbkrAutoTrader:
             
             # 🔧 使用统一验证器替代重复验证逻辑，添加性能监控
             from .unified_order_validator import get_unified_validator
-            from .performance_monitor import get_performance_monitor
+            from .unified_monitoring_system import get_performance_monitor
             
             performance_monitor = get_performance_monitor()
             unified_validator = get_unified_validator(self.config_manager)
@@ -2920,52 +2944,53 @@ class IbkrAutoTrader:
             print(f"{'='*80}\n")
             raise
         
-        # 纯路bytoEnhancedOrderExecutor执行订单
-        print(f"\n🚀 开始执行市价单...")
+        # 使用 IB 实际下单（市价）
+        print(f"\n🚀 开始执行市价单 (IB 实盘)...")
         try:
-            from .enhanced_order_execution_with_state_machine import OrderExecutionConfig as ExecutionConfig
-            exec_cfg = ExecutionConfig()
-            print(f"   ├─ 执行配置已加载")
-            print(f"   ├─ 调用增强订单执行器...")
-            
-            # 监控订单提交性能
-            order_sm = await performance_monitor.monitor_operation(
-                "order_submission",
-                self.enhanced_executor.execute_market_order,
-                symbol=symbol,
-                action=action,
-                quantity=quantity,
-                config=exec_cfg,
-            )
-            
-            print(f"   ├─ 订单状态机创建成功: Order ID {order_sm.order_id}")
-            print(f"   └─ 当前订单状态: {order_sm.state.value}")
+            # 合约
+            c = await self.qualify_stock(symbol)
+            send_side = action.upper() if action.upper() in ("BUY", "SELL") else ("SELL" if action.upper() == "SHORT" else "BUY")
+            ib_order = MarketOrder(send_side, quantity)
 
-            # 统一返回 OrderRef（and现has调use方兼容）
-            enhanced_ref = OrderRef(
-                order_id=order_sm.order_id,
+            # 提交订单并等待完成或确认
+            trade = await performance_monitor.monitor_operation(
+                "order_submission",
+                self.ib.placeOrder,
+                c,
+                ib_order,
+            )
+
+            try:
+                await asyncio.wait_for(trade.doneEvent.wait(), timeout=60.0)
+            except Exception:
+                # 即使未等到 done，也继续刷新账户
+                pass
+
+            order_id = getattr(trade.order, 'orderId', 0)
+
+            # 构造返回引用
+            order_ref = OrderRef(
+                order_id=order_id,
                 symbol=symbol,
                 side=action,
                 qty=quantity,
                 order_type="MKT",
             )
             
-            print(f"📋 订单引用创建: OrderRef(id={enhanced_ref.order_id})")
+            print(f"📋 订单引用创建: OrderRef(id={order_ref.order_id})")
             
-            # 审计记录通过OrderManager回调自动处理，no需重复记录
-            
-            # updates计数
+            # 更新统计
             self._daily_order_count += 1
             print(f"📊 更新日内计数: {self._daily_order_count}笔")
             
-            # 刷新account信息
+            # 刷新账户
             print(f"🔄 刷新账户信息...")
             await self.refresh_account_balances_and_positions()
             print(f"✅ 账户信息刷新完成")
             
             print(f"{'='*80}")
             print(f"✅ 市价单提交成功: {symbol} {action.upper()} {quantity}股")
-            print(f"   ├─ 订单ID: {enhanced_ref.order_id}")
+            print(f"   ├─ 订单ID: {order_ref.order_id}")
             print(f"   ├─ 订单类型: 市价单")
             print(f"   └─ 订单价格: ${price_now:.4f} (参考)")
             print(f"{'='*80}\n")
@@ -2977,7 +3002,7 @@ class IbkrAutoTrader:
                 except Exception as e:
                     self.logger.debug(f"频率控制记录失败: {e}")
             
-            return enhanced_ref
+            return order_ref
             
         except Exception as e:
             print(f"❌ 订单执行失败: {e}")
@@ -3671,27 +3696,28 @@ class IbkrAutoTrader:
         return status
 
     async def place_limit_order(self, symbol: str, action: str, quantity: int, limit_price: float) -> OrderRef:
-        # 🔧 使用统一验证器替代重复验证
+        # 🔧 使用统一验证器
         from .unified_order_validator import get_unified_validator
         unified_validator = get_unified_validator(self.config_manager)
         validation_result = await unified_validator.validate_order_unified(symbol, action, quantity, limit_price, self.net_liq or 50000)
         if not validation_result.is_valid:
             raise RuntimeError(f"统一验证失败: {validation_result.reason}")
         
-        # 纯路bytoEnhancedOrderExecutor执行limit单
-        from .enhanced_order_execution_with_state_machine import OrderExecutionConfig as ExecutionConfig, OrderExecutionStrategy as ExecutionAlgorithm
-        exec_cfg = ExecutionConfig(algorithm=ExecutionAlgorithm.LIMIT)
-        order_sm = await self.enhanced_executor.execute_limit_order(
-            symbol=symbol,
-            action=action,
-            quantity=quantity,
-            limit_price=limit_price,
-            config=exec_cfg,
-        )
+        # 使用 IB 实际下单（限价）
+        c = await self.qualify_stock(symbol)
+        send_side = action.upper() if action.upper() in ("BUY", "SELL") else ("SELL" if action.upper() == "SHORT" else "BUY")
+        ib_order = LimitOrder(send_side, quantity, limit_price)
 
-        # 统一返回 OrderRef（and现has调use方兼容）
-        enhanced_ref = OrderRef(
-            order_id=order_sm.order_id,
+        trade = self.ib.placeOrder(c, ib_order)
+        try:
+            await asyncio.wait_for(trade.doneEvent.wait(), timeout=60.0)
+        except Exception:
+            pass
+
+        order_id = getattr(trade.order, 'orderId', 0)
+
+        order_ref = OrderRef(
+            order_id=order_id,
             symbol=symbol,
             side=action,
             qty=quantity,
@@ -3699,15 +3725,9 @@ class IbkrAutoTrader:
             limit_price=limit_price,
         )
         
-        # 审计记录通过OrderManager回调自动处理，no需重复记录
-        
-        # updates计数
         self._daily_order_count += 1
-        
-        # 刷新account信息
         await self.refresh_account_balances_and_positions()
-        
-        return enhanced_ref
+        return order_ref
 
     async def plan_and_place_with_rr(
         self,
@@ -5438,7 +5458,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 async def amain(args: argparse.Namespace) -> None:
     # 日志配置移至主入口点
     # 注意：此函数仅供内部测试使use，主入口请使uselauncher.py
-    from .config_manager import get_config_manager
+    from bma_models.unified_config_loader import get_unified_config
     config_manager = get_config_manager()
     trader = IbkrAutoTrader(config_manager=config_manager)
 

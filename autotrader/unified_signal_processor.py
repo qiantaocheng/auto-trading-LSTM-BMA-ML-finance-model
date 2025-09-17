@@ -52,16 +52,17 @@ class UnifiedSignalProcessor:
         # Integration with environment config and data manager
         try:
             try:
-                from .config_manager import get_config_manager
-                from .enhanced_market_data_manager import get_unified_market_data_manager
+                from bma_models.unified_config_loader import get_unified_config
+                # 移除market data manager，直接使用polygon factors
                 from .unified_polygon_factors import get_unified_polygon_factors
             except ImportError:
-                from config_manager import get_config_manager
-                from enhanced_market_data_manager import get_unified_market_data_manager
+                from bma_models.unified_config_loader import get_unified_config
+                # 移除market data manager，直接使用polygon factors
                 from unified_polygon_factors import get_unified_polygon_factors
             
             self.env_manager = get_config_manager()
-            self.data_manager = get_unified_market_data_manager()
+            # 直接使用Polygon因子库，不需要单独的数据管理器
+            # self.data_manager = get_unified_market_data_manager()
             self.polygon_factors = get_unified_polygon_factors()
             
             self.logger.info(f"UnifiedSignalProcessor initialized in {mode.value} mode")

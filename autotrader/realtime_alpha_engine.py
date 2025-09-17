@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import logging
 import time
+import math
 from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -224,11 +225,23 @@ class RealtimeAlphaEngine:
         market_context = market_context or {}
         
         try:
-            # 1. 获取微结构特征
+            # 1. 获取微结构特征（增强容错处理）
             features = self.microstructure_engine.get_latest_features(symbol)
             if not features:
-                return self._create_hold_decision(symbol, timestamp, "无微结构数据")
-            
+                # 尝试获取历史特征作为降级
+                features = self._get_fallback_features(symbol)
+                if not features:
+                    return self._create_hold_decision(symbol, timestamp, "无微结构数据且无历史特征")
+                else:
+                    self.logger.warning(f"{symbol}: 使用历史特征降级处理")
+
+            # 验证关键特征完整性
+            if not self._validate_features_completeness(features):
+                # 尝试补充缺失特征
+                features = self._supplement_missing_features(symbol, features)
+                if not self._validate_features_completeness(features):
+                    return self._create_hold_decision(symbol, timestamp, "关键特征数据不完整")
+
             features['symbol'] = symbol  # 添加symbol到特征中
             
             # 2. 计算原始Alpha预测
@@ -342,7 +355,154 @@ class RealtimeAlphaEngine:
         except Exception as e:
             logger.error(f"决策生成失败 {symbol}: {e}")
             return self._create_hold_decision(symbol, timestamp, f"决策异常: {e}")
-    
+
+    def _validate_features_completeness(self, features: Dict[str, float]) -> bool:
+        """验证关键特征完整性"""
+        required_features = [
+            'OFI', 'QI', 'mid_price', 'spread_bps', 'VPIN',
+            'TSI', 'slope_avg', 'micro_dev_bps'
+        ]
+
+        missing_features = []
+        invalid_features = []
+
+        for feature in required_features:
+            if feature not in features:
+                missing_features.append(feature)
+            else:
+                value = features[feature]
+                # 检查数值有效性
+                if value is None or (isinstance(value, float) and
+                    (math.isnan(value) or math.isinf(value))):
+                    invalid_features.append(feature)
+
+        if missing_features:
+            logger.warning(f"缺失特征: {missing_features}")
+        if invalid_features:
+            logger.warning(f"无效特征值: {invalid_features}")
+
+        return len(missing_features) == 0 and len(invalid_features) == 0
+
+    def _get_fallback_features(self, symbol: str) -> Optional[Dict[str, float]]:
+        """获取降级特征数据"""
+        try:
+            # 尝试从历史特征缓存获取
+            history = self.microstructure_engine.get_feature_history(symbol, lookback=10)
+            if history and len(history) > 0:
+                # 使用最近的有效特征
+                for hist_features in reversed(history):
+                    if self._validate_features_completeness(hist_features):
+                        logger.info(f"{symbol}: 使用历史特征 (age={time.time() - hist_features.get('timestamp', 0):.1f}s)")
+                        return hist_features
+
+                # 如果没有完全有效的历史特征，使用最近的并补充
+                latest_hist = history[-1]
+                if latest_hist:
+                    return self._supplement_missing_features(symbol, latest_hist)
+
+            # 如果没有历史数据，生成基础特征
+            return self._generate_basic_features(symbol)
+
+        except Exception as e:
+            logger.error(f"获取降级特征失败 {symbol}: {e}")
+            return None
+
+    def _supplement_missing_features(self, symbol: str, features: Dict[str, float]) -> Dict[str, float]:
+        """补充缺失的特征"""
+        supplemented_features = features.copy()
+
+        try:
+            # 获取基础市场数据
+            current_price = features.get('mid_price', 100.0)
+
+            # 补充缺失的关键特征
+            if 'OFI' not in supplemented_features or supplemented_features.get('OFI') is None:
+                # 使用历史OFI均值或0
+                hist_ofi = self._get_historical_feature_mean(symbol, 'OFI')
+                supplemented_features['OFI'] = hist_ofi or 0.0
+                logger.debug(f"{symbol}: 补充OFI特征 = {supplemented_features['OFI']}")
+
+            if 'QI' not in supplemented_features:
+                supplemented_features['QI'] = 0.0  # 中性队列不平衡
+
+            if 'spread_bps' not in supplemented_features:
+                # 使用历史点差均值或默认值
+                hist_spread = self._get_historical_feature_mean(symbol, 'spread_bps')
+                supplemented_features['spread_bps'] = hist_spread or 5.0  # 默认5bps
+
+            if 'VPIN' not in supplemented_features:
+                supplemented_features['VPIN'] = 0.3  # 中等毒性水平
+
+            if 'TSI' not in supplemented_features:
+                supplemented_features['TSI'] = 0.0  # 中性成交不平衡
+
+            if 'slope_avg' not in supplemented_features:
+                supplemented_features['slope_avg'] = 500.0  # 中等流动性
+
+            if 'micro_dev_bps' not in supplemented_features:
+                supplemented_features['micro_dev_bps'] = 0.0  # 中性微价偏离
+
+            if 'mid_price' not in supplemented_features:
+                supplemented_features['mid_price'] = current_price
+
+            # 添加时间戳和数据质量标识
+            supplemented_features['timestamp'] = time.time()
+            supplemented_features['data_quality'] = 'supplemented'
+
+            return supplemented_features
+
+        except Exception as e:
+            logger.error(f"补充特征失败 {symbol}: {e}")
+            return features
+
+    def _generate_basic_features(self, symbol: str) -> Dict[str, float]:
+        """生成基础特征（最后降级选项）"""
+        try:
+            # 生成保守的默认特征
+            basic_features = {
+                'OFI': 0.0,
+                'QI': 0.0,
+                'mid_price': 100.0,  # 默认价格
+                'spread_bps': 8.0,   # 保守的点差估计
+                'VPIN': 0.4,         # 中等偏高毒性
+                'TSI': 0.0,
+                'slope_avg': 800.0,  # 保守的流动性估计
+                'micro_dev_bps': 0.0,
+                'timestamp': time.time(),
+                'data_quality': 'basic_fallback'
+            }
+
+            logger.warning(f"{symbol}: 使用基础降级特征")
+            return basic_features
+
+        except Exception as e:
+            logger.error(f"生成基础特征失败 {symbol}: {e}")
+            return None
+
+    def _get_historical_feature_mean(self, symbol: str, feature_name: str, lookback: int = 20) -> Optional[float]:
+        """获取历史特征均值"""
+        try:
+            history = self.microstructure_engine.get_feature_history(symbol, lookback=lookback)
+            if not history:
+                return None
+
+            values = []
+            for hist_features in history:
+                if feature_name in hist_features:
+                    value = hist_features[feature_name]
+                    if value is not None and not (isinstance(value, float) and
+                        (math.isnan(value) or math.isinf(value))):
+                        values.append(value)
+
+            if values:
+                return sum(values) / len(values)
+            else:
+                return None
+
+        except Exception as e:
+            logger.error(f"获取历史特征均值失败 {symbol} {feature_name}: {e}")
+            return None
+
     def _create_hold_decision(self, symbol: str, timestamp: float, reason: str) -> TradingDecision:
         """创建HOLD决策"""
         return TradingDecision(

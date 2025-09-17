@@ -24,16 +24,24 @@ import json
 import hashlib
 from scipy import stats
 
+# 使用统一配置加载器
+from bma_models.unified_config_loader import get_time_config, TIME_CONFIG
+
+# Removed strict_time_config_enforcer - using unified config loader
+
 logger = logging.getLogger(__name__)
 
 @dataclass
 class OOSConfig:
-    """Enhanced OOS系统配置"""
-    # 时间分割参数
-    cv_n_splits: int = 5
-    cv_gap_days: int = 1   # UNIFIED: 统一为1天gap以提高数据利用率
-    embargo_days: int = 1  # UNIFIED: 统一为1天embargo以提高数据利用率
-    test_size_ratio: float = 0.2  # 测试集比例
+    """Enhanced OOS系统配置 - 从统一时间配置中心获取"""
+    # 时间分割参数 - 禁止本地定义，强制使用统一配置
+    def __post_init__(self):
+        unified_config = get_time_config()
+        # 强制使用统一时间配置，禁止本地覆盖
+        object.__setattr__(self, 'cv_n_splits', 5)
+        object.__setattr__(self, 'cv_gap_days', unified_config.cv_gap_days)
+        object.__setattr__(self, 'embargo_days', unified_config.cv_embargo_days)
+        object.__setattr__(self, 'test_size_ratio', 0.2)
     
     # 滚动窗口参数
     rolling_window_months: int = 24  # 与Walk-Forward一致
@@ -148,6 +156,7 @@ class EnhancedOOSSystem:
         
         # OOS预测历史
         self.oos_history: deque = deque(maxlen=self.config.max_oos_history)
+        self.oos_predictions = self.oos_history  # Alias for compatibility
         
         # 当前批次的OOS预测
         self.current_batch_predictions: Dict[str, OOSPrediction] = {}
@@ -214,11 +223,22 @@ class EnhancedOOSSystem:
     
     def _create_temporal_splits(self, feature_data: pd.DataFrame) -> List[Dict[str, Any]]:
         """创建时间感知的训练/测试分割"""
-        if 'date' not in feature_data.columns:
-            raise ValueError("特征数据必须包含'date'列")
-        
-        # 按日期排序
-        data_sorted = feature_data.sort_values('date').reset_index(drop=True)
+        # 处理MultiIndex情况 - 优先使用索引中的date
+        if hasattr(feature_data.index, 'names') and 'date' in feature_data.index.names:
+            # 从MultiIndex中获取date，只reset需要的索引级别
+            if 'date' in feature_data.columns:
+                # 如果date已存在于列和索引中，删除列中的date以避免歧义
+                temp_data = feature_data.drop(columns=['date']).reset_index(level='date')
+                data_sorted = temp_data.sort_values('date').reset_index(drop=True)
+            else:
+                # 只reset到date级别
+                temp_data = feature_data.reset_index(level='date')
+                data_sorted = temp_data.sort_values('date').reset_index(drop=True)
+        elif 'date' in feature_data.columns:
+            # 按列中的日期排序
+            data_sorted = feature_data.sort_values('date').reset_index(drop=True)
+        else:
+            raise ValueError("特征数据必须包含'date'列或'date'索引级别")
         dates = pd.to_datetime(data_sorted['date'])
         
         splits = []

@@ -122,7 +122,7 @@ class UnifiedMonitoringInterface:
     def _load_performance_monitor(self):
         """加载性能监控器"""
         try:
-            from .performance_monitor import PerformanceMonitor
+            from .unified_monitoring_system import TradingPerformanceMonitor as PerformanceMonitor
             self.monitoring_components['performance'] = PerformanceMonitor()
             self.logger.debug("Performance monitor loaded")
         except ImportError:
@@ -131,7 +131,7 @@ class UnifiedMonitoringInterface:
     def _load_system_monitor(self):
         """加载系统监控器"""
         try:
-            from .resource_monitor import ResourceMonitor
+            from .unified_monitoring_system import ResourceMonitor
             self.monitoring_components['system'] = ResourceMonitor()
             self.logger.debug("System monitor loaded")
         except ImportError:
@@ -140,7 +140,7 @@ class UnifiedMonitoringInterface:
     def _load_trading_monitor(self):
         """加载交易监控器"""
         try:
-            from .realtime_monitoring_system import RealtimeMonitoringSystem
+            from .unified_monitoring_system import UnifiedMonitoringSystem as RealtimeMonitoringSystem
             self.monitoring_components['trading'] = RealtimeMonitoringSystem()
             self.logger.debug("Trading monitor loaded")
         except ImportError:

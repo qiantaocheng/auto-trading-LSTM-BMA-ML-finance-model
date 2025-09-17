@@ -52,7 +52,7 @@ def analyze_embargo_impact():
     print(f"\nRecommendations:")
     print("-" * 40)
     
-    recommended_embargo = 2
+    recommended_embargo=get_time_config().cv_embargo_days
     print(f"✅ RECOMMENDED: {recommended_embargo}-day embargo")
     print(f"   • Training data: up to T-{feature_lag + recommended_embargo}")  
     print(f"   • Total gap: {feature_lag + recommended_embargo + prediction_horizon} days")

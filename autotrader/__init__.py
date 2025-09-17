@@ -6,17 +6,13 @@ IBKR 自动交易系统
 __version__ = "2.0.0"
 __author__ = "Trading System Team"
 
-# 向后兼容的导入策略
+# 配置管理器导入
 try:
-    # 优先使用新的配置管理器
-    from .master_config_manager import get_master_config_manager as get_config_manager
+    from bma_models.unified_config_loader import get_unified_config
 except ImportError:
-    try:
-        # 回退到旧的配置管理器
-        from .config_manager import get_config_manager
-    except ImportError:
-        # 最后回退到兼容性层
-        from .compatibility_layer import get_config_manager
+    # 配置加载失败时的回退
+    def get_unified_config():
+        return None
 
 # 导入核心组件（懒加载以避免循环导入）
 def get_autotrader_gui():

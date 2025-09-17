@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional, Any
@@ -23,10 +24,55 @@ class StockPoolManager:
         Args:
             db_path: 数据库文件路径
         """
-        self.db_path = db_path
+        self.db_path = self._resolve_db_path(db_path)
         self._init_database()
         self._load_default_pools()
     
+    @staticmethod
+    def _sanitize_ticker(raw: str) -> Optional[str]:
+        """规范化单个股票代码：去除空白和引号，统一大小写，保留常见符号。"""
+        if raw is None:
+            return None
+        t = str(raw)
+        # 去除中英文引号
+        for ch in ['"', "'", '“', '”', '‘', '’']:
+            t = t.replace(ch, '')
+        # 统一空白
+        t = t.replace('\u3000', ' ')
+        t = t.strip()
+        # 移除内部所有空白
+        t = ''.join(c for c in t if not c.isspace())
+        if not t:
+            return None
+        t = t.upper()
+        # 统一分隔符（常见类股后缀）
+        t = t.replace('/', '.')
+        # XYZ-A -> XYZ.A（仅在后缀为单字符时）
+        if '-' in t:
+            parts = t.split('-')
+            if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
+                t = parts[0] + '.' + parts[1]
+        # 仅保留允许字符
+        allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+        t = ''.join(ch for ch in t if ch in allowed)
+        return t or None
+
+    @classmethod
+    def _sanitize_tickers(cls, tickers: List[str]) -> List[str]:
+        """批量规范化股票代码，去重并保持顺序。"""
+        sanitized: List[str] = []
+        seen = set()
+        for raw in tickers or []:
+            st = cls._sanitize_ticker(raw)
+            if st and st not in seen:
+                sanitized.append(st)
+                seen.add(st)
+        return sanitized
+
+    @staticmethod
+    def _sanitize_pool_name(name: str) -> str:
+        return (name or '').strip()
+
     def _init_database(self):
         """初始化数据库表"""
         try:
@@ -79,6 +125,38 @@ class StockPoolManager:
         except Exception as e:
             logger.error(f"初始化数据库失败: {e}")
             raise
+
+    def _resolve_db_path(self, raw_path: str) -> str:
+        """将数据库路径解析到可写目录，避免权限导致的新建失败。"""
+        try:
+            p = Path(raw_path)
+            if p.is_absolute():
+                p.parent.mkdir(parents=True, exist_ok=True)
+                return str(p)
+            # 相对路径：尝试多个候选可写目录
+            candidates = []
+            module_dir = Path(__file__).resolve().parent
+            candidates.append(module_dir / 'data')
+            candidates.append(Path.cwd() / 'data')
+            # 用户目录下的应用数据
+            home_app = Path.home() / 'Autotrader' / 'data'
+            candidates.append(home_app)
+            for base in candidates:
+                try:
+                    base.mkdir(parents=True, exist_ok=True)
+                    test_file = base / '.write_test'
+                    with open(test_file, 'w', encoding='utf-8') as f:
+                        f.write('ok')
+                    os.remove(test_file)
+                    dbp = base / raw_path
+                    logger.info(f"股票池数据库路径: {dbp}")
+                    return str(dbp)
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"数据库路径解析失败，将回退默认路径: {e}")
+        # 最后回退当前目录
+        return raw_path
     
     def _load_default_pools(self):
         """加载默认股票池"""
@@ -145,6 +223,9 @@ class StockPoolManager:
             新创建的股票池ID
         """
         try:
+            pool_name = self._sanitize_pool_name(pool_name)
+            tickers = self._sanitize_tickers(tickers)
+            tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
@@ -206,25 +287,27 @@ class StockPoolManager:
                 
                 if pool_name is not None:
                     updates.append("pool_name = ?")
-                    params.append(pool_name)
+                    params.append(self._sanitize_pool_name(pool_name))
                 
                 if description is not None:
                     updates.append("description = ?")
                     params.append(description)
                 
                 if tickers is not None:
+                    norm_tickers = self._sanitize_tickers(tickers)
                     updates.append("tickers = ?")
-                    params.append(json.dumps(tickers))
+                    params.append(json.dumps(norm_tickers))
                     
                     # 记录历史
                     cursor.execute("""
                         INSERT INTO stock_pool_history (pool_id, action, old_tickers, new_tickers)
                         VALUES (?, 'UPDATE', ?, ?)
-                    """, (pool_id, old_pool['tickers'], json.dumps(tickers)))
+                    """, (pool_id, old_pool['tickers'], json.dumps(norm_tickers)))
                 
                 if tags is not None:
+                    clean_tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
                     updates.append("tags = ?")
-                    params.append(json.dumps(tags))
+                    params.append(json.dumps(clean_tags))
                 
                 if updates:
                     updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -366,10 +449,11 @@ class StockPoolManager:
             raise ValueError(f"股票池不存在: ID {pool_id}")
         
         current_tickers = json.loads(pool['tickers'])
-        # 去重
-        new_tickers = list(set(current_tickers + tickers))
+        to_add = self._sanitize_tickers(tickers)
+        # 合并去重并保持顺序
+        merged = list(dict.fromkeys(current_tickers + to_add))
         
-        return self.update_pool(pool_id, tickers=new_tickers)
+        return self.update_pool(pool_id, tickers=merged)
     
     def remove_tickers_from_pool(self, pool_id: int, tickers: List[str]) -> bool:
         """

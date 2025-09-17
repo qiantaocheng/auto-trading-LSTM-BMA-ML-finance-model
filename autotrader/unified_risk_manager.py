@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Enhanced error handling
+# 统一错误处理
 try:
-    from .error_handling_system import (
-        get_error_handler, with_error_handling, error_handling_context,
+    from .unified_error_handler import (
+        get_unified_error_handler, with_error_handling, error_handling_context,
         ErrorSeverity, ErrorCategory, ErrorContext
     )
 except ImportError:
-    from error_handling_system import (
-        get_error_handler, with_error_handling, error_handling_context,
+    from unified_error_handler import (
+        get_unified_error_handler, with_error_handling, error_handling_context,
         ErrorSeverity, ErrorCategory, ErrorContext
     )
 
@@ -21,10 +21,12 @@ except ImportError:
 import asyncio
 import logging
 import time
+import json
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from collections import defaultdict
+from pathlib import Path
 import math
 
 class RiskLevel(Enum):
@@ -124,7 +126,7 @@ class UnifiedRiskManager:
             if risk_settings:
                 self.risk_config.update(risk_settings)
                 self.logger.info(f"Risk configuration loaded: {len(risk_settings)} items")
-            
+
             # from订单settingsretrieval配置
             sizing_config = self.config_manager.get('sizing', {})
             if sizing_config:
@@ -132,7 +134,7 @@ class UnifiedRiskManager:
                     self.risk_config['max_single_position_pct'] = sizing_config['max_position_pct_of_equity']
                 if 'min_position_usd' in sizing_config:
                     self.risk_config['min_order_value'] = sizing_config['min_position_usd']
-            
+
             # from风险控制settingsretrieval配置
             risk_controls = self.config_manager.get('risk_controls', {})
             if risk_controls:
@@ -142,9 +144,136 @@ class UnifiedRiskManager:
                     self.risk_config['max_sector_exposure_pct'] = risk_controls['sector_exposure_limit']
                 if 'max_correlation' in risk_controls:
                     self.risk_config['max_correlation'] = risk_controls['max_correlation']
-            
+
         except Exception as e:
             self.logger.warning(f"加载风险配置failed，使use默认值: {e}")
+
+    def reload_dynamic_config(self) -> bool:
+        """动态重新加载风险配置"""
+        try:
+            old_config = self.risk_config.copy()
+
+            # 重新加载配置
+            self._load_risk_config()
+
+            # 检查配置变化
+            changes = []
+            for key, new_value in self.risk_config.items():
+                old_value = old_config.get(key)
+                if old_value != new_value:
+                    changes.append(f"{key}: {old_value} -> {new_value}")
+
+            if changes:
+                self.logger.info(f"风险配置已更新: {', '.join(changes)}")
+
+                # 记录配置变更事件
+                self._log_risk_event(RiskEventType.SECTOR_LIMIT, {  # 复用现有事件类型
+                    'action': 'config_reload',
+                    'changes': changes,
+                    'timestamp': time.time()
+                })
+
+                return True
+            else:
+                self.logger.debug("风险配置无变化")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"动态重新加载风险配置失败: {e}")
+            return False
+
+    def get_live_config_from_external_source(self) -> Dict[str, Any]:
+        """从外部数据源获取实时配置"""
+        try:
+            # 尝试从多个配置源获取
+            config_sources = [
+                self._get_config_from_database,
+                self._get_config_from_file_watcher,
+                self._get_config_from_api_endpoint
+            ]
+
+            for source_func in config_sources:
+                try:
+                    config = source_func()
+                    if config:
+                        self.logger.info(f"从 {source_func.__name__} 获取到实时配置")
+                        return config
+                except Exception as e:
+                    self.logger.debug(f"{source_func.__name__} 配置源不可用: {e}")
+                    continue
+
+            return {}
+
+        except Exception as e:
+            self.logger.error(f"获取外部配置失败: {e}")
+            return {}
+
+    def _get_config_from_database(self) -> Dict[str, Any]:
+        """从数据库获取配置"""
+        # 这里应该连接到配置数据库
+        # 目前返回空，待实际实现
+        return {}
+
+    def _get_config_from_file_watcher(self) -> Dict[str, Any]:
+        """从文件监视器获取配置"""
+        try:
+            config_file_path = "autotrader/config/autotrader_unified_config.json"
+            if Path(config_file_path).exists():
+                with open(config_file_path, 'r') as f:
+                    return json.loads(f.read())
+        except Exception as e:
+            self.logger.debug(f"文件配置源错误: {e}")
+        return {}
+
+    def _get_config_from_api_endpoint(self) -> Dict[str, Any]:
+        """从API端点获取配置"""
+        # 这里应该调用配置管理API
+        # 目前返回空，待实际实现
+        return {}
+
+    def start_config_auto_reload(self, interval_seconds: int = 60):
+        """启动配置自动重加载"""
+        import threading
+
+        def config_reload_worker():
+            while getattr(self, '_config_reload_active', True):
+                try:
+                    # 获取外部配置
+                    external_config = self.get_live_config_from_external_source()
+                    if external_config:
+                        # 更新配置
+                        old_config = self.risk_config.copy()
+                        self.risk_config.update(external_config)
+
+                        # 检查变化
+                        changes = []
+                        for key, new_value in self.risk_config.items():
+                            old_value = old_config.get(key)
+                            if old_value != new_value:
+                                changes.append(f"{key}: {old_value} -> {new_value}")
+
+                        if changes:
+                            self.logger.info(f"自动重载配置变更: {', '.join(changes)}")
+
+                    time.sleep(interval_seconds)
+
+                except Exception as e:
+                    self.logger.error(f"配置自动重载异常: {e}")
+                    time.sleep(interval_seconds)
+
+        # 启动后台线程
+        self._config_reload_active = True
+        self._config_reload_thread = threading.Thread(target=config_reload_worker, daemon=True)
+        self._config_reload_thread.start()
+
+        self.logger.info(f"配置自动重载已启动，间隔 {interval_seconds} 秒")
+
+    def stop_config_auto_reload(self):
+        """停止配置自动重加载"""
+        self._config_reload_active = False
+        if hasattr(self, '_config_reload_thread'):
+            self._config_reload_thread.join(timeout=5)
+        self.logger.info("配置自动重载已停止")
     
     async def validate_order(self, symbol: str, side: str, quantity: int, 
                            price: float, account_value: float) -> RiskValidationResult:
@@ -223,7 +352,7 @@ class UnifiedRiskManager:
                 operation="unified_risk_manager",
                 component=self.__class__.__name__ if hasattr(self, '__class__') else "unknown"
             )
-            get_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
+            get_unified_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
             return RiskValidationResult(
                 is_valid=False,
                 risk_level=RiskLevel.CRITICAL,
@@ -265,7 +394,7 @@ class UnifiedRiskManager:
                 operation="unified_risk_manager",
                 component=self.__class__.__name__ if hasattr(self, '__class__') else "unknown"
             )
-            get_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
+            get_unified_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
             return {
             'violations': violations,
             'warnings': warnings,
@@ -321,7 +450,7 @@ class UnifiedRiskManager:
                 operation="unified_risk_manager",
                 component=self.__class__.__name__ if hasattr(self, '__class__') else "unknown"
             )
-            get_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
+            get_unified_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
             return None
     
     def _calculate_max_allowed_size(self, symbol: str, price: float, account_value: float) -> Optional[int]:
@@ -337,7 +466,7 @@ class UnifiedRiskManager:
                 operation="unified_risk_manager",
                 component=self.__class__.__name__ if hasattr(self, '__class__') else "unknown"
             )
-            get_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
+            get_unified_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
             return None
     
     def update_position(self, symbol: str, quantity: int, current_price: float, 
@@ -436,8 +565,8 @@ class UnifiedRiskManager:
                 'status': 'OK' if self.daily_pnl > -self.risk_config['daily_loss_limit_pct'] else 'WARNING'
             },
             'positions': {
-                'count': self.position_manager.get_portfolio_summary().total_positions,
-                'symbols': list(self.position_manager.get_symbols())
+                'count': len(self.positions),
+                'symbols': list(self.positions.keys())
             },
             'portfolio_risk': self.portfolio_risk.__dict__ if self.portfolio_risk else None,
             'recent_events': len(recent_events),
@@ -471,9 +600,9 @@ def get_risk_manager(config_manager=None) -> UnifiedRiskManager:
     if _global_risk_manager is None:
         if config_manager is None:
             try:
-                from .config_manager import get_config_manager
+                from bma_models.unified_config_loader import get_unified_config
             except ImportError:
-                from config_manager import get_config_manager
+                from bma_models.unified_config_loader import get_unified_config
             config_manager = get_config_manager()
         _global_risk_manager = UnifiedRiskManager(config_manager)
     return _global_risk_manager

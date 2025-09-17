@@ -173,11 +173,11 @@ class PolygonClient:
                     'description': result.get('description', ''),
                     'homepage_url': result.get('homepage_url', ''),
                     'total_employees': result.get('total_employees', 0),
-                    'market_cap': result.get('market_cap', 1000000000),  # Default 1B
-                    'share_class_shares_outstanding': result.get('share_class_shares_outstanding', 1000000),
-                    'weighted_shares_outstanding': result.get('weighted_shares_outstanding', 1000000),
-                    # Add common yfinance fields with defaults
-                    'marketCap': result.get('market_cap', 1000000000),
+                    'market_cap': result.get('market_cap') or np.nan,  # No hardcoded defaults
+                    'share_class_shares_outstanding': result.get('share_class_shares_outstanding') or np.nan,
+                    'weighted_shares_outstanding': result.get('weighted_shares_outstanding') or np.nan,
+                    # Add common yfinance fields without hardcoded defaults
+                    'marketCap': result.get('market_cap') or np.nan,
                     'sector': 'Technology',  # Default sector since Polygon doesn't provide
                     'industry': 'Software',  # Default industry
                     'country': result.get('locale', 'us').upper()
@@ -204,10 +204,10 @@ class PolygonClient:
             'description': '',
             'homepage_url': '',
             'total_employees': 0,
-            'market_cap': 1000000000,
-            'share_class_shares_outstanding': 1000000,
-            'weighted_shares_outstanding': 1000000,
-            'marketCap': 1000000000,
+            'market_cap': np.nan,
+            'share_class_shares_outstanding': np.nan,
+            'weighted_shares_outstanding': np.nan,
+            'marketCap': np.nan,
             'sector': 'Technology',
             'industry': 'Software',
             'country': 'US'
@@ -648,9 +648,10 @@ class PolygonClient:
         return None
             
     def get_financials(self, symbol: str, limit: int = 4) -> Dict:
-        """Get financial data for a symbol"""
-        url = f"{self.base_url}/v3/reference/tickers/{symbol}/financials"
+        """Get financial data for a symbol using correct Polygon API endpoint"""
+        url = f"{self.base_url}/vX/reference/financials"
         params = {
+            'ticker': symbol,  # 正确参数名
             'apikey': self.api_key,
             'limit': limit
         }

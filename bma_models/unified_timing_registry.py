@@ -16,23 +16,35 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class TimingRegistry:
     """
-    统一时序配置注册表 - 严格的单一真相源
+    ❌ DEPRECATED: 此类已弃用，请使用 unified_time_config.UnifiedTimeConfig
     
-    所有时序相关参数必须从此处获取，禁止在其他地方硬编码
+    ⚠️  WARNING: 本类存在配置冲突，已被统一时间配置中心取代
+    
+    请使用：
+    from bma_models.unified_config_loader import get_time_config
+    config = get_time_config()
     """
-    # === 核心隔离参数 ===
-    prediction_horizon: int = 10  # T+10预测期
-    holding_period: int = 10      # 10天持有期
+    # === 禁止硬编码 - 从统一配置获取 ===
+    def __post_init__(self):
+        from bma_models.unified_config_loader import get_time_config
+        unified_config = get_time_config()
+        # 强制使用统一配置，禁止本地硬编码
+        object.__setattr__(self, 'prediction_horizon', unified_config.prediction_horizon_days)
+        object.__setattr__(self, 'holding_period', unified_config.prediction_horizon_days)
+        object.__setattr__(self, 'cv_gap_days', unified_config.cv_gap_days)
+        object.__setattr__(self, 'cv_embargo_days', unified_config.cv_embargo_days)
+        object.__setattr__(self, 'feature_lag_days', unified_config.feature_lag_days)
+        logger.warning(f"TimingRegistry已弃用，使用统一配置: gap={unified_config.cv_gap_days}, embargo={unified_config.cv_embargo_days}")
     
-    # === 严格隔离配置 === (UNIFIED: 统一为1天隔离期以提高数据利用率)
-    effective_isolation: int = 1   # FIX: 调整为1天隔离期
-    cv_gap_days: int = 1          # FIX: CV gap天数调整为1天
-    cv_embargo_days: int = 1      # FIX: CV embargo天数调整为1天  
-    oos_embargo_days: int = 1     # FIX: OOS embargo天数调整为1天
-    
-    # === 特征滞后配置 ===
-    feature_lag_days: int = 1      # FIX: 特征滞后天数调整为1天（更合理）
-    feature_global_lag: int = 1    # FIX: 全局特征滞后调整为1天
+    # 这些值将在 __post_init__ 中被统一配置覆盖
+    prediction_horizon: int = None
+    holding_period: int = None
+    effective_isolation: int = None
+    cv_gap_days: int = None
+    cv_embargo_days: int = None
+    oos_embargo_days: int = None
+    feature_lag_days: int = None
+    feature_global_lag: int = None
     
     # === 样本权重半衰期 ===
     sample_weight_half_life: int = 75  # 统一样本权重半衰期（天）
@@ -144,7 +156,7 @@ class TimingRegistry:
             'min_t_stat': self.min_t_stat,
             'min_coverage_months': self.min_coverage_months,
             'min_qlike_reduction_pct': self.min_qlike_reduction_pct,
-            'gate_logic': 'strict_and_with_fallback'
+            'gate_logic': 'strict_and_required'
         }
 
 
@@ -250,7 +262,7 @@ if __name__ == "__main__":
     # 测试参数一致性验证
     try:
         test_config = {
-            'cv_embargo_days': 1,  # 优化为1天一致配置
+            'cv_embargo_days': get_time_config().cv_embargo_days,  # 优化为1天一致配置
             'oos_embargo_days': 1
         }
         reset_timing_registry(test_config)

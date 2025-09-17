@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class ProductionGateResult:
     """生产闸门验证结果"""
     passed: bool
-    gate_type: str  # 'strict_and', 'fallback_or', 'failed'
+    gate_type: str  # 'strict_and', 'flexible_or', 'failed'
     score: float
     details: Dict[str, Any]
     recommendation: str
@@ -144,16 +144,16 @@ class EnhancedProductionGate:
         
         # 3. 兜底OR逻辑验证（仅在有基准对比时）
         if baseline_metrics:
-            fallback_result = self._validate_fallback_or_criteria(
+            flexible_result = self._validate_flexible_or_criteria(
                 model_metrics, baseline_metrics, coverage_months
             )
             
-            if fallback_result['passed']:
+            if flexible_result['passed']:
                 result = ProductionGateResult(
                     passed=True,
-                    gate_type='fallback_or',
-                    score=fallback_result['score'],
-                    details={**strict_result, **fallback_result},
+                    gate_type='flexible_or',
+                    score=flexible_result['score'],
+                    details={**strict_result, **flexible_result},
                     recommendation="⚠️ 建议影子模式试运行 - 概率度量显著优秀但IC略低",
                     risk_level="MEDIUM"
                 )
@@ -251,7 +251,7 @@ class EnhancedProductionGate:
             'gate_type': 'strict_and'
         }
     
-    def _validate_fallback_or_criteria(
+    def _validate_flexible_or_criteria(
         self, 
         model_metrics: Dict[str, Any], 
         baseline_metrics: Dict[str, Any],
@@ -308,26 +308,26 @@ class EnhancedProductionGate:
         }
         
         # 兜底逻辑：概率度量显著改善 + 基本IC要求 + 基本覆盖期
-        fallback_passed = (
+        flexible_passed = (
             checks['qlike_reduction']['passed'] and 
             checks['relaxed_rank_ic']['passed'] and 
             checks['basic_coverage']['passed']
         )
         
         # 计算兜底得分
-        if fallback_passed:
+        if flexible_passed:
             qlike_score = min(checks['qlike_reduction']['value'] / qlike_required, 2.0)
             ic_score = checks['relaxed_rank_ic']['value'] / relaxed_rank_ic
             coverage_score = min(coverage_months / min_coverage, 1.5)
-            fallback_score = np.mean([qlike_score, ic_score, coverage_score])
+            flexible_score = np.mean([qlike_score, ic_score, coverage_score])
         else:
-            fallback_score = 0
+            flexible_score = 0
         
         return {
-            'passed': fallback_passed,
-            'score': fallback_score,
+            'passed': flexible_passed,
+            'score': flexible_score,
             'checks': checks,
-            'gate_type': 'fallback_or'
+            'gate_type': 'flexible_or'
         }
     
     def _log_validation_result(self, result: ProductionGateResult, model_name: str):

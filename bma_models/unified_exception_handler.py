@@ -23,7 +23,7 @@ class ErrorHandlingConfig:
     """异常处理配置"""
     enable_retry: bool = True
     max_retries: int = 3
-    enable_fallback: bool = False
+    enable_strict_mode: bool = True
     log_errors: bool = True
     raise_on_critical: bool = True
     retry_delay: float = 1.0
@@ -46,13 +46,13 @@ class UnifiedExceptionHandler:
         self.retry_count = {}
         
     @contextmanager
-    def safe_execution(self, operation_name: str, fallback_value: Any = None):
+    def safe_execution(self, operation_name: str, default_value: Any = None):
         """
         安全执行上下文管理器
         
         Args:
             operation_name: 操作名称
-            fallback_value: 失败时的回退值
+            default_value: 失败时的默认值
         """
         try:
             if self.config.log_errors:
@@ -77,9 +77,9 @@ class UnifiedExceptionHandler:
             if self.config.raise_on_critical and self._is_critical_error(e):
                 raise
             
-            if self.config.enable_fallback and fallback_value is not None:
-                logger.info(f"使用回退值: {fallback_value}")
-                return fallback_value
+            if not self.config.enable_strict_mode and default_value is not None:
+                logger.info(f"使用默认值: {default_value}")
+                return default_value
     
     def with_retry(self, func: Callable) -> Callable:
         """
@@ -259,13 +259,13 @@ def get_global_exception_handler(config: Optional[ErrorHandlingConfig] = None) -
     return _global_handler
 
 
-def safe_execute(operation_name: str, fallback_value: Any = None):
+def safe_execute(operation_name: str, default_value: Any = None):
     """
     装饰器：安全执行函数
     
     Args:
         operation_name: 操作名称
-        fallback_value: 失败时的回退值
+        default_value: 失败时的默认值
     """
     def decorator(func):
         @functools.wraps(func)
@@ -276,8 +276,8 @@ def safe_execute(operation_name: str, fallback_value: Any = None):
             except Exception as e:
                 handler.error_count += 1
                 logger.error(f"{operation_name} 失败: {e}")
-                if fallback_value is not None:
-                    return fallback_value
+                if default_value is not None:
+                    return default_value
                 raise
         return wrapper
     return decorator

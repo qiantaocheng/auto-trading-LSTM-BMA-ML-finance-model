@@ -66,19 +66,31 @@ class DataFeed:
         return Quote(bid, ask, t.bidSize or 0.0, t.askSize or 0.0)
 
     async def fetch_daily_bars(self, sym: str, lookback_days: int = 60):
-        """from IB 拉取日线历史数据，useat真实信号andATR计算。"""
+        """从Polygon获取历史数据，不再使用IBKR数据"""
         try:
-            contract = await self.broker.qualify_stock(sym)
-            bars = await self.broker.ib.reqHistoricalDataAsync(
-                contract,
-                endDateTime="",
-                durationStr=f"{max(lookback_days, 30)} D",
-                barSizeSetting="1 day",
-                whatToShow="TRADES",
-                useRTH=True,
-                formatDate=1,
-            )
-            return list(bars or [])
+            # 使用统一Polygon因子库获取数据
+            from .unified_polygon_factors import get_unified_polygon_factors
+            unified_factors = get_unified_polygon_factors()
+            market_data = unified_factors.get_market_data(sym, days=lookback_days)
+
+            if market_data.empty:
+                self.logger.warning(f"{sym} Polygon数据为空")
+                return []
+
+            # 转换为类似IB的bar格式
+            bars = []
+            for _, row in market_data.iterrows():
+                bar = type('Bar', (), {
+                    'open': row.get('Open', 0.0),
+                    'high': row.get('High', 0.0),
+                    'low': row.get('Low', 0.0),
+                    'close': row.get('Close', 0.0),
+                    'volume': row.get('Volume', 0.0)
+                })()
+                bars.append(bar)
+
+            return bars
+
         except Exception as e:
             context = ErrorContext(
                 operation="engine",
@@ -136,7 +148,7 @@ class RiskEngine:
         
         # 基at风险positions计算 - Use environment config first
         try:
-            from .config_manager import get_config_manager
+            from bma_models.unified_config_loader import get_unified_config
             env_manager = get_config_manager()
             risk_params = env_manager.get("trading", {}) if env_manager else {}
         except (ImportError, AttributeError):
@@ -232,7 +244,7 @@ class RiskEngine:
             # 安全的配置访问，避免KeyError
             max_exposure = 0.95
             try:
-                max_exposure = self.cfg.get("CONFIG", {}).get("capital", {}).get("max_portfolio_exposure", 0.95)
+                max_exposure = self.cfg.get("capital", {}).get("max_portfolio_exposure", 0.95)
             except (AttributeError, KeyError, TypeError):
                 self.logger.debug("Using default max_exposure due to config access error")
             
@@ -701,7 +713,7 @@ class Engine:
                 if mid and mid > 0:
                     total_positions_value += abs(pos) * mid
             
-            max_exposure = self.broker.net_liq * cfg["capital"]["max_portfolio_exposure"]
+            max_exposure = self.broker.net_liq * cfg.get("capital", {}).get("max_portfolio_exposure", 0.95)
             if total_positions_value >= max_exposure:
                 self.logger.warning(f"投资组合敞口达上限: ${total_positions_value:,.2f} >= ${max_exposure:,.2f}")
                 return False
@@ -737,9 +749,18 @@ class Engine:
         """增强信号计算and交易执行：包含account状态验证and净值check"""
         try:
             cfg = self.config_manager.get_full_config()
-            uni = cfg["scanner"]["universe"]
+            # 安全获取股票池
+            try:
+                uni = cfg.get("scanner", {}).get("universe") or self.config_manager.get("scanner.universe", ["SPY"])  # type: ignore
+            except Exception:
+                uni = ["SPY"]
             
-            self.logger.info(f"运行信号计算and交易 - 标数量: {len(uni)}")
+            # 增强日志：显示部分股票池示例
+            try:
+                sample = ",".join(uni[:5]) if isinstance(uni, list) else str(uni)
+            except Exception:
+                sample = str(uni)
+            self.logger.info(f"运行信号计算and交易 - 标数量: {len(uni)} | 样本: {sample}")
             
             # 强制刷新account信息，确保数据最新
             try:
@@ -770,7 +791,7 @@ class Engine:
                 return
             
             orders_sent = 0
-            max_new_orders = cfg["capital"].get("max_new_positions_per_day", 10)
+            max_new_orders = cfg.get("capital", {}).get("max_new_positions_per_day", 10)
             
             for sym in uni:
                 if orders_sent >= max_new_orders:
@@ -807,32 +828,45 @@ class Engine:
                 except Exception as e:
                     self.logger.warning(f"{sym} Polygon因子计算失败，回退到IBKR数据: {e}")
                     
-                    # 回退到原有逻辑
-                    bars = await self.data.fetch_daily_bars(sym, lookback_days=60)
-                    if len(bars) < 60:
-                        self.logger.debug(f"{sym} 历史K线不足 {len(bars)} < 60，跳过")
-                        continue
-                        
-                    closes_all: List[float] = [float(getattr(b, "close", 0.0) or 0.0) for b in bars]
-                    closes_50 = closes_all[-60:]
-                    highs = [float(getattr(b, "high", 0.0) or 0.0) for b in bars][-60:]
-                    lows = [float(getattr(b, "low", 0.0) or 0.0) for b in bars][-60:]
-                    vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in bars][-60:]
-                    score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
-                    
-                    thr = self.config_manager.get("signals.acceptance_threshold", 0.6)
-                    if abs(score) < thr:
-                        self.logger.debug(f"{sym} 回退信号强度不足 | score={score:.3f}, thr={thr:.3f}，跳过")
+                    # 继续使用Polygon数据作为备选
+                    market_data = self.unified_factors.get_market_data(sym, days=60)
+                    if market_data.empty or len(market_data) < 60:
+                        self.logger.debug(f"{sym} Polygon备选数据不足，跳过")
                         continue
 
-                side = "BUY" if score > 0 else "SELL"
+                    closes_all: List[float] = market_data['Close'].tolist()
+                    closes_50 = closes_all[-60:]
+                    highs = market_data['High'].tolist()[-60:]
+                    lows = market_data['Low'].tolist()[-60:]
+                    vols = market_data['Volume'].tolist()[-60:]
+                    score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
+
+                    thr = self.config_manager.get("signals.acceptance_threshold", 0.6)
+                    if abs(score) < thr:
+                        self.logger.debug(f"{sym} Polygon备选信号强度不足 | score={score:.3f}, thr={thr:.3f}，跳过")
+                        continue
+
+                # 可选微结构 α>成本 门槛（若可用）
+                try:
+                    from .realtime_alpha_engine import get_realtime_alpha_engine
+                    alpha_engine = get_realtime_alpha_engine()
+                    decision = alpha_engine.make_trading_decision(sym)
+                    if not decision.is_tradable:
+                        self.logger.debug(f"{sym} 微结构门槛拒绝: {decision.decision_reason}")
+                        continue
+                    micro_side = "BUY" if decision.calibrated_alpha_bps > 0 else "SELL"
+                    self.logger.debug(f"{sym} 微结构门槛通过 | α={decision.calibrated_alpha_bps:.1f}bps 置信={decision.confidence:.2f} 侧={micro_side} 成本={decision.total_cost_bps:.1f}bps POV={decision.optimal_pov:.3f}")
+                except Exception:
+                    micro_side = None
+
+                side = (micro_side or ("BUY" if score > 0 else "SELL"))
                 entry = q.ask if side == "BUY" else q.bid
                 if not entry or entry <= 0:
                     self.logger.debug(f"{sym} no法retrievalhas效入场价（side={side}），跳过")
                     continue
                     
                 # check最大单个positions限制
-                max_single_position = self.broker.net_liq * cfg["capital"].get("max_single_position_pct", 0.15)
+                max_single_position = self.broker.net_liq * cfg.get("capital", {}).get("max_single_position_pct", 0.15)
                 current_position_qty = self.position_manager.get_quantity(sym)
                 current_position_value = abs(current_position_qty) * entry
                 if current_position_value >= max_single_position:
@@ -855,14 +889,15 @@ class Engine:
                         
                         self.logger.debug(f"{sym} 使用Polygon数据计算ATR: {atr14}")
                     else:
-                        # 回退到IBKR数据
-                        if 'bars' in locals() and len(bars) >= 14:
-                            hi = [float(getattr(b, "high", entry) or entry) for b in bars][-15:]
-                            lo = [float(getattr(b, "low", entry) or entry) for b in bars][-15:]
-                            cl = [float(getattr(b, "close", entry) or entry) for b in bars][-15:]
+                        # 继续使用Polygon数据
+                        alt_data = self.unified_factors.get_market_data(sym, days=30)
+                        if not alt_data.empty and len(alt_data) >= 14:
+                            hi = alt_data['High'].tolist()[-15:]
+                            lo = alt_data['Low'].tolist()[-15:]
+                            cl = alt_data['Close'].tolist()[-15:]
                             atr_values = atr(hi, lo, cl, 14)
                             atr14 = atr_values[-1] if atr_values and not math.isnan(atr_values[-1]) else None
-                            self.logger.debug(f"{sym} 回退到IBKR数据计算ATR: {atr14}")
+                            self.logger.debug(f"{sym} 使用Polygon备选数据计算ATR: {atr14}")
                         else:
                             atr14 = None
                     
@@ -876,12 +911,41 @@ class Engine:
                 else:
                     stop_px = max(entry * (1 + stop_pct), entry + (atr14 or entry * 0.02))
                     
-                # 使use增强仓位计算
-                qty = self.risk.position_size(self.broker.net_liq, entry, stop_px)
+                # 动态头寸（基于资金/信号）
+                try:
+                    from .position_size_calculator import create_position_calculator
+                    calculator = create_position_calculator(target_percentage=self.config_manager.get("sizing.target_pct", 0.05),
+                                                            min_percentage=self.config_manager.get("sizing.min_pct", 0.04),
+                                                            max_percentage=self.config_manager.get("sizing.max_pct", 0.10),
+                                                            method="signal_strength")
+                    # 资金口径：可选购买力，否则现金余额
+                    try:
+                        use_bp = bool(self.config_manager.get("sizing.use_buying_power", False))
+                    except Exception:
+                        use_bp = False
+                    try:
+                        available_cash = float(getattr(self.broker, 'buying_power', 0.0)) if use_bp else float(getattr(self.broker, 'cash_balance', 0.0))
+                    except Exception:
+                        available_cash = float(getattr(self.broker, 'cash_balance', 0.0) or 0.0)
+                    pos_res = calculator.calculate_position_size(
+                        symbol=sym,
+                        current_price=entry,
+                        signal_strength=float(score),
+                        available_cash=max(available_cash, 0.0),
+                        signal_confidence=float(confidence if 'confidence' in locals() else 0.8)
+                    )
+                    qty = int(pos_res.get('shares', 0))
+                    try:
+                        self.logger.debug(f"{sym} 动态仓位 | shares={qty} value=${pos_res.get('actual_value', 0):,.2f} pct={pos_res.get('actual_percentage', 0):.3f}")
+                    except Exception:
+                        pass
+                except Exception:
+                    # 回退到风险引擎计算
+                    qty = self.risk.position_size(self.broker.net_liq, entry, stop_px)
                 
                 # 应use最小仓位要求
-                min_usd = cfg["sizing"].get("min_position_usd", 1000)
-                min_shares = cfg["sizing"].get("min_shares", 1)
+                min_usd = cfg.get("sizing", {}).get("min_position_usd", 1000)
+                min_shares = cfg.get("sizing", {}).get("min_shares", 1)
                 min_qty_by_value = max(min_usd // entry, min_shares)
                 
                 if qty <= 0:
@@ -891,15 +955,75 @@ class Engine:
                     qty = max(qty, min_qty_by_value)
 
                 price_plan = self.router.build_prices(sym, side, q)
+                # 统一订单验证（放在入场前）
+                try:
+                    from .unified_order_validator import get_unified_validator
+                    validator = get_unified_validator(self.config_manager)
+                    account_value = float(getattr(self.broker, 'net_liq', 0.0) or 0.0)
+                    validate_price = float(price_plan.get("limit") if price_plan.get("type") == "LMT" else entry)
+                    validation = await validator.validate_order_unified(sym, side, int(qty), float(validate_price), account_value)
+                    if not validation.is_valid:
+                        self.logger.debug(f"{sym} 统一订单验证拒绝: {validation.reason}")
+                        continue
+                except Exception as e:
+                    self.logger.debug(f"{sym} 订单验证异常，跳过: {e}")
+                    continue
+
+                # 频率控制集成（若可用）
+                try:
+                    if hasattr(self.broker, 'frequency_controller') and self.broker.frequency_controller:
+                        from .frequency_controller import TradingRequest, TradingDecision as FreqDecision
+                        req = TradingRequest(
+                            symbol=sym,
+                            action=side,
+                            target_weight=0.0,
+                            current_weight=0.0,
+                            expected_return=float(score),
+                            confidence=float(confidence if 'confidence' in locals() else 0.8),
+                            timestamp=__import__('time').time(),
+                            estimated_cost=0.0,
+                            priority="normal",
+                            metadata={"current_price": entry, "portfolio_value": float(getattr(self.broker, 'net_liq', 0.0) or 0.0)}
+                        )
+                        decision, message = self.broker.frequency_controller.should_allow_trade(req, None)
+                        if str(getattr(decision, 'value', '')) in ('reject_cost','reject_band','reject_cooldown','reject_quota','reject_liquidity'):
+                            self.logger.debug(f"{sym} 频率控制拒绝: {message}")
+                            continue
+                        if str(getattr(decision, 'value', '')) == 'queue_batch':
+                            self.logger.debug(f"{sym} 加入批量队列: {message}（跳过即时下单）")
+                            try:
+                                self.broker.frequency_controller.batching_manager.queue_request(req)
+                            except Exception:
+                                pass
+                            continue
+                except Exception:
+                    pass
+
+                # 做空权限：SELL 且无持仓且不允许做空时跳过
+                try:
+                    allow_short = bool(self.config_manager.get("risk.allow_short", True))
+                except Exception:
+                    allow_short = True
+                if side == "SELL" and (current_position_qty <= 0) and not allow_short:
+                    self.logger.debug(f"{sym} 不允许做空且无持仓，跳过 SELL")
+                    continue
                 self.logger.debug(f"{sym} order placement计划 | side={side} qty={qty} plan={price_plan}")
                 
                 try:
-                    if price_plan.get("type") == "MKT":
-                        await self.broker.place_market_order(sym, side, qty)
+                    # 若启用 bracket 托管止损/止盈（配置开关）
+                    use_bracket = bool(self.config_manager.get("orders.use_bracket", False))
+                    if use_bracket:
+                        stop_pct = float(self.config_manager.get("trading.default_stop_loss_pct", 0.02))
+                        tp_pct = float(self.config_manager.get("trading.default_take_profit_pct", 0.05))
+                        # bracket 使用市价入场 + 服务器端止损/止盈
+                        await self.broker.place_market_order_with_bracket(sym, side, int(qty), stop_pct=stop_pct, target_pct=tp_pct)
                     else:
-                        await self.broker.place_limit_order(sym, side, qty, float(price_plan["limit"]))
+                        if price_plan.get("type") == "MKT":
+                            await self.broker.place_market_order(sym, side, int(qty))
+                        else:
+                            await self.broker.place_limit_order(sym, side, int(qty), float(price_plan["limit"]))
                     orders_sent += 1
-                    self.logger.info(f"success提交订单: {side} {qty} {sym} @ {entry}")
+                    self.logger.info(f"success提交订单: {side} {qty} {sym} 计划={price_plan} @ 参考价≈{entry} 托管={'bracket' if use_bracket else 'none'}")
                 except Exception as e:
                     self.logger.error(f"订单提交failed {sym}: {e}")
                     continue
@@ -924,7 +1048,21 @@ class Engine:
         if not self.broker.ib.isConnected():
             self.logger.warning("connection断开，尝试重连...")
             await self.broker.connect()
-        # 热updates配置
-        if self.cfg.maybe_reload():
-            self.logger.info("配置热updates")
+        # 热更新配置（使用配置管理器接口，而非字典方法）
+        try:
+            # 若配置管理器支持 reload 或 get_full_config 刷新，这里调用
+            if hasattr(self.config_manager, 'reload'):
+                changed = bool(self.config_manager.reload())
+            elif hasattr(self.config_manager, 'maybe_reload'):
+                changed = bool(self.config_manager.maybe_reload())
+            else:
+                # 回退：重新获取并替换本地快照
+                new_cfg = self.config_manager.get_full_config()
+                changed = (new_cfg != getattr(self, 'cfg', {}))
+                if changed:
+                    self.cfg = new_cfg
+            if changed:
+                self.logger.info("配置热更新已应用")
+        except Exception as e:
+            self.logger.debug(f"配置热更新检查失败: {e}")
 

@@ -47,9 +47,9 @@ class AutoTraderGUI(tk.Tk):
         super().__init__()
         
         # 使use统一配置管理器
-        from autotrader.master_config_manager import get_default_config
+        from bma_models.unified_config_loader import get_config_manager as get_default_config
         from autotrader.unified_event_manager import get_event_loop_manager
-        from autotrader.resource_monitor import get_resource_monitor
+        from autotrader.unified_monitoring_system import get_resource_monitor
         
         self.config_manager = get_default_config()
         self.loop_manager = get_event_loop_manager()
@@ -97,7 +97,7 @@ class AutoTraderGUI(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         
         # 添加资源清理回调
-        self.resource_monitor.add_warning_callback(self._on_resource_warning)
+        self.resource_monitor.add_alert_callback(self._on_resource_warning)
         
         # 初始化事件系统
         from autotrader.unified_event_manager import get_event_bus, GUIEventAdapter
@@ -109,20 +109,11 @@ class AutoTraderGUI(tk.Tk):
         self._init_strategy_components()
 
     def _init_enhanced_trading_components(self):
-        """初始化增强交易组件：阈值自适应 + 动态头寸 + 数据新鲜度"""
+        """初始化增强交易组件：阈值自适应 + 动态头寸"""
         try:
-            from autotrader.data_freshness_scoring import create_freshness_scoring
             from autotrader.position_size_calculator import create_position_calculator
             from autotrader.volatility_adaptive_gating import create_volatility_gating
-            
-            # 数据新鲜度评分系统
-            self.freshness_scorer = create_freshness_scoring(
-                tau_minutes=15.0,          # 15分钟衰减常数
-                max_age_minutes=60.0,      # 最大数据年龄1小时
-                base_threshold=0.005,      # 基础阈值0.5%
-                freshness_threshold_add=0.010  # 新鲜度惩罚阈值1%
-            )
-            
+
             # 动态头寸规模计算器
             self.position_calculator = create_position_calculator(
                 target_percentage=0.05,    # 目标5%头寸
@@ -130,7 +121,7 @@ class AutoTraderGUI(tk.Tk):
                 max_percentage=0.10,       # 最大10%
                 method="volatility_adjusted"  # 使用波动率调整方法
             )
-            
+
             # 波动率自适应门控系统
             self.volatility_gating = create_volatility_gating(
                 base_k=0.5,               # 基础门槛系数
@@ -138,13 +129,12 @@ class AutoTraderGUI(tk.Tk):
                 use_atr=True,             # 使用ATR计算波动率
                 enable_liquidity_filter=True  # 启用流动性过滤
             )
-            
-            self.log("增强交易组件初始化成功: 数据新鲜度评分 + 动态头寸计算 + 波动率自适应门控")
-            
+
+            self.log("增强交易组件初始化成功: 动态头寸计算 + 波动率自适应门控")
+
         except Exception as e:
             self.log(f"增强交易组件初始化失败: {e}")
             # 设置回退组件
-            self.freshness_scorer = None
             self.position_calculator = None
             self.volatility_gating = None
     
@@ -2055,7 +2045,13 @@ class AutoTraderGUI(tk.Tk):
     def _add_ticker_global(self) -> None:
         """添加to全局tickers"""
         try:
-            symbol = (self.ent_symbol.get() or '').strip().upper()
+            raw = (self.ent_symbol.get() or '')
+            try:
+                from stock_pool_manager import StockPoolManager
+                symbol = StockPoolManager._sanitize_ticker(raw) or ''
+            except Exception:
+                symbol = (raw or '').strip().upper().replace('"','').replace("'",'')
+                symbol = ''.join(c for c in symbol if not c.isspace())
             if not symbol:
                 messagebox.showwarning("警告", "请输入股票代码")
                 return
@@ -2079,7 +2075,22 @@ class AutoTraderGUI(tk.Tk):
             if not csv_text:
                 messagebox.showwarning("警告", "请输入股票代码")
                 return
-            symbols = [s.strip().upper() for s in csv_text.split(',') if s.strip()]
+            tokens = []
+            for line in csv_text.split('\n'):
+                tokens.extend(line.replace(',', ' ').split())
+            symbols = []
+            try:
+                from stock_pool_manager import StockPoolManager
+                for tok in tokens:
+                    s = StockPoolManager._sanitize_ticker(tok)
+                    if s:
+                        symbols.append(s)
+            except Exception:
+                for tok in tokens:
+                    s = (tok or '').strip().upper().replace('"','').replace("'",'')
+                    s = ''.join(c for c in s if not c.isspace())
+                    if s:
+                        symbols.append(s)
             success = 0
             fail = 0
             for s in symbols:
@@ -2652,7 +2663,7 @@ class AutoTraderGUI(tk.Tk):
                     
                     # 停止事件总线
                     try:
-                        from autotrader.event_system import shutdown_event_bus
+                        from autotrader.unified_event_manager import shutdown_event_bus
                         shutdown_event_bus()
                         self.log("事件总线停止")
                     except Exception as e:
@@ -2721,7 +2732,7 @@ class AutoTraderGUI(tk.Tk):
                     if bma_path not in sys.path:
                         sys.path.append(bma_path)
                     
-                    from 量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+                    from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
                     
                     self.after(0, lambda: self.log("[BMA] 创建模型实例..."))
                     model = UltraEnhancedQuantitativeModel()

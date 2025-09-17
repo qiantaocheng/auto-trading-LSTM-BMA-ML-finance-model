@@ -524,7 +524,7 @@ class UnifiedTradingCore:
         return True
     
     # =============================================================================
-    # 性能监控功能 (替代 performance_optimizer.py + resource_monitor.py)
+    # 基础监控功能
     # =============================================================================
     
     def update_performance_metrics(self):

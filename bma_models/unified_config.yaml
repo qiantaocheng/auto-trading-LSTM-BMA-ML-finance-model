@@ -1,41 +1,97 @@
-# BMA Ultra Enhanced 统一配置文件
-# 所有配置参数集中管理
+# BMA UNIFIED CONFIGURATION - SINGLE SOURCE OF TRUTH
+# 所有配置参数集中管理 - UnifiedTrainingConfig唯一配置文件
+# 整合：temporal, training, data, features, evaluation, 所有YAML配置
 
 # ==========================================
 # 时间配置 - 防止数据泄露的关键参数
 # ==========================================
 temporal:
-  # === 核心预测参数 ===
-  prediction_horizon_days: 10      # T+10预测
-  holding_period_days: 10          # 10天持有期
+  # === 随机种子配置 ===
+  random_state: 42                     # 统一随机种子
   
-  # === 时间隔离参数 (UNIFIED to 1-day isolation) ===
-  feature_lag_days: 1              # UNIFIED: T-1特征滞后
-  cv_gap_days: 1                   # UNIFIED: CV间隔1天最大化数据利用
-  cv_embargo_days: 1               # UNIFIED: CV禁止期1天最小间隔
-  oos_embargo_days: 1              # UNIFIED: OOS embargo 1天
-  effective_isolation_days: 1      # UNIFIED: 有效隔离期1天
-  safety_gap_days: 1               # UNIFIED: 安全间隔1天
-  min_total_gap_days: 3            # UNIFIED: 最小总间隔 = 1+1+1 = 3天
+  # === 核心预测参数 ===
+  prediction_horizon_days: 10          # T+10预测
+  holding_period_days: 10              # 10天持有期
+  
+  # === 时间隔离参数 (CRITICAL: CORRECTLY ALIGNED) ===
+  feature_lag_days: 1                  # T-1特征滞后
+  cv_gap_days: 11                      # Gap >= horizon to prevent leakage
+  cv_embargo_days: 10                  # Embargo >= horizon for safety
+  oos_embargo_days: 10                 # OOS embargo aligned with horizon
+  effective_isolation_days: 10         # 有效隔离期
+  safety_gap_days: 1                   # 安全间隔
+  min_total_gap_days: 21               # 最小总间隔 (approx gap+embargo+buffer)
   
   # === 交叉验证参数 ===
-  cv_n_splits: 5                   # CV折数
-  cv_test_ratio: 0.2               # 测试集比例
-  min_train_test_gap_days: 12      # 训练测试最小间隔
+  cv_n_splits: 5                       # CV折数
+  cv_test_ratio: 0.2                   # 测试集比例
+  min_train_test_gap_days: 12          # 训练测试最小间隔
   
   # === 样本权重参数 ===
-  sample_weight_half_life_days: 75 # 样本权重半衰期（天）
+  sample_weight_half_life_days: 75     # 样本权重半衰期（天）
   
   # === 生产闸门阈值 ===
-  min_rank_ic: 0.02               # 最低RankIC要求
-  min_t_stat: 2.0                 # 最低t统计量
-  min_coverage_months: 12         # 最低覆盖月数
-  min_qlike_reduction_pct: 0.12   # QLIKE最小改善（12%）
+  min_rank_ic: 0.02                    # 最低RankIC要求
+  min_t_stat: 2.0                      # 最低t统计量
+  min_coverage_months: 12              # 最低覆盖月数
+  min_qlike_reduction_pct: 0.12        # QLIKE最小改善（12%）
 
 # ==========================================
-# 数据配置
+# 验证阈值配置 - 精细化参数控制
+# ==========================================
+validation_thresholds:
+  # 外部target校验阈值（软硬阈值分离）
+  target_validation:
+    min_target_corr_soft: 0.005        # 软阈值：低于此值告警
+    min_target_corr_hard: 0.001        # 硬阈值：低于此值中止
+    min_overlap_samples_soft: 100      # 最小重叠样本数软阈值
+    min_overlap_samples_hard: 50       # 最小重叠样本数硬阈值
+
+  # IC相关阈值
+  ic_processing:
+    ffill_limit: 5                     # IC ffill最大天数
+    bfill_limit: 2                     # IC bfill最大天数
+    min_valid_days_for_ic: 3           # IC计算最小有效天数
+    min_daily_stocks: 10               # 每日最小股票数（跳过IC计算）
+    small_variance_threshold: 1e-8     # 小方差阈值（直接置零）
+
+  # 权重更新稳健性
+  weight_update:
+    min_effective_days: 5              # 权重更新最小有效天数
+    min_samples_per_day: 10            # 每日最小样本数
+    ewma_min_valid_points: 3           # EWMA最小有效点数
+
+  # Catastrophic gate阈值
+  catastrophic_gate:
+    min_avg_ic: -0.02                  # 平均IC最低阈值
+    max_negative_r2: -0.5              # 最大负R²阈值
+    trigger_count_threshold: 3         # 连续触发次数阈值
+
+  # 质量标记阈值
+  quality_gates:
+    min_prediction_variance: 1e-6      # 最小预测方差
+    min_prediction_range: 1e-4         # 最小预测范围
+    max_nan_ratio: 0.1                 # 最大NaN比例
+
+# ==========================================
+# 严格模式配置
+# ==========================================
+strict_mode:
+  enable_strict_cv: false              # 严格CV模式开关（每折用训练样本统计）
+  enable_determinism_strict: true      # 严格确定性模式
+  enable_temporal_strict: true         # 严格时间验证
+  enable_feature_validation: true     # 严格特征验证
+
+# ==========================================
+# 数据配置 - SINGLE FORMAT ONLY
 # ==========================================
 data:
+  # MANDATORY DATA FORMAT
+  required_format: "MultiIndex"           # ONLY MultiIndex(date, ticker) accepted
+  required_index_names: ["date", "ticker"]  # STRICT index naming
+  required_target_column: "target"       # Target column name
+  min_features: 2                        # Minimum feature columns
+  
   # 数据下载配置
   max_risk_model_tickers: 50
   max_market_regime_tickers: 20
@@ -46,10 +102,13 @@ data:
   market_regime_history_days: 200
   alpha_data_history_days: 200
   
-  # 数据质量要求
+  # 数据质量要求 - NO COMPROMISES
   min_data_days: 20
   min_risk_model_days: 100
   min_cross_sectional_stocks: 30    # 横截面最少股票数
+  min_oof_coverage: 0.5              # Minimum OOF coverage (50%)
+  min_samples_per_model: 100         # Minimum samples for model training
+  min_samples_for_cv: 400            # Match CONFIG.MIN_SAMPLES_FOR_CV
   
   # 批处理配置
   batch_size: 50
@@ -69,8 +128,10 @@ features:
   # 特征选择
   feature_selection:
     method: "robust"
-    max_features: 100
-    min_importance: 0.001
+    max_features: 25                    # FIXED: Set to 25 as requested
+    min_features: 5                     # Match CONFIG.MIN_FEATURES  
+    min_importance: 1e-6                # Match CONFIG.VARIANCE_THRESHOLD
+    correlation_threshold: 0.95         # Match CONFIG.CORRELATION_THRESHOLD
     
   # 特征滞后优化
   lag_optimization:
@@ -78,6 +139,16 @@ features:
     max_lag: 5
     optimization_method: "grid_search"
     
+  # 横截面因子标准化 (NEW)
+  cross_sectional_standardization:
+    enable: true                        # 启用横截面标准化
+    min_valid_ratio: 0.5               # 最小有效样本比例
+    outlier_method: "iqr"              # 异常值处理方法: ['iqr', 'zscore', 'quantile']
+    outlier_threshold: 3.0             # 异常值阈值
+    fill_method: "cross_median"        # 缺失值填充方法: ['cross_median', 'zero', 'forward_fill']
+    industry_neutral: false            # 是否进行行业中性化
+    validation_samples: 30             # 验证标准化效果的最小样本数
+
   # 自适应因子衰减
   factor_decay:
     enable: true
@@ -95,48 +166,88 @@ features:
       microstructure: 3
 
 # ==========================================
-# 模型训练配置
+# 模型训练配置 - SINGLE CV SYSTEM ONLY
 # ==========================================
 training:
   # 训练类型
   incremental_days: 14
   full_rebuild_days: 28
   
-  # 交叉验证
-  cv_splits: 5
-  cv_method: "purged_time_series"
+  # 交叉验证 - NO FALLBACKS  
+  cv_method: "time_series_split"          # ONLY TimeSeriesSplit accepted
+  cv_splits: 5                           # Fixed number of splits
+  cv_gap_days: 11                        # Match temporal config
+  cv_embargo_days: 3                     # Match temporal config
+  cv_min_train_size: 252                 # Match CONFIG.MIN_TRAIN_SIZE (1 year)
+  test_size: 63                          # Match CONFIG.TEST_SIZE (3 months)
+  cv_no_fallback: true                   # NO FALLBACK CV METHODS
   
-  # 传统ML模型
-  traditional_models:
-    enable: true
-    models:
-      - elastic_net
-      - xgboost
-      - lightgbm
+  # 基础ML模型 - SIMPLIFIED
+  base_models:
+    elastic_net:
+      enable: true
+      alpha: 0.01
+      l1_ratio: 0.5
+      random_state: 42
     
-  # LTR配置
-  ltr:
-    enable: true
-    objective: "rank:pairwise"
-    n_estimators: 100
-    learning_rate: 0.05
-    max_depth: 5
+    xgboost:
+      enable: true
+      n_estimators: 100
+      max_depth: 3
+      learning_rate: 0.1
+      random_state: 42
+      verbosity: 0
     
-  # Stacking配置
-  stacking:
-    enable: true
-    meta_model: "elastic_net"
-    meta_learner: "elastic_net"
-    cv_folds: 3
-    use_oof_predictions: true
-    min_base_models: 2
-    
-  # Regime-aware训练
-  regime_aware:
-    enable: true
-    n_regimes: 3
-    detection_window: 252
-    update_frequency: 63
+    catboost:
+      enable: true
+      iterations: 2000
+      depth: 5
+      learning_rate: 0.05
+      l2_leaf_reg: 5
+      subsample: 0.7
+      loss_function: "RMSE"
+      random_state: 42
+      verbose: false
+      allow_writing_files: false
+      thread_count: -1
+      od_type: "Iter"
+      od_wait: 100
+  
+  # BMA权重方法
+  bma_weighting:
+    method: "ic_based"                    # IC-based weighting ONLY
+    min_ic_threshold: 0.001               # Minimum IC for inclusion
+    normalize_weights: true               # Normalize weights to sum=1
+  
+  # === ENHANCED TRAINING PARAMETERS (FROM proper_training_config) ===
+  enable_hyperparameter_tuning: true     # ENHANCED: Enable hyperparameter tuning
+  n_jobs: -1                             # ENHANCED: Use all CPU cores
+  feature_selection_method: "rolling_ic" # ENHANCED: Rolling IC method
+  min_ic_threshold: 0.02                 # ENHANCED: Minimum IC threshold
+
+  # 元集成（EWA先验×证据）配置
+  meta_ensemble:
+    method: "ewa_with_prior"            # EWA with monthly NNLS(Ridge) prior
+    lookback_days: 120                   # 月度先验回看窗（~120交易日）
+    rebalance: "M"                      # 月度重估先验
+    ridge_lambda: 0.01                  # 先验Ridge L2强度（λ）
+    non_negative: true                  # 先验非负约束
+    normalize: true                     # 先验权重归一
+    eta: 0.8                            # EWA温度（指数放大系数）
+    cap: 0.9                            # 单模型权重上限
+    alpha: 0.9                          # EMA平滑系数
+    ic_metric: "IC"                    # "IC" 或 "ICIR"
+    ic_window_days: 120                 # IC/ICIR滚动窗口（严格滞后H）
+    lag_days: 10                        # 与目标T+10对齐的滞后（H）
+    negative_ic_policy: "clip0"        # 负IC处理：clip0 | flip | ignore
+    logging:
+      track_daily_weights: true         # 记录日度权重分布
+      track_ic_curve: true              # 记录IC/ICIR曲线
+      max_weight_hhi: true              # 记录HHI集中度
+    tuning:
+      eta_grid: [0.5, 0.8, 1.0, 1.2]    # 线上栈外调参范围
+      ic_metric: "ICIR"                 # 默认采用ICIR（均值/波动）
+      strict_temporal_safety: true      # 严格时间安全：不满足直接报错
 
 # ==========================================
 # 模型评估配置
@@ -155,6 +266,25 @@ evaluation:
     min_t_stat: 2.0
     min_months: 12
     max_qlike: 0.12
+
+# ==========================================
+# 验证阈值配置 (VALIDATION THRESHOLDS)
+# ==========================================
+validation_thresholds:
+  # 生产就绪阈值
+  production_ready_threshold: 0.8
+  min_rank_ic: 0.01
+  min_t_stat: 1.0
+  min_stability_ratio: 0.5
+  min_calibration_r2: 0.6
+  max_correlation_median: 0.7
+
+  # 目标完整性验证新参数 (TARGET INTEGRITY VALIDATION)
+  enable_strict_target_validation: true    # 启用严格目标验证 (设为false启用宽松模式)
+  min_target_correlation: 0.85            # 偏好最小相关性(与重构目标比较)
+  critical_target_correlation: 0.6        # 严重失败阈值(低于此值停止处理)
+  min_target_overlap: 100                 # 偏好最小重叠样本数
+  critical_target_overlap: 50             # 严重失败的重叠阈值
     
   # OOF配置
   oof:
@@ -179,13 +309,52 @@ professional_factors:
     - alternative
 
 # ==========================================
+# 自适应权重配置 (FROM adaptive_weights_config.yaml)
+# ==========================================
+adaptive_weights:
+  # 权重学习配置
+  weight_learning:
+    enabled: true                        # 启用权重学习
+    lookback_days: 252                   # 历史数据回看期（天）
+    min_confidence: 0.6                  # 最小置信度阈值
+    max_weight: 0.4                      # 单因子最大权重
+    min_weight: 0.05                     # 单因子最小权重
+    rebalance_frequency: 21              # 权重更新频率（天）
+  
+  # 回退权重配置
+  fallback_weights:
+    momentum: 0.35                       # 动量信号回退权重
+    mean_reversion: 0.35                 # 均值回归信号回退权重
+    quality: 0.30                        # 质量信号回退权重
+  
+  # BMA模型权重配置
+  bma_weights:
+    # IC阈值配置
+    ic_thresholds:
+      strong: 0.1                        # 强信号阈值
+      weak: 0.05                         # 弱信号阈值
+      noise: 0.02                        # 噪音阈值
+    
+    # 权重映射
+    weight_mapping:
+      strong: 0.4                        # 强信号权重
+      weak: 0.2                          # 弱信号权重
+      noise: 0.0                         # 噪音权重
+    
+    # 基础模型权重
+    base_models:
+      ridge: 0.3
+      xgboost: 0.4
+      catboost: 0.3
+
+# ==========================================
 # 集成系统配置
 # ==========================================
 ensemble:
   # BMA权重计算
   bma_weights:
     method: "ic_weighted"
-    lookback_window: 60
+    lookbook_window: 60
     min_ic_threshold: 0.01
     
   # 动态权重
@@ -195,14 +364,16 @@ ensemble:
     weight_bounds: [0.0, 0.5]
 
 # ==========================================
-# 异常处理配置
+# 异常处理配置 - NO FALLBACKS POLICY
 # ==========================================
 error_handling:
-  enable_retry: true
-  max_retries: 3
-  enable_fallback: false
-  log_errors: true
-  raise_on_critical: true
+  enable_retry: false                   # NO RETRIES - Fail fast
+  max_retries: 0                        # NO RETRIES
+  enable_fallback: false                # NO FALLBACKS EVER
+  log_errors: true                      # Log all errors
+  raise_on_critical: true               # Always raise critical errors
+  fail_fast: true                       # Fail immediately on errors
+  no_exception_masking: true            # Never mask exceptions
 
 # ==========================================
 # 性能优化配置
@@ -251,6 +422,106 @@ module_thresholds:
   ltr_min_samples: 1000
 
 # ==========================================
+# ALPHA因子配置 (FROM alphas_config.yaml)
+# ==========================================
+alphas:
+  # 技术指标因子
+  - name: "momentum_5d"
+    function: "momentum"
+    period: 5
+    decay: 15
+    enabled: true
+  - name: "momentum_20d" 
+    function: "momentum"
+    period: 20
+    decay: 20
+    enabled: true
+  - name: "mean_reversion_10d"
+    function: "mean_reversion"
+    period: 10
+    decay: 20
+    enabled: true
+  - name: "volatility_5d"
+    function: "volatility"
+    period: 5
+    decay: 8
+    enabled: true
+  - name: "volume_ratio"
+    function: "volume_ratio"
+    period: 20
+    decay: 10
+    enabled: true
+  - name: "rsi_14d"
+    function: "rsi"
+    period: 14
+    decay: 14
+    enabled: true
+    
+  # 基本面因子
+  - name: "earnings_yield"
+    function: "earnings_yield"
+    period: 252
+    decay: 60
+    enabled: true
+  - name: "book_to_market"
+    function: "pb_ratio"
+    period: 252
+    decay: 60
+    enabled: true
+  - name: "roe_factor"
+    function: "roe_neutralized"
+    period: 252
+    decay: 60
+    enabled: true
+    
+  # 质量因子
+  - name: "piotroski_score"
+    function: "piotroski_score"
+    period: 252
+    decay: 90
+    enabled: true
+  - name: "altman_score"
+    function: "altman_score" 
+    period: 252
+    decay: 90
+    enabled: true
+    
+  # 风险因子
+  - name: "low_beta"
+    function: "low_beta"
+    period: 252
+    decay: 60
+    enabled: true
+  - name: "idiosyncratic_vol"
+    function: "idiosyncratic_vol"
+    period: 60
+    decay: 20
+    enabled: true
+
+# Alpha处理配置
+alpha_processing:
+  winsorize_quantiles: [0.01, 0.99]
+  standardization: "cross_sectional"
+  neutralization:
+    by_industry: false
+    by_market_cap: false
+
+# ==========================================
+# 存储配置 (FROM adaptive_weights_config.yaml)
+# ==========================================
+storage:
+  cache_dir: "cache/factor_weights"
+  max_history_records: 20
+  cleanup_frequency_days: 3
+
+# ==========================================
+# 监控配置 (FROM adaptive_weights_config.yaml)
+# ==========================================
+monitoring:
+  log_weight_changes: false
+  performance_tracking: false
+
+# ==========================================
 # 默认股票池
 # ==========================================
 default_tickers:
@@ -274,3 +545,95 @@ default_tickers:
   - DIS
   - NFLX
   - ADBE
+
+# ==========================================
+# EOD 交易配置 (合并自 autotrader/config/eod_trading_config.yaml)
+# ==========================================
+# 收盘后信号生成 + 次日开盘下单模式配置
+eod_trading:
+  # 策略配置
+  strategy:
+    double_trend:
+      eod_mode: true                    # 只在收盘后跑信号
+      run_after_close_min: 20           # 收盘后等20分钟触发，避免15分钟延迟
+      
+    execution:
+      open_order_type: "LOO"            # 首选开盘限价单；也支持 "MOO"
+      avoid_open_auction: false         # 如需避开开盘竞价阶段，改成 true
+      limit_band_by_atr_mult: 0.5       # 开仓价带 = 0.5×ATR
+      limit_band_floor_pct: 0.003       # 价带地板=0.30%
+      limit_band_cap_pct: 0.015         # 价带上限=1.5%
+      cancel_if_not_filled_minutes: 30  # 开盘后30分钟未成撤单
+
+  # 风险管理配置
+  risk_management:
+    default_stop_pct: 0.01             # 初始止损1%
+    
+    atr_trailing:
+      enabled: true                     # 启用ATR移动止损
+      period: 14                        # ATR计算期间
+      multiplier: 2.0                   # ATR倍数
+      activate_after_R: 1.0             # 浮盈>=1R时激活
+      eod_update_only: true             # 只在EOD更新移动止损
+
+  # 仓位管理配置
+  sizing:
+    per_trade_risk_pct: 0.005          # 延迟环境建议单笔风险0.5%
+    max_position_pct_of_equity: 0.10   # 单仓位最大10%资金
+    base_dollar_amount: 10000          # 基础下单金额
+
+  # 交易时间配置
+  timing:
+    market_open_time: "09:30"          # 美股开盘时间
+    market_close_time: "16:00"         # 美股收盘时间
+    eod_signal_delay_min: 20           # 收盘后延迟时间
+    
+  # 数据源配置
+  data_sources:
+    primary: "polygon"                  # 主要数据源
+    backup: "yahoo"                     # 备用数据源
+    daily_bars_lookback: 200           # 日线数据回溯天数
+    
+  # 订单执行配置
+  order_execution:
+    default_exchange: "SMART"          # 默认交易所
+    currency: "USD"                    # 交易货币
+    enable_risk_validation: true       # 启用风控校验
+    enable_audit_logging: true         # 启用审计日志
+    
+  # 监控配置
+  monitoring:
+    enable_alerts: true
+    alert_channels: ["email", "log"]
+    track_execution_metrics: true
+
+# ==========================================
+# PCA 配置 (合并自 unified_pca_config.py)
+# ==========================================
+pca:
+  # 核心设置
+  enabled: true
+  method: "separated"  # unified, separated, time_safe, disabled
+  
+  # 方差阈值
+  variance_threshold: 0.95  # 标准化：始终为 0.95
+  
+  # 组件数量
+  traditional_components: 10  # 传统特征固定使用 10 个组件
+  alpha_components: 5         # Alpha 特征固定使用 5 个组件
+  
+  # 安全约束
+  min_components: 1
+  max_components_ratio: 0.8  # 最大组件数 = 80% 的输入特征数
+  
+  # Time-Safe PCA 设置
+  time_safe:
+    min_history_days: 60
+    refit_frequency: 21
+    rolling_window_mode: true
+  
+  # 生产配置
+  production:
+    enable_caching: true
+    cache_duration_hours: 24
+    validation_threshold: 0.02

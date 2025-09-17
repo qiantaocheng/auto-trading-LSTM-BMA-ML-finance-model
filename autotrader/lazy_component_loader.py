@@ -109,14 +109,14 @@ class LazyComponentLoader:
             )
         )
         
-        # 主配置管理器
+        # 统一配置管理器
         self.register_component(
-            "config_manager",
+            "config_manager", 
             ComponentSpec(
-                module_path="autotrader.master_config_manager",
-                class_name="get_master_config_manager",
+                module_path="bma_models.unified_config_loader",
+                class_name="get_config_manager",
                 required=True,
-                description="Master configuration manager"
+                description="Unified configuration manager"
             )
         )
         

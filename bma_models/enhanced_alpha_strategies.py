@@ -13,6 +13,7 @@ from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import RobustScaler
 from bma_models.unified_purged_cv_factory import create_unified_cv
+from bma_models.enhanced_alpha_quality_monitor import EnhancedAlphaQualityMonitor, AlphaFactorQualityReport
 
 # Configure logging first
 import logging
@@ -21,19 +22,21 @@ logger = logging.getLogger(__name__)
 
 # 核心依赖 - 必需
 try:
-    from .unified_nan_handler import unified_nan_handler, clean_nan_predictive_safe
+    from bma_models.unified_nan_handler import unified_nan_handler, clean_nan_predictive_safe
 except ImportError:
     from unified_nan_handler import unified_nan_handler, clean_nan_predictive_safe
 
 try:
-    from cross_sectional_standardization import CrossSectionalStandardizer, standardize_cross_sectional_predictive_safe
+    from cross_sectional_standardizer import CrossSectionalStandardizer, standardize_factors_cross_sectionally
+    # Create alias for compatibility
+    standardize_cross_sectional_predictive_safe = standardize_factors_cross_sectionally
 except ImportError:
     CrossSectionalStandardizer = None
     standardize_cross_sectional_predictive_safe = None
 
 # 可选依赖
 try:
-    from .factor_orthogonalization import orthogonalize_factors_predictive_safe, FactorOrthogonalizer
+    from bma_models.factor_orthogonalization import orthogonalize_factors_predictive_safe, FactorOrthogonalizer
 except ImportError:
     try:
         from factor_orthogonalization import orthogonalize_factors_predictive_safe, FactorOrthogonalizer
@@ -42,14 +45,9 @@ except ImportError:
         orthogonalize_factors_predictive_safe = None
         FactorOrthogonalizer = None
 
-try:
-    from .parameter_optimization import TechnicalIndicatorOptimizer, ParameterConfig
-except ImportError:
-    try:
-        from parameter_optimization import TechnicalIndicatorOptimizer, ParameterConfig
-    except ImportError:
-        TechnicalIndicatorOptimizer = None
-        ParameterConfig = None
+# Parameter optimization module removed - functionality integrated inline
+TechnicalIndicatorOptimizer = None
+ParameterConfig = None
 
 # Dynamic factor weighting removed - using pure PCA approach
 
@@ -110,6 +108,13 @@ class AlphaStrategiesEngine:
             'cache_misses': 0,
             'neutralization_stats': {}
         }
+        
+        # 初始化数据质量监控器
+        self.quality_monitor = EnhancedAlphaQualityMonitor(
+            strict_mode=False,  # 默认非严格模式，记录但不中断
+            log_dir="logs/alpha_quality"
+        )
+        self.quality_reports = {}  # 存储每个因子的质量报告
         
         # Initialize data providers for fundamental data
         self._init_data_providers()
@@ -223,7 +228,31 @@ class AlphaStrategiesEngine:
             return self._get_default_config()
     
     def _get_default_config(self) -> Dict:
-        """Get default configuration"""
+        """Get default configuration with all 25 required factors enabled"""
+        # Define the 25 required factors
+        required_25_factors = [
+            'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
+            'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
+            'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
+            'macd_histogram', 'stoch_k', 'cci', 'mfi',
+            'market_cap_proxy', 'value_proxy', 'quality_proxy', 'profitability_proxy',
+            'liquidity_factor', 'growth_proxy', 'profitability_momentum',
+            'growth_acceleration', 'quality_consistency', 'financial_resilience'
+        ]
+        
+        # Create alpha config for each required factor
+        alphas_config = []
+        for factor_name in required_25_factors:
+            alpha_config = {
+                'name': factor_name,
+                'kind': factor_name,  # Use factor name as kind
+                'enabled': True,
+                'windows': [20],  # Default window
+                'decay': 6,       # Default decay
+                'delay': 1        # Default delay
+            }
+            alphas_config.append(alpha_config)
+        
         return {
             'universe': 'TOPDIV3000',
             'region': 'GLB',
@@ -233,7 +262,7 @@ class AlphaStrategiesEngine:
             'winsorize_std': 2.5,
             'truncation': 0.10,
             'temperature': 1.2,
-            'alphas': []
+            'alphas': alphas_config  # Now includes all 25 factors
         }
     
     def _register_alpha_functions(self) -> Dict[str, Callable]:
@@ -1289,24 +1318,110 @@ class AlphaStrategiesEngine:
             return pd.Series(0.0, index=df.index)
     
     def _compute_idiosyncratic_volatility(self, df: pd.DataFrame, windows: List[int], decay: int) -> pd.Series:
-        """特异volatility率：Using ewm.cov fast estimation of residual variance, take negative (low volatility is better)"""
+        """
+        IVOL 特质波动率 (T+10 适用):
+        使用60日滚动回归计算相对于SPY的特异性波动率
+
+        步骤:
+        1. 计算对数收益: r_i,t = ln(c_t/c_t-1), r_m,t 使用SPY
+        2. 60日滚动回归: r_i,t = α + β*r_m,t + ε_i,t
+        3. IVOL_60d = sqrt(1/(N-1) * Σ(ε_i,t-k)^2) for k=1 to 60
+        4. 每日横截面 winsorize → z-score
+        """
         try:
             window = windows[0] if windows else 60
-            close = df['Close']
-            ret = close.groupby(df['ticker']).pct_change()
-            mkt = close.groupby(df['date']).transform('mean')
-            mkt_ret = mkt.groupby(df['ticker']).pct_change()
+            min_periods = max(30, window // 2)
 
-            cov_im = ret.ewm(span=window, min_periods=max(20, window//3)).cov(mkt_ret)
-            var_m = mkt_ret.ewm(span=window, min_periods=max(20, window//3)).var()
-            beta = cov_im / (var_m + 1e-12)
-            alpha = ret.ewm(span=window, min_periods=max(20, window//3)).mean() - beta * mkt_ret.ewm(span=window, min_periods=max(20, window//3)).mean()
-            residual = ret - (alpha + beta * mkt_ret)
-            idio_vol = -residual.ewm(span=window, min_periods=max(20, window//3)).std()
-            idio_vol_ema = idio_vol.groupby(df['ticker']).transform(lambda x: self.ema_decay(x, span=decay))
-            return idio_vol_ema.fillna(0.0)
+            # 计算对数收益
+            close = df['Close']
+            log_returns = close.groupby(df['ticker']).apply(lambda x: np.log(x / x.shift(1))).reset_index(level=0, drop=True)
+
+            # 获取市场基准收益 (SPY proxy: 使用市场平均作为基准)
+            # 注意: 如果有SPY数据，可以直接使用；这里使用市场平均作为proxy
+            market_close = df.groupby('date')['Close'].mean()
+            market_returns = pd.Series(index=df.index, dtype=float)
+
+            # 为每个日期分配市场收益
+            for date in df['date'].unique():
+                mask = df['date'] == date
+                if date in market_close.index:
+                    market_returns.loc[mask] = market_close[date]
+
+            # 计算市场对数收益
+            market_log_returns = pd.Series(index=df.index, dtype=float)
+            for ticker in df['ticker'].unique():
+                ticker_mask = df['ticker'] == ticker
+                ticker_dates = df[ticker_mask]['date'].values
+                for i, date in enumerate(ticker_dates[1:], 1):
+                    prev_date = ticker_dates[i-1]
+                    if prev_date in market_close.index and date in market_close.index:
+                        market_log_returns.loc[(df['ticker'] == ticker) & (df['date'] == date)] = \
+                            np.log(market_close[date] / market_close[prev_date])
+
+            # 为每个股票计算60日滚动回归残差
+            ivol_results = pd.Series(index=df.index, dtype=float)
+
+            for ticker in df['ticker'].unique():
+                ticker_mask = df['ticker'] == ticker
+                ticker_data = df[ticker_mask].copy()
+                ticker_returns = log_returns[ticker_mask]
+                ticker_market_returns = market_log_returns[ticker_mask]
+
+                # 去除 NaN 值
+                valid_mask = ~(ticker_returns.isna() | ticker_market_returns.isna())
+                if valid_mask.sum() < min_periods:
+                    continue
+
+                ticker_returns_clean = ticker_returns[valid_mask]
+                ticker_market_returns_clean = ticker_market_returns[valid_mask]
+
+                # 滚动回归计算残差
+                residuals = pd.Series(index=ticker_returns_clean.index, dtype=float)
+
+                for i in range(window - 1, len(ticker_returns_clean)):
+                    start_idx = max(0, i - window + 1)
+
+                    y = ticker_returns_clean.iloc[start_idx:i+1].values
+                    x = ticker_market_returns_clean.iloc[start_idx:i+1].values
+
+                    if len(y) >= min_periods and len(x) >= min_periods:
+                        # 简化CAPM回归: r_i = α + β*r_m + ε
+                        x_with_intercept = np.column_stack([np.ones(len(x)), x])
+                        try:
+                            # 使用最小二乘法
+                            beta_coef = np.linalg.lstsq(x_with_intercept, y, rcond=None)[0]
+                            predicted = x_with_intercept @ beta_coef
+                            residual = y[-1] - predicted[-1]  # 当前期残差
+                            residuals.iloc[i] = residual
+                        except:
+                            residuals.iloc[i] = 0.0
+
+                # 计算60日残差标准差作为IVOL
+                ivol_values = pd.Series(index=residuals.index, dtype=float)
+                for i in range(window - 1, len(residuals)):
+                    start_idx = max(0, i - window + 1)
+                    window_residuals = residuals.iloc[start_idx:i+1]
+                    valid_residuals = window_residuals.dropna()
+                    if len(valid_residuals) >= min_periods:
+                        ivol_values.iloc[i] = valid_residuals.std()
+
+                # 映射回原始索引
+                for idx, value in ivol_values.items():
+                    if not pd.isna(value):
+                        ivol_results.loc[idx] = value
+
+            # 应用EMA衰减
+            ivol_ema = ivol_results.groupby(df['ticker']).transform(
+                lambda x: self.ema_decay(x, span=decay) if hasattr(self, 'ema_decay') else x
+            )
+
+            # 负号处理：低波动率更好
+            result = -ivol_ema.fillna(0.0)
+
+            return result
+
         except Exception as e:
-            logger.warning(f"特异volatility率 computation failed: {e}")
+            logger.warning(f"IVOL特质波动率 computation failed: {e}")
             return pd.Series(0.0, index=df.index)
 
     # ===== Fundamental factors（Using proxydata） =====
@@ -1777,6 +1892,32 @@ class AlphaStrategiesEngine:
                     alpha_name=alpha_name
                 )
                 
+                # 【新增】数据质量监控 - 对每个计算的Alpha因子进行质量检查
+                try:
+                    quality_report = self.quality_monitor.monitor_alpha_calculation(
+                        factor_name=alpha_name,
+                        input_data=df_work,
+                        output_data=alpha_factor,
+                        calculation_func=alpha_func if alpha_kind != 'hump' else None
+                    )
+                    
+                    # 存储质量报告
+                    self.quality_reports[alpha_name] = quality_report
+                    
+                    # 记录质量问题
+                    if quality_report.errors:
+                        logger.error(f"[{alpha_name}] 数据质量错误: {', '.join(quality_report.errors)}")
+                    if quality_report.warnings:
+                        logger.warning(f"[{alpha_name}] 数据质量警告: {', '.join(quality_report.warnings)}")
+                    
+                    # 输出关键质量指标
+                    logger.info(f"[{alpha_name}] 质量指标 - 缺失率:{quality_report.output_quality.missing_ratio:.2%}, "
+                               f"覆盖率:{quality_report.output_quality.coverage_ratio:.2%}, "
+                               f"异常值率:{quality_report.output_quality.outlier_ratio:.2%}")
+                    
+                except Exception as monitor_error:
+                    logger.warning(f"[{alpha_name}] 质量监控失败: {monitor_error}")
+                
                 # [OK] NEW: 应用差异化滞后策略
                 if self.lag_manager and factor_specific_lag > 0:
                     # 使用因子特定的滞后
@@ -1900,13 +2041,23 @@ class AlphaStrategiesEngine:
                     result_clean = result_df.copy()
                     result_clean.index = multi_idx
                     
-                    # 移除重复的索引列，保留所有特征列
-                    cols_to_keep = [col for col in result_clean.columns 
-                                  if col not in ['date', 'ticker'] and not col.startswith('level_')]
+                    # 只保留25个Alpha因子，移除原始市场数据和元数据列
+                    required_25_factors = [
+                        'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
+                        'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
+                        'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
+                        'macd_histogram', 'stoch_k', 'cci', 'mfi',
+                        'market_cap_proxy', 'value_proxy', 'quality_proxy', 'profitability_proxy',
+                        'liquidity_factor', 'growth_proxy', 'profitability_momentum',
+                        'growth_acceleration', 'quality_consistency', 'financial_resilience'
+                    ]
                     
-                    if cols_to_keep:
-                        final_result = result_clean[cols_to_keep]
-                        logger.info(f"✅ MultiIndex重建成功: {final_result.shape} 包含列: {list(final_result.columns)[:5]}...")
+                    # 只保留存在的25个因子列
+                    alpha_cols_available = [col for col in required_25_factors if col in result_clean.columns]
+                    
+                    if alpha_cols_available:
+                        final_result = result_clean[alpha_cols_available]
+                        logger.info(f"✅ MultiIndex重建成功: {final_result.shape} 包含25个纯净因子: {len(alpha_cols_available)}/25")
                         return final_result
                     else:
                         logger.error("❌ 重建后没有可用的特征列")
@@ -1919,10 +2070,30 @@ class AlphaStrategiesEngine:
             logger.warning("⚠️ MultiIndex重建失败，返回原格式")
             logger.warning("⚠️ 这可能导致后续特征合并时的索引对齐问题")
         else:
-            logger.info(f"✅ 结果已是MultiIndex格式: {result_df.shape}")
-            return result_df
+            # 对于已经是MultiIndex的情况，也只返回25个纯净因子
+            required_25_factors = [
+                'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
+                'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
+                'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
+                'macd_histogram', 'stoch_k', 'cci', 'mfi',
+                'market_cap_proxy', 'value_proxy', 'quality_proxy', 'profitability_proxy',
+                'liquidity_factor', 'growth_proxy', 'profitability_momentum',
+                'growth_acceleration', 'quality_consistency', 'financial_resilience'
+            ]
+            
+            alpha_cols_available = [col for col in required_25_factors if col in result_df.columns]
+            
+            if alpha_cols_available:
+                final_result = result_df[alpha_cols_available]
+                logger.info(f"✅ 结果已是MultiIndex格式: {final_result.shape} 包含25个纯净因子: {len(alpha_cols_available)}/25")
+                return final_result
+            else:
+                logger.error("❌ 没有找到任何25个因子列")
+                return pd.DataFrame()  # 返回空DataFrame
         
-        return result_df
+        # 如果以上都失败，返回空DataFrame
+        logger.error("❌ 所有返回路径都失败")
+        return pd.DataFrame()
     
     def _process_alpha_pipeline(self, df: pd.DataFrame, alpha_factor: pd.Series, 
                                alpha_config: Dict, alpha_name: str) -> pd.Series:
@@ -3069,3 +3240,169 @@ class AlphaStrategiesEngine:
             return self.safe_fillna(financial_resilience, df)
         except:
             return pd.Series(0, index=df.index)
+    
+    # ========== 数据质量报告方法 ==========
+    
+    def get_quality_summary(self) -> Dict[str, Any]:
+        """
+        获取所有Alpha因子的质量汇总
+        
+        Returns:
+            质量汇总字典
+        """
+        if not self.quality_reports:
+            return {"message": "没有可用的质量报告"}
+        
+        summary = {
+            "total_factors": len(self.quality_reports),
+            "factors_with_errors": 0,
+            "factors_with_warnings": 0,
+            "average_metrics": {},
+            "factor_details": {}
+        }
+        
+        # 收集所有指标
+        all_missing_ratios = []
+        all_coverage_ratios = []
+        all_outlier_ratios = []
+        all_distribution_scores = []
+        
+        for factor_name, report in self.quality_reports.items():
+            # 统计错误和警告
+            if report.errors:
+                summary["factors_with_errors"] += 1
+            if report.warnings:
+                summary["factors_with_warnings"] += 1
+            
+            # 收集指标
+            all_missing_ratios.append(report.output_quality.missing_ratio)
+            all_coverage_ratios.append(report.output_quality.coverage_ratio)
+            all_outlier_ratios.append(report.output_quality.outlier_ratio)
+            all_distribution_scores.append(report.output_quality.distribution_score)
+            
+            # 记录每个因子的详细信息
+            summary["factor_details"][factor_name] = {
+                "missing_ratio": f"{report.output_quality.missing_ratio:.2%}",
+                "coverage_ratio": f"{report.output_quality.coverage_ratio:.2%}",
+                "outlier_ratio": f"{report.output_quality.outlier_ratio:.2%}",
+                "distribution_score": f"{report.output_quality.distribution_score:.2f}",
+                "errors": len(report.errors),
+                "warnings": len(report.warnings)
+            }
+        
+        # 计算平均指标
+        if all_missing_ratios:
+            summary["average_metrics"] = {
+                "avg_missing_ratio": f"{np.mean(all_missing_ratios):.2%}",
+                "avg_coverage_ratio": f"{np.mean(all_coverage_ratios):.2%}",
+                "avg_outlier_ratio": f"{np.mean(all_outlier_ratios):.2%}",
+                "avg_distribution_score": f"{np.mean(all_distribution_scores):.2f}"
+            }
+        
+        return summary
+    
+    def export_quality_report(self, output_file: str = None):
+        """
+        导出质量报告到文件
+        
+        Args:
+            output_file: 输出文件路径，默认为logs/alpha_quality/quality_summary_{timestamp}.csv
+        """
+        if not self.quality_reports:
+            logger.warning("没有质量报告可导出")
+            return
+        
+        # 生成默认文件名
+        if output_file is None:
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+            output_file = f"logs/alpha_quality/quality_summary_{timestamp}.csv"
+        
+        # 确保目录存在
+        output_path = pd.io.common.get_filepath_or_buffer(output_file, mode='w')[0]
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # 构建数据框
+        data = []
+        for factor_name, report in self.quality_reports.items():
+            data.append({
+                'factor_name': factor_name,
+                'timestamp': report.timestamp,
+                'input_missing_ratio': report.input_quality.missing_ratio,
+                'output_missing_ratio': report.output_quality.missing_ratio,
+                'coverage_ratio': report.output_quality.coverage_ratio,
+                'outlier_ratio': report.output_quality.outlier_ratio,
+                'zero_ratio': report.output_quality.zero_ratio,
+                'distribution_score': report.output_quality.distribution_score,
+                'stability_score': report.output_quality.stability_score,
+                'time_consistency': report.output_quality.time_consistency,
+                'error_count': len(report.errors),
+                'warning_count': len(report.warnings),
+                'recommendations_count': len(report.recommendations)
+            })
+        
+        df = pd.DataFrame(data)
+        df.to_csv(output_file, index=False)
+        logger.info(f"质量报告已导出到: {output_file}")
+        
+        return df
+    
+    def get_factor_recommendations(self, factor_name: str = None) -> Dict[str, List[str]]:
+        """
+        获取因子的优化建议
+        
+        Args:
+            factor_name: 因子名称，None表示所有因子
+            
+        Returns:
+            建议字典
+        """
+        recommendations = {}
+        
+        if factor_name:
+            if factor_name in self.quality_reports:
+                report = self.quality_reports[factor_name]
+                recommendations[factor_name] = report.recommendations
+        else:
+            for fname, report in self.quality_reports.items():
+                if report.recommendations:
+                    recommendations[fname] = report.recommendations
+        
+        return recommendations
+    
+    def print_quality_dashboard(self):
+        """
+        打印质量仪表板
+        """
+        summary = self.get_quality_summary()
+        
+        print("\n" + "="*80)
+        print("Alpha因子数据质量仪表板")
+        print("="*80)
+        
+        print(f"\n总因子数: {summary['total_factors']}")
+        print(f"存在错误的因子: {summary['factors_with_errors']}")
+        print(f"存在警告的因子: {summary['factors_with_warnings']}")
+        
+        if summary.get('average_metrics'):
+            print("\n平均质量指标:")
+            for metric, value in summary['average_metrics'].items():
+                print(f"  {metric}: {value}")
+        
+        # 找出问题最严重的因子
+        if summary.get('factor_details'):
+            print("\n需要关注的因子:")
+            problem_factors = []
+            for fname, details in summary['factor_details'].items():
+                if details['errors'] > 0 or details['warnings'] > 2:
+                    problem_factors.append((fname, details['errors'], details['warnings']))
+            
+            if problem_factors:
+                problem_factors.sort(key=lambda x: (x[1], x[2]), reverse=True)
+                for fname, errors, warnings in problem_factors[:5]:
+                    print(f"  {fname}: {errors}个错误, {warnings}个警告")
+            else:
+                print("  所有因子质量良好")
+        
+        print("\n" + "="*80)

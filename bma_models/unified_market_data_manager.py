@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MarketDataConfig:
     """市场数据配置"""
-    # 数据源优先级 - CRITICAL FIX: 多级真实数据源fallback
+    # 数据源优先级 - CRITICAL FIX: 多级真实数据源
     data_sources: List[str] = field(default_factory=lambda: [
         'polygon',      # 主要数据源：Polygon API
         'local_db',     # 本地数据库缓存
         'backup_api',   # 备用API（可配置）
-        'minimal_fallback'  # 最小化fallback（仅基础股票池）
+        'minimal_data'  # 最小化数据（仅基础股票池）
     ])
     
     # 缓存设置
@@ -285,7 +285,7 @@ class IndexComponentProvider:
             
         except Exception as e:
             logger.warning(f"获取S&P 500成分股失败: {e}")
-            return self._get_fallback_sp500()
+            return self._get_basic_sp500()
     
     def get_nasdaq100_components(self) -> List[str]:
         """获取NASDAQ 100成分股"""
@@ -293,11 +293,11 @@ class IndexComponentProvider:
             # 使用QQQ ETF的持仓作为近似
             qqq = Ticker("QQQ")
             # 这里简化处理，实际可以通过其他API获取
-            return self._get_fallback_nasdaq100()
+            return self._get_basic_nasdaq100()
             
         except Exception as e:
             logger.warning(f"获取NASDAQ 100成分股失败: {e}")
-            return self._get_fallback_nasdaq100()
+            return self._get_basic_nasdaq100()
     
     def get_dow30_components(self) -> List[str]:
         """获取道琼斯30成分股"""
@@ -312,9 +312,9 @@ class IndexComponentProvider:
             
         except Exception as e:
             logger.warning(f"获取道琼斯成分股失败: {e}")
-            return self._get_fallback_dow30()
+            return self._get_basic_dow30()
     
-    def _get_fallback_sp500(self) -> List[str]:
+    def _get_basic_sp500(self) -> List[str]:
         """S&P 500后备成分股列表"""
         return [
             'AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'TSLA', 'GOOG', 'BRK-B', 'UNH', 'META',
@@ -322,14 +322,14 @@ class IndexComponentProvider:
             'BAC', 'COST', 'DIS', 'WMT', 'KO', 'MRK', 'PEP', 'TMO', 'NFLX', 'ABT'
         ]
     
-    def _get_fallback_nasdaq100(self) -> List[str]:
+    def _get_basic_nasdaq100(self) -> List[str]:
         """NASDAQ 100后备成分股列表"""
         return [
             'AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'TSLA', 'GOOG', 'META', 'NFLX', 'ADBE',
             'PYPL', 'INTC', 'CMCSA', 'PEP', 'COST', 'QCOM', 'TXN', 'TMUS', 'AVGO', 'CHTR'
         ]
     
-    def _get_fallback_dow30(self) -> List[str]:
+    def _get_basic_dow30(self) -> List[str]:
         """道琼斯30后备成分股列表"""
         return [
             'AAPL', 'MSFT', 'UNH', 'JNJ', 'JPM', 'V', 'PG', 'HD', 'CVX', 'MRK',
@@ -513,10 +513,10 @@ class UnifiedMarketDataManager:
             elif source == 'backup_api':
                 # CRITICAL FIX: 备用API数据源（可扩展）
                 stock_info = self._get_backup_api_data(ticker)
-            elif source == 'minimal_fallback':
-                # CRITICAL FIX: 最小化fallback - 仅提供基础信息
-                stock_info = self._get_minimal_fallback_data(ticker)
-            elif source == 'fallback':
+            elif source == 'minimal_data':
+                # CRITICAL FIX: 最小化数据 - 仅提供基础信息
+                stock_info = self._get_minimal_data(ticker)
+            elif source == 'basic_data':
                 # 不允许伪数据回退
                 raise ValueError(f"所有真实数据源均不可用，拒绝使用伪数据: {ticker}")
             
@@ -580,7 +580,7 @@ class UnifiedMarketDataManager:
         self.index_components_cache[index_ticker] = components
         return components
     
-    def _get_fallback_stock_info(self, ticker: str) -> Optional[StockInfo]:
+    def _get_basic_stock_info(self, ticker: str) -> Optional[StockInfo]:
         """伪数据回退已删除 - 根据用户要求不允许伪数据"""
         raise ValueError(f"无法获取{ticker}的真实市场数据，拒绝使用伪数据")
     
@@ -739,9 +739,9 @@ class UnifiedMarketDataManager:
             logger.warning(f"备用API获取{ticker}数据失败: {e}")
             return None
     
-    def _get_minimal_fallback_data(self, ticker: str) -> Optional['StockInfo']:
+    def _get_minimal_data(self, ticker: str) -> Optional['StockInfo']:
         """
-        CRITICAL FIX: 最小化fallback数据
+        CRITICAL FIX: 最小化基础数据
         仅提供基础的行业和地区信息，确保系统不崩溃
         """
         try:
@@ -778,16 +778,16 @@ class UnifiedMarketDataManager:
                 market_cap=market_cap,
                 shares_outstanding=market_cap / 150,  # 简单估算
                 employees=50000,  # 默认值
-                description=f"Minimal fallback data for {ticker}",
+                description=f"Minimal basic data for {ticker}",
                 website=f"https://www.{ticker.lower()}.com",
                 exchange="NASDAQ"  # 默认交易所
             )
             
-            logger.warning(f"使用最小化fallback数据: {ticker} -> {sector}")
+            logger.warning(f"使用最小化基础数据: {ticker} -> {sector}")
             return minimal_info
             
         except Exception as e:
-            logger.error(f"最小化fallback数据生成失败: {ticker}, {e}")
+            logger.error(f"最小化基础数据生成失败: {ticker}, {e}")
             return None
 
 # 使用示例

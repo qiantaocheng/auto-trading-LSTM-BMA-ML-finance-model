@@ -234,102 +234,224 @@ class IdempotentOrderController:
         return hashlib.md5(key_string.encode()).hexdigest()
     
     def check_order_duplicate(self, order_key: OrderKey) -> Tuple[bool, Optional[str]]:
-        """检查订单是否重复"""
+        """检查订单是否重复（增强竞态条件防护）"""
         dedup_key = self.generate_dedup_key(order_key)
-        
+
         with self._lock:
-            # 先检查缓存
-            if dedup_key in self._order_cache:
-                cached_record = self._order_cache[dedup_key]
-                
-                # 检查是否过期
-                if cached_record.expires_at and cached_record.expires_at < datetime.now(timezone.utc):
-                    # 已过期，从缓存中移除
-                    del self._order_cache[dedup_key]
-                    return False, dedup_key
-                
-                # 检查状态
-                if cached_record.status in ['PENDING', 'RETRYING', 'SUCCESS']:
-                    return True, cached_record.original_order_id
-            
-            # 检查数据库
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT original_order_id, status, expires_at FROM order_dedup 
-                    WHERE dedup_key = ?
-                """, (dedup_key,))
-                
-                result = cursor.fetchone()
-                if result:
-                    original_order_id, status, expires_at = result
-                    
-                    # 检查过期
-                    if expires_at:
-                        expires_dt = datetime.fromisoformat(expires_at)
-                        if expires_dt < datetime.now(timezone.utc):
-                            return False, dedup_key
-                    
-                    # 活跃状态认为是重复
-                    if status in ['PENDING', 'RETRYING', 'SUCCESS']:
-                        return True, original_order_id
-            
-            return False, dedup_key
+            # 使用数据库级别的原子操作确保一致性
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    # 启用WAL模式以提高并发性能
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=5000")  # 5秒超时
+
+                    cursor = conn.cursor()
+
+                    # 使用SELECT FOR UPDATE模拟的原子检查和更新
+                    cursor.execute("BEGIN IMMEDIATE")  # 立即获取写锁
+
+                    try:
+                        # 原子性检查存在性
+                        cursor.execute("""
+                            SELECT original_order_id, status, expires_at, created_at
+                            FROM order_dedup
+                            WHERE dedup_key = ?
+                        """, (dedup_key,))
+
+                        result = cursor.fetchone()
+                        current_time = datetime.now(timezone.utc)
+
+                        if result:
+                            original_order_id, status, expires_at, created_at = result
+
+                            # 检查过期（在事务内原子性清理）
+                            if expires_at:
+                                expires_dt = datetime.fromisoformat(expires_at)
+                                if expires_dt < current_time:
+                                    # 原子性删除过期记录
+                                    cursor.execute("DELETE FROM order_dedup WHERE dedup_key = ?", (dedup_key,))
+                                    conn.commit()
+
+                                    # 从缓存中移除
+                                    if dedup_key in self._order_cache:
+                                        del self._order_cache[dedup_key]
+
+                                    return False, dedup_key
+
+                            # 检查活跃状态
+                            if status in ['PENDING', 'RETRYING', 'SUCCESS']:
+                                conn.commit()
+
+                                # 更新缓存（双重保险）
+                                if dedup_key not in self._order_cache:
+                                    record = OrderDedupRecord(
+                                        dedup_key=dedup_key,
+                                        original_order_id=original_order_id,
+                                        symbol=order_key.symbol,
+                                        side=order_key.side,
+                                        quantity=order_key.quantity,
+                                        price=order_key.price,
+                                        order_type=order_key.order_type,
+                                        signal_id=order_key.signal_id,
+                                        created_at=datetime.fromisoformat(created_at),
+                                        expires_at=datetime.fromisoformat(expires_at) if expires_at else None,
+                                        status=status
+                                    )
+                                    self._order_cache[dedup_key] = record
+
+                                return True, original_order_id
+
+                        # 不存在重复记录
+                        conn.commit()
+                        return False, dedup_key
+
+                    except Exception as e:
+                        conn.rollback()
+                        logger.error(f"数据库事务失败: {e}")
+                        raise
+
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e).lower():
+                    logger.warning(f"数据库锁定，重试检查: {dedup_key}")
+                    time.sleep(0.01)  # 短暂等待后重试
+                    return self.check_order_duplicate(order_key)
+                else:
+                    logger.error(f"数据库操作错误: {e}")
+                    # 降级到缓存检查
+                    return self._fallback_cache_check(dedup_key)
+            except Exception as e:
+                logger.error(f"订单重复检查异常: {e}")
+                return self._fallback_cache_check(dedup_key)
+
+    def _fallback_cache_check(self, dedup_key: str) -> Tuple[bool, Optional[str]]:
+        """降级到缓存检查（数据库不可用时）"""
+        if dedup_key in self._order_cache:
+            cached_record = self._order_cache[dedup_key]
+
+            # 检查是否过期
+            if cached_record.expires_at and cached_record.expires_at < datetime.now(timezone.utc):
+                del self._order_cache[dedup_key]
+                return False, dedup_key
+
+            if cached_record.status in ['PENDING', 'RETRYING', 'SUCCESS']:
+                return True, cached_record.original_order_id
+
+        return False, dedup_key
     
-    def register_order(self, order_key: OrderKey, order_id: str, 
+    def register_order(self, order_key: OrderKey, order_id: str,
                       ttl_seconds: Optional[int] = None) -> str:
-        """注册订单（防重复）"""
-        is_duplicate, existing_id = self.check_order_duplicate(order_key)
-        
-        if is_duplicate:
-            logger.warning(f"Duplicate order detected: {order_key.symbol} {order_key.side} {order_key.quantity}")
-            return existing_id
-        
-        # 注册新订单
+        """注册订单（防重复）- 增强原子性保护"""
         dedup_key = self.generate_dedup_key(order_key)
-        ttl_seconds = ttl_seconds or self.default_ttl_seconds
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
-        
-        record = OrderDedupRecord(
-            dedup_key=dedup_key,
-            original_order_id=order_id,
-            symbol=order_key.symbol,
-            side=order_key.side,
-            quantity=order_key.quantity,
-            price=order_key.price,
-            order_type=order_key.order_type,
-            signal_id=order_key.signal_id,
-            created_at=datetime.now(timezone.utc),
-            expires_at=expires_at,
-            status='PENDING'
-        )
-        
+
         with self._lock:
-            # 保存到数据库
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO order_dedup 
-                    (dedup_key, original_order_id, symbol, side, quantity, price, 
-                     order_type, signal_id, created_at, expires_at, status, 
-                     retry_count, last_retry, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    record.dedup_key, record.original_order_id, record.symbol,
-                    record.side, record.quantity, record.price, record.order_type,
-                    record.signal_id, record.created_at.isoformat(),
-                    record.expires_at.isoformat() if record.expires_at else None,
-                    record.status, record.retry_count, 
-                    record.last_retry.isoformat() if record.last_retry else None,
-                    json.dumps(record.metadata)
-                ))
-                conn.commit()
-            
-            # 更新缓存
-            self._order_cache[dedup_key] = record
-        
-        logger.info(f"Order registered: {order_id} -> {dedup_key}")
-        return order_id
+            # 使用原子性的检查和插入操作
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    # 启用WAL模式和设置超时
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=5000")
+
+                    cursor = conn.cursor()
+                    cursor.execute("BEGIN IMMEDIATE")  # 立即获取写锁
+
+                    try:
+                        # 再次检查重复（双重检查模式）
+                        cursor.execute("""
+                            SELECT original_order_id, status, expires_at
+                            FROM order_dedup
+                            WHERE dedup_key = ?
+                        """, (dedup_key,))
+
+                        result = cursor.fetchone()
+                        current_time = datetime.now(timezone.utc)
+
+                        if result:
+                            original_order_id, status, expires_at = result
+
+                            # 检查过期状态
+                            if expires_at:
+                                expires_dt = datetime.fromisoformat(expires_at)
+                                if expires_dt < current_time:
+                                    # 删除过期记录，继续注册新订单
+                                    cursor.execute("DELETE FROM order_dedup WHERE dedup_key = ?", (dedup_key,))
+                                else:
+                                    # 未过期且活跃，返回重复
+                                    if status in ['PENDING', 'RETRYING', 'SUCCESS']:
+                                        conn.commit()
+                                        logger.warning(f"Duplicate order detected (atomic): {order_key.symbol} {order_key.side} {order_key.quantity}")
+                                        return original_order_id
+
+                        # 原子性插入新记录
+                        ttl_seconds = ttl_seconds or self.default_ttl_seconds
+                        expires_at = current_time + timedelta(seconds=ttl_seconds)
+
+                        cursor.execute("""
+                            INSERT INTO order_dedup
+                            (dedup_key, original_order_id, symbol, side, quantity, price,
+                             order_type, signal_id, created_at, expires_at, status,
+                             retry_count, last_retry, metadata)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            dedup_key, order_id, order_key.symbol, order_key.side,
+                            order_key.quantity, order_key.price, order_key.order_type,
+                            order_key.signal_id, current_time.isoformat(),
+                            expires_at.isoformat(), 'PENDING', 0, None, "{}"
+                        ))
+
+                        conn.commit()
+
+                        # 更新缓存
+                        record = OrderDedupRecord(
+                            dedup_key=dedup_key,
+                            original_order_id=order_id,
+                            symbol=order_key.symbol,
+                            side=order_key.side,
+                            quantity=order_key.quantity,
+                            price=order_key.price,
+                            order_type=order_key.order_type,
+                            signal_id=order_key.signal_id,
+                            created_at=current_time,
+                            expires_at=expires_at,
+                            status='PENDING'
+                        )
+                        self._order_cache[dedup_key] = record
+
+                        logger.info(f"Order registered atomically: {order_id} -> {dedup_key}")
+                        return order_id
+
+                    except Exception as e:
+                        conn.rollback()
+                        logger.error(f"订单注册事务失败: {e}")
+                        raise
+
+            except sqlite3.IntegrityError as e:
+                # 可能是并发插入导致的唯一键冲突
+                logger.warning(f"订单注册冲突，可能已存在: {dedup_key}")
+                # 重新检查是否存在
+                is_duplicate, existing_id = self.check_order_duplicate(order_key)
+                return existing_id if is_duplicate else order_id
+
+            except Exception as e:
+                logger.error(f"订单注册异常: {e}")
+                # 降级处理：仅使用缓存
+                if dedup_key not in self._order_cache:
+                    record = OrderDedupRecord(
+                        dedup_key=dedup_key,
+                        original_order_id=order_id,
+                        symbol=order_key.symbol,
+                        side=order_key.side,
+                        quantity=order_key.quantity,
+                        price=order_key.price,
+                        order_type=order_key.order_type,
+                        signal_id=order_key.signal_id,
+                        created_at=datetime.now(timezone.utc),
+                        expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds or self.default_ttl_seconds),
+                        status='PENDING'
+                    )
+                    self._order_cache[dedup_key] = record
+                    logger.warning(f"Order registered in cache only: {order_id}")
+
+                return order_id
     
     def update_order_status(self, order_id: str, status: str, 
                            error_message: Optional[str] = None):
