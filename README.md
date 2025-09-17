@@ -115,95 +115,142 @@ Environment overrides (optional): `BMA_START_DATE`, `BMA_END_DATE`, `BMA_EXTRA_A
 
 ## Algorithm Details
 
-### Data Pipeline and Leakage Controls
+### Modernized Architecture (September 2025)
 
-- Quote/Bar data via Polygon; historical aggregation uses `next_url` pagination and adjusted prices.
-- Feature engineering enforces temporal isolation:
-  - Features lagged by at least T-4 (base lag + safety gap)
-  - Targets predict T+1 to T+5 windowed returns only from information available at or before T-4
-  - Validation uses PurgedGroupTimeSeriesSplit with gap and embargo; stacking meta‑learner uses even larger gap/embargo to prevent cross‑fold leakage
-- Explicit checks log alignment issues (warnings only) for shallow histories.
+The algorithm has been completely redesigned with a simplified, production-ready architecture that eliminates previous complexity and failure modes:
 
-### Alpha Layer
+**Core Principles:**
+- Single DataFrame MultiIndex format (date, ticker) - no complex branching
+- Fail-fast validation - no fallback cascades that mask errors
+- Unified configuration system - all parameters centralized
+- Direct ML pipeline - clean first-layer models with LTR stacking
+- Quality monitoring at every stage
 
-- Core technical features: moving averages/ratios, volatility windows, RSI, price position in rolling high‑low bands, momentum windows (5/10/20), volume trend (20D), and derived microstructure factors consolidated via `polygon_factors.py`.
-- Neutralization: within‑date cross‑section winsorization (1–99%), z‑scoring, and optional industry de‑meaning if metadata available.
-- Outlier handling: clip extreme values; NaNs imputed (median for numeric) before ML.
+### Enhanced Data Pipeline
 
-### Learning‑to‑Rank and Traditional Models
+**Data Sources & Quality Control:**
+- **Polygon.io Integration**: Robust API client with cursor pagination and backoff
+- **Quality Monitoring**: Real-time data validation with `alpha_factor_quality_monitor.py`
+- **Temporal Safety**: Strict T-4 lag enforcement with safety gaps
+- **Outlier Detection**: Multi-stage filtering with institutional-grade controls
 
-- Traditional baselines: Ridge, ElasticNet, RandomForest; optional XGBoost/LightGBM if installed.
-- OOF predictions using PGTS split; indices are re‑aligned to ensure strictly out‑of‑fold.
-- Stacking: meta‑learner trained on first‑layer OOF with larger gap/embargo; time sanity checks (train_max + gap + embargo < test_min) enforced.
+**Factor Engineering (25 High-Quality Factors):**
+- **Momentum Factors**: 5D/10D/20D momentum with quality filters and reversal signals
+- **Technical Indicators**: RSI, Bollinger position/squeeze, MA ratios, trend strength
+- **Volume Factors**: OBV momentum, Money Flow Index, volume-price correlation
+- **Volatility Factors**: Parkinson estimator, GARCH(1,1), volatility clustering
+- **Microstructure**: Bid-ask dynamics, trade imbalance, liquidity scoring
 
-### Regime‑Aware Fusion
+### Machine Learning Pipeline
 
-- Market regime detection from composite market index:
-  - Rolling 21D volatility and trend; quantile thresholds define states (Bull/Bear, Low/High Vol, Normal)
-- Per‑regime alpha weights emphasize momentum in Bull, quality/reversion in Bear, reversion in Volatile, balanced in Normal.
-- Fusion combines ML predictions and weighted alpha signals; indices aligned before blending.
+**Simplified First-Layer Models:**
+- **XGBoost**: Gradient boosting with optimized hyperparameters
+- **CatBoost**: Categorical boosting for robust feature handling
+- **ElasticNet**: Linear baseline with L1/L2 regularization
 
-### Risk Model
+**LTR Isotonic Stacking:**
+- **Learning-to-Rank**: Advanced ranking-based meta-learner
+- **Isotonic Calibration**: Monotonic probability calibration
+- **Temporal Validation**: Purged time series cross-validation with strict gaps
 
-- T‑1 Size factor: group by prior‑day free‑float market cap to form Small‑minus‑Big on T returns (no look‑ahead). Fallback: 60D average dollar volume proxy when cap unavailable.
-- Factor loadings: robust regression (HuberRegressor) of each asset’s returns on factor set.
-- Factor covariance: Ledoit‑Wolf shrinkage, projected to positive‑definite if needed.
-- Specific risk: residual variance square‑root from fitted factor model.
+### Cross-Sectional Processing
 
-### Portfolio Construction
+**Robust Standardization:**
+- **Cross-sectional Z-scoring**: Within-date normalization using `cross_sectional_standardizer.py`
+- **Winsorization**: 1st/99th percentile clipping with outlier detection
+- **Industry Neutralization**: Sector-adjusted signals when metadata available
+- **Missing Value Handling**: Forward-fill with decay and median imputation
 
-- Inputs: expected_returns (from fused signals), covariance matrix assembled as B·F·Bᵀ + diag(S²).
-- Constraints (configurable):
-  - Position caps (e.g., max 3%), country/sector exposure guards, cash reserve, daily order cap
-  - Optional liquidity rank (e.g., 20D volume) for soft constraints
-- Objective (conceptual): maximize expected return minus risk_aversion · variance and turnover_penalty.
-- Signal processing before optimization: cross‑section standardization, small amplification (e.g., ×0.02), micro‑jitter to avoid ties/flat solutions.
-- Fallbacks: stratified or equal‑weight if the solver fails or covariance ill‑conditioned; metrics still computed.
+### Risk Model Enhancement
 
-### Risk‑Reward Controller (Execution Planning)
-
-- For delayed‑data environments, an optional planner screens orders based on:
-  - Liquidity (ADV USD), spreads (bps), volatility buckets (ATR), expected alpha bps
-  - Dynamic limit pricing around last/prev close with tickSize and confidence
-  - Throttling and per‑cycle order caps
-  - Outputs symbol, side, quantity, limit price for submission
-
-### Execution and Routing
-
-- IBKR SMART routing by default: `Stock(symbol, exchange="SMART")`; optional primaryExchange hint for contract qualification.
-- Orders: Market, Limit, and Bracket (parent market + take‑profit limit + stop). Optional local dynamic stops (ATR‑based, time‑decay) can replace server‑side stops if enabled.
-- Real‑time vs Delayed data: auto fallback to delayed if permissions missing; price retrieval attempts subscription first, then Polygon close fallback.
-
-### Monitoring and Health
-
-- Health metrics track initialization and failure counts (alpha computation failures, optimization fallbacks, risk model failures, etc.).
-- Unified config debounced reload avoids repeated noisy log lines.
-
-## Implementation Reference (deeper details)
-
-### Temporal Alignment (no look‑ahead)
-
-The system enforces strict temporal alignment to prevent look-ahead bias. Features are lagged by a minimum base lag plus an additional safety gap, ensuring that predictions at time T only use information available before T. The target variable represents a windowed forward return, calculated as the ratio of future prices minus one. All feature columns are shifted by the combined lag amount within each ticker group, and the system validates that training data ends before test data begins with sufficient gaps and embargo periods.
-
-### Purged CV and Stacking
-
-Cross-validation uses PurgedGroupTimeSeriesSplit with configurable gaps and embargo periods to prevent data leakage between training and validation sets. The stacking meta-learner employs even stricter temporal constraints with larger gaps and embargo periods to ensure the second-layer model doesn't see future information from the first-layer predictions. The system validates that maximum training dates plus gaps and embargo periods are strictly less than minimum test dates.
-
-### Industry/Date Cross‑Section Neutralization
-
-Within each trading date, the system applies winsorization to the 1st and 99th percentiles, followed by z-score standardization. When industry metadata is available, the system performs cross-sectional neutralization by demeaning factors within industry groups, removing industry-specific biases from the alpha signals.
-
-### Risk Model (T‑1 Size, Loadings, Covariance, Specific Risk)
-
-The risk model constructs a Size factor using market capitalization data from the previous period to predict current returns, implementing the small-minus-big (SMB) factor. Factor loadings are estimated using robust regression techniques that are less sensitive to outliers. The factor covariance matrix is estimated using Ledoit-Wolf shrinkage and ensures positive semi-definiteness through eigenvalue adjustment. Specific risk is calculated as the square root of the variance of residuals from the factor model fit.
-
-### Regime Detection and Fusion
-
-Market regime detection analyzes 21-day rolling volatility and trend characteristics of a market index, classifying regimes using 33rd and 67th percentile thresholds. The system maintains separate alpha weights for each regime and combines predictions through a weighted fusion mechanism that balances machine learning predictions with regime-adjusted alpha signals.
+**Professional-Grade Risk Estimation:**
+- **T-1 Size Factor**: Market cap based SMB factor with no look-ahead bias
+- **Robust Factor Loadings**: Huber regression resistant to outliers
+- **Covariance Estimation**: Ledoit-Wolf shrinkage with PSD projection
+- **Specific Risk**: Residual variance with robust estimation methods
 
 ### Portfolio Optimization
 
-The optimization process aligns all inputs to common assets and constructs the covariance matrix using factor loadings, factor covariance, and specific risk. The objective function maximizes expected returns while penalizing portfolio risk and turnover, subject to various constraints including position limits, sector exposure caps, and country concentration limits. The system includes signal preprocessing to prevent flat solutions and implements multiple fallback mechanisms when the primary optimizer fails.
+**Institutional-Quality Construction:**
+- **Objective Function**: Mean-variance optimization with turnover penalties
+- **Risk Constraints**: Position limits, sector exposure caps, concentration limits
+- **Execution Constraints**: Liquidity filters, order size limits, cash reserves
+- **Robust Optimization**: Multiple fallback mechanisms with quality validation
+
+### Quality Assurance Framework
+
+**Comprehensive Monitoring:**
+- **Evaluation Integrity**: `evaluation_integrity_monitor.py` for validation oversight
+- **Production Gate**: `enhanced_production_gate.py` for deployment readiness
+- **Exception Handling**: `enhanced_exception_handler.py` for robust error management
+- **Performance Tracking**: Real-time monitoring with alerting capabilities
+
+### Advanced Execution Engine
+
+**Smart Order Management:**
+- **Pre-execution Screening**: Liquidity, spread, and volatility analysis
+- **Dynamic Pricing**: ATR-based limit pricing with tick size optimization
+- **Risk Controls**: Real-time position monitoring and exposure limits
+- **Order Throttling**: Per-cycle and daily order caps with queue management
+
+**IBKR Integration:**
+- **SMART Routing**: Intelligent order routing across exchanges
+- **Order Types**: Market, limit, and bracket orders with advanced stops
+- **Real-time Data**: Live market data with delayed fallback
+- **Contract Qualification**: Automatic exchange selection and validation
+
+### Production Monitoring
+
+**Comprehensive Health Tracking:**
+- **System Metrics**: Initialization status, failure rates, performance KPIs
+- **Model Health**: Prediction quality, feature stability, regime detection
+- **Execution Quality**: Fill rates, slippage analysis, latency monitoring
+- **Risk Oversight**: Real-time exposure tracking and limit violations
+
+**Configuration Management:**
+- **Hot Reload**: Dynamic configuration updates without restart
+- **Version Control**: Configuration change tracking and rollback
+- **Environment Isolation**: Separate configs for dev/staging/production
+
+## Implementation Reference
+
+### Architectural Simplification (2025 Update)
+
+The system has moved from complex multi-path architectures to a streamlined, fail-fast design:
+
+**Single Data Format:** All data flows through DataFrame MultiIndex(date, ticker) - eliminating complex branching logic that previously caused alignment errors.
+
+**Unified Configuration:** The `UnifiedConfig` class centralizes all parameters, replacing scattered hardcoded constants and complex inheritance hierarchies.
+
+**Direct ML Pipeline:** First-layer models (XGBoost, CatBoost, ElasticNet) feed directly into LTR Isotonic Stacking - no complex ensemble cascades.
+
+### Enhanced Temporal Safety
+
+**Strict Lag Enforcement:** Features use T-4 base lag plus safety gaps. The system validates alignment at every stage rather than relying on complex fallback mechanisms.
+
+**Purged Cross-Validation:** Uses `unified_purged_cv_factory.py` with gap and embargo periods. The stacking meta-learner employs even stricter temporal constraints to prevent information leakage.
+
+**Validation Gates:** Each stage includes temporal sanity checks that fail fast rather than masking errors with fallbacks.
+
+### Production-Grade Processing
+
+**Cross-Sectional Standardization:** The `cross_sectional_standardizer.py` handles within-date normalization, winsorization, and industry neutralization with robust statistical methods.
+
+**Quality Monitoring:** Real-time factor quality assessment using `alpha_factor_quality_monitor.py` and `enhanced_alpha_quality_monitor.py` catches degradation before it affects predictions.
+
+**Robust Numerics:** Enhanced numerical stability through `robust_numerical_methods.py` prevents common optimization failures and matrix conditioning issues.
+
+### Advanced Risk Modeling
+
+**Professional Risk Estimation:** Factor loadings use Huber regression, covariance estimation employs Ledoit-Wolf shrinkage with PSD projection, and specific risk calculation includes robust variance estimation.
+
+**Institutional Controls:** Multiple validation layers ensure risk model quality and catch degenerate scenarios before they propagate to portfolio construction.
+
+### Modern Execution Framework
+
+**Smart Order Management:** Pre-execution screening covers liquidity, spreads, and volatility. Dynamic pricing uses ATR-based methods with proper tick size handling.
+
+**Robust IBKR Integration:** SMART routing with automatic contract qualification, comprehensive error handling, and real-time vs delayed data fallback mechanisms.
 
 ### Risk‑Reward Controller (optional)
 
@@ -299,25 +346,40 @@ The configuration system implements debounced reloading that only logs and reloa
   - Check GUI risk settings; try lowering `min_order_value_usd`, `cash_reserve_pct`, raising `max_single_position_pct`
 - Polygon errors: check logs for `status`, `request_id`, message; ensure API key; pagination enabled by default
 
-## Project Layout (selected)
+## Project Structure (Modernized)
 
-- `autotrader/app.py`: GUI
-- `autotrader/ibkr_auto_trader.py`: trading engine
-- `autotrader/unified_config.py`: config manager
-- `autotrader/unified_*`: connection/position/risk managers
-- `autotrader/enhanced_order_execution.py`, `order_state_machine.py`, `trading_auditor_v2.py`: execution & auditing
-- `autotrader/data_source_manager.py`, `autotrader/polygon_unified_factors.py`: data/factors integration
-- `polygon_client.py`: Polygon API client
-- `polygon_factors.py`: consolidated factor library
-- `量化模型_bma_ultra_enhanced.py`: BMA model
+### Core Trading System
+- `autotrader/app.py`: Main GUI application
+- `autotrader/ibkr_auto_trader.py`: IBKR trading engine
+- `autotrader/unified_trading_core.py`: Unified trading orchestration
+- `autotrader/unified_error_handler.py`: Centralized error management
+- `autotrader/enhanced_order_execution_with_state_machine.py`: Advanced order execution
 
-### Legacy/Optional (not required for main flow)
+### BMA Model Architecture
+- `bma_models/量化模型_bma_ultra_enhanced.py`: Main BMA model
+- `bma_models/optimized_factor_engine.py`: High-quality factor calculations (25 factors)
+- `bma_models/ltr_isotonic_stacker.py`: Learning-to-rank meta-learner
+- `bma_models/cross_sectional_standardizer.py`: Robust cross-sectional processing
+- `bma_models/unified_purged_cv_factory.py`: Temporal validation framework
 
-- `autotrader/backtest_engine.py`, `autotrader/backtest_analyzer.py`
-- `autotrader/database_pool.py`, `autotrader/engine_logger.py`
-- `autotrader/enhanced_config_cache.py`, `autotrader/indicator_cache.py`, `autotrader/enhanced_indicator_cache.py`
-- `autotrader/client_id_manager.py`
-- `autotrader/launcher.py` (needed only for CLI launching alternative to GUI)
+### Quality & Monitoring
+- `bma_models/alpha_factor_quality_monitor.py`: Factor quality assessment
+- `bma_models/enhanced_alpha_quality_monitor.py`: Advanced quality monitoring
+- `bma_models/evaluation_integrity_monitor.py`: Validation oversight
+- `bma_models/institutional_monitoring_dashboard.py`: Production monitoring
+- `bma_models/enhanced_production_gate.py`: Deployment readiness validation
+
+### Infrastructure
+- `bma_models/robust_numerical_methods.py`: Enhanced numerical stability
+- `bma_models/enhanced_exception_handler.py`: Robust error handling
+- `bma_models/unified_config_loader.py`: Configuration management
+- `bma_models/unified_constants.py`: System constants and parameters
+- `polygon_client.py`: Polygon API client with pagination and backoff
+
+### Configuration & Data
+- `bma_models/unified_config.yaml`: Main configuration file
+- `autotrader/config/autotrader_unified_config.json`: Trading system config
+- `bma_models/default_tickers.txt`: Default stock universe
 
 ## Security & Disclaimers
 
