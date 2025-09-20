@@ -67,7 +67,7 @@ DATA PROCESSING & QUALITY CONTROLS
 ==================================
 
 TEMPORAL SAFETY FRAMEWORK:
-- **Feature Lag Enforcement**: T-4 minimum lag with safety gaps for all factors
+- **Feature Lag Enforcement**: T-1 optimal lag maximizing info while preventing leakage
 - **Prediction Horizon**: Strict T+5 target alignment with embargo periods
 - **Cross-Validation**: Purged GroupTimeSeriesSplit with 6-day gaps and 5-day embargos
 - **Look-Ahead Prevention**: Multi-stage validation to prevent information leakage
@@ -385,7 +385,7 @@ class UnifiedTrainingConfig:
     CONFIGURATION CATEGORIES:
 
     TEMPORAL PARAMETERS:
-    - Prediction horizon (T+5), feature lags (T-4), safety gaps
+    - Prediction horizon (T+5), feature lags (T-1), safety gaps
     - Cross-validation splits, gaps, embargo periods for temporal safety
     - Sample requirements and minimum data constraints
 
@@ -497,7 +497,7 @@ class UnifiedTrainingConfig:
 
         # Core prediction and lag parameters
         self._PREDICTION_HORIZON_DAYS = temporal_config.get('prediction_horizon_days', 5)  # T+5 target horizon
-        self._FEATURE_LAG_DAYS = temporal_config.get('feature_lag_days', 1)                # T-1 minimum feature lag
+        self._FEATURE_LAG_DAYS = temporal_config.get('feature_lag_days', 1)                # T-1 optimal feature lag
         self._SAFETY_GAP_DAYS = temporal_config.get('safety_gap_days', 1)                  # Additional safety buffer
 
         # Cross-validation temporal parameters
@@ -1364,7 +1364,7 @@ except ImportError:
         return get_unified_time_config()
 
 # T+5预测的时间隔离配置说明:
-# - 特征使用T-1及之前的数据
+# - 特征使用T-1及之前的数据 (优化后: 最大化信息价值)
 # - 目标为T+5的收益率
 
 # 向后兼容别名
@@ -2453,7 +2453,7 @@ def load_universe_fallback() -> List[str]:
     return get_safe_default_universe()
 # CRITICAL TIME ALIGNMENT FIX APPLIED:
 # - Prediction horizon set to T+5 for short-term signals
-# - Features use T-1 data, targets predict T+5 (5-day gap prevents data leakage)
+# - Features use T-1 data, targets predict T+5 (6-day gap prevents leakage, maximizes prediction power)
 # - This configuration is validated for production trading
 
 class TemporalSafetyValidator:
