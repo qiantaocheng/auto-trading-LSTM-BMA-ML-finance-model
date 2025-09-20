@@ -228,10 +228,10 @@ import traceback
 from typing import Dict, Any, Tuple, Optional, List, Union
 # Using only XGBoost, CatBoost, ElasticNet as first layer models
 from bma_models.cross_sectional_standardizer import CrossSectionalStandardizer, standardize_factors_cross_sectionally
-from fix_second_layer_issues import fix_multiindex_safely, create_prediction_data_safely, verify_ltr_data_format
+# fix_second_layer_issues module completely removed
 from bma_models.enhanced_index_aligner import EnhancedIndexAligner
 import bma_models.ltr_isotonic_stacker as ltr_isotonic_stacker
-from bma_models.unified_purged_cv_factory import create_unified_cv_splitter, create_unified_cv
+from bma_models.unified_purged_cv_factory import create_unified_cv
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
 from sklearn.exceptions import NotFittedError
@@ -269,8 +269,8 @@ except ImportError as e:
 
 # === QUALITY MONITORING & ROBUST NUMERICS ===
 try:
-    from .alpha_factor_quality_monitor import AlphaFactorQualityMonitor
-    from .robust_numerical_methods import (
+    from bma_models.alpha_factor_quality_monitor import AlphaFactorQualityMonitor
+    from bma_models.robust_numerical_methods import (
         RobustWeightOptimizer,
         RobustICCalculator
     )
@@ -500,9 +500,12 @@ class UnifiedTrainingConfig:
         self._FEATURE_LAG_DAYS = temporal_config.get('feature_lag_days', 1)                # T-1 optimal feature lag
         self._SAFETY_GAP_DAYS = temporal_config.get('safety_gap_days', 1)                  # Additional safety buffer
 
-        # Cross-validation temporal parameters
+        # Cross-validation temporal parameters - 使用统一配置硬编码值避免循环导入
         self._MIN_TRAIN_SIZE = training_config.get('cv_min_train_size', 252)               # 1 year minimum training
         self._TEST_SIZE = training_config.get('test_size', 63)                             # 3 months test size
+        self._CV_GAP_DAYS = temporal_config.get('cv_gap_days', 6)                          # CV gap = 6 (from unified config)
+        self._CV_EMBARGO_DAYS = temporal_config.get('cv_embargo_days', 5)                  # CV embargo = 5 (from unified config)
+        self._CV_SPLITS = training_config.get('cv_splits', 5)                              # Number of CV splits
 
         # Sample size calculation with mathematical consistency
         # Formula: MIN_CV_SAMPLES >= MIN_TRAIN_SIZE + TEST_SIZE + safety_margin
@@ -666,7 +669,15 @@ class UnifiedTrainingConfig:
         if not 0 < self._CORRELATION_THRESHOLD < 1:
             errors.append(f"CORRELATION_THRESHOLD must be in (0,1), got {self._CORRELATION_THRESHOLD}")
         
-            errors.append(f"CV isolation ({total_isolation}) must be >= PREDICTION_HORIZON_DAYS ({self._PREDICTION_HORIZON_DAYS})")
+        # Validate CV isolation (use defined attributes)
+        try:
+            total_isolation = self._CV_GAP_DAYS + self._CV_EMBARGO_DAYS
+            if total_isolation < self._PREDICTION_HORIZON_DAYS:
+                errors.append(
+                    f"CV isolation ({total_isolation}) must be >= PREDICTION_HORIZON_DAYS ({self._PREDICTION_HORIZON_DAYS})"
+                )
+        except Exception:
+            pass
         
         min_required = self._MIN_TRAIN_SIZE + self._TEST_SIZE
 
@@ -700,10 +711,13 @@ class UnifiedTrainingConfig:
     def SAFETY_GAP_DAYS(self): return self._SAFETY_GAP_DAYS
     
     @property
-    
+    def CV_GAP_DAYS(self): return self._CV_GAP_DAYS
+
     @property
-    
+    def CV_EMBARGO_DAYS(self): return self._CV_EMBARGO_DAYS
+
     @property
+    def CV_SPLITS(self): return self._CV_SPLITS
     
     @property
     def MIN_TRAIN_SIZE(self): return self._MIN_TRAIN_SIZE
@@ -1177,9 +1191,11 @@ class SimpleDataAligner:
                     actual_gap = (min_label_date - max_feature_date).days
                     alignment_report['issues'].append(f'时间间隔检查: 特征最晚{max_feature_date.date()}, 标签最早{min_label_date.date()}, 间隔{actual_gap}天')
                     
-                    alignment_report['issues'].append(error_msg)
+                    # 设定最小时间安全间隔（使用统一配置的特征滞后天数）
+                    required_gap = int(getattr(CONFIG, 'FEATURE_LAG_DAYS', 1))
+                    alignment_report['issues'].append(f'应用最小时间安全间隔: {required_gap}天')
 
-                        # STRICT: Adjust feature date range to ensure temporal safety
+                    # STRICT: Adjust feature date range to ensure temporal safety
                     safe_feature_end_date = min_label_date - pd.Timedelta(days=required_gap)
                     safe_feature_dates = feature_dates[feature_dates <= safe_feature_end_date]
 
@@ -1352,16 +1368,9 @@ def get_safe_default_universe() -> List[str]:
     logger.warning("No ticker configuration found, using minimal fallback (not recommended for production)")
     return ['SPY', 'QQQ', 'IWM']  # 使用ETF作为最小化风险的fallback
 
-# === 统一时间配置常量 - 从统一配置加载器获取 ===
-# ✅  使用 unified_config_loader 作为单一入口点
-try:
-    from bma_models.unified_config_loader import get_time_config
-except ImportError:
-    # Fallback if config loader not available
-    def get_time_config():
-        # CRITICAL FIX: Use unified configuration instead of hardcoded values
-        from bma_models.unified_config_loader import get_time_config as get_unified_time_config
-        return get_unified_time_config()
+# === 统一时间配置常量 ===
+# 使用硬编码值避免循环导入，这些值与unified_config.yaml保持一致
+# CV_GAP_DAYS = 6, CV_EMBARGO_DAYS = 5
 
 # T+5预测的时间隔离配置说明:
 # - 特征使用T-1及之前的数据 (优化后: 最大化信息价值)
@@ -3048,6 +3057,11 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         self.config_path = config_path
         self.config = config or {}  # Initialize config attribute
         self.horizon = CONFIG.PREDICTION_HORIZON_DAYS  # Initialize horizon attribute
+        # Define safe CV defaults to avoid missing attribute errors
+        self._CV_SPLITS = getattr(CONFIG, 'CV_SPLITS', 5)
+        self._CV_GAP_DAYS = getattr(CONFIG, 'CV_GAP_DAYS', getattr(CONFIG, 'cv_gap_days', 6))
+        self._CV_EMBARGO_DAYS = getattr(CONFIG, 'CV_EMBARGO_DAYS', getattr(CONFIG, 'cv_embargo_days', 5))
+        self._TEST_SIZE = getattr(CONFIG, 'TEST_SIZE', getattr(CONFIG, 'validation_window_days', None))
         # Initialize data_contract attribute - create basic implementation
         self.data_contract = self._create_basic_data_contract()
         self.feature_data = None
@@ -3150,19 +3164,19 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             self.use_simple_25_factors = False
 
     def enable_simple_25_factors(self, enable: bool = True):
-        """启用或禁用Simple21FactorEngine (T+5优化版本)
+        """启用或禁用Simple24FactorEngine (T+5优化版本)
 
         Args:
-            enable: True为启用21因子引擎，False为禁用
+            enable: True为启用24因子引擎，False为禁用
         """
         if enable:
             try:
-                from bma_models.simple_25_factor_engine import Simple21FactorEngine
-                self.simple_25_engine = Simple21FactorEngine()
+                from bma_models.simple_25_factor_engine import Simple24FactorEngine
+                self.simple_25_engine = Simple24FactorEngine()
                 self.use_simple_25_factors = True
-                logger.info("✅ Simple 21-Factor Engine enabled - will generate 21 optimized factors for T+5")
+                logger.info("✅ Simple 24-Factor Engine enabled - will generate 24 optimized factors for T+5")
             except ImportError as e:
-                logger.error(f"Failed to import Simple21FactorEngine: {e}")
+                logger.error(f"Failed to import Simple24FactorEngine: {e}")
                 logger.warning("Falling back to traditional feature selection with 25-factor limit")
                 self.simple_25_engine = None
                 self.use_simple_25_factors = False
@@ -3179,7 +3193,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         """创建时间安全的CV分割器 - 统一入口点"""
         try:
             # 优先使用统一CV分割器工厂
-            splitter, method = create_unified_cv_splitter(**kwargs)
+            splitter, method = create_unified_cv(
+                n_splits=kwargs.get('n_splits', self._CV_SPLITS),
+                gap=kwargs.get('gap', self._CV_GAP_DAYS),
+                embargo=kwargs.get('embargo', self._CV_EMBARGO_DAYS),
+                test_size=kwargs.get('test_size', self._TEST_SIZE)
+            )
             logger.info(f"[TIME_SAFE_CV] 使用统一CV工厂创建: {method}")
             return splitter
         except Exception as e:
@@ -4862,7 +4881,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 return self._generate_base_predictions(training_results)
 
             # 使用安全方法构造 LTR 输入，避免重建索引/截断
-            # 使用增强版对齐器替代create_prediction_data_safely
+            # 使用增强版对齐器进行数据对齐
 
             try:
 
@@ -4890,7 +4909,17 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                 logger.warning(f"[预测] ⚠️ 增强版对齐器失败，回退到原方法: {e}")
 
-                ltr_input = create_prediction_data_safely(first_layer_preds, feature_data.index)
+                # Fallback: 确保列名正确并创建安全的输入
+                required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb']
+                available_cols = [col for col in required_cols if col in first_layer_preds.columns]
+
+                if len(available_cols) >= 2:
+                    # 使用可用的列创建输入
+                    ltr_input = first_layer_preds[available_cols].copy()
+                    logger.info(f"[预测] 使用回退方法，可用列: {available_cols}")
+                else:
+                    logger.error(f"[预测] 第一层预测列不足，无法进行stacking: {first_layer_preds.columns.tolist()}")
+                    return self._generate_base_predictions(training_results)
             stacked_scores = self.ltr_stacker.replace_ewa_in_pipeline(ltr_input)
 
             # 返回最终分数
@@ -5058,6 +5087,99 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.debug(traceback.format_exc())
             return pd.Series()
 
+    def _prepare_target_column(self, feature_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        🎯 TARGET COLUMN VALIDATION - 确保数据包含预先准备的高质量target列
+
+        CRITICAL CHANGE: 不再自动生成target列，必须预先准备
+
+        策略:
+        1. 验证现有target列的质量
+        2. 如果target列缺失或质量不佳，抛出错误并提供明确指导
+        3. 不再依赖Close列自动生成target - 这必须在数据预处理阶段完成
+
+        Args:
+            feature_data: 输入的特征数据（必须包含预先计算的target列）
+
+        Returns:
+            验证后的DataFrame（包含高质量的target列）
+
+        Raises:
+            ValueError: 当target列缺失或质量不佳时
+        """
+        # 检查是否存在target列
+        if 'target' not in feature_data.columns:
+            raise ValueError(
+                "❌ 缺少预先准备的target列\n"
+                "\n"
+                "CRITICAL: 不再支持自动target生成，必须预先准备target列\n"
+                "\n"
+                "建议解决方案：\n"
+                "1. 在数据预处理阶段预先计算target列\n"
+                "2. 使用feature_pipeline生成包含target的完整数据\n"
+                "3. 在调用模型之前，确保数据包含以下列：\n"
+                "   - 'target': T+5前向收益率或其他目标变量\n"
+                "   - 确保target列有足够的有效值(>50%)\n"
+                "\n"
+                "示例target生成代码：\n"
+                "   grouped = data.groupby('ticker')['Close']\n"
+                "   forward_returns = (grouped.shift(-5) - data['Close']) / data['Close']\n"
+                "   data['target'] = forward_returns\n"
+            )
+
+        # 验证target列质量
+        target_series = feature_data['target']
+        valid_ratio = target_series.notna().sum() / len(target_series)
+
+        if valid_ratio < 0.5:  # 至少50%的有效值
+            raise ValueError(
+                f"❌ 预先准备的target列质量不佳 (有效率: {valid_ratio:.1%})\n"
+                "\n"
+                "target列质量要求：\n"
+                "- 至少50%的有效值（非NaN、非inf）\n"
+                "- 推荐70%以上的有效值以获得最佳性能\n"
+                "\n"
+                "建议改进：\n"
+                "1. 检查数据时间范围：确保有足够的未来数据计算forward returns\n"
+                "2. 验证数据完整性：减少缺失值和异常值\n"
+                "3. 使用更长的历史数据周期\n"
+                "\n"
+                f"当前统计：\n"
+                f"- 总样本数: {len(target_series)}\n"
+                f"- 有效样本数: {target_series.notna().sum()}\n"
+                f"- 有效率: {valid_ratio:.1%}\n"
+            )
+
+        # 验证target列的数值质量
+        valid_targets = target_series.dropna()
+        if len(valid_targets) > 0:
+            target_std = valid_targets.std()
+            target_mean = valid_targets.mean()
+
+            # 检查是否存在常数target（无变异）
+            if target_std < 1e-6:
+                logger.warning(
+                    f"⚠️ target列标准差过小 ({target_std:.6f})，可能影响模型训练效果\n"
+                    "建议检查target生成逻辑和数据质量"
+                )
+
+            # 检查极端值
+            extreme_ratio = (np.abs(valid_targets) > 0.5).sum() / len(valid_targets)
+            if extreme_ratio > 0.1:
+                logger.warning(
+                    f"⚠️ target列包含{extreme_ratio:.1%}的极端值（绝对值>0.5），建议进行winsorization处理"
+                )
+
+        logger.info(f"✅ target列验证通过 (有效率: {valid_ratio:.1%})")
+        logger.info(f"   目标变量统计: mean={valid_targets.mean():.4f}, std={valid_targets.std():.4f}")
+
+        # 移除Close列避免数据泄露（如果存在）
+        if 'Close' in feature_data.columns:
+            feature_data = feature_data.drop(columns=['Close'])
+            logger.info("📋 已移除Close列以避免数据泄露")
+
+        return feature_data
+
     def _prepare_standard_data_format(self, feature_data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
         """
         🎯 UNIFIED DATA PREPARATION - 支持MultiIndex和传统格式
@@ -5075,7 +5197,45 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # 🔥 CASE 1: 数据已经是MultiIndex格式 (feature_pipeline输出)
         if isinstance(feature_data.index, pd.MultiIndex):
             logger.info("✅ 检测到MultiIndex格式数据 (feature_pipeline输出)")
-            
+
+            # 🎯 PRE-PROCESSING: 检查并生成target列（如果需要）
+            if 'target' not in feature_data.columns:
+                logger.info("🔧 数据中缺少target列，检查是否可以生成...")
+
+                if 'Close' in feature_data.columns:
+                    logger.info("🎯 基于Close列生成T+5前向收益率target...")
+                    feature_data = feature_data.copy()
+
+                    # 计算前向收益率：(P_{t+H} - P_t) / P_t
+                    grouped = feature_data.groupby(level='ticker')['Close']
+                    horizon_days = CONFIG.PREDICTION_HORIZON_DAYS
+                    future_prices = grouped.shift(-horizon_days)
+                    current_prices = feature_data['Close']
+                    forward_returns = (future_prices - current_prices) / current_prices
+
+                    # 添加target列
+                    feature_data['target'] = forward_returns
+
+                    # 验证生成的target质量
+                    valid_ratio = forward_returns.notna().sum() / len(forward_returns)
+                    logger.info(f"✅ Target生成完成 (有效率: {valid_ratio:.1%})")
+
+                    if valid_ratio < 0.3:
+                        logger.warning(f"⚠️ 生成的target覆盖率较低 ({valid_ratio:.1%})，可能影响模型性能")
+                else:
+                    raise ValueError(
+                        "❌ 数据中既没有预先准备的target列，也没有Close列用于生成target\n"
+                        "\n"
+                        "建议解决方案：\n"
+                        "1. 在feature_pipeline中添加target列生成逻辑\n"
+                        "2. 确保数据包含Close列或预先计算的target列\n"
+                        "3. 使用完整的数据预处理流程"
+                    )
+
+            # 🎯 CRITICAL: 验证target列质量
+            logger.info("🔍 验证target列质量...")
+            feature_data = self._prepare_target_column(feature_data)
+
             # 验证MultiIndex格式
             if len(feature_data.index.names) < 2 or 'date' not in feature_data.index.names or 'ticker' not in feature_data.index.names:
                 raise ValueError(f"Invalid MultiIndex format: {feature_data.index.names}")
@@ -5137,46 +5297,6 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.info(f"✅ Alpha因子标准化完成: {X.shape}")
                 # Mark data as standardized to prevent double standardization
                 self._data_standardized = True
-            else:
-                # 尝试从原始数据生成目标变量
-                logger.warning("⚠️ MultiIndex数据中缺少target列，尝试生成target")
-                X = feature_data.copy()
-                
-                # 简单的target生成：使用未来收益（遵循统一配置的预测窗口）
-                if 'Close' in feature_data.columns:
-                    # Calculate forward returns with configured horizon H = CONFIG.PREDICTION_HORIZON_DAYS
-                    grouped = feature_data.groupby(level='ticker')['Close']
-                    
-                    # Shift prices forward by H days to construct T+H return
-                    horizon_days = CONFIG.PREDICTION_HORIZON_DAYS
-                    future_prices = grouped.shift(-horizon_days)  # FIXED: Negative shift to avoid future leak
-                    current_prices = feature_data['Close']
-                    returns = (future_prices - current_prices) / current_prices
-                    # CRITICAL VALIDATION: Ensure no future data leak
-                    if len(returns.dropna()) == 0:
-                        raise ValueError(f"No valid returns after {horizon_days}-day shift. Check data availability.")
-
-                    # Validate temporal ordering
-                    if len(returns.dropna()) < len(returns) * 0.5:
-                        logger.warning(f"More than 50% of returns are NaN after shift. This may indicate insufficient historical data.")
-
-                    # Remove Close from features to avoid data leakage
-                    X = feature_data.drop(columns=['Close']).copy()
-
-                    # 🎯 ALPHA FACTOR STANDARDIZATION: 对每个alpha因子进行横截面标准化
-                    # Standardization already applied in _prepare_standard_data_format
-                    
-                    # Only keep samples where we have valid returns (not NaN)
-                    valid_returns = returns.dropna()
-                    
-                    # Align features with valid targets
-                    common_idx = X.index.intersection(valid_returns.index)
-                    X = X.loc[common_idx]
-                    y = valid_returns.loc[common_idx]
-                    
-                    logger.info(f"✅ 生成target变量: {len(y)}个样本 (使用{horizon_days}日前向收益率)")
-                else:
-                    raise ValueError("无法生成target变量：缺少Close列")
             
             # 提取日期和ticker作为Series - 需要与X和y的索引对齐
             dates_series = pd.Series(
@@ -5995,20 +6115,20 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # 使用Simple20FactorEngine进行稳定的数据获取
             if not hasattr(self, 'simple_25_engine') or self.simple_25_engine is None:
                 try:
-                    from bma_models.simple_25_factor_engine import Simple21FactorEngine
+                    from bma_models.simple_25_factor_engine import Simple24FactorEngine
                     # 计算lookback天数
                     start_dt = pd.to_datetime(start_date)
                     end_dt = pd.to_datetime(end_date)
                     lookback_days = (end_dt - start_dt).days + 50  # 加50天buffer
 
-                    self.simple_25_engine = Simple21FactorEngine(lookback_days=lookback_days)
-                    logger.info(f"✅ Simple21FactorEngine initialized with {lookback_days} day lookback for T+5")
+                    self.simple_25_engine = Simple24FactorEngine(lookback_days=lookback_days)
+                    logger.info(f"✅ Simple24FactorEngine initialized with {lookback_days} day lookback for T+5")
                 except ImportError as e:
-                    logger.error(f"❌ Failed to import Simple21FactorEngine: {e}")
-                    raise ValueError("Simple21FactorEngine is required for data acquisition but not available")
+                    logger.error(f"❌ Failed to import Simple24FactorEngine: {e}")
+                    raise ValueError("Simple24FactorEngine is required for data acquisition but not available")
                 except Exception as e:
-                    logger.error(f"❌ Failed to initialize Simple21FactorEngine: {e}")
-                    raise ValueError(f"Simple21FactorEngine initialization failed: {e}")
+                    logger.error(f"❌ Failed to initialize Simple24FactorEngine: {e}")
+                    raise ValueError(f"Simple24FactorEngine initialization failed: {e}")
 
             # 使用Simple20FactorEngine的稳定数据获取方法
             market_data = self.simple_25_engine.fetch_market_data(
@@ -6197,14 +6317,14 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             
             # 1. 使用25因子引擎优化的数据下载（统一数据源）
             if self.use_simple_25_factors and self.simple_25_engine is not None:
-                logger.info("🎯 使用Simple21FactorEngine优化数据下载和因子生成 (T+5)...")
+                logger.info("🎯 使用Simple24FactorEngine优化数据下载和因子生成 (T+5)...")
                 try:
                     stock_data = self._download_stock_data_for_25factors(tickers, start_date, end_date)
                     if not stock_data:
-                        logger.error("21因子优化数据下载失败")
+                        logger.error("24因子优化数据下载失败")
                         return None
                     
-                    logger.info(f"[OK] 21因子优化数据下载完成: {len(stock_data)}只股票")
+                    logger.info(f"[OK] 24因子优化数据下载完成: {len(stock_data)}只股票")
                     
                     # Convert to Simple21FactorEngine format (已经优化，减少列处理)
                     market_data_list = []
@@ -6217,8 +6337,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     if market_data_list:
                         market_data = pd.concat(market_data_list, ignore_index=True)
                         # Generate all 21 factors (使用优化后的干净数据)
-                        feature_data = self.simple_25_engine.compute_all_21_factors(market_data)
-                        logger.info(f"✅ Simple21FactorEngine生成特征: {feature_data.shape} (T+5优化)")
+                        feature_data = self.simple_25_engine.compute_all_24_factors(market_data)
+                        logger.info(f"✅ Simple24FactorEngine生成特征: {feature_data.shape} (包含24个因子, T+5优化)")
 
                         # === INTEGRATE QUALITY MONITORING ===
                         if self.factor_quality_monitor is not None and not feature_data.empty:
@@ -6853,9 +6973,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
     def _unified_feature_selection(self, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
         """FORCE USE ALL 25 ALPHA FACTORS - NO FEATURE SELECTION"""
         
-        # 强制使用所有25个alpha因子，不进行任何特征选择
-        logger.info(f"🎯 [25-FACTOR MODE] FORCING ALL {X.shape[1]} FEATURES - NO SELECTION")
-        logger.info(f"✅ [25-FACTOR MODE] Using complete 25 alpha factors without any filtering")
+        # 强制使用所有可用因子，不进行任何特征选择
+        logger.info(f"🎯 [FACTOR MODE] FORCING ALL {X.shape[1]} FEATURES - NO SELECTION")
+        logger.info(f"✅ [FACTOR MODE] Using all available alpha factors without filtering")
         return X
     
     def _ensure_two_level_index(
@@ -6972,7 +7092,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.info(f"[二层] 第一个预测形状: {getattr(first_pred, 'shape', len(first_pred))}")
             logger.info(f"[二层] 第一个预测索引类型: {type(first_pred.index)}")
 
-            # 使用增强版对齐器替代fix_multiindex_safely
+            # 使用增强版对齐器进行第一层到第二层数据对齐
 
             try:
 
@@ -6994,7 +7114,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                 logger.warning(f"[二层] ⚠️ 增强版对齐器失败，回退到原方法: {e}")
 
-                stacker_data = fix_multiindex_safely(oof_predictions, y, dates)
+                # Fallback: use OOF predictions directly
+                stacker_data = oof_predictions
             logger.info(f"[二层] 二层训练输入就绪: {stacker_data.shape}, 索引={stacker_data.index.names}")
 
             # 添加目标变量 - 增强验证和处理
@@ -7044,7 +7165,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.warning("[二层] 目标变量为空，使用虚拟目标")
                 stacker_data['ret_fwd_5d'] = np.random.normal(0, 0.01, len(stacker_data))
 
-            # 不再进行索引重建/截断；fix_multiindex_safely 已保证一致性
+            # 数据对齐已通过增强版对齐器完成
 
             # 初始化 LTR Stacker
             # 兼容不同版本的 LTR 实现（外部模块或嵌入式类）
@@ -7207,10 +7328,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
         try:
             # Use enhanced CV splitter with sample size adaptation
-            cv, cv_method = create_unified_cv_splitter(
-                sample_size=sample_size
+            cv = create_unified_cv(
+                n_splits=self._CV_SPLITS,
+                gap=self._CV_GAP_DAYS,
+                embargo=self._CV_EMBARGO_DAYS,
+                test_size=self._TEST_SIZE
             )
-            logger.info(f"[FIRST_LAYER] CV分割器创建成功: {cv_method}")
+            logger.info(f"[FIRST_LAYER] CV分割器创建成功")
         except Exception as e:
             logger.error(f"[FIRST_LAYER] CV分割器创建失败: {e}")
             # 降级到基础CV（如果增强版失败）
@@ -7225,12 +7349,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
         logger.info(f"[FIRST_LAYER] 模型参数适应: 小样本={is_small_sample}, 极小样本={is_very_small_sample}")
 
-        # 1. ElasticNet（小样本时增加正则化）
+        # 1. ElasticNet（避免过度正则化）
         elastic_alpha = CONFIG.ELASTIC_NET_CONFIG['alpha']
-        if is_very_small_sample:
-            elastic_alpha *= 2.0  # 极小样本增强正则化
-        elif is_small_sample:
-            elastic_alpha *= 1.5  # 小样本适度增强正则化
+        # 移除小样本额外正则化，防止过度收缩导致模型退化
+        # if is_very_small_sample:
+        #     elastic_alpha *= 2.0  # 极小样本增强正则化
+        # elif is_small_sample:
+        #     elastic_alpha *= 1.5  # 小样本适度增强正则化
 
         models['elastic_net'] = ElasticNet(
             alpha=elastic_alpha,
@@ -7661,19 +7786,23 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             analysis_results['predictions'] = predictions
             analysis_results['success'] = True
 
-            # 生成推荐列表
+            # 生成推荐列表（按最新交易日截面排序）
             if len(predictions) > 0:
-                # 按预测分数排序
-                pred_df = pd.DataFrame({
-                    'ticker': predictions.index.get_level_values('ticker') if isinstance(predictions.index, pd.MultiIndex) else predictions.index,
-                    'score': predictions.values
-                })
+                if isinstance(predictions.index, pd.MultiIndex) and 'date' in predictions.index.names and 'ticker' in predictions.index.names:
+                    latest_date = predictions.index.get_level_values('date').max()
+                    mask = predictions.index.get_level_values('date') == latest_date
+                    pred_last = predictions[mask]
+                    pred_df = pd.DataFrame({
+                        'ticker': pred_last.index.get_level_values('ticker'),
+                        'score': pred_last.values
+                    })
+                else:
+                    pred_df = pd.DataFrame({
+                        'ticker': predictions.index,
+                        'score': predictions.values
+                    })
 
-                # 去重并按分数排序
-                pred_df = pred_df.groupby('ticker')['score'].mean().reset_index()
                 pred_df = pred_df.sort_values('score', ascending=False)
-
-                # Top N 推荐
                 top_n = min(10, len(pred_df))
                 recommendations = pred_df.head(top_n).to_dict('records')
                 analysis_results['recommendations'] = recommendations
@@ -7878,8 +8007,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     if market_data_list:
                         market_data = pd.concat(market_data_list, ignore_index=True)
                         # Compute all 21 factors using Simple21FactorEngine
-                        alpha_data_combined = self.simple_25_engine.compute_all_21_factors(market_data)
-                        logger.info(f"✅ Simple21FactorEngine生成21个因子 (T+5): {alpha_data_combined.shape}")
+                        alpha_data_combined = self.simple_25_engine.compute_all_24_factors(market_data)
+                        logger.info(f"✅ Simple24FactorEngine生成24个因子 (T+5): {alpha_data_combined.shape}")
 
                         # === INTEGRATE QUALITY MONITORING ===
                         if self.factor_quality_monitor is not None and not alpha_data_combined.empty:

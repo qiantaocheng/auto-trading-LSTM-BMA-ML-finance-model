@@ -1,6 +1,9 @@
 import numpy as np
 import pandas as pd
 import logging
+from sklearn.isotonic import IsotonicRegression
+from scipy.stats import rankdata, spearmanr
+import lightgbm as lgb
 
 """
 Learning-to-Rank Isotonic Stacking Meta-Learner
@@ -57,9 +60,12 @@ try:
     TIME_ALIGNMENT_AVAILABLE = True
 except ImportError:
     TIME_ALIGNMENT_AVAILABLE = False
-    logger.warning("时间对齐工具未找到，使用原有处理方式")
 
 logger = logging.getLogger(__name__)
+
+# Log import status after logger is defined
+if not TIME_ALIGNMENT_AVAILABLE:
+    logger.warning("时间对齐工具未找到，使用原有处理方式")
 
 # 导入统一配置
 try:
@@ -153,80 +159,7 @@ def _spearman_ic_eval(preds: np.ndarray, dataset: lgb.Dataset):
     return ('spearman_ic', float(ic), True)
 
 
-def make_purged_splits(dates_sorted: np.ndarray, n_splits=5, embargo=10,
-                      production_mode: bool = False) -> List[Tuple]:
-    """
-    智能时序CV（带 purge + embargo）的折生成器
-    专为生产环境设计，防止数据泄漏，最大化训练效果
-
-    Args:
-        dates_sorted: 升序的不重复交易日数组
-        n_splits: CV折数
-        embargo: 禁用期天数（防止前瞻偏差）
-        production_mode: 生产模式，最大化训练数据使用
-
-    Returns:
-        [(train_date_idx, valid_date_idx), ...]
-    """
-    n = len(dates_sorted)
-
-    if production_mode:
-        # 生产模式：更激进的训练数据使用
-        # 每折使用更多历史数据，验证集更小
-        logger.info("🎯 生产模式时序CV：最大化训练数据")
-
-        fold_size = n // (n_splits * 2)  # 验证集更小
-        train_ratio = 0.8  # 80%用于训练，20%用于验证
-
-        splits = []
-        for k in range(n_splits):
-            # 动态增长的训练集
-            train_end = int(n * train_ratio * (k + 1) / n_splits)
-            valid_start = train_end + embargo
-            valid_end = min(valid_start + fold_size, n)
-
-            if valid_end <= valid_start or train_end <= embargo:
-                continue
-
-            train_idx = np.arange(0, train_end)
-            valid_idx = np.arange(valid_start, valid_end)
-            splits.append((train_idx, valid_idx))
-
-            logger.info(f"   生产CV折 {k+1}: 训练[0:{train_end}], 验证[{valid_start}:{valid_end}], embargo={embargo}天")
-
-    else:
-        # 开发模式：标准均匀分割
-        fold_size = n // (n_splits + 1)  # 留出末段做测试/留白
-        splits = []
-
-        for k in range(n_splits):
-            train_end = fold_size * (k + 1)
-            valid_start = train_end + embargo
-            valid_end = min(valid_start + fold_size, n)
-
-            if valid_end <= valid_start:
-                break
-
-            train_idx = np.arange(0, train_end)   # [0, train_end)
-            valid_idx = np.arange(valid_start, valid_end)
-            splits.append((train_idx, valid_idx))
-
-    # 数据泄漏安全检查
-    for i, (train_idx, valid_idx) in enumerate(splits):
-        if len(train_idx) == 0 or len(valid_idx) == 0:
-            logger.warning(f"⚠️ CV折 {i+1} 数据不足，跳过")
-            continue
-
-        # 确保时间严格递增
-        max_train_date = dates_sorted[train_idx].max()
-        min_valid_date = dates_sorted[valid_idx].min()
-
-        if max_train_date >= min_valid_date:
-            raise ValueError(f"❌ 数据泄漏风险：CV折 {i+1} 训练集最大日期 {max_train_date} >= 验证集最小日期 {min_valid_date}")
-
-        logger.info(f"✅ CV折 {i+1} 时间安全：训练截止 {max_train_date}, 验证开始 {min_valid_date}")
-
-    return splits
+# make_purged_splits函数已被删除 - 二层CV功能已完全移除
 
 
 class LtrIsotonicStacker:
@@ -248,7 +181,8 @@ class LtrIsotonicStacker:
                  random_state=None,
                  external_date_splits=None,
                  disable_cv=False,
-                 calibrator_holdout_frac=0.1):
+                 calibrator_holdout_frac=0.1,
+                 disable_calibration=False):
         """
         初始化 LTR Stacker
 
@@ -277,6 +211,7 @@ class LtrIsotonicStacker:
         # 允许禁用二层CV，直接使用全量训练 + 独立持出校准
         self.disable_cv_ = bool(disable_cv)
         self.calibrator_holdout_frac_ = float(calibrator_holdout_frac)
+        self.disable_calibration_ = bool(disable_calibration)
 
         # 简化的 LightGBM 回归参数
         self.lgbm_params_ = lgbm_params or dict(
@@ -294,6 +229,8 @@ class LtrIsotonicStacker:
         self.cv_scores_ = []
         self.oof_predictions_ = None
         self.oof_targets_ = None
+        # Orientation: +1 means higher score implies higher expected returns
+        self._orientation_sign_ = 1.0
 
     def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         """统一预处理：对训练或推理数据都可用"""
@@ -646,25 +583,9 @@ class LtrIsotonicStacker:
                 if len(tr_idx) > 0 and len(va_idx) > 0:
                     splits.append((np.array(tr_idx), np.array(va_idx)))
 
-        # 若未提供或外部切分失效，则根据模式生成
-        if not isinstance(self.external_date_splits_, (list, tuple)) or len(self.external_date_splits_) == 0:
-            if max_train_to_today:
-                # 生产模式：最大化训练数据，减少CV折数，增加embargo
-                logger.info("🎯 生产模式：最大化训练数据使用")
-                splits = make_purged_splits(
-                    unique_dates,
-                    n_splits=max(2, self.n_splits_ // 2),  # 减少折数
-                    embargo=self.embargo_ * 2,  # 加强时间隔离
-                    production_mode=True  # 启用生产模式
-                )
-            else:
-                # 开发模式：标准CV
-                splits = make_purged_splits(
-                    unique_dates,
-                    n_splits=self.n_splits_,
-                    embargo=self.embargo_,
-                    production_mode=False
-                )
+        # 二层CV已完全禁用 - 强制使用全量训练模式
+        logger.info("🚫 二层CV已完全禁用，强制使用全量训练模式")
+        splits = []  # 空的splits将确保跳过CV循环
 
         # 收集 OOF 预测用于全局 Isotonic 校准
         oof_preds = []
@@ -731,13 +652,23 @@ class LtrIsotonicStacker:
                     return self.gbm.predict(X, num_iteration=self.gbm.best_iteration)
             self.ranker_ = LGBWrapper(gbm)
 
-            # 校准器用holdout上的预测
-            va_pred = self.ranker_.predict(X_va_clean)
+            # 方向检测：确保分数与收益单调同向
+            try:
+                probe_pred = self.ranker_.predict(X_tr_clean)
+                corr_probe = np.corrcoef(probe_pred, y_tr_clean)[0, 1] if len(probe_pred) > 2 else 0.0
+                if not np.isfinite(corr_probe):
+                    corr_probe = 0.0
+                self._orientation_sign_ = 1.0 if corr_probe >= 0 else -1.0
+                logger.info(f"模型-收益方向: {'正向' if self._orientation_sign_>0 else '反向'} (corr={corr_probe:.4f})")
+            except Exception as _e:
+                logger.warning(f"方向探测失败，默认正向: {_e}")
+                self._orientation_sign_ = 1.0
+
+            # 校准器用holdout上的预测（方向对齐 + 平滑Isotonic）
+            va_pred = self.ranker_.predict(X_va_clean) * self._orientation_sign_
             if len(va_pred) > 100:
-                if getattr(self, 'calibrator_', None) is None:
-                    self.calibrator_ = IsotonicRegression(out_of_bounds='clip')
-                self.calibrator_.fit(va_pred, y_va_clean)
-                logger.info(f"校准器基于holdout重新拟合: n={len(va_pred)}")
+                self._fit_smoothed_isotonic(va_pred.astype(float), y_va_clean.astype(float), n_bins=50)
+                logger.info(f"校准器基于holdout重新拟合(平滑Isotonic): n={len(va_pred)}")
             else:
                 logger.warning("holdout样本不足，跳过校准器拟合")
 
@@ -745,252 +676,10 @@ class LtrIsotonicStacker:
             self.cv_scores_ = []
             logger.info("已禁用CV，因此不计算CV IC")
 
-        else:
-            logger.info(f"生成 {len(splits)} 个时序CV折")
-            for fold_idx, (tr_idx, va_idx) in enumerate(splits):
-                dates_tr = unique_dates[tr_idx]
-                dates_va = unique_dates[va_idx]
+        # 二层CV已被完全删除 - else分支已移除
+        logger.info("🚫 二层CV已彻底删除 - 所有训练都使用全量数据模式")
 
-                df_tr = df.loc[df.index.get_level_values('date').isin(dates_tr)]
-                df_va = df.loc[df.index.get_level_values('date').isin(dates_va)]
-
-                logger.info(f"Fold {fold_idx+1}/{len(splits)}: 训练 {len(df_tr)} 样本, 验证 {len(df_va)} 样本")
-
-                X_tr = df_tr[actual_base_cols].values
-                y_tr = _winsorize_by_date(df_tr[label_col], self.winsor_limits_).values
-
-                X_va = df_va[actual_base_cols].values
-                y_va = _winsorize_by_date(df_va[label_col], self.winsor_limits_).values
-
-                # 清理训练数据中的NaN值
-                train_valid_mask = (~np.isnan(y_tr) &
-                                   ~np.isinf(y_tr) &
-                                   np.isfinite(X_tr).all(axis=1))
-
-                X_tr_clean = X_tr[train_valid_mask]
-                y_tr_clean = y_tr[train_valid_mask]
-
-                # 清理验证数据中的NaN值
-                val_valid_mask = (~np.isnan(y_va) &
-                                 ~np.isinf(y_va) &
-                                 np.isfinite(X_va).all(axis=1))
-
-                X_va_clean = X_va[val_valid_mask]
-                y_va_clean = y_va[val_valid_mask]
-
-                # 检查清理后的数据量
-                if len(X_tr_clean) < 10:
-                    logger.warning(f"Fold {fold_idx+1}: 训练数据清理后样本不足 ({len(X_tr_clean)}), 跳过")
-                    self.cv_scores_.append(0.0)
-                    # 跳过当前fold的后续步骤
-                    goto_next_fold = True
-                else:
-                    goto_next_fold = False
-
-                if not goto_next_fold and len(X_va_clean) < 5:
-                    logger.warning(f"Fold {fold_idx+1}: 验证数据清理后样本不足 ({len(X_va_clean)}), 跳过")
-                    self.cv_scores_.append(0.0)
-                    goto_next_fold = True
-
-                if goto_next_fold:
-                    # 显式跳过该fold
-                    pass
-                else:
-                    logger.info(f"Fold {fold_idx+1}: 数据清理 训练 {len(X_tr)} -> {len(X_tr_clean)}, 验证 {len(X_va)} -> {len(X_va_clean)}")
-
-                    # 训练 regressor (最安全的LightGBM方式)
-                    import lightgbm as lgb_clean
-
-                    # 创建干净的数据集
-                    train_data = lgb_clean.Dataset(X_tr_clean, label=y_tr_clean, free_raw_data=False)
-
-                    # 自适应回归参数 - 根据训练样本数调整
-                    n_samples = len(X_tr_clean)
-
-                    # 生产级自适应参数调整
-                    if n_samples < 100:
-                        min_data_in_leaf = 1
-                        num_leaves = max(3, n_samples // 20)
-                        learning_rate = 0.1
-                        early_stopping_rounds = max(5, n_samples // 10)
-                        feature_fraction = 1.0
-                        bagging_fraction = 1.0
-                        lambda_l1 = 0.0
-                        lambda_l2 = 0.0
-                    elif n_samples < 1000:
-                        min_data_in_leaf = max(1, n_samples // 50)
-                        num_leaves = max(5, min(15, n_samples // 20))
-                        learning_rate = 0.08
-                        early_stopping_rounds = max(10, n_samples // 20)
-                        feature_fraction = 0.95
-                        bagging_fraction = 0.95
-                        lambda_l1 = 0.001
-                        lambda_l2 = 0.001
-                    elif n_samples < 50000:
-                        min_data_in_leaf = max(3, n_samples // 100)
-                        num_leaves = max(15, min(63, n_samples // 50))
-                        learning_rate = 0.05
-                        early_stopping_rounds = 30
-                        feature_fraction = 0.9
-                        bagging_fraction = 0.9
-                        lambda_l1 = 0.01
-                        lambda_l2 = 0.01
-                    else:
-                        # 大规模数据集 - 激进参数防止常数预测
-                        min_data_in_leaf = max(1, min(10, n_samples // 10000))
-                        num_leaves = max(127, min(255, n_samples // 2000))
-                        learning_rate = 0.03
-                        early_stopping_rounds = 100
-                        feature_fraction = 0.8
-                        bagging_fraction = 0.8
-                        lambda_l1 = 0.001
-                        lambda_l2 = 0.001
-
-                    # 合并用户/默认参数，但强制回归目标
-                    params = {
-                        'objective': 'regression',
-                        'boosting_type': 'gbdt',
-                        'metric': 'rmse',
-                        'num_leaves': num_leaves,
-                        'learning_rate': learning_rate,
-                        'feature_fraction': feature_fraction,
-                        'bagging_fraction': bagging_fraction,
-                        'bagging_freq': 1,
-                        'lambda_l1': lambda_l1,
-                        'lambda_l2': lambda_l2,
-                        'min_data_in_leaf': min_data_in_leaf,
-                        'verbosity': -1,
-                        'seed': self.random_state_,
-                        'force_row_wise': True,
-                        'min_sum_hessian_in_leaf': 1e-3
-                    }
-                    if isinstance(self.lgbm_params_, dict):
-                        # 先应用用户参数
-                        params.update(self.lgbm_params_)
-
-                    # 🔒 强制回归目标 - 防止ranking配置导致错误
-                    # CRITICAL: 必须在应用用户参数后强制设置，防止被覆盖
-                    params['objective'] = 'regression'
-                    params['metric'] = 'rmse'  # 确保metric也是回归类型
-
-                    # 移除任何ranking相关参数
-                    ranking_params = ['label_gain', 'lambdarank_truncation_level', 'lambdarank_norm']
-                    for rp in ranking_params:
-                        if rp in params:
-                            logger.warning(f"⚠️ 移除ranking参数: {rp}")
-                            del params[rp]
-
-                    logger.info(f"自适应参数: n_samples={n_samples}, min_data_in_leaf={min_data_in_leaf}, num_leaves={num_leaves}, early_stopping={early_stopping_rounds}")
-                    logger.info(f"🔒 确认CV参数 - objective: {params['objective']}, metric: {params['metric']}")
-
-                    # 使用core API训练（强制回归模式）
-                    valid_sets = [train_data]
-                    # 确保回归模式：不设置group信息，因为我们强制使用regression objective
-                    gbm = lgb_clean.train(
-                        params=params,
-                        train_set=train_data,
-                        num_boost_round=100,
-                        valid_sets=valid_sets,
-                        callbacks=[lgb_clean.early_stopping(early_stopping_rounds, verbose=False)]
-                    )
-
-                    # 包装为sklearn兼容对象
-                    class LGBWrapper:
-                        def __init__(self, gbm):
-                            self.gbm = gbm
-                            self.best_iteration_ = gbm.best_iteration
-                            self.feature_importances_ = gbm.feature_importance()
-
-                        def predict(self, X):
-                            return self.gbm.predict(X, num_iteration=self.gbm.best_iteration)
-
-                    ranker = LGBWrapper(gbm)
-
-                    # 验证集预测（OOF）
-                    va_pred = ranker.predict(X_va_clean)
-
-                    # 创建完整的验证预测，对于被过滤的样本用0填充
-                    va_pred_full = np.zeros(len(y_va))
-                    va_pred_full[val_valid_mask] = va_pred
-
-                    oof_preds.append(pd.Series(va_pred_full, index=df_va.index))
-                    oof_y.append(pd.Series(y_va, index=df_va.index))
-
-                    # 计算验证分数 - 使用鲁棒方法，只使用清理后的数据
-                    ic_score = self._calculate_ic_robust(va_pred, y_va_clean)
-                    self.cv_scores_.append(ic_score)
-                    if np.isnan(ic_score):
-                        logger.warning(f"Fold {fold_idx+1} IC: nan (数据质量问题)")
-                    else:
-                        logger.info(f"Fold {fold_idx+1} IC: {ic_score:.4f}")
-
-        # 合并OOF预测（仅在CV模式下）
-
-
-        if not self.disable_cv_ and oof_preds:
-
-
-            oof_preds = pd.concat(oof_preds).sort_index()
-
-
-            oof_y = pd.concat(oof_y).sort_index()
-
-
-            self.oof_predictions_ = oof_preds
-
-
-            self.oof_targets_ = oof_y
-
-
-        else:
-
-
-            # CV禁用模式：没有OOF预测
-
-
-            self.oof_predictions_ = None
-
-
-            self.oof_targets_ = None
-
-
-            if self.disable_cv_:
-
-
-                logger.info("CV已禁用，跳过OOF预测合并")
-
-        # 计算CV平均IC，忽略NaN值
-        valid_scores = [s for s in self.cv_scores_ if not np.isnan(s)]
-        if valid_scores:
-            mean_ic = np.mean(valid_scores)
-            std_ic = np.std(valid_scores)
-            logger.info(f"📊 CV平均IC: {mean_ic:.4f} (std: {std_ic:.4f}) - {len(valid_scores)}/{len(self.cv_scores_)} 有效折")
-        else:
-            mean_ic = 0.0
-            logger.warning("📊 CV平均IC: 无有效分数")
-
-        # 训练全局 Isotonic（保持单调、校正刻度）
-        if not self.disable_cv_ and self.oof_predictions_ is not None:
-            logger.info("训练全局 Isotonic 校准器...")
-
-            # 清理OOF数据中的NaN值
-            oof_pred_vals = self.oof_predictions_.values
-            oof_y_vals = self.oof_targets_.values
-
-            isotonic_valid_mask = (~np.isnan(oof_pred_vals) &
-                                  ~np.isnan(oof_y_vals) &
-                                  np.isfinite(oof_pred_vals) &
-                                  np.isfinite(oof_y_vals))
-
-            oof_pred_clean = oof_pred_vals[isotonic_valid_mask]
-            oof_y_clean = oof_y_vals[isotonic_valid_mask]
-
-            logger.info(f"Isotonic校准数据清理: {len(oof_pred_vals)} -> {len(oof_pred_clean)} 样本")
-
-            # 使用改进的平滑Isotonic校准，使用更多bins保持多样性
-            self._fit_smoothed_isotonic(oof_pred_clean, oof_y_clean, n_bins=min(200, len(oof_pred_clean)//10))
-        else:
-            logger.info("CV已禁用或无OOF数据，校准器已在holdout数据上训练")
+        # 二层CV已被完全删除 - 直接进入最终训练阶段
 
         # 最大化训练数据：使用所有可用历史数据到当天
         logger.info("🎯 最大化训练模型：使用所有历史数据到当天...")
@@ -1100,26 +789,24 @@ class LtrIsotonicStacker:
         self.ranker_ = LGBWrapper(final_gbm)
 
         # 使用最终模型的预测重新拟合（或微调）校准器，降低OOF/FINAL分布差异的影响
-        try:
-            logger.info("🔄 使用最终模型预测重新校准Isotonic/线性校准器...")
-            final_raw_pred = self.ranker_.predict(X_all_clean)
-            # 清理无效值
-            mask_final = (~np.isnan(final_raw_pred) & ~np.isinf(final_raw_pred) & ~np.isnan(y_all_clean) & ~np.isinf(y_all_clean))
-            x_final = final_raw_pred[mask_final]
-            y_final = y_all_clean[mask_final]
-            if len(x_final) > 100:
-                if getattr(self, 'calibrator_type_', 'isotonic') == 'linear':
-                    from sklearn.linear_model import LinearRegression
-                    self.calibrator_ = LinearRegression()
-                    self.calibrator_.fit(x_final.reshape(-1, 1), y_final)
+        if not self.disable_calibration_:
+            try:
+                logger.info("🔄 使用最终模型预测重新校准Isotonic/线性校准器...")
+                final_raw_pred = self.ranker_.predict(X_all_clean) * self._orientation_sign_
+                # 清理无效值
+                mask_final = (~np.isnan(final_raw_pred) & ~np.isinf(final_raw_pred) & ~np.isnan(y_all_clean) & ~np.isinf(y_all_clean))
+                x_final = final_raw_pred[mask_final]
+                y_final = y_all_clean[mask_final]
+                if len(x_final) > 100:
+                    # 统一使用平滑Isotonic，确保全局单调且具备足够分辨率
+                    self._fit_smoothed_isotonic(x_final.astype(float), y_final.astype(float), n_bins=50)
+                    logger.info(f"✅ 校准器已基于最终模型预测重新拟合(平滑Isotonic): n={len(x_final)}")
                 else:
-                    # 默认或平滑Isotonic，直接在最终预测上微调一次
-                    self.calibrator_.fit(x_final, y_final)
-                logger.info(f"✅ 校准器已基于最终模型预测重新拟合: n={len(x_final)}")
-            else:
-                logger.warning("最终模型预测样本不足，跳过重新校准")
-        except Exception as _e:
-            logger.warning(f"最终模型重新校准失败: {_e}")
+                    logger.warning("最终模型预测样本不足，跳过重新校准")
+            except Exception as _e:
+                logger.warning(f"最终模型重新校准失败: {_e}")
+        else:
+            logger.info("🚫 校准已禁用，跳过校准器拟合")
 
         # 保存特征重要性
         self.feature_importance_ = pd.DataFrame({
@@ -1164,7 +851,7 @@ class LtrIsotonicStacker:
         self._validate_feature_quality(X, df_today)
 
         # LightGBM 预测
-        raw = self.ranker_.predict(X)
+        raw = self.ranker_.predict(X) * self._orientation_sign_
 
         # 预测质量检查
         if np.std(raw) < 1e-8:
@@ -1306,6 +993,11 @@ class LtrIsotonicStacker:
         优化的自适应校准，专注于预测准确性
         减少过度校准，保持预测信号强度
         """
+        # 检查是否禁用校准
+        if self.disable_calibration_:
+            logger.info("校准已禁用，使用原始预测")
+            return raw_predictions
+
         # 检查校准器是否可用
         if self.calibrator_ is None:
             logger.info("校准器未拟合，直接返回原始预测")
@@ -1332,6 +1024,15 @@ class LtrIsotonicStacker:
         # 高级校准质量分析
         calibrated_std = np.std(calibrated)
         raw_std = np.std(raw_predictions)
+
+        # 检查校准后的预测是否出现异常（全部为负或分布异常）
+        calibrated_mean = np.mean(calibrated)
+        raw_mean = np.mean(raw_predictions)
+
+        # 如果校准后的预测全部为负且原始预测不是，说明校准有问题
+        if calibrated_mean < 0 and np.max(calibrated) < 0 and raw_mean >= 0:
+            logger.warning(f"⚠️ 校准器输出异常：全部为负值 (mean={calibrated_mean:.6f})，使用原始预测")
+            return raw_predictions
         variance_ratio = calibrated_std / (raw_std + 1e-12)
         unique_ratio = len(np.unique(calibrated)) / len(calibrated)
 
@@ -1345,19 +1046,25 @@ class LtrIsotonicStacker:
         logger.info(f"   信号保持率: {signal_retention:.3f}")
         logger.info(f"   动态范围比: {dynamic_range:.3f}")
 
-        # 直接使用校准结果，不进行混合策略
-        logger.info(f"✅ 使用完整校准结果")
+        # 根据质量决定是否使用校准
+        if variance_ratio < 0.1:
+            logger.warning("⚠️ 校准后方差严重降低，使用原始预测")
+            return raw_predictions
+        elif unique_ratio < 0.001:
+            logger.warning(f"⚠️ 校准输出唯一值比例过低: {unique_ratio:.3f}, 使用原始预测")
+            return raw_predictions
+        elif variance_ratio > 5.0:
+            logger.warning(f"⚠️ 校准后方差异常增大: {variance_ratio:.3f}, 使用原始预测")
+            return raw_predictions
+        elif signal_retention < 0.1:
+            logger.warning(f"⚠️ 校准后信号丢失严重: {signal_retention:.3f}, 使用原始预测")
+            return raw_predictions
+        else:
+            logger.info("✅ 使用完整校准结果")
 
-        # 简化质量验证 - 只做基本检查，不轻易回退
+        # 最终质量验证
         final_std = np.std(calibrated)
         final_unique_ratio = len(np.unique(calibrated)) / len(calibrated)
-
-        # 只在极端情况下记录警告，但仍使用校准结果
-        if final_std < 1e-12:
-            logger.warning(f"⚠️ 校准输出方差极小: {final_std:.12f}, 但仍使用校准结果")
-
-        if final_unique_ratio < 0.01:
-            logger.warning(f"⚠️ 校准输出唯一值比例很低: {final_unique_ratio:.3f}, 但仍使用校准结果")
 
         logger.info(f"✅ 校准质量验证通过：std={final_std:.6f}, unique_ratio={final_unique_ratio:.3f}")
         return calibrated
