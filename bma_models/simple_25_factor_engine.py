@@ -22,24 +22,36 @@ logger = logging.getLogger(__name__)
 # THE EXACT 20 FACTORS REQUIRED BY BMA (Optimized)
 # Removed: macd_histogram (redundant with momentum), stoch_k (redundant with RSI), market_cap_proxy (weak size effect)
 # Removed: atr_20d (redundant with atr_ratio), ad_line (redundant with obv_momentum/MFI), quality_consistency (redundant with quality_proxy)
-# Added: ivol_60d (idiosyncratic volatility - excellent for T+10 prediction)
-REQUIRED_20_FACTORS = [
+# Updated: Added 4 new factors for better T+5 prediction
+# Total: 24 factors (20 original + 4 new high-alpha factors)
+REQUIRED_24_FACTORS = [
+    # Original momentum factors
     'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
+    # Technical indicators
     'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
     'obv_momentum',  # Removed ad_line (redundant)
     'atr_ratio',     # Removed atr_20d (redundant)
     'cci', 'mfi',
-    'ivol_60d',      # NEW: Idiosyncratic volatility factor
+    'ivol_60d',      # Idiosyncratic volatility factor
+    # Fundamental factors
     'value_proxy', 'quality_proxy', 'profitability_proxy',
     'liquidity_factor', 'growth_proxy', 'profitability_momentum',
-    'growth_acceleration', 'financial_resilience'  # Removed quality_consistency (redundant)
+    'growth_acceleration', 'financial_resilience',
+    # NEW HIGH-ALPHA FACTORS (4 additions)
+    'near_52w_high',      # 52-week high momentum
+    'reversal_5d',        # 5-day reversal
+    'rel_volume_spike',   # Volume spike relative to 20-day max
+    'mom_accel_10_5'      # Momentum acceleration (5d vs 10d)
 ]
 
-class Simple20FactorEngine:
+# Keep backward compatibility
+REQUIRED_20_FACTORS = REQUIRED_24_FACTORS[:20]  # First 20 factors for compatibility
+
+class Simple24FactorEngine:
     """
-    Simple 20 Factor Engine - No Dependencies
-    Directly computes all 20 optimized factors with robust implementation
-    (Removed redundant factors + Added IVOL for better ML performance)
+    Simple 24 Factor Engine - No Dependencies
+    Directly computes all 24 optimized factors with robust implementation
+    (20 original optimized factors + 4 new high-alpha factors for T+5 prediction)
     """
     
     def __init__(self, lookback_days: int = 252):
@@ -144,8 +156,8 @@ class Simple20FactorEngine:
             
         return pd.DataFrame()
     
-    def compute_all_20_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
-        """Compute all 20 optimized factors directly (including IVOL)"""
+    def compute_all_24_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+        """Compute all 24 optimized factors directly (20 original + 4 new high-alpha)"""
         import time
         
         if market_data.empty:
@@ -268,6 +280,14 @@ class Simple20FactorEngine:
         factor_timings['fundamental'] = time.time() - start_t
         logger.info(f"   Fundamental factors computed in {factor_timings['fundamental']:.3f}s")
         all_factors.append(fundamental_results)
+
+        # NEW: 21-24: High-Alpha Factors
+        logger.info("Computing 4 new high-alpha factors...")
+        start_t = time.time()
+        new_alpha_results = self._compute_new_alpha_factors(market_data_clean, grouped)
+        factor_timings['new_alpha'] = time.time() - start_t
+        logger.info(f"   New alpha factors computed in {factor_timings['new_alpha']:.3f}s")
+        all_factors.append(new_alpha_results)
         
         # Combine all factor DataFrames
         factors_df = pd.concat(all_factors, axis=1)
@@ -286,19 +306,19 @@ class Simple20FactorEngine:
         factors_df[factor_columns] = factors_df[factor_columns].replace([np.inf, -np.inf], 0)
         factors_df[factor_columns] = factors_df[factor_columns].fillna(0)
         
-        # Verify all factors are present
-        missing = set(REQUIRED_20_FACTORS) - set(factors_df.columns)
+        # Verify all 24 factors are present
+        missing = set(REQUIRED_24_FACTORS) - set(factors_df.columns)
         if missing:
             logger.error(f"Missing factors: {missing}")
             for factor in missing:
                 factors_df[factor] = 0.0
-        
-        # Reorder columns: 20 factors first, then Close for target generation
-        column_order = REQUIRED_20_FACTORS + ['Close']
+
+        # Reorder columns: 24 factors first, then Close for target generation
+        column_order = REQUIRED_24_FACTORS + ['Close']
         factors_df = factors_df[column_order]
-        
+
         logger.info("=" * 60)
-        logger.info(f"ALL 20 FACTORS + CLOSE COMPUTED: {factors_df.shape}")
+        logger.info(f"ALL 24 FACTORS + CLOSE COMPUTED: {factors_df.shape}")
         logger.info("Factor Computation Timing:")
         total_time = sum(factor_timings.values())
         for name, duration in factor_timings.items():
@@ -368,6 +388,49 @@ class Simple20FactorEngine:
             'momentum_reversal_short': momentum_reversal_short
         }, index=data.index)
     
+    def _compute_new_alpha_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
+        """
+        Compute 4 new high-alpha factors:
+        - near_52w_high: 52-week high momentum
+        - reversal_5d: 5-day reversal
+        - rel_volume_spike: Volume spike relative to 20-day max
+        - mom_accel_10_5: Momentum acceleration (5d vs 10d)
+        """
+        logger.info("📊 [NEW FACTORS] Computing 4 high-alpha factors")
+
+        # Compute factors using grouped operations and transform to preserve index
+        logger.info("   🔄 Computing near_52w_high (52-week high momentum)...")
+        high_252 = data.groupby('ticker')['High'].transform(lambda x: x.rolling(252, min_periods=20).max())
+        near_52w_high = ((data['Close'] / high_252) - 1).fillna(0)
+        logger.info(f"   ✅ near_52w_high: mean={near_52w_high.mean():.4f}, std={near_52w_high.std():.4f}")
+
+        logger.info("   🔄 Computing reversal_5d (5-day mean reversion)...")
+        close_5d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(5))
+        reversal_5d = -(((data['Close'] - close_5d_ago) / close_5d_ago)).fillna(0)
+        logger.info(f"   ✅ reversal_5d: mean={reversal_5d.mean():.4f}, std={reversal_5d.std():.4f}")
+
+        logger.info("   🔄 Computing rel_volume_spike (volume anomaly)...")
+        volume_max_20 = data.groupby('ticker')['Volume'].transform(lambda x: x.rolling(20, min_periods=1).max())
+        rel_volume_spike = (data['Volume'] / volume_max_20.clip(lower=1)).fillna(0)
+        logger.info(f"   ✅ rel_volume_spike: mean={rel_volume_spike.mean():.4f}, std={rel_volume_spike.std():.4f}")
+
+        logger.info("   🔄 Computing mom_accel_10_5 (momentum acceleration)...")
+        close_10d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(10))
+        close_5d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(5))
+        mom_10 = (data['Close'] - close_10d_ago) / close_10d_ago
+        mom_5 = (data['Close'] - close_5d_ago) / close_5d_ago
+        mom_accel_10_5 = (mom_5 - mom_10).fillna(0)
+        logger.info(f"   ✅ mom_accel_10_5: mean={mom_accel_10_5.mean():.4f}, std={mom_accel_10_5.std():.4f}")
+
+        logger.info("   ✅ New alpha factors computation completed")
+
+        return pd.DataFrame({
+            'near_52w_high': near_52w_high,
+            'reversal_5d': reversal_5d,
+            'rel_volume_spike': rel_volume_spike,
+            'mom_accel_10_5': mom_accel_10_5
+        }, index=data.index)
+
     def _compute_mean_reversion_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """Compute mean reversion factors: rsi, bollinger_position, price_to_ma20, bollinger_squeeze"""
         
@@ -679,6 +742,22 @@ class Simple20FactorEngine:
             return pd.DataFrame({'ivol_60d': np.zeros(len(data))}, index=data.index)
 
 
+class Simple21FactorEngine(Simple24FactorEngine):
+    """Compatibility wrapper for the main model (T+5 optimized path).
+
+    Provides the interface expected by `量化模型_bma_ultra_enhanced.py`,
+    delegating computations to the existing 20-factor engine implementation.
+    """
+
+    def compute_all_21_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+        """Compute factors via the 20-factor engine.
+
+        Returns a DataFrame with 20 factor columns plus 'Close', matching
+        the expected 21-column layout in the caller logs.
+        """
+        return super().compute_all_20_factors(market_data)
+
+
 def test_simple_20_factor_engine():
     """Test the simple 20 factor engine"""
     logger.info("Testing Simple 20 Factor Engine...")
@@ -739,6 +818,28 @@ def test_simple_20_factor_engine():
         traceback.print_exc()
         return None
 
+
+# Backward compatibility aliases
+Simple20FactorEngine = Simple24FactorEngine  # Alias for backward compatibility
+Simple25FactorEngine = Simple24FactorEngine  # Alias for name consistency
+
+# Add backward compatibility method to the class
+def compute_all_20_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+    """Backward compatibility: compute first 20 factors only"""
+    all_24_factors = self.compute_all_24_factors(market_data)
+    if not all_24_factors.empty:
+        # Return only the first 20 factors + Close
+        return all_24_factors[REQUIRED_20_FACTORS + ['Close']]
+    return all_24_factors
+
+# Add backward compatibility method to the class
+def compute_all_21_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+    """Backward compatibility: alias for compute_all_24_factors"""
+    return self.compute_all_24_factors(market_data)
+
+# Monkey-patch the methods onto the class
+Simple24FactorEngine.compute_all_20_factors = compute_all_20_factors
+Simple24FactorEngine.compute_all_21_factors = compute_all_21_factors
 
 if __name__ == "__main__":
     # Setup logging

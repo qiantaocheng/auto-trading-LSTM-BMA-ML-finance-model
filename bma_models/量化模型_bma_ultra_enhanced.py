@@ -7803,11 +7803,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     })
 
                 pred_df = pred_df.sort_values('score', ascending=False)
-                top_n = min(10, len(pred_df))
-                recommendations = pred_df.head(top_n).to_dict('records')
+
+                # Excel使用Top 20，终端显示Top 10
+                top_20_for_excel = min(20, len(pred_df))
+                top_10_for_display = min(10, len(pred_df))
+
+                # Excel推荐列表 (Top 20)
+                recommendations = pred_df.head(top_20_for_excel).to_dict('records')
                 analysis_results['recommendations'] = recommendations
-                logger.info(f"\n🏆 Top {top_n} 推荐股票:")
-                for i, rec in enumerate(recommendations, 1):
+
+                # 终端显示 (Top 10)
+                logger.info(f"\n🏆 Top {top_10_for_display} 推荐股票:")
+                for i, rec in enumerate(recommendations[:top_10_for_display], 1):
                     logger.info(f"  {i}. {rec['ticker']}: {rec['score']:.6f}")
             else:
                 analysis_results['recommendations'] = []
