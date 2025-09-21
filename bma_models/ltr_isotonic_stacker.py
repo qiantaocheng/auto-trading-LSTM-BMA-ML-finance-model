@@ -706,7 +706,7 @@ class LtrIsotonicStacker:
             # 校准器用holdout上的预测（方向对齐 + 平滑Isotonic）
             va_pred = self.ranker_.predict(X_va_clean) * self._orientation_sign_
             if len(va_pred) > 100:
-                self._fit_smoothed_isotonic(va_pred.astype(float), y_va_clean.astype(float), n_bins=50)
+                self._fit_smoothed_isotonic(va_pred.astype(float), y_va_clean.astype(float), n_bins=15)
                 logger.info(f"校准器基于holdout重新拟合(平滑Isotonic): n={len(va_pred)}")
             else:
                 logger.warning("holdout样本不足，跳过校准器拟合")
@@ -851,7 +851,7 @@ class LtrIsotonicStacker:
                 y_final = y_all_clean[mask_final]
                 if len(x_final) > 100:
                     # 统一使用平滑Isotonic，确保全局单调且具备足够分辨率
-                    self._fit_smoothed_isotonic(x_final.astype(float), y_final.astype(float), n_bins=50)
+                    self._fit_smoothed_isotonic(x_final.astype(float), y_final.astype(float), n_bins=15)
                     logger.info(f"✅ 校准器已基于最终模型预测重新拟合(平滑Isotonic): n={len(x_final)}")
                 else:
                     logger.warning("最终模型预测样本不足，跳过重新校准")
@@ -966,15 +966,15 @@ class LtrIsotonicStacker:
         scores = self.predict(df_today)
         return scores[['score']]
 
-    def _fit_smoothed_isotonic(self, oof_pred_clean, oof_y_clean, n_bins=50):
+    def _fit_smoothed_isotonic(self, oof_pred_clean, oof_y_clean, n_bins=15):
         """
         训练平滑的Isotonic回归，防止过拟合
-        使用分桶方法减少过度拟合
+        使用分桶方法减少过度拟合 - 优化版本减少过度平滑
         """
-        logger.info(f"训练平滑Isotonic校准器 (n_bins={n_bins})...")
+        logger.info(f"训练优化Isotonic校准器 (n_bins={n_bins})...")
 
         # 如果样本数太少，直接使用线性校准
-        if len(oof_pred_clean) < n_bins * 2:
+        if len(oof_pred_clean) < n_bins * 5:  # 提高最小样本要求
             logger.info("样本数不足，使用线性校准")
             self.calibrator_type_ = 'linear'
             from sklearn.linear_model import LinearRegression
@@ -982,17 +982,17 @@ class LtrIsotonicStacker:
             self.calibrator_.fit(oof_pred_clean.reshape(-1, 1), oof_y_clean)
             return
 
-        # 分桶平滑处理
+        # 分桶平滑处理 - 优化版本
         try:
             # 按预测值排序
             sorted_indices = np.argsort(oof_pred_clean)
             pred_sorted = oof_pred_clean[sorted_indices]
             y_sorted = oof_y_clean[sorted_indices]
 
-            # 计算分桶 - 使用更小的最小桶大小以保持更多多样性
+            # 自适应分桶大小 - 保持更多信号多样性
             bin_size = len(pred_sorted) // n_bins
-            if bin_size < 3:  # 降低最小桶大小从5到3
-                bin_size = 3
+            if bin_size < 10:  # 提高最小桶大小，减少噪音
+                bin_size = 10
                 n_bins = len(pred_sorted) // bin_size
 
             binned_x = []
@@ -1003,9 +1003,9 @@ class LtrIsotonicStacker:
                 bin_x = pred_sorted[i:end_idx]
                 bin_y = y_sorted[i:end_idx]
 
-                # 使用分桶内的中位数/均值
-                binned_x.append(np.median(bin_x))
-                binned_y.append(np.mean(bin_y))
+                # 使用更保守的统计量，减少过度平滑
+                binned_x.append(np.percentile(bin_x, 50))  # 中位数更稳健
+                binned_y.append(np.percentile(bin_y, 50))  # 中位数更稳健
 
             binned_x = np.array(binned_x)
             binned_y = np.array(binned_y)
@@ -1017,21 +1017,27 @@ class LtrIsotonicStacker:
             self.calibrator_ = IsotonicRegression(out_of_bounds='clip')
             self.calibrator_.fit(binned_x, binned_y)
 
-            # 验证校准器质量
+            # 验证校准器质量 - 添加智能回退机制
             test_range = np.linspace(oof_pred_clean.min(), oof_pred_clean.max(), 100)
             test_output = self.calibrator_.transform(test_range)
             output_std = np.std(test_output)
+            input_std = np.std(oof_pred_clean)
 
             logger.info(f"校准器输出范围测试: std={output_std:.6f}")
 
-            # 相信Isotonic校准器，只记录信息不回退
-            logger.info(f"✅ Isotonic校准器训练完成，输出方差: {output_std:.6f}")
+            # 检查是否过度平滑（输出方差相对输入方差太小）
+            variance_retention = output_std / (input_std + 1e-12)
+            if variance_retention < 0.1:  # 如果方差保持率低于10%
+                logger.warning(f"⚠️ Isotonic校准器过度平滑 (方差保持率={variance_retention:.3f})，回退到线性校准")
+                self.calibrator_type_ = 'linear'
+                from sklearn.linear_model import LinearRegression
+                self.calibrator_ = LinearRegression()
+                self.calibrator_.fit(oof_pred_clean.reshape(-1, 1), oof_y_clean)
+                logger.info("✅ 已回退到线性校准器")
+                return
 
-            # 验证isotonic校准器效果
-            test_pred_range = np.linspace(oof_pred_clean.min(), oof_pred_clean.max(), 10)
-            test_output = self.calibrator_.transform(test_pred_range)
-            test_std = np.std(test_output)
-            logger.info(f"✅ Isotonic校准器测试方差: {test_std:.6f}")
+            logger.info(f"✅ Isotonic校准器训练完成，输出方差: {output_std:.6f}")
+            logger.info(f"✅ 方差保持率: {variance_retention:.3f}")
 
         except Exception as e:
             logger.warning(f"平滑Isotonic训练失败: {e}，使用线性校准")
@@ -1098,18 +1104,21 @@ class LtrIsotonicStacker:
         logger.info(f"   信号保持率: {signal_retention:.3f}")
         logger.info(f"   动态范围比: {dynamic_range:.3f}")
 
-        # 根据质量决定是否使用校准
-        if variance_ratio < 0.1:
+        # 根据质量决定是否使用校准 - 放宽阈值减少过度拒绝
+        if variance_ratio < 0.05:  # 从0.1降低到0.05，更宽松
             logger.warning("⚠️ 校准后方差严重降低，使用原始预测")
             return raw_predictions
-        elif unique_ratio < 0.001:
+        elif unique_ratio < 0.0005:  # 从0.001降低到0.0005，更宽松
             logger.warning(f"⚠️ 校准输出唯一值比例过低: {unique_ratio:.3f}, 使用原始预测")
             return raw_predictions
-        elif variance_ratio > 5.0:
+        elif variance_ratio > 10.0:  # 从5.0提高到10.0，更宽松
             logger.warning(f"⚠️ 校准后方差异常增大: {variance_ratio:.3f}, 使用原始预测")
             return raw_predictions
-        elif signal_retention < 0.1:
+        elif signal_retention < 0.05:  # 从0.1降低到0.05，更宽松
             logger.warning(f"⚠️ 校准后信号丢失严重: {signal_retention:.3f}, 使用原始预测")
+            return raw_predictions
+        elif dynamic_range < 0.05:  # 新增动态范围检查
+            logger.warning(f"⚠️ 校准后动态范围过小: {dynamic_range:.3f}, 使用原始预测")
             return raw_predictions
         else:
             logger.info("✅ 使用完整校准结果")
