@@ -6,18 +6,18 @@ from scipy.stats import rankdata, spearmanr
 import lightgbm as lgb
 
 """
-Learning-to-Rank Isotonic Stacking Meta-Learner
-Advanced second-layer model combining ranking-based learning with monotonic calibration.
+LightGBM Regressor + Isotonic Stacking Meta-Learner
+Advanced second-layer model combining regression-based learning with monotonic calibration.
 
 ARCHITECTURE:
-- Learning-to-Rank (LambdaRank): Optimizes ranking quality directly using NDCG
-- Isotonic Regression: Provides monotonic probability calibration
+- LightGBM Regressor: Optimizes continuous return prediction using regression objective
+- Isotonic Regression: Provides monotonic probability calibration for final predictions
 - No cross-validation in second layer: Direct full-sample training for efficiency
 - Temporal validation: Strict adherence to T+5 prediction horizon with proper lags
 
 IMPROVEMENTS OVER PREVIOUS SYSTEMS:
-- Replaces EWA (exponential weighted averaging) with sophisticated ranking optimization
-- Better handling of cross-sectional ranking dynamics in equity markets
+- Replaces EWA (exponential weighted averaging) with sophisticated regression optimization
+- Proper handling of continuous return targets (not ranking-based)
 - Superior calibration through isotonic regression vs linear calibration
 - 4-5x faster training compared to previous CV-based stacking approaches
 
@@ -25,7 +25,7 @@ INPUT REQUIREMENTS:
 - First layer predictions from XGBoost, CatBoost, and ElasticNet models
 - DataFrame with MultiIndex(date, ticker) format
 - Temporal alignment: Features at T-1, targets at T+5 (optimal lag for max prediction power)
-- Minimum sample requirements for stable training
+- Continuous return targets (ret_fwd_5d) for regression training
 
 QUALITY CONTROLS:
 - Production readiness validation before deployment
@@ -34,7 +34,7 @@ QUALITY CONTROLS:
 - Performance monitoring with IC and ICIR metrics
 
 Author: BMA Trading System
-Updated: September 2025 (Modernization)
+Updated: September 2025 (Regression Optimization)
 """
 
 import numpy as np
@@ -83,12 +83,7 @@ def _ensure_sorted(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_index(level=['date','ticker'])
 
 
-def _group_sizes_by_date(df: pd.DataFrame) -> List[int]:
-    """
-    以 date 为 query 生成 LightGBM 的 group
-    依赖 df 已按 (date,ticker) 排序！
-    """
-    return [len(g) for _, g in df.groupby(level='date', sort=False)]
+# Note: _group_sizes_by_date removed - no longer needed for regression objective
 
 
 def _winsorize_by_date(s: pd.Series, limits=(0.01, 0.99)) -> pd.Series:
@@ -164,9 +159,9 @@ def _spearman_ic_eval(preds: np.ndarray, dataset: lgb.Dataset):
 
 class LtrIsotonicStacker:
     """
-    LightGBM Regressor + 全局 Isotonic 校准的二层 Stacking 模型
+    LightGBM Regressor + Isotonic 校准的二层 Stacking 模型
     用于替换原有的 EWA 方案，提供更优的 T+5 预测能力
-    使用回归而非排序，因为我们的标签是连续的收益率
+    使用回归目标处理连续收益率标签，通过Isotonic校准优化预测质量
     """
 
     def __init__(self,
@@ -213,11 +208,12 @@ class LtrIsotonicStacker:
         self.calibrator_holdout_frac_ = float(calibrator_holdout_frac)
         self.disable_calibration_ = bool(disable_calibration)
 
-        # 简化的 LightGBM 回归参数
+        # 简化的 LightGBM 回归参数 - 使用回归目标处理连续收益率标签
         self.lgbm_params_ = lgbm_params or dict(
             objective='regression',
             boosting_type='gbdt',
-            n_estimators=100,
+            n_estimators=200,
+            metric='rmse',
             verbosity=-1
         )
 
@@ -618,39 +614,40 @@ class LtrIsotonicStacker:
             X_tr_clean, y_tr_clean = X_tr[tr_mask], y_tr[tr_mask]
             X_va_clean, y_va_clean = X_va[va_mask], y_va[va_mask]
 
-            # 训练回归/排序模型
+            # 训练回归模型（处理连续收益率标签）
             import lightgbm as lgb_clean
-            train_data = lgb_clean.Dataset(X_tr_clean, label=y_tr_clean, free_raw_data=False)
-            params = {
-                'objective': 'regression',
-                'boosting_type': 'gbdt',
-                'metric': 'rmse',
-                'verbosity': -1,
-                'seed': self.random_state_,
-                'force_row_wise': True
-            }
+            # 准备清洗后的训练数据
+            try:
+                df_tr_clean = df_tr.loc[tr_mask].sort_index(level=['date', 'ticker'])
+                X_tr_clean = df_tr_clean[actual_base_cols].values
+                y_tr_clean = _winsorize_by_date(df_tr_clean[label_col], self.winsor_limits_).values
+            except Exception:
+                # 使用原始数据
+                pass
+
+            params = dict(
+                objective='regression',
+                boosting_type='gbdt',
+                n_estimators=200,
+                metric='rmse',
+                verbosity=-1,
+                random_state=self.random_state_
+            )
             if isinstance(self.lgbm_params_, dict):
                 params.update(self.lgbm_params_)
-            # 🔒 强制使用回归目标 - 防止ranking配置导致错误
-            params['objective'] = 'regression'
-            params['metric'] = 'rmse'
 
-            # 移除任何ranking相关参数
-            ranking_params = ['label_gain', 'lambdarank_truncation_level', 'lambdarank_norm']
-            for rp in ranking_params:
-                if rp in params:
-                    logger.warning(f"⚠️ 移除ranking参数: {rp}")
-                    del params[rp]
-            gbm = lgb_clean.train(params=params, train_set=train_data, num_boost_round=200)
+            # 使用回归器处理连续标签，不需要group参数
+            ranker_model = lgb_clean.LGBMRegressor(**params)
+            ranker_model.fit(X_tr_clean, y_tr_clean)
 
             class LGBWrapper:
-                def __init__(self, gbm):
-                    self.gbm = gbm
-                    self.best_iteration_ = gbm.best_iteration
-                    self.feature_importances_ = gbm.feature_importance()
+                def __init__(self, model):
+                    self.model = model
+                    self.best_iteration_ = getattr(model, 'best_iteration_', None)
+                    self.feature_importances_ = model.feature_importances_
                 def predict(self, X):
-                    return self.gbm.predict(X, num_iteration=self.gbm.best_iteration)
-            self.ranker_ = LGBWrapper(gbm)
+                    return self.model.predict(X)
+            self.ranker_ = LGBWrapper(ranker_model)
 
             # 方向检测：确保分数与收益单调同向
             try:
@@ -767,26 +764,31 @@ class LtrIsotonicStacker:
 
         logger.info(f"最终模型自适应参数: n_samples={n_final_samples}, min_data_in_leaf={final_min_data_in_leaf}, num_leaves={final_num_leaves}")
 
-        # 训练最终模型（严格回归模式）
-        logger.info(f"🔒 确认最终模型参数 - objective: {final_params['objective']}, metric: {final_params['metric']}")
-        final_gbm = lgb_clean.train(
-            params=final_params,
-            train_set=final_train_data,
-            num_boost_round=100,
-            valid_sets=[final_train_data]
+        # 训练最终回归模型（处理连续收益率标签）
+        final_params = dict(
+            objective='regression',
+            boosting_type='gbdt',
+            n_estimators=200,
+            metric='rmse',
+            verbosity=-1,
+            random_state=self.random_state_
         )
+        if isinstance(self.lgbm_params_, dict):
+            final_params.update(self.lgbm_params_)
 
-        # 包装最终模型
-        class LGBWrapper:
-            def __init__(self, gbm):
-                self.gbm = gbm
-                self.best_iteration_ = gbm.best_iteration
-                self.feature_importances_ = gbm.feature_importance()
+        # 使用回归器，无需group参数
+        final_ranker = lgb_clean.LGBMRegressor(**final_params)
+        final_ranker.fit(X_all_clean, y_all_clean)
 
+        class LGBWrapperFinal:
+            def __init__(self, model):
+                self.model = model
+                self.best_iteration_ = getattr(model, 'best_iteration_', None)
+                self.feature_importances_ = model.feature_importances_
             def predict(self, X):
-                return self.gbm.predict(X, num_iteration=self.gbm.best_iteration)
+                return self.model.predict(X)
 
-        self.ranker_ = LGBWrapper(final_gbm)
+        self.ranker_ = LGBWrapperFinal(final_ranker)
 
         # 使用最终模型的预测重新拟合（或微调）校准器，降低OOF/FINAL分布差异的影响
         if not self.disable_calibration_:
@@ -1076,7 +1078,7 @@ class LtrIsotonicStacker:
 
         return {
             'fitted': True,
-            'model_type': 'LTR + Isotonic Calibration',
+            'model_type': 'LightGBM Regressor + Isotonic Calibration',
             'base_features': self._col_cache_,
             'cv_mean_ic': np.mean(self.cv_scores_) if self.cv_scores_ else None,
             'cv_std_ic': np.std(self.cv_scores_) if self.cv_scores_ else None,
