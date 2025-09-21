@@ -230,19 +230,17 @@ class AlphaStrategiesEngine:
     def _get_default_config(self) -> Dict:
         """Get default configuration with all 25 required factors enabled"""
         # Define the 25 required factors
-        required_25_factors = [
-            'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
-            'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
-            'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
-            'macd_histogram', 'stoch_k', 'cci', 'mfi',
-            'market_cap_proxy', 'value_proxy', 'quality_proxy', 'profitability_proxy',
-            'liquidity_factor', 'growth_proxy', 'profitability_momentum',
-            'growth_acceleration', 'quality_consistency', 'financial_resilience'
+        required_17_factors = [
+            'momentum_10d',
+            'rsi', 'bollinger_squeeze',
+            'obv_momentum', 'atr_ratio', 'ivol_60d',
+            'liquidity_factor',
+            'near_52w_high', 'reversal_5d', 'rel_volume_spike', 'mom_accel_10_5'
         ]
         
         # Create alpha config for each required factor
         alphas_config = []
-        for factor_name in required_25_factors:
+        for factor_name in required_17_factors:
             alpha_config = {
                 'name': factor_name,
                 'kind': factor_name,  # Use factor name as kind
@@ -270,42 +268,30 @@ class AlphaStrategiesEngine:
         return {
             # FOCUSED 25 FACTORS - All others commented out
             
-            # Momentum factors (3/25)
+            # Momentum factors (1/23) - REMOVED: momentum_20d, momentum_reversal_short
             'momentum_10d': self._compute_momentum_10d,
-            'momentum_20d': self._compute_momentum_20d,
-            'momentum_reversal_short': self._compute_momentum_reversal_short,
             
-            # Mean reversion factors (4/25)
+            # Mean reversion factors (3/17) - REMOVED: price_to_ma20
             'rsi': self._compute_rsi,
-            'bollinger_position': self._compute_bollinger_position,
-            'price_to_ma20': self._compute_price_to_ma20,
             'bollinger_squeeze': self._compute_bollinger_squeeze,
-            
-            # Volume factors (2/25)
+
+            # Volume factors (1/17)
             'obv_momentum': self._compute_obv_momentum,
-            'ad_line': self._compute_ad_line,
-            
-            # Volatility factors (2/25)
-            'atr_20d': self._compute_atr_20d,
+
+            # Volatility factors (1/17)
             'atr_ratio': self._compute_atr_ratio,
-            
-            # Technical factors (4/25)
-            'macd_histogram': self._compute_macd_histogram,
-            'stoch_k': self._compute_stoch_k,
-            'cci': self._compute_cci,
-            'mfi': self._compute_mfi,
-            
-            # Fundamental factors (10/25)
-            'market_cap_proxy': self._compute_market_cap_proxy,
-            'value_proxy': self._compute_value_proxy,
-            'quality_proxy': self._compute_quality_proxy,
-            'profitability_proxy': self._compute_profitability_proxy,
+
+            # Special factor (1/17)
+            'ivol_60d': self._compute_ivol_60d,
+
+            # Fundamental factors (2/17) - REMOVED: growth_proxy, profitability_momentum, growth_acceleration, value_proxy, profitability_proxy, quality_proxy, mfi
             'liquidity_factor': self._compute_liquidity_factor,
-            'growth_proxy': self._compute_growth_proxy,
-            'profitability_momentum': self._compute_profitability_momentum,
-            'growth_acceleration': self._compute_growth_acceleration,
-            'quality_consistency': self._compute_quality_consistency,
-            'financial_resilience': self._compute_financial_resilience,
+
+            # High-alpha factors (4/17)
+            'near_52w_high': self._compute_near_52w_high,
+            'reversal_5d': self._compute_reversal_5d,
+            'rel_volume_spike': self._compute_rel_volume_spike,
+            'mom_accel_10_5': self._compute_mom_accel_10_5,
             
             # ===== ALL OTHER FACTORS COMMENTED OUT =====
             
@@ -2042,22 +2028,20 @@ class AlphaStrategiesEngine:
                     result_clean.index = multi_idx
                     
                     # 只保留25个Alpha因子，移除原始市场数据和元数据列
-                    required_25_factors = [
-                        'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
-                        'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
-                        'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
-                        'macd_histogram', 'stoch_k', 'cci', 'mfi',
-                        'market_cap_proxy', 'value_proxy', 'quality_proxy', 'profitability_proxy',
-                        'liquidity_factor', 'growth_proxy', 'profitability_momentum',
-                        'growth_acceleration', 'quality_consistency', 'financial_resilience'
+                    required_17_factors = [
+                        'momentum_10d',
+                        'rsi', 'bollinger_squeeze',
+                        'obv_momentum', 'atr_ratio', 'ivol_60d',
+                        'liquidity_factor',
+                        'near_52w_high', 'reversal_5d', 'rel_volume_spike', 'mom_accel_10_5'
                     ]
-                    
-                    # 只保留存在的25个因子列
-                    alpha_cols_available = [col for col in required_25_factors if col in result_clean.columns]
+
+                    # 只保留存在的17个因子列
+                    alpha_cols_available = [col for col in required_17_factors if col in result_clean.columns]
                     
                     if alpha_cols_available:
                         final_result = result_clean[alpha_cols_available]
-                        logger.info(f"✅ MultiIndex重建成功: {final_result.shape} 包含25个纯净因子: {len(alpha_cols_available)}/25")
+                        logger.info(f"✅ MultiIndex重建成功: {final_result.shape} 包含17个高质量因子: {len(alpha_cols_available)}/17")
                         return final_result
                     else:
                         logger.error("❌ 重建后没有可用的特征列")
@@ -2072,11 +2056,11 @@ class AlphaStrategiesEngine:
         else:
             # 对于已经是MultiIndex的情况，也只返回25个纯净因子
             required_25_factors = [
-                'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
+                'momentum_10d',
                 'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
                 'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
-                'macd_histogram', 'stoch_k', 'cci', 'mfi',
-                'market_cap_proxy', 'value_proxy', 'quality_proxy', 'profitability_proxy',
+                'macd_histogram', 'stoch_k', 'cci',
+                'market_cap_proxy',
                 'liquidity_factor', 'growth_proxy', 'profitability_momentum',
                 'growth_acceleration', 'quality_consistency', 'financial_resilience'
             ]
@@ -2984,21 +2968,6 @@ class AlphaStrategiesEngine:
             return pd.Series(0, index=df.index)
     
     # Mean reversion factors (4/25)
-    def _compute_bollinger_position(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Position within Bollinger Bands"""
-        if 'Close' not in df.columns or len(df) < 20:
-            return pd.Series(0, index=df.index)
-        try:
-            sma_20 = df['Close'].rolling(20).mean()
-            std_20 = df['Close'].rolling(20).std()
-            upper_band = sma_20 + (2 * std_20)
-            lower_band = sma_20 - (2 * std_20)
-            position = (df['Close'] - lower_band) / (upper_band - lower_band + 1e-8)
-            position = position.clip(0, 1) - 0.5  # Center around 0
-            return self.safe_fillna(position, df)
-        except:
-            return pd.Series(0, index=df.index)
-    
     def _compute_price_to_ma20(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """Price relative to 20-day moving average"""
         if 'Close' not in df.columns or len(df) < 20:
@@ -3107,23 +3076,6 @@ class AlphaStrategiesEngine:
         except:
             return pd.Series(0, index=df.index)
     
-    def _compute_mfi(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Money Flow Index"""
-        if not all(col in df.columns for col in ['High', 'Low', 'Close', 'Volume']) or len(df) < 14:
-            return pd.Series(0, index=df.index)
-        try:
-            typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-            money_flow = typical_price * df['Volume']
-            price_change = typical_price.diff()
-            positive_flow = (money_flow * (price_change > 0)).rolling(14).sum()
-            negative_flow = (money_flow * (price_change < 0)).rolling(14).sum()
-            money_ratio = positive_flow / (negative_flow + 1e-8)
-            mfi = 100 - (100 / (1 + money_ratio))
-            mfi_normalized = (mfi - 50) / 50
-            return self.safe_fillna(mfi_normalized, df)
-        except:
-            return pd.Series(0, index=df.index)
-    
     # Fundamental factors (10/25)
     def _compute_market_cap_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """Market capitalization proxy"""
@@ -3136,40 +3088,18 @@ class AlphaStrategiesEngine:
         except:
             return pd.Series(0, index=df.index)
     
-    def _compute_value_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Value factor from mean reversion"""
-        if 'Close' not in df.columns or len(df) < 20:
+    def _compute_ivol_60d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Idiosyncratic volatility factor"""
+        if 'Close' not in df.columns or len(df) < 60:
             return pd.Series(0, index=df.index)
         try:
-            ma_20 = df['Close'].rolling(20).mean()
-            value_proxy = (ma_20 - df['Close']) / (ma_20 + 1e-8)
-            return self.safe_fillna(value_proxy, df)
+            returns = df['Close'].pct_change()
+            rolling_std = returns.rolling(60, min_periods=30).std()
+            ivol_60d = -rolling_std  # Negative because low volatility is better
+            return self.safe_fillna(ivol_60d, df)
         except:
             return pd.Series(0, index=df.index)
-    
-    def _compute_quality_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Quality factor from low volatility"""
-        if 'Close' not in df.columns or len(df) < 20:
-            return pd.Series(0, index=df.index)
-        try:
-            volatility = df['Close'].pct_change().rolling(20).std()
-            quality_proxy = -volatility  # Low volatility = high quality
-            return self.safe_fillna(quality_proxy, df)
-        except:
-            return pd.Series(0, index=df.index)
-    
-    def _compute_profitability_proxy(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Profitability from price-volume"""
-        if 'Close' not in df.columns or 'Volume' not in df.columns or len(df) < 10:
-            return pd.Series(0, index=df.index)
-        try:
-            price_change = df['Close'].pct_change(10)
-            volume_avg = df['Volume'].rolling(10).mean()
-            profitability_proxy = price_change * np.log(volume_avg + 1)
-            return self.safe_fillna(profitability_proxy, df)
-        except:
-            return pd.Series(0, index=df.index)
-    
+
     def _compute_liquidity_factor(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """Liquidity from volume patterns"""
         if 'Volume' not in df.columns or len(df) < 10:
@@ -3226,18 +3156,6 @@ class AlphaStrategiesEngine:
             rolling_sharpe = returns.rolling(20).mean() / (returns.rolling(20).std() + 1e-8)
             quality_consistency = rolling_sharpe
             return self.safe_fillna(quality_consistency, df)
-        except:
-            return pd.Series(0, index=df.index)
-    
-    def _compute_financial_resilience(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Financial resilience (5th percentile return)"""
-        if 'Close' not in df.columns or len(df) < 20:
-            return pd.Series(0, index=df.index)
-        try:
-            returns = df['Close'].pct_change()
-            rolling_5th_percentile = returns.rolling(20).quantile(0.05)
-            financial_resilience = -rolling_5th_percentile  # Higher is better
-            return self.safe_fillna(financial_resilience, df)
         except:
             return pd.Series(0, index=df.index)
     

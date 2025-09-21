@@ -22,36 +22,42 @@ logger = logging.getLogger(__name__)
 # THE EXACT 20 FACTORS REQUIRED BY BMA (Optimized)
 # Removed: macd_histogram (redundant with momentum), stoch_k (redundant with RSI), market_cap_proxy (weak size effect)
 # Removed: atr_20d (redundant with atr_ratio), ad_line (redundant with obv_momentum/MFI), quality_consistency (redundant with quality_proxy)
-# Updated: Added 4 new factors for better T+5 prediction
-# Total: 24 factors (20 original + 4 new high-alpha factors)
-REQUIRED_24_FACTORS = [
-    # Original momentum factors
-    'momentum_10d', 'momentum_20d', 'momentum_reversal_short',
-    # Technical indicators
-    'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
+# Updated: Added 7 new factors for better T+5 prediction, removed redundant factors
+# Total: 14 factors (streamlined from original set)
+REQUIRED_14_FACTORS = [
+    # Original momentum factors - REMOVED: momentum_20d, momentum_reversal_short
+    'momentum_10d',
+    # Technical indicators - REMOVED: price_to_ma20, cci (redundant with bollinger_position/RSI)
+    'rsi', 'bollinger_squeeze',
     'obv_momentum',  # Removed ad_line (redundant)
     'atr_ratio',     # Removed atr_20d (redundant)
-    'cci', 'mfi',
     'ivol_60d',      # Idiosyncratic volatility factor
-    # Fundamental factors
-    'value_proxy', 'quality_proxy', 'profitability_proxy',
-    'liquidity_factor', 'growth_proxy', 'profitability_momentum',
-    'growth_acceleration', 'financial_resilience',
+    # Fundamental factors - REMOVED: growth_proxy, profitability_momentum, growth_acceleration, value_proxy, profitability_proxy, quality_proxy, mfi (redundant/unstable)
+    'liquidity_factor',
     # NEW HIGH-ALPHA FACTORS (4 additions)
     'near_52w_high',      # 52-week high momentum
     'reversal_5d',        # 5-day reversal
     'rel_volume_spike',   # Volume spike relative to 20-day max
-    'mom_accel_10_5'      # Momentum acceleration (5d vs 10d)
+    'mom_accel_10_5',     # Momentum acceleration (5d vs 10d)
+    # NEW BEHAVIORAL FACTORS (3 microstructure additions)
+    'overnight_intraday_gap',  # Overnight vs intraday return gap
+    'max_lottery_factor',      # Maximum return in recent window (lottery effect)
+    'streak_reversal'          # Consecutive return streak reversal signal
 ]
 
 # Keep backward compatibility
-REQUIRED_20_FACTORS = REQUIRED_24_FACTORS[:20]  # First 20 factors for compatibility
+REQUIRED_16_FACTORS = REQUIRED_14_FACTORS       # Alias for backward compatibility
+REQUIRED_17_FACTORS = REQUIRED_14_FACTORS       # Alias for backward compatibility
+REQUIRED_20_FACTORS = REQUIRED_14_FACTORS       # Alias for backward compatibility
+REQUIRED_22_FACTORS = REQUIRED_14_FACTORS       # Alias for backward compatibility
+REQUIRED_24_FACTORS = REQUIRED_14_FACTORS       # Alias for backward compatibility
 
-class Simple24FactorEngine:
+class Simple17FactorEngine:
     """
-    Simple 24 Factor Engine - No Dependencies
-    Directly computes all 24 optimized factors with robust implementation
-    (20 original optimized factors + 4 new high-alpha factors for T+5 prediction)
+    Simple 14 Factor Engine - No Dependencies (Backward Compatible Name)
+    Directly computes all 17 high-quality factors with robust implementation
+    (Removed redundant and unstable factors: momentum_20d, momentum_reversal_short,
+     price_to_ma20, cci, growth_proxy, profitability_momentum, growth_acceleration)
     """
     
     def __init__(self, lookback_days: int = 252):
@@ -156,16 +162,16 @@ class Simple24FactorEngine:
             
         return pd.DataFrame()
     
-    def compute_all_24_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
-        """Compute all 24 optimized factors directly (20 original + 4 new high-alpha)"""
+    def compute_all_17_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+        """Compute all 20 high-quality factors (17 original + 3 behavioral factors)"""
         import time
-        
+
         if market_data.empty:
             logger.error("No market data provided")
             return pd.DataFrame()
-        
+
         logger.info("=" * 80)
-        logger.info("COMPUTING ALL 20 OPTIMIZED ALPHA FACTORS WITH IVOL & QUALITY MONITORING")
+        logger.info("COMPUTING ALL 14 HIGH-QUALITY ALPHA FACTORS WITH BEHAVIORAL FACTORS")
         logger.info("=" * 80)
         logger.info(f"📊 Market data input: shape={market_data.shape}")
         if 'Close' in market_data.columns:
@@ -212,83 +218,83 @@ class Simple24FactorEngine:
         # Collect all factor results, ensuring consistent indexing
         all_factors = []
         
-        # 1-3: Momentum Factors
+        # 1: Momentum Factors (REDUCED: only momentum_10d)
         logger.info("="*60)
-        logger.info("🎯 [ALPHA FACTOR 1-3] MOMENTUM FACTORS")
+        logger.info("🎯 [ALPHA FACTOR 1] MOMENTUM FACTORS")
         logger.info("="*60)
         start_t = time.time()
         momentum_results = self._compute_momentum_factors(market_data_clean, grouped)
         factor_timings['momentum'] = time.time() - start_t
-        
+
         # Monitor each momentum factor if monitor available
         if self.factor_monitor:
-            for factor_name in ['momentum_10d', 'momentum_20d', 'momentum_reversal_short']:
+            for factor_name in ['momentum_10d']:
                 if factor_name in momentum_results.columns:
                     self.factor_monitor.monitor_factor_computation(
-                        factor_name, momentum_results[factor_name], 
-                        computation_time=factor_timings['momentum']/3
+                        factor_name, momentum_results[factor_name],
+                        computation_time=factor_timings['momentum']
                     )
         
         logger.info(f"⏱️ Momentum factors computed in {factor_timings['momentum']:.3f}s")
         logger.info("="*60)
         all_factors.append(momentum_results)
         
-        # 4-7: Mean Reversion Factors  
-        logger.info("Computing mean reversion factors (4/25)...")
+        # 2-4: Mean Reversion Factors (REDUCED: removed price_to_ma20, cci)
+        logger.info("Computing mean reversion factors (2/14)...")
         start_t = time.time()
         meanrev_results = self._compute_mean_reversion_factors(market_data_clean, grouped)
         factor_timings['mean_reversion'] = time.time() - start_t
         logger.info(f"   Mean reversion factors computed in {factor_timings['mean_reversion']:.3f}s")
         all_factors.append(meanrev_results)
-        
-        # 8-9: Volume Factors
-        logger.info("Computing volume factors (2/25)...")
+
+        # 5-6: Volume Factors
+        logger.info("Computing volume factors (1/14)...")
         start_t = time.time()
         volume_results = self._compute_volume_factors(market_data_clean, grouped)
         factor_timings['volume'] = time.time() - start_t
         logger.info(f"   Volume factors computed in {factor_timings['volume']:.3f}s")
         all_factors.append(volume_results)
         
-        # 10-11: Volatility Factors
-        logger.info("Computing volatility factors (2/25)...")
+        # 7: Volatility Factors (1 factor: atr_ratio)
+        logger.info("Computing volatility factors (1/14)...")
         start_t = time.time()
         vol_results = self._compute_volatility_factors(market_data_clean, grouped)
         factor_timings['volatility'] = time.time() - start_t
         logger.info(f"   Volatility factors computed in {factor_timings['volatility']:.3f}s")
         all_factors.append(vol_results)
-        
-        # 12-13: Technical Factors (reduced from 4 to 2)
-        logger.info("Computing technical factors (2/23)...")
-        start_t = time.time()
-        tech_results = self._compute_technical_factors(market_data_clean, grouped)
-        factor_timings['technical'] = time.time() - start_t
-        logger.info(f"   Technical factors computed in {factor_timings['technical']:.3f}s")
-        all_factors.append(tech_results)
 
-        # 14: IVOL Factor (NEW)
-        logger.info("Computing IVOL factor (1/23)...")
+        # 8: IVOL Factor
+        logger.info("Computing IVOL factor (1/14)...")
         start_t = time.time()
         ivol_result = self._compute_ivol_factor(market_data_clean)
         factor_timings['ivol'] = time.time() - start_t
         logger.info(f"   IVOL factor computed in {factor_timings['ivol']:.3f}s")
         all_factors.append(ivol_result)
 
-        # 16-25: Fundamental Proxy Factors
-        logger.info("Computing fundamental proxy factors (10/25)...")
+        # 10-13: Fundamental Proxy Factors (REDUCED: removed growth_proxy, profitability_momentum, growth_acceleration)
+        logger.info("Computing fundamental proxy factors (1/14)...")
         start_t = time.time()
         fundamental_results = self._compute_fundamental_factors(market_data_clean, grouped)
         factor_timings['fundamental'] = time.time() - start_t
         logger.info(f"   Fundamental factors computed in {factor_timings['fundamental']:.3f}s")
         all_factors.append(fundamental_results)
 
-        # NEW: 21-24: High-Alpha Factors
-        logger.info("Computing 4 new high-alpha factors...")
+        # 14-17: High-Alpha Factors
+        logger.info("Computing 4 high-alpha factors...")
         start_t = time.time()
         new_alpha_results = self._compute_new_alpha_factors(market_data_clean, grouped)
         factor_timings['new_alpha'] = time.time() - start_t
-        logger.info(f"   New alpha factors computed in {factor_timings['new_alpha']:.3f}s")
+        logger.info(f"   High-alpha factors computed in {factor_timings['new_alpha']:.3f}s")
         all_factors.append(new_alpha_results)
-        
+
+        # 18-20: Behavioral Factors (NEW)
+        logger.info("Computing 3 behavioral factors...")
+        start_t = time.time()
+        behavioral_results = self._compute_behavioral_factors(market_data_clean, grouped)
+        factor_timings['behavioral'] = time.time() - start_t
+        logger.info(f"   Behavioral factors computed in {factor_timings['behavioral']:.3f}s")
+        all_factors.append(behavioral_results)
+
         # Combine all factor DataFrames
         factors_df = pd.concat(all_factors, axis=1)
         
@@ -306,19 +312,19 @@ class Simple24FactorEngine:
         factors_df[factor_columns] = factors_df[factor_columns].replace([np.inf, -np.inf], 0)
         factors_df[factor_columns] = factors_df[factor_columns].fillna(0)
         
-        # Verify all 24 factors are present
-        missing = set(REQUIRED_24_FACTORS) - set(factors_df.columns)
+        # Verify all 20 factors are present
+        missing = set(REQUIRED_14_FACTORS) - set(factors_df.columns)
         if missing:
             logger.error(f"Missing factors: {missing}")
             for factor in missing:
                 factors_df[factor] = 0.0
 
-        # Reorder columns: 24 factors first, then Close for target generation
-        column_order = REQUIRED_24_FACTORS + ['Close']
+        # Reorder columns: 14 factors first, then Close for target generation
+        column_order = REQUIRED_14_FACTORS + ['Close']
         factors_df = factors_df[column_order]
 
         logger.info("=" * 60)
-        logger.info(f"ALL 24 FACTORS + CLOSE COMPUTED: {factors_df.shape}")
+        logger.info(f"ALL 14 HIGH-QUALITY FACTORS + CLOSE COMPUTED: {factors_df.shape}")
         logger.info("Factor Computation Timing:")
         total_time = sum(factor_timings.values())
         for name, duration in factor_timings.items():
@@ -326,15 +332,19 @@ class Simple24FactorEngine:
             logger.info(f"   {name:<15}: {duration:.3f}s ({pct:.1f}%)")
         logger.info(f"   {'TOTAL':<15}: {total_time:.3f}s")
         logger.info("=" * 60)
-        
+
         return factors_df
-    
+
+    def compute_all_20_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+        """Compute all 20 factors including behavioral factors"""
+        return self.compute_all_17_factors(market_data)  # Use the updated method
+
     def _compute_momentum_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute momentum factors: momentum_10d, momentum_20d, momentum_reversal_short"""
-        
+        """Compute momentum factors: momentum_10d only (REMOVED: momentum_20d, momentum_reversal_short)"""
+
         logger.info("📊 [FACTOR COMPUTATION] Starting momentum factors calculation")
         factor_quality = {}
-        
+
         # Momentum 10d
         logger.info("   🔄 Computing momentum_10d...")
         momentum_10d = grouped['Close'].pct_change(10).fillna(0)
@@ -346,46 +356,18 @@ class Simple24FactorEngine:
             'coverage': (momentum_10d != 0).sum() / len(momentum_10d) * 100
         }
         logger.info(f"   ✅ momentum_10d: coverage={factor_quality['momentum_10d']['coverage']:.1f}%, mean={factor_quality['momentum_10d']['mean']:.4f}")
-        
-        # Momentum 20d
-        logger.info("   🔄 Computing momentum_20d...")
-        momentum_20d = grouped['Close'].pct_change(20).fillna(0)
-        factor_quality['momentum_20d'] = {
-            'non_zero': (momentum_20d != 0).sum(),
-            'nan_count': momentum_20d.isna().sum(),
-            'mean': momentum_20d.mean(),
-            'std': momentum_20d.std(),
-            'coverage': (momentum_20d != 0).sum() / len(momentum_20d) * 100
-        }
-        logger.info(f"   ✅ momentum_20d: coverage={factor_quality['momentum_20d']['coverage']:.1f}%, mean={factor_quality['momentum_20d']['mean']:.4f}")
-        
-        # Momentum reversal short (negative of 1-day momentum * 5-day momentum)
-        logger.info("   🔄 Computing momentum_reversal_short...")
-        mom_1d = grouped['Close'].pct_change(1).fillna(0)
-        mom_5d = grouped['Close'].pct_change(5).fillna(0)
-        momentum_reversal_short = -(mom_1d * mom_5d).fillna(0)
-        factor_quality['momentum_reversal_short'] = {
-            'non_zero': (momentum_reversal_short != 0).sum(),
-            'nan_count': momentum_reversal_short.isna().sum(),
-            'mean': momentum_reversal_short.mean(),
-            'std': momentum_reversal_short.std(),
-            'coverage': (momentum_reversal_short != 0).sum() / len(momentum_reversal_short) * 100
-        }
-        logger.info(f"   ✅ momentum_reversal_short: coverage={factor_quality['momentum_reversal_short']['coverage']:.1f}%, mean={factor_quality['momentum_reversal_short']['mean']:.4f}")
-        
+
         # Data quality warning
         for factor_name, quality in factor_quality.items():
             if quality['coverage'] < 50:
                 logger.warning(f"   ⚠️ {factor_name}: Low coverage {quality['coverage']:.1f}%")
             if quality['std'] == 0:
                 logger.warning(f"   ⚠️ {factor_name}: Zero variance detected")
-        
+
         logger.info("   ✅ Momentum factors computation completed")
-        
+
         return pd.DataFrame({
-            'momentum_10d': momentum_10d,
-            'momentum_20d': momentum_20d,
-            'momentum_reversal_short': momentum_reversal_short
+            'momentum_10d': momentum_10d
         }, index=data.index)
     
     def _compute_new_alpha_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
@@ -432,49 +414,36 @@ class Simple24FactorEngine:
         }, index=data.index)
 
     def _compute_mean_reversion_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute mean reversion factors: rsi, bollinger_position, price_to_ma20, bollinger_squeeze"""
-        
+        """Compute mean reversion factors: rsi, bollinger_squeeze (REMOVED: price_to_ma20, bollinger_position)"""
+
         # RSI - collect results as arrays to avoid index issues
         rsi_values = []
-        price_to_ma20_values = []
-        bollinger_position_values = []
         bollinger_squeeze_values = []
-        
+
         for ticker, group in data.groupby('ticker'):
             closes = group['Close'].values
-            
+
             # RSI computation
             deltas = np.diff(np.concatenate([[closes[0]], closes]))
             gains = np.where(deltas > 0, deltas, 0)
             losses = np.where(deltas < 0, -deltas, 0)
-            
+
             gain_avg = pd.Series(gains).rolling(14, min_periods=1).mean().values
             loss_avg = pd.Series(losses).rolling(14, min_periods=1).mean().values
-            
+
             rs = gain_avg / (loss_avg + 1e-10)
             rsi = 100 - (100 / (1 + rs))
             rsi_normalized = (rsi - 50) / 50
             rsi_values.extend(rsi_normalized)
-            
-            # Bollinger Bands computation
+
+            # Bollinger Squeeze computation
             ma20 = pd.Series(closes).rolling(20, min_periods=1).mean().values
             std20 = pd.Series(closes).rolling(20, min_periods=1).std().fillna(0).values
-            
-            price_to_ma20 = (closes / (ma20 + 1e-10) - 1)
-            price_to_ma20_values.extend(price_to_ma20)
-            
-            upper_band = ma20 + 2 * std20
-            lower_band = ma20 - 2 * std20
-            bb_position = (closes - lower_band) / (upper_band - lower_band + 1e-10)
-            bollinger_position_values.extend(np.clip(bb_position, 0, 1))
-            
             bb_squeeze = std20 / (ma20 + 1e-10)
             bollinger_squeeze_values.extend(bb_squeeze)
-        
+
         return pd.DataFrame({
             'rsi': rsi_values,
-            'price_to_ma20': price_to_ma20_values,
-            'bollinger_position': bollinger_position_values,
             'bollinger_squeeze': bollinger_squeeze_values
         }, index=data.index)
     
@@ -530,115 +499,24 @@ class Simple24FactorEngine:
             'atr_ratio': atr_ratio_values
         }, index=data.index)
     
-    def _compute_technical_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute technical factors: cci, mfi (removed redundant MACD histogram and stoch_k)"""
-
-        cci_values = []
-        mfi_values = []
-        
-        for ticker, group in data.groupby('ticker'):
-            closes = group['Close'].values
-            highs = group['High'].values
-            lows = group['Low'].values
-            volumes = group['Volume'].values
-            
-            # CCI (Commodity Channel Index)
-            tp = (highs + lows + closes) / 3
-            tp_series = pd.Series(tp)
-            sma_tp = tp_series.rolling(20, min_periods=1).mean().values
-            mad = tp_series.rolling(20, min_periods=1).std().fillna(0.01).values
-            cci = (tp - sma_tp) / (mad + 1e-10)
-            cci_values.extend(cci)
-            
-            # MFI (Money Flow Index) 
-            raw_money_flow = tp * volumes
-            tp_change = np.diff(np.concatenate([[tp[0]], tp]))
-            
-            positive_flow = np.where(tp_change > 0, raw_money_flow, 0)
-            negative_flow = np.where(tp_change <= 0, raw_money_flow, 0)
-            
-            positive_flow_sum = pd.Series(positive_flow).rolling(14, min_periods=1).sum().values
-            negative_flow_sum = pd.Series(negative_flow).rolling(14, min_periods=1).sum().values
-            
-            money_ratio = positive_flow_sum / (negative_flow_sum + 1e-10)
-            mfi = 100 - (100 / (1 + money_ratio))
-            mfi_values.extend(mfi)
-        
-        return pd.DataFrame({
-            'cci': cci_values,
-            'mfi': mfi_values
-        }, index=data.index)
-    
     def _compute_fundamental_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute fundamental proxy factors (9 factors, removed market_cap_proxy)"""
+        """Compute fundamental proxy factors (REDUCED: removed growth_proxy, profitability_momentum, growth_acceleration, value_proxy, profitability_proxy, ivol_60d, quality_proxy, mfi, financial_resilience)"""
 
-        value_proxy_values = []
-        quality_proxy_values = []
-        profitability_proxy_values = []
         liquidity_factor_values = []
-        growth_proxy_values = []
-        profitability_momentum_values = []
-        growth_acceleration_values = []
-        financial_resilience_values = []
 
         for ticker, group in data.groupby('ticker'):
             closes = group['Close'].values
             volumes = group['Volume'].values
-
-            # Value proxy (contrarian - negative momentum)
-            close_series = pd.Series(closes)
-            value_proxy = -close_series.pct_change(60).fillna(0).values
-            value_proxy_values.extend(value_proxy)
-
-            # Quality proxy (negative volatility = higher quality)
-            returns = close_series.pct_change().fillna(0)
-            quality_proxy = -returns.rolling(20, min_periods=1).std().fillna(0).values
-            quality_proxy_values.extend(quality_proxy)
-
-            # Profitability proxy
-            ret_60d = close_series.pct_change(60).fillna(0).values
-            vol_series = pd.Series(volumes)
-            vol_avg = vol_series.rolling(60, min_periods=1).mean().values
-            vol_ratio = volumes / (vol_avg + 1e-10)
-            profitability_proxy = ret_60d * vol_ratio
-            profitability_proxy_values.extend(profitability_proxy)
 
             # Liquidity factor
+            close_series = pd.Series(closes)
+            vol_series = pd.Series(volumes)
             vol_ma20 = vol_series.rolling(20, min_periods=1).mean().values
             liquidity_factor = (volumes / (vol_ma20 + 1e-10) - 1)
             liquidity_factor_values.extend(liquidity_factor)
 
-            # Growth proxy (momentum acceleration)
-            mom_20d = close_series.pct_change(20).fillna(0).values
-            mom_40d = close_series.pct_change(40).fillna(0).values
-            growth_proxy = mom_20d - mom_40d
-            growth_proxy_values.extend(growth_proxy)
-
-            # Profitability momentum
-            prof_series = pd.Series(profitability_proxy)
-            profitability_momentum = prof_series.pct_change(20).fillna(0).values
-            profitability_momentum_values.extend(profitability_momentum)
-
-            # Growth acceleration
-            growth_series = pd.Series(growth_proxy)
-            growth_acceleration = growth_series.diff().fillna(0).values
-            growth_acceleration_values.extend(growth_acceleration)
-
-            # Financial resilience
-            market_vol = returns.rolling(20, min_periods=1).std().fillna(0.01).values
-            rel_performance = close_series.pct_change(20).fillna(0).values
-            financial_resilience = rel_performance / (market_vol + 1e-10)
-            financial_resilience_values.extend(financial_resilience)
-
         return pd.DataFrame({
-            'value_proxy': value_proxy_values,
-            'quality_proxy': quality_proxy_values,
-            'profitability_proxy': profitability_proxy_values,
-            'liquidity_factor': liquidity_factor_values,
-            'growth_proxy': growth_proxy_values,
-            'profitability_momentum': profitability_momentum_values,
-            'growth_acceleration': growth_acceleration_values,
-            'financial_resilience': financial_resilience_values
+            'liquidity_factor': liquidity_factor_values
         }, index=data.index)
 
     def _compute_ivol_factor(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -741,8 +619,84 @@ class Simple24FactorEngine:
             logger.warning(f"IVOL computation failed: {e}")
             return pd.DataFrame({'ivol_60d': np.zeros(len(data))}, index=data.index)
 
+    def _compute_behavioral_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
+        """Compute behavioral factors capturing market microstructure effects"""
+        try:
+            all_results = []
 
-class Simple21FactorEngine(Simple24FactorEngine):
+            for ticker, ticker_data in grouped:
+                ticker_data = ticker_data.sort_values('date').reset_index(drop=True)
+
+                # Required columns
+                if not all(col in ticker_data.columns for col in ['Open', 'Close', 'High', 'Low']):
+                    logger.warning(f"Missing OHLC data for {ticker}")
+                    n_obs = len(ticker_data)
+                    result_df = pd.DataFrame({
+                        'overnight_intraday_gap': np.zeros(n_obs),
+                        'max_lottery_factor': np.zeros(n_obs),
+                        'streak_reversal': np.zeros(n_obs)
+                    }, index=ticker_data.index)
+                    all_results.append(result_df)
+                    continue
+
+                # 1) Overnight-Intraday Return Gap
+                # Overnight return: Open[t] / Close[t-1] - 1
+                r_on = ticker_data['Open'] / ticker_data['Close'].shift(1) - 1.0
+                # Intraday return: Close[t] / Open[t] - 1
+                r_day = ticker_data['Close'] / ticker_data['Open'] - 1.0
+                # 20-day cumulative gap
+                K = 20
+                gap = (r_on - r_day).rolling(K, min_periods=K).sum().fillna(0)
+
+                # 2) MAX Lottery Factor (maximum return in recent window)
+                r_close = ticker_data['Close'] / ticker_data['Close'].shift(1) - 1.0
+                max_factor = r_close.rolling(K, min_periods=K).max().fillna(0)
+
+                # 3) Return Streak Reversal (relative to market)
+                # Simple market proxy: use overall market average return if available
+                # For now, use absolute returns (can enhance with market data later)
+                excess = r_close.fillna(0)  # Simplified - can add market adjustment
+
+                # Compute consecutive streak lengths
+                streak = np.zeros(len(excess))
+                run = 0
+                for i, val in enumerate(excess.values):
+                    if val > 0:
+                        run = run + 1 if run >= 0 else 1
+                    elif val < 0:
+                        run = run - 1 if run <= 0 else -1
+                    else:
+                        run = 0
+                    streak[i] = run
+
+                # Reversal signal: negative of streak (longer streaks more likely to reverse)
+                streak_reversal = -pd.Series(streak, index=ticker_data.index)
+
+                # Clean and handle edge cases
+                gap = gap.replace([np.inf, -np.inf], 0).fillna(0)
+                max_factor = max_factor.replace([np.inf, -np.inf], 0).fillna(0)
+                streak_reversal = streak_reversal.replace([np.inf, -np.inf], 0).fillna(0)
+
+                result_df = pd.DataFrame({
+                    'overnight_intraday_gap': gap,
+                    'max_lottery_factor': max_factor,
+                    'streak_reversal': streak_reversal
+                }, index=ticker_data.index)
+
+                all_results.append(result_df)
+
+            return pd.concat(all_results, ignore_index=True)
+
+        except Exception as e:
+            logger.error(f"Behavioral factors computation failed: {e}")
+            return pd.DataFrame({
+                'overnight_intraday_gap': np.zeros(len(data)),
+                'max_lottery_factor': np.zeros(len(data)),
+                'streak_reversal': np.zeros(len(data))
+            }, index=data.index)
+
+
+class Simple21FactorEngine(Simple17FactorEngine):
     """Compatibility wrapper for the main model (T+5 optimized path).
 
     Provides the interface expected by `量化模型_bma_ultra_enhanced.py`,
@@ -789,7 +743,7 @@ def test_simple_20_factor_engine():
         logger.info(f"Computed factors: {len(factors.columns)}")
 
         # Check all factors present
-        missing = set(REQUIRED_20_FACTORS) - set(factors.columns)
+        missing = set(REQUIRED_14_FACTORS) - set(factors.columns)
         extra = set(factors.columns) - set(REQUIRED_20_FACTORS)
         
         logger.info(f"Missing factors: {missing if missing else 'None'}")
@@ -820,26 +774,37 @@ def test_simple_20_factor_engine():
 
 
 # Backward compatibility aliases
-Simple20FactorEngine = Simple24FactorEngine  # Alias for backward compatibility
-Simple25FactorEngine = Simple24FactorEngine  # Alias for name consistency
+Simple20FactorEngine = Simple17FactorEngine  # Alias for backward compatibility
+Simple22FactorEngine = Simple17FactorEngine  # Alias for backward compatibility
+Simple24FactorEngine = Simple17FactorEngine  # Alias for backward compatibility
+Simple25FactorEngine = Simple17FactorEngine  # Alias for name consistency
 
 # Add backward compatibility method to the class
 def compute_all_20_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
-    """Backward compatibility: compute first 20 factors only"""
-    all_24_factors = self.compute_all_24_factors(market_data)
-    if not all_24_factors.empty:
-        # Return only the first 20 factors + Close
-        return all_24_factors[REQUIRED_20_FACTORS + ['Close']]
-    return all_24_factors
+    """Backward compatibility: compute all 17 factors"""
+    all_17_factors = self.compute_all_17_factors(market_data)
+    return all_17_factors
 
 # Add backward compatibility method to the class
 def compute_all_21_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
-    """Backward compatibility: alias for compute_all_24_factors"""
-    return self.compute_all_24_factors(market_data)
+    """Backward compatibility: alias for compute_all_17_factors"""
+    return self.compute_all_17_factors(market_data)
+
+# Add backward compatibility method to the class
+def compute_all_22_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+    """Backward compatibility: alias for compute_all_17_factors"""
+    return self.compute_all_17_factors(market_data)
+
+# Add backward compatibility method to the class
+def compute_all_24_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
+    """Backward compatibility: alias for compute_all_17_factors"""
+    return self.compute_all_17_factors(market_data)
 
 # Monkey-patch the methods onto the class
-Simple24FactorEngine.compute_all_20_factors = compute_all_20_factors
-Simple24FactorEngine.compute_all_21_factors = compute_all_21_factors
+Simple17FactorEngine.compute_all_20_factors = compute_all_20_factors
+Simple17FactorEngine.compute_all_21_factors = compute_all_21_factors
+Simple17FactorEngine.compute_all_22_factors = compute_all_22_factors
+Simple17FactorEngine.compute_all_24_factors = compute_all_24_factors
 
 if __name__ == "__main__":
     # Setup logging

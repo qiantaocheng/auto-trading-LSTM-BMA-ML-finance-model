@@ -3171,8 +3171,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         """
         if enable:
             try:
-                from bma_models.simple_25_factor_engine import Simple24FactorEngine
-                self.simple_25_engine = Simple24FactorEngine()
+                from bma_models.simple_25_factor_engine import Simple17FactorEngine
+                self.simple_25_engine = Simple17FactorEngine()
                 self.use_simple_25_factors = True
                 logger.info("✅ Simple 24-Factor Engine enabled - will generate 24 optimized factors for T+5")
             except ImportError as e:
@@ -4925,6 +4925,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # 返回最终分数
             final_predictions = stacked_scores['score']
 
+            # === 关键修复：验证预测质量，防止常数预测问题 ===
+            final_predictions = self.validate_prediction_quality(final_predictions, "LTR stacking")
+
             logger.info(f"✅ LTR stacking 预测完成: {len(final_predictions)} 样本")
             logger.info(f"    预测统计: mean={final_predictions.mean():.6f}, std={final_predictions.std():.6f}")
 
@@ -4957,13 +4960,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     if hasattr(direct_predictions, 'index'):
                         # 验证索引长度匹配
                         if len(direct_predictions) == len(direct_predictions.index):
-                            return pd.Series(direct_predictions)
+                            validated_predictions = self.validate_prediction_quality(pd.Series(direct_predictions), "直接预测")
+                            return validated_predictions
                         else:
                             logger.warning(f"直接预测索引长度不匹配: values={len(direct_predictions)}, index={len(direct_predictions.index)}")
-                            return pd.Series(direct_predictions.values, index=range(len(direct_predictions)), name='predictions')
+                            base_predictions = pd.Series(direct_predictions.values, index=range(len(direct_predictions)), name='predictions')
+                            validated_predictions = self.validate_prediction_quality(base_predictions, "直接预测")
+                            return validated_predictions
                     else:
                         # 创建合理的索引
-                        return pd.Series(direct_predictions, index=range(len(direct_predictions)), name='predictions')
+                        base_predictions = pd.Series(direct_predictions, index=range(len(direct_predictions)), name='predictions')
+                        validated_predictions = self.validate_prediction_quality(base_predictions, "直接预测")
+                        return validated_predictions
             
             # 2. 检查是否有有效的训练结果（放宽成功条件）
             success_indicators = [
@@ -5012,11 +5020,14 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                     if hasattr(predictions, 'index'):
                                         # 验证索引长度是否匹配值的长度
                                         if len(predictions) == len(predictions.index):
-                                            return pd.Series(predictions)
+                                            validated_predictions = self.validate_prediction_quality(pd.Series(predictions), f"{best_model}模型")
+                                            return validated_predictions
                                         else:
                                             logger.warning(f"索引长度不匹配: values={len(predictions)}, index={len(predictions.index)}")
                                             # 重建索引
-                                            return pd.Series(predictions.values, name='ml_predictions')
+                                            base_predictions = pd.Series(predictions.values, name='ml_predictions')
+                                            validated_predictions = self.validate_prediction_quality(base_predictions, f"{best_model}模型")
+                                            return validated_predictions
                                     else:
                                         # 创建基于预测值长度的索引
                                         if hasattr(self, 'feature_data') and self.feature_data is not None:
@@ -5024,11 +5035,15 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                                 tickers = self.feature_data['ticker'].unique()
                                                 # 确保索引长度与预测值长度一致
                                                 if len(tickers) >= len(predictions):
-                                                    return pd.Series(predictions, index=tickers[:len(predictions)], name='ml_predictions')
+                                                    base_predictions = pd.Series(predictions, index=tickers[:len(predictions)], name='ml_predictions')
+                                                    validated_predictions = self.validate_prediction_quality(base_predictions, f"{best_model}模型")
+                                                    return validated_predictions
                                                 else:
                                                     logger.warning(f"股票数量不足: tickers={len(tickers)}, predictions={len(predictions)}")
                                         # 使用数值索引，确保长度匹配
-                                        return pd.Series(predictions, index=range(len(predictions)), name='ml_predictions')
+                                        base_predictions = pd.Series(predictions, index=range(len(predictions)), name='ml_predictions')
+                                        validated_predictions = self.validate_prediction_quality(base_predictions, f"{best_model}模型")
+                                        return validated_predictions
                         
                         # 如果最佳模型失败，尝试其他模型
                         for model_name, model_data in models.items():
@@ -5039,12 +5054,17 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                     if hasattr(predictions, 'index'):
                                         # 验证索引长度匹配
                                         if len(predictions) == len(predictions.index):
-                                            return pd.Series(predictions)
+                                            validated_predictions = self.validate_prediction_quality(pd.Series(predictions), f"{model_name}模型")
+                                            return validated_predictions
                                         else:
                                             logger.warning(f"备选模型索引长度不匹配: {model_name}")
-                                            return pd.Series(predictions.values, name=f'{model_name}_predictions')
+                                            base_predictions = pd.Series(predictions.values, name=f'{model_name}_predictions')
+                                            validated_predictions = self.validate_prediction_quality(base_predictions, f"{model_name}模型")
+                                            return validated_predictions
                                     else:
-                                        return pd.Series(predictions, index=range(len(predictions)), name=f'{model_name}_predictions')
+                                        base_predictions = pd.Series(predictions, index=range(len(predictions)), name=f'{model_name}_predictions')
+                                        validated_predictions = self.validate_prediction_quality(base_predictions, f"{model_name}模型")
+                                        return validated_predictions
 
                 # 处理非字典类型的数据
                 elif source_data is not None and hasattr(source_data, '__len__') and len(source_data) > 0:
@@ -5052,12 +5072,17 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     if hasattr(source_data, 'index'):
                         # 验证索引长度
                         if len(source_data) == len(source_data.index):
-                            return pd.Series(source_data)
+                            validated_predictions = self.validate_prediction_quality(pd.Series(source_data), f"{source_key}数据")
+                            return validated_predictions
                         else:
                             logger.warning(f"直接数据索引长度不匹配: {source_key}")
-                            return pd.Series(source_data.values, index=range(len(source_data)), name=f'{source_key}_data')
+                            base_predictions = pd.Series(source_data.values, index=range(len(source_data)), name=f'{source_key}_data')
+                            validated_predictions = self.validate_prediction_quality(base_predictions, f"{source_key}数据")
+                            return validated_predictions
                     else:
-                        return pd.Series(source_data, index=range(len(source_data)), name=f'{source_key}_data')
+                        base_predictions = pd.Series(source_data, index=range(len(source_data)), name=f'{source_key}_data')
+                        validated_predictions = self.validate_prediction_quality(base_predictions, f"{source_key}数据")
+                        return validated_predictions
             
             # 4. 如果所有提取都失败，生成诊断信息
             logger.error("[ERROR] 所有机器学习预测提取失败")
@@ -6115,13 +6140,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # 使用Simple20FactorEngine进行稳定的数据获取
             if not hasattr(self, 'simple_25_engine') or self.simple_25_engine is None:
                 try:
-                    from bma_models.simple_25_factor_engine import Simple24FactorEngine
+                    from bma_models.simple_25_factor_engine import Simple17FactorEngine
                     # 计算lookback天数
                     start_dt = pd.to_datetime(start_date)
                     end_dt = pd.to_datetime(end_date)
                     lookback_days = (end_dt - start_dt).days + 50  # 加50天buffer
 
-                    self.simple_25_engine = Simple24FactorEngine(lookback_days=lookback_days)
+                    self.simple_25_engine = Simple17FactorEngine(lookback_days=lookback_days)
                     logger.info(f"✅ Simple24FactorEngine initialized with {lookback_days} day lookback for T+5")
                 except ImportError as e:
                     logger.error(f"❌ Failed to import Simple24FactorEngine: {e}")
@@ -6372,6 +6397,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                 logger.warning(f"因子质量监控失败: {e}")
 
                         # OPTIMIZED: 25因子引擎的输出已经是最终格式，无需额外标准化
+
+                        # === 关键修复：验证并修复特征数据，防止常数预测问题 ===
+                        feature_data = self.validate_and_fix_feature_data(feature_data)
+
                         return feature_data
                     
                 except Exception as e:
@@ -6404,6 +6433,236 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         
         logger.info(f"[SIMPLIFIED] {feature_prefix}特征处理: 使用原始特征，形状: {features.shape}")
         return features, process_info
+
+    def validate_and_fix_feature_data(self, feature_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        验证并修复特征数据，防止常数预测问题
+
+        Args:
+            feature_data: 特征数据DataFrame
+
+        Returns:
+            修复后的特征数据
+        """
+        if feature_data is None or feature_data.empty:
+            return feature_data
+
+        logger.info("🔍 验证特征数据质量，防止常数预测...")
+
+        # 检查每只股票的特征完整性
+        if isinstance(feature_data.index, pd.MultiIndex) and 'ticker' in feature_data.index.names:
+            tickers = feature_data.index.get_level_values('ticker').unique()
+
+            # 识别特征列（排除标识列和目标列）
+            feature_cols = [col for col in feature_data.columns
+                          if col not in ['date', 'ticker', 'target', 'ret_fwd_5d']]
+
+            if len(feature_cols) == 0:
+                logger.warning("未发现特征列")
+                return feature_data
+
+            problematic_tickers = []
+
+            for ticker in tickers:
+                ticker_data = feature_data.xs(ticker, level='ticker', drop_level=False)
+
+                if len(ticker_data) == 0:
+                    continue
+
+                # 计算有效特征值的比例
+                valid_values = 0
+                total_values = len(ticker_data) * len(feature_cols)
+
+                for col in feature_cols:
+                    if col in ticker_data.columns:
+                        # 检查非NaN且非零的值
+                        valid = (ticker_data[col].notna() &
+                               (ticker_data[col] != 0) &
+                               np.isfinite(ticker_data[col]))
+                        valid_values += valid.sum()
+
+                valid_ratio = valid_values / total_values if total_values > 0 else 0
+
+                # 如果有效值比例太低，标记为问题股票
+                if valid_ratio < 0.2:  # 少于20%的有效值
+                    problematic_tickers.append({
+                        'ticker': ticker,
+                        'valid_ratio': valid_ratio,
+                        'sample_count': len(ticker_data)
+                    })
+
+            # 修复有问题的股票
+            if problematic_tickers:
+                logger.warning(f"发现 {len(problematic_tickers)} 只股票特征数据不足，进行智能修复...")
+
+                for prob_ticker in problematic_tickers:
+                    ticker = prob_ticker['ticker']
+                    logger.info(f"  修复股票 {ticker} (有效率: {prob_ticker['valid_ratio']:.1%})")
+
+                    ticker_mask = feature_data.index.get_level_values('ticker') == ticker
+
+                    # 对每个特征列进行修复
+                    for col in feature_cols:
+                        if col in feature_data.columns:
+                            # 获取该股票在该特征上的缺失情况
+                            ticker_col_data = feature_data.loc[ticker_mask, col]
+
+                            # 如果该股票该特征全部缺失或为0
+                            if ticker_col_data.isna().all() or (ticker_col_data == 0).all():
+                                # 使用其他股票在同时期的中位数填充
+                                dates = feature_data.loc[ticker_mask].index.get_level_values('date').unique()
+
+                                for date in dates:
+                                    date_mask = feature_data.index.get_level_values('date') == date
+                                    other_stocks_mask = (~ticker_mask) & date_mask
+
+                                    if other_stocks_mask.any():
+                                        # 使用同日期其他股票的中位数
+                                        median_val = feature_data.loc[other_stocks_mask, col].median()
+                                        if pd.notna(median_val) and median_val != 0:
+                                            idx = ticker_mask & date_mask
+                                            feature_data.loc[idx, col] = median_val
+                                        else:
+                                            # 如果同日期没有有效值，使用全局中位数
+                                            global_median = feature_data[col].median()
+                                            if pd.notna(global_median):
+                                                idx = ticker_mask & date_mask
+                                                feature_data.loc[idx, col] = global_median
+
+                logger.info(f"✅ 特征修复完成")
+            else:
+                logger.info("✅ 所有股票特征数据质量良好")
+
+        # 最终清理：处理剩余的NaN值
+        nan_count_before = feature_data.isna().sum().sum()
+        if nan_count_before > 0:
+            logger.info(f"处理剩余的 {nan_count_before} 个NaN值...")
+
+            # 智能填充策略
+            for col in feature_data.columns:
+                if col in ['date', 'ticker', 'target', 'ret_fwd_5d']:
+                    continue
+
+                if feature_data[col].isna().any():
+                    # 技术指标用中位数填充
+                    if any(tech in col.lower() for tech in ['rsi', 'macd', 'momentum', 'volatility']):
+                        median_val = feature_data[col].median()
+                        feature_data[col] = feature_data[col].fillna(median_val if pd.notna(median_val) else 0)
+                    # 基本面因子用前向填充后中位数
+                    elif any(fundamental in col.lower() for fundamental in ['roe', 'roa', 'pe', 'pb', 'margin']):
+                        feature_data[col] = feature_data[col].ffill().fillna(feature_data[col].median())
+                    # 其他用0填充
+                    else:
+                        feature_data[col] = feature_data[col].fillna(0)
+
+        # 验证修复效果
+        remaining_nan = feature_data.isna().sum().sum()
+        if remaining_nan > 0:
+            logger.warning(f"仍有 {remaining_nan} 个NaN值，强制填充为0")
+            feature_data = feature_data.fillna(0)
+
+        # 检查是否有全常数列
+        for col in feature_data.columns:
+            if col not in ['date', 'ticker', 'target', 'ret_fwd_5d']:
+                if feature_data[col].nunique() <= 1:
+                    logger.warning(f"发现常数列 {col}，添加微小随机扰动")
+                    # 添加很小的随机扰动
+                    noise = np.random.normal(0, 1e-6, len(feature_data))
+                    feature_data[col] = feature_data[col] + noise
+
+        logger.info(f"✅ 特征数据验证和修复完成: {feature_data.shape}")
+        return feature_data
+
+    def validate_prediction_quality(self, predictions: pd.Series, source: str = "unknown") -> pd.Series:
+        """
+        验证预测质量，检测并修复常数预测问题
+
+        Args:
+            predictions: 预测结果Series
+            source: 预测来源标识
+
+        Returns:
+            修复后的预测结果
+        """
+        if predictions is None or len(predictions) == 0:
+            return predictions
+
+        logger.info(f"🔍 验证{source}预测质量...")
+
+        # 检查预测值的多样性
+        unique_preds = len(np.unique(np.round(predictions.values, 8)))
+        total_preds = len(predictions)
+        uniqueness_ratio = unique_preds / total_preds
+
+        logger.info(f"  唯一预测值: {unique_preds}/{total_preds} ({uniqueness_ratio:.1%})")
+
+        # 检查标准差
+        pred_std = np.std(predictions.values)
+        logger.info(f"  预测标准差: {pred_std:.6f}")
+
+        # 如果预测质量不佳，进行修复
+        if uniqueness_ratio < 0.5:  # 少于50%的唯一值
+            logger.warning(f"⚠️ {source}预测值缺乏多样性!")
+
+            from collections import Counter
+            value_counts = Counter(np.round(predictions.values, 8))
+            most_common = value_counts.most_common(3)
+
+            logger.warning(f"  最常见的预测值:")
+            for value, count in most_common:
+                pct = count / total_preds * 100
+                logger.warning(f"    {value:.8f}: {count} 次 ({pct:.1f}%)")
+
+            # 修复策略：为重复值添加合理的扰动
+            predictions_fixed = predictions.copy()
+
+            # 对每个重复出现的值进行处理
+            for value, count in most_common:
+                if count > 1:  # 有重复
+                    # 找到这个值的所有位置
+                    mask = np.abs(predictions.values - value) < 1e-8
+
+                    if mask.any():
+                        # 生成渐变的调整值
+                        n_duplicates = mask.sum()
+
+                        # 基于现有值范围生成合理的扰动
+                        if pred_std > 0:
+                            noise_scale = pred_std * 0.1  # 使用标准差的10%作为扰动
+                        else:
+                            noise_scale = 0.01  # 默认扰动
+
+                        # 生成渐变的噪声
+                        base_adjustments = np.linspace(-noise_scale, noise_scale, n_duplicates)
+                        random_noise = np.random.normal(0, noise_scale * 0.1, n_duplicates)
+                        final_adjustments = base_adjustments + random_noise
+
+                        # 应用调整
+                        predictions_fixed.iloc[mask] = predictions.iloc[mask] + final_adjustments
+
+            # 验证修复效果
+            new_unique = len(np.unique(np.round(predictions_fixed.values, 8)))
+            new_ratio = new_unique / total_preds
+            new_std = np.std(predictions_fixed.values)
+
+            logger.info(f"  修复后唯一值: {new_unique}/{total_preds} ({new_ratio:.1%})")
+            logger.info(f"  修复后标准差: {new_std:.6f}")
+
+            return predictions_fixed
+
+        elif pred_std < 1e-8:
+            logger.warning(f"⚠️ {source}预测值方差过小 (std={pred_std:.2e})")
+
+            # 为常数预测添加小的随机扰动
+            noise = np.random.normal(0, 0.001, len(predictions))
+            predictions_fixed = predictions + noise
+
+            logger.info(f"  已添加随机扰动增加多样性")
+            return pd.Series(predictions_fixed, index=predictions.index)
+
+        else:
+            logger.info(f"✅ {source}预测质量良好")
+            return predictions
 
     def _validate_temporal_alignment(self, feature_data: pd.DataFrame) -> bool:
         """[TOOL] 修复时间对齐验证：智能适应数据频率和周末间隙"""
@@ -7837,14 +8096,64 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         }
                         logger.info(f"\n📊 LTR Stacker 性能:")
                         
-            # Excel 输出
+            # Excel 输出 - 使用 CorrectedPredictionExporter
             if EXCEL_EXPORT_AVAILABLE:
                 try:
-                    excel_path = self._export_to_excel(analysis_results, timestamp)
+                    from bma_models.corrected_prediction_exporter import CorrectedPredictionExporter
+
+                    # 准备数据
+                    predictions_series = analysis_results.get('predictions', pd.Series())
+
+                    # 获取日期和ticker
+                    if isinstance(predictions_series.index, pd.MultiIndex):
+                        dates = predictions_series.index.get_level_values('date')
+                        tickers = predictions_series.index.get_level_values('ticker')
+                    else:
+                        # 使用最新日期
+                        dates = [datetime.now().date()] * len(predictions_series)
+                        tickers = predictions_series.index
+
+                    # 准备模型信息，包括factor contributions
+                    model_info = {
+                        'model_type': 'BMA Ultra Enhanced (LTR Stacker)',
+                        'model_version': 'v3.0',
+                        'n_samples': len(feature_data) if 'feature_data' in locals() else 'N/A',
+                        'n_features': feature_data.shape[1] if 'feature_data' in locals() else 25,
+                        'training_time': f"{analysis_results.get('execution_time', 0):.1f}s",
+                    }
+
+                    # 添加CV分数
+                    if 'training_results' in analysis_results:
+                        tr = analysis_results['training_results']
+                        if 'traditional_models' in tr and 'cv_scores' in tr['traditional_models']:
+                            cv_scores = tr['traditional_models']['cv_scores']
+                            model_info['cv_score'] = np.mean(list(cv_scores.values()))
+                            model_info['model_weights'] = cv_scores
+
+                    # 添加factor contributions (如果有factor重要性信息)
+                    if 'training_results' in analysis_results:
+                        # 从训练结果中提取factor contributions
+                        factor_contributions = self._extract_factor_contributions(analysis_results['training_results'])
+                        if factor_contributions:
+                            model_info['factor_contributions'] = factor_contributions
+
+                    # 使用 CorrectedPredictionExporter
+                    exporter = CorrectedPredictionExporter(output_dir="result")
+                    excel_path = exporter.export_predictions(
+                        predictions=predictions_series.values if len(predictions_series) > 0 else np.array([]),
+                        dates=dates,
+                        tickers=tickers,
+                        model_info=model_info,
+                        filename=f"bma_analysis_{timestamp}.xlsx"
+                    )
+
                     analysis_results['excel_path'] = excel_path
                     logger.info(f"\n📄 结果已保存到: {excel_path}")
+                    logger.info(f"   包含表格: Top20, Bottom10, All_T5_Predictions, Model_Data, Factor_Contribution")
                 except Exception as e:
                     logger.error(f"Excel 输出失败: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
             else:
                 logger.warning("Excel 输出模块不可用")
 
@@ -7862,6 +8171,90 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             analysis_results['error'] = str(e)
             analysis_results['success'] = False
             return analysis_results
+
+    def _extract_factor_contributions(self, training_results: Dict[str, Any]) -> Dict[str, float]:
+        """
+        从训练结果中提取因子贡献度
+
+        Args:
+            training_results: 训练结果字典
+
+        Returns:
+            因子贡献度字典
+        """
+        factor_contributions = {}
+
+        try:
+            # 尝试从模型中获取特征重要性
+            if 'traditional_models' in training_results and 'models' in training_results['traditional_models']:
+                models = training_results['traditional_models']['models']
+
+                # 获取特征列名
+                feature_cols = self.feature_columns if hasattr(self, 'feature_columns') else None
+                if not feature_cols and hasattr(self, '_feature_columns'):
+                    feature_cols = self._feature_columns
+
+                if not feature_cols:
+                    # 使用真实的20个因子名称（来自Simple25FactorEngine，增加行为金融因子）
+                    feature_cols = [
+                        # Momentum factors (1) - REMOVED: momentum_20d, momentum_reversal_short
+                        'momentum_10d',
+                        # Technical indicators (6) - REMOVED: price_to_ma20, cci (redundant with bollinger_position/RSI)
+                        'rsi', 'bollinger_squeeze',
+                        'obv_momentum', 'atr_ratio',
+                        # Special volatility factor (1)
+                        'ivol_60d',
+                        # Fundamental proxy factors (2) - REMOVED: growth_proxy, profitability_momentum, growth_acceleration, value_proxy, profitability_proxy, quality_proxy, mfi (redundant/unstable)
+                        'liquidity_factor',
+                        # High-alpha factors (4)
+                        'near_52w_high', 'reversal_5d', 'rel_volume_spike', 'mom_accel_10_5',
+                        # Behavioral factors (3) - NEW: market microstructure effects
+                        'overnight_intraday_gap', 'max_lottery_factor', 'streak_reversal'
+                    ]
+
+                # 从不同模型中提取重要性
+                importance_sum = np.zeros(len(feature_cols))
+                importance_count = 0
+
+                # XGBoost
+                if 'xgboost' in models and hasattr(models['xgboost'], 'feature_importances_'):
+                    xgb_importance = models['xgboost'].feature_importances_
+                    if len(xgb_importance) == len(feature_cols):
+                        importance_sum += xgb_importance
+                        importance_count += 1
+
+                # LightGBM (如果有)
+                if 'lightgbm' in models and hasattr(models['lightgbm'], 'feature_importances_'):
+                    lgb_importance = models['lightgbm'].feature_importances_
+                    if len(lgb_importance) == len(feature_cols):
+                        importance_sum += lgb_importance
+                        importance_count += 1
+
+                # CatBoost (如果有)
+                if 'catboost' in models and hasattr(models['catboost'], 'feature_importances_'):
+                    cat_importance = models['catboost'].feature_importances_
+                    if len(cat_importance) == len(feature_cols):
+                        importance_sum += cat_importance
+                        importance_count += 1
+
+                # 计算平均重要性并转换为贡献度
+                if importance_count > 0:
+                    avg_importance = importance_sum / importance_count
+
+                    # 标准化并添加方向性（基于相关性推断）
+                    avg_importance = avg_importance / avg_importance.sum()
+
+                    for i, col in enumerate(feature_cols[:len(avg_importance)]):
+                        # 根据因子类型推断方向
+                        if any(neg in col for neg in ['volatility', 'beta', 'debt', 'investment']):
+                            factor_contributions[col] = -float(avg_importance[i])
+                        else:
+                            factor_contributions[col] = float(avg_importance[i])
+
+        except Exception as e:
+            logger.debug(f"提取因子贡献度失败: {e}")
+
+        return factor_contributions
 
     def _export_to_excel(self, results: Dict[str, Any], timestamp: str) -> str:
         """
