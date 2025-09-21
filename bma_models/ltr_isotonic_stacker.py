@@ -6,18 +6,20 @@ from scipy.stats import rankdata, spearmanr
 import lightgbm as lgb
 
 """
-LightGBM Regressor + Isotonic Stacking Meta-Learner
-Advanced second-layer model combining regression-based learning with monotonic calibration.
+LambdaRank + Isotonic Stacking Meta-Learner
+Advanced second-layer model combining ranking-based learning with monotonic calibration.
 
 ARCHITECTURE:
-- LightGBM Regressor: Optimizes continuous return prediction using regression objective
+- LambdaRank (LightGBM): Optimizes cross-sectional ranking quality using NDCG objectives
+- Automatic Label Conversion: Converts continuous returns to ranking labels for LambdaRank
 - Isotonic Regression: Provides monotonic probability calibration for final predictions
 - No cross-validation in second layer: Direct full-sample training for efficiency
 - Temporal validation: Strict adherence to T+5 prediction horizon with proper lags
 
 IMPROVEMENTS OVER PREVIOUS SYSTEMS:
-- Replaces EWA (exponential weighted averaging) with sophisticated regression optimization
-- Proper handling of continuous return targets (not ranking-based)
+- Replaces EWA (exponential weighted averaging) with sophisticated ranking optimization
+- Superior cross-sectional ranking dynamics for equity markets
+- Automatic handling of continuous return targets through rank conversion
 - Superior calibration through isotonic regression vs linear calibration
 - 4-5x faster training compared to previous CV-based stacking approaches
 
@@ -25,7 +27,7 @@ INPUT REQUIREMENTS:
 - First layer predictions from XGBoost, CatBoost, and ElasticNet models
 - DataFrame with MultiIndex(date, ticker) format
 - Temporal alignment: Features at T-1, targets at T+5 (optimal lag for max prediction power)
-- Continuous return targets (ret_fwd_5d) for regression training
+- Continuous return targets (ret_fwd_5d) - automatically converted to ranking labels
 
 QUALITY CONTROLS:
 - Production readiness validation before deployment
@@ -34,7 +36,7 @@ QUALITY CONTROLS:
 - Performance monitoring with IC and ICIR metrics
 
 Author: BMA Trading System
-Updated: September 2025 (Regression Optimization)
+Updated: September 2025 (LambdaRank Restoration)
 """
 
 import numpy as np
@@ -83,7 +85,40 @@ def _ensure_sorted(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_index(level=['date','ticker'])
 
 
-# Note: _group_sizes_by_date removed - no longer needed for regression objective
+def _group_sizes_by_date(df: pd.DataFrame) -> List[int]:
+    """
+    以 date 为 query 生成 LightGBM 的 group
+    依赖 df 已按 (date,ticker) 排序！
+    """
+    return [len(g) for _, g in df.groupby(level='date', sort=False)]
+
+
+def _convert_continuous_to_rank_labels(y_continuous: np.ndarray, df: pd.DataFrame) -> np.ndarray:
+    """
+    将连续收益率标签转换为LambdaRank需要的整数排名标签
+
+    Args:
+        y_continuous: 连续收益率标签
+        df: 对应的DataFrame（用于按日期分组）
+
+    Returns:
+        整数排名标签 (0为最差，最高数字为最好)
+    """
+    y_rank = np.zeros_like(y_continuous, dtype=int)
+
+    # 按日期分组，在每组内进行排名
+    for date, group_data in df.groupby(level='date'):
+        group_indices = group_data.index.get_indexer_for(df.index)
+        group_mask = np.isin(np.arange(len(df)), group_indices)
+
+        if group_mask.sum() > 1:  # 确保有多个样本才进行排名
+            group_returns = y_continuous[group_mask]
+            # 使用rankdata转换为0-based整数排名
+            from scipy.stats import rankdata
+            ranks = rankdata(group_returns, method='ordinal') - 1  # 转为0-based
+            y_rank[group_mask] = ranks.astype(int)
+
+    return y_rank
 
 
 def _winsorize_by_date(s: pd.Series, limits=(0.01, 0.99)) -> pd.Series:
@@ -110,7 +145,7 @@ def _zscore_by_date(s: pd.Series) -> pd.Series:
     # Use transform to preserve index structure
     result = s.groupby(level='date').transform(_z)
     return result
-# Note: strictly use regression objective; remove ranking/discretization paths per user request
+# Note: LambdaRank objective restored - automatically converts continuous labels to rankings
 
 
 def _demean_by_group(df_feat: pd.DataFrame, group_col: str) -> pd.DataFrame:
@@ -159,9 +194,10 @@ def _spearman_ic_eval(preds: np.ndarray, dataset: lgb.Dataset):
 
 class LtrIsotonicStacker:
     """
-    LightGBM Regressor + Isotonic 校准的二层 Stacking 模型
+    LambdaRank + Isotonic 校准的二层 Stacking 模型
     用于替换原有的 EWA 方案，提供更优的 T+5 预测能力
-    使用回归目标处理连续收益率标签，通过Isotonic校准优化预测质量
+    使用LambdaRank排名目标优化横截面排序质量，通过Isotonic校准优化预测
+    自动将连续收益率标签转换为排名标签以适配LambdaRank
     """
 
     def __init__(self,
@@ -208,12 +244,13 @@ class LtrIsotonicStacker:
         self.calibrator_holdout_frac_ = float(calibrator_holdout_frac)
         self.disable_calibration_ = bool(disable_calibration)
 
-        # 简化的 LightGBM 回归参数 - 使用回归目标处理连续收益率标签
+        # LambdaRank参数 - 恢复排名目标优化
         self.lgbm_params_ = lgbm_params or dict(
-            objective='regression',
+            objective='lambdarank',
             boosting_type='gbdt',
             n_estimators=200,
-            metric='rmse',
+            metric='ndcg',
+            eval_at=[5],
             verbosity=-1
         )
 
@@ -614,7 +651,7 @@ class LtrIsotonicStacker:
             X_tr_clean, y_tr_clean = X_tr[tr_mask], y_tr[tr_mask]
             X_va_clean, y_va_clean = X_va[va_mask], y_va[va_mask]
 
-            # 训练回归模型（处理连续收益率标签）
+            # 训练LambdaRank模型（自动转换连续收益率标签为排名）
             import lightgbm as lgb_clean
             # 准备清洗后的训练数据
             try:
@@ -626,19 +663,24 @@ class LtrIsotonicStacker:
                 pass
 
             params = dict(
-                objective='regression',
+                objective='lambdarank',
                 boosting_type='gbdt',
                 n_estimators=200,
-                metric='rmse',
+                metric='ndcg',
+                eval_at=[5],
                 verbosity=-1,
                 random_state=self.random_state_
             )
             if isinstance(self.lgbm_params_, dict):
                 params.update(self.lgbm_params_)
 
-            # 使用回归器处理连续标签，不需要group参数
-            ranker_model = lgb_clean.LGBMRegressor(**params)
-            ranker_model.fit(X_tr_clean, y_tr_clean)
+            # 将连续标签转换为排名标签
+            y_tr_rank = _convert_continuous_to_rank_labels(y_tr_clean, df_tr.iloc[tr_mask])
+            group_tr = _group_sizes_by_date(df_tr.iloc[tr_mask])
+
+            # 使用LambdaRank排序器
+            ranker_model = lgb_clean.LGBMRanker(**params)
+            ranker_model.fit(X_tr_clean, y_tr_rank, group=group_tr)
 
             class LGBWrapper:
                 def __init__(self, model):
@@ -751,34 +793,42 @@ class LtrIsotonicStacker:
         if isinstance(self.lgbm_params_, dict):
             final_params.update(self.lgbm_params_)
 
-        # 🔒 强制回归目标 - 防止ranking配置导致错误
-        final_params['objective'] = 'regression'
-        final_params['metric'] = 'rmse'
+        # LambdaRank配置确认
+        final_params['objective'] = 'lambdarank'
+        final_params['metric'] = 'ndcg'
 
-        # 移除任何ranking相关参数
-        ranking_params = ['label_gain', 'lambdarank_truncation_level', 'lambdarank_norm']
-        for rp in ranking_params:
-            if rp in final_params:
-                logger.warning(f"⚠️ 移除ranking参数: {rp}")
-                del final_params[rp]
+        logger.info("✅ LambdaRank配置已确认：优化横截面排名质量")
 
         logger.info(f"最终模型自适应参数: n_samples={n_final_samples}, min_data_in_leaf={final_min_data_in_leaf}, num_leaves={final_num_leaves}")
 
-        # 训练最终回归模型（处理连续收益率标签）
+        # 训练最终LambdaRank模型（处理连续收益率标签）
         final_params = dict(
-            objective='regression',
+            objective='lambdarank',
             boosting_type='gbdt',
             n_estimators=200,
-            metric='rmse',
+            metric='ndcg',
+            eval_at=[5],
             verbosity=-1,
             random_state=self.random_state_
         )
         if isinstance(self.lgbm_params_, dict):
             final_params.update(self.lgbm_params_)
 
-        # 使用回归器，无需group参数
-        final_ranker = lgb_clean.LGBMRegressor(**final_params)
-        final_ranker.fit(X_all_clean, y_all_clean)
+        # 准备最终训练数据：转换标签为排名
+        try:
+            df_all_clean = df.iloc[final_valid_mask].sort_index(level=['date', 'ticker'])
+            X_all_clean = df_all_clean[actual_base_cols].values
+            y_all_continuous = _winsorize_by_date(df_all_clean[label_col], self.winsor_limits_).values
+            y_all_rank = _convert_continuous_to_rank_labels(y_all_continuous, df_all_clean)
+            grp_all = _group_sizes_by_date(df_all_clean)
+        except Exception:
+            # 回退处理
+            y_all_rank = _convert_continuous_to_rank_labels(y_all_clean, df.iloc[final_valid_mask])
+            grp_all = _group_sizes_by_date(df.iloc[final_valid_mask])
+
+        # 使用LambdaRank训练最终模型
+        final_ranker = lgb_clean.LGBMRanker(**final_params)
+        final_ranker.fit(X_all_clean, y_all_rank, group=grp_all)
 
         class LGBWrapperFinal:
             def __init__(self, model):
@@ -1078,7 +1128,7 @@ class LtrIsotonicStacker:
 
         return {
             'fitted': True,
-            'model_type': 'LightGBM Regressor + Isotonic Calibration',
+            'model_type': 'LambdaRank + Isotonic Calibration',
             'base_features': self._col_cache_,
             'cv_mean_ic': np.mean(self.cv_scores_) if self.cv_scores_ else None,
             'cv_std_ic': np.std(self.cv_scores_) if self.cv_scores_ else None,
