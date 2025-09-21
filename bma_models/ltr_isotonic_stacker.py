@@ -108,15 +108,15 @@ def _convert_continuous_to_rank_labels(y_continuous: np.ndarray, df: pd.DataFram
 
     # 按日期分组，在每组内进行排名
     for date, group_data in df.groupby(level='date'):
-        group_indices = group_data.index.get_indexer_for(df.index)
-        group_mask = np.isin(np.arange(len(df)), group_indices)
+        # 获取当前组在原DataFrame中的位置
+        group_positions = df.index.get_indexer_for(group_data.index)
 
-        if group_mask.sum() > 1:  # 确保有多个样本才进行排名
-            group_returns = y_continuous[group_mask]
+        if len(group_positions) > 1:  # 确保有多个样本才进行排名
+            group_returns = y_continuous[group_positions]
             # 使用rankdata转换为0-based整数排名
             from scipy.stats import rankdata
             ranks = rankdata(group_returns, method='ordinal') - 1  # 转为0-based
-            y_rank[group_mask] = ranks.astype(int)
+            y_rank[group_positions] = ranks.astype(int)
 
     return y_rank
 
