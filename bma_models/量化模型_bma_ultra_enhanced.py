@@ -549,8 +549,8 @@ class UnifiedTrainingConfig:
         
         elastic_config = base_models.get('elastic_net', {})
         self._ELASTIC_NET_CONFIG = {
-            'alpha': elastic_config.get('alpha', 0.01),
-            'l1_ratio': elastic_config.get('l1_ratio', 0.5),
+            'alpha': elastic_config.get('alpha', 0.0001),  # 继续大幅减少正则化：0.001 → 0.0001
+            'l1_ratio': elastic_config.get('l1_ratio', 0.05),  # 进一步减少L1比例：0.3 → 0.05
             'max_iter': 2000,
             'random_state': elastic_config.get('random_state', self._RANDOM_STATE)
         }

@@ -192,8 +192,8 @@ training:
   base_models:
     elastic_net:
       enable: true
-      alpha: 0.001       # 进一步降低正则化强度
-      l1_ratio: 0.1      # 大幅降低L1比例，主要使用L2正则化
+      alpha: 0.0001      # 继续大幅降低正则化：0.001 → 0.0001
+      l1_ratio: 0.05     # 进一步降低L1比例：0.1 → 0.05，几乎纯L2正则化
       random_state: 42
     
     xgboost:
