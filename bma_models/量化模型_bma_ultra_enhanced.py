@@ -7450,7 +7450,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 **_extra_kwargs,
                 neutralize_cfg=None,  # 可以根据需要添加中性化配置
                 lgbm_params=dict(
-                    objective='regression',  # 强制回归目标
+                    objective='lambdarank',  # 恢复LambdaRank目标
                     boosting_type='gbdt',
                     learning_rate=0.03,
                     num_leaves=63,
@@ -7459,6 +7459,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     feature_fraction=0.9,
                     bagging_fraction=0.9,
                     bagging_freq=1,
+                    metric='ndcg',
+                    eval_at=[5],
                     verbosity=-1,
                     n_estimators=400
                 ),
