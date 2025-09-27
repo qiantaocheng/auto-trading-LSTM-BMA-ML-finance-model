@@ -19,9 +19,9 @@ try:
     # 向后兼容别名
     BMAExcelExporter = CorrectedPredictionExporter
 
-    def export_bma_predictions_to_excel(predictions, dates, tickers, model_info, output_dir="result", filename=None):
+    def export_bma_predictions_to_excel(predictions, dates, tickers, model_info, output_dir="D:/trade/results", filename=None):
         """向后兼容的导出函数"""
-        exporter = CorrectedPredictionExporter()
+        exporter = CorrectedPredictionExporter(output_dir=output_dir)
         return exporter.export_predictions(
             predictions=predictions,
             dates=dates,

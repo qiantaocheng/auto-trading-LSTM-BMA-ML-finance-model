@@ -87,16 +87,16 @@ class LazyComponentLoader:
             )
         )
         
-        # Alpha策略引擎
-        self.register_component(
-            "alpha_engine",
-            ComponentSpec(
-                module_path="bma_models.enhanced_alpha_strategies",
-                class_name="AlphaStrategiesEngine",
-                required=False,
-                description="Enhanced alpha strategies engine"
-            )
-        )
+        # Alpha策略引擎已废弃 - 现在使用Simple 25策略
+        # self.register_component(
+        #     "alpha_engine",
+        #     ComponentSpec(
+        #         module_path="bma_models.enhanced_alpha_strategies",
+        #         class_name="AlphaStrategiesEngine",
+        #         required=False,
+        #         description="Enhanced alpha strategies engine (DEPRECATED)"
+        #     )
+        # )
         
         # Polygon因子
         self.register_component(

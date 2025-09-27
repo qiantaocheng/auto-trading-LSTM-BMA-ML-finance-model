@@ -310,7 +310,7 @@ class UnifiedQuantCore:
             
             # 基础价格因子
             df['returns'] = df['close'].pct_change()
-            df['log_returns'] = np.log(df['close'] / df['close'].shift(1))
+            df['log_returns'] = np.log(1 + df['close'].pct_change()).fillna(0)  # T-1滞后由统一配置控制
             
             # 动量因子
             df['return_1m'] = df['close'] / df['close'].shift(20) - 1

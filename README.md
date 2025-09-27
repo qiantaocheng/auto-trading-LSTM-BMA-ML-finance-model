@@ -87,7 +87,7 @@ Environment overrides (optional): `BMA_START_DATE`, `BMA_END_DATE`, `BMA_EXTRA_A
 ### BMA Ultra Enhanced Model
 
 - **File**: `bma_models/量化模型_bma_ultra_enhanced.py`
-- **Architecture**: Learning-to-rank models with traditional ML baselines and regime-aware fusion
+- **Architecture**: Ridge regression models with traditional ML baselines and regime-aware fusion
 - **Risk Model**: Professional-grade factor loadings, covariance matrices, and specific risk estimation
 - **Quality Control**: Integrated alpha quality monitoring and evaluation integrity systems
 - **Robust Methods**: Enhanced numerical stability and exception handling
@@ -123,7 +123,7 @@ The algorithm has been completely redesigned with a simplified, production-ready
 - Single DataFrame MultiIndex format (date, ticker) - no complex branching
 - Fail-fast validation - no fallback cascades that mask errors
 - Unified configuration system - all parameters centralized
-- Direct ML pipeline - clean first-layer models with LTR stacking
+- Direct ML pipeline - clean first-layer models with Ridge stacking
 - Quality monitoring at every stage
 
 ### Enhanced Data Pipeline
@@ -148,8 +148,8 @@ The algorithm has been completely redesigned with a simplified, production-ready
 - **CatBoost**: Categorical boosting for robust feature handling
 - **ElasticNet**: Linear baseline with L1/L2 regularization
 
-**LTR Isotonic Stacking:**
-- **Learning-to-Rank**: Advanced ranking-based meta-learner
+**Ridge Regression Stacking:**
+- **Ridge Regression**: Linear meta-learner optimizing continuous returns
 - **Isotonic Calibration**: Monotonic probability calibration
 - **Temporal Validation**: Purged time series cross-validation with strict gaps
 
@@ -222,7 +222,7 @@ The system has moved from complex multi-path architectures to a streamlined, fai
 
 **Unified Configuration:** The `UnifiedConfig` class centralizes all parameters, replacing scattered hardcoded constants and complex inheritance hierarchies.
 
-**Direct ML Pipeline:** First-layer models (XGBoost, CatBoost, ElasticNet) feed directly into LTR Isotonic Stacking - no complex ensemble cascades.
+**Direct ML Pipeline:** First-layer models (XGBoost, CatBoost, ElasticNet) feed directly into Ridge Regression Stacking - no complex ensemble cascades.
 
 ### Enhanced Temporal Safety
 
@@ -358,7 +358,7 @@ The configuration system implements debounced reloading that only logs and reloa
 ### BMA Model Architecture
 - `bma_models/量化模型_bma_ultra_enhanced.py`: Main BMA model
 - `bma_models/optimized_factor_engine.py`: High-quality factor calculations (25 factors)
-- `bma_models/ltr_isotonic_stacker.py`: Learning-to-rank meta-learner
+- `bma_models/ridge_stacker.py`: Ridge regression meta-learner
 - `bma_models/cross_sectional_standardizer.py`: Robust cross-sectional processing
 - `bma_models/unified_purged_cv_factory.py`: Temporal validation framework
 

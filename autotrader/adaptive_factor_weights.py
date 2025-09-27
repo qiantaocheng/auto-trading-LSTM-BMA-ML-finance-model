@@ -227,16 +227,17 @@ class AdaptiveFactorWeights:
                     alpha_performance = max(0, alpha_scores.mean())
                     logger.info(f"Alpha策略平均得分: {alpha_performance:.4f}")
             
-            # 分析Learning-to-Rank性能
-            ltr_performance = 0
-            if 'learning_to_rank' in bma_results:
-                ltr_results = bma_results['learning_to_rank']
-                if isinstance(ltr_results, dict):
-                    ltr_perf = ltr_results.get('performance_summary', {})
-                    if ltr_perf:
-                        avg_ic = np.mean([p.get('ic', 0.0) for p in ltr_perf.values() if isinstance(p, dict)])
-                        ltr_performance = max(0, avg_ic)
-                        logger.info(f"LTR平均IC: {ltr_performance:.4f}")
+            # 分析Ridge性能
+            ridge_performance = 0
+            # 向后兼容：检查旧的learning_to_rank键
+            if 'learning_to_rank' in bma_results and 'ridge_stacker' not in bma_results:
+                ridge_results = bma_results.get('ridge_stacker', bma_results.get('learning_to_rank', {}))
+                if isinstance(ridge_results, dict):
+                    ridge_perf = ridge_results.get('performance_summary', {})
+                    if ridge_perf:
+                        avg_ic = np.mean([p.get('ic', 0.0) for p in ridge_perf.values() if isinstance(p, dict)])
+                        ridge_performance = max(0, avg_ic)
+                        logger.info(f"Ridge平均IC: {ridge_performance:.4f}")
             
             # 基于模型性能映射到因子权重
             factor_weights = {}
@@ -272,14 +273,14 @@ class AdaptiveFactorWeights:
                     if factor in factor_weights:
                         factor_weights[factor] += alpha_weight_per_factor
             
-            # 加入LTR的贡献
-            if ltr_performance > 0:
-                # LTR主要贡献趋势和动量
-                ltr_factors = ['trend', 'momentum']
-                ltr_weight_per_factor = ltr_performance * 0.2 / len(ltr_factors)
-                for factor in ltr_factors:
+            # 加入Ridge的贡献
+            if ridge_performance > 0:
+                # Ridge主要贡献趋势和动量
+                ridge_factors = ['trend', 'momentum']
+                ridge_weight_per_factor = ridge_performance * 0.2 / len(ridge_factors)
+                for factor in ridge_factors:
                     if factor in factor_weights:
-                        factor_weights[factor] += ltr_weight_per_factor
+                        factor_weights[factor] += ridge_weight_per_factor
             
             # 确保所有因子都有最小权重
             for factor in self.factor_names:

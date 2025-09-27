@@ -1,0 +1,205 @@
+# Kronos Model Training Configuration
+# 最优训练参数配置
+
+# 推荐配置组合
+configurations:
+  # 日线长线配置（最稳定）
+  daily_trading:
+    data:
+      interval: "1d"
+      period: "2y"           # 730个数据点
+      min_data_points: 500
+    model:
+      sequence_length: 60    # 60天输入
+      prediction_length: 20  # 预测20天
+      features: ["open", "high", "low", "close", "volume"]
+    training:
+      epochs: 80
+      batch_size: 32
+      learning_rate: 0.001
+      early_stopping: true
+      patience: 15
+      validation_split: 0.2
+    retrain:
+      frequency: "weekly"    # 每周日凌晨
+      trigger_mae: 0.025    # MAE > 2.5%触发重训练
+      trigger_accuracy: 0.60 # 方向准确率 < 60%触发
+
+  # 4小时波段配置（平衡型）
+  swing_trading:
+    data:
+      interval: "4h"
+      period: "6mo"          # ~1080个数据点
+      min_data_points: 800
+    model:
+      sequence_length: 120   # 20天的4小时数据
+      prediction_length: 30  # 预测5天
+      features: ["open", "high", "low", "close", "volume", "rsi", "macd"]
+    training:
+      epochs: 100
+      batch_size: 32
+      learning_rate: 0.0008
+      early_stopping: true
+      patience: 20
+      validation_split: 0.15
+    retrain:
+      frequency: "3days"
+      trigger_mae: 0.02
+      trigger_accuracy: 0.65
+
+  # 小时线短线配置（激进型）
+  intraday_trading:
+    data:
+      interval: "1h"
+      period: "3mo"          # ~2160个数据点
+      min_data_points: 1500
+    model:
+      sequence_length: 168   # 7天的小时数据
+      prediction_length: 24  # 预测24小时
+      features: ["open", "high", "low", "close", "volume", "rsi", "bb_upper", "bb_lower"]
+    training:
+      epochs: 120
+      batch_size: 64
+      learning_rate: 0.0005
+      early_stopping: true
+      patience: 25
+      validation_split: 0.15
+    retrain:
+      frequency: "daily"     # 每天凌晨2点
+      trigger_mae: 0.015
+      trigger_accuracy: 0.70
+
+  # 高频5分钟配置（需要优质数据源）
+  high_frequency:
+    data:
+      interval: "5m"
+      period: "1mo"          # ~8640个数据点
+      min_data_points: 5000
+    model:
+      sequence_length: 288   # 1天的5分钟数据
+      prediction_length: 12  # 预测1小时
+      features: ["close", "volume", "vwap", "bid_ask_spread"]
+    training:
+      epochs: 150
+      batch_size: 128
+      learning_rate: 0.0003
+      early_stopping: true
+      patience: 30
+      validation_split: 0.1
+    retrain:
+      frequency: "6hours"    # 每6小时
+      trigger_mae: 0.01
+      trigger_accuracy: 0.75
+
+# 数据预处理参数
+preprocessing:
+  normalization: "z-score"    # 标准化方法
+  handle_missing: "interpolate"
+  remove_outliers: true
+  outlier_threshold: 4.0      # 4倍标准差
+  detrend: false              # 日线不去趋势，分钟线去趋势
+
+# 特征工程
+feature_engineering:
+  technical_indicators:
+    - name: "rsi"
+      period: 14
+    - name: "macd"
+      fast: 12
+      slow: 26
+      signal: 9
+    - name: "bollinger_bands"
+      period: 20
+      std: 2
+    - name: "atr"              # 平均真实范围（波动率）
+      period: 14
+    - name: "volume_ratio"     # 量比
+      period: 5
+
+  time_features:
+    - "day_of_week"            # 星期几
+    - "hour_of_day"            # 小时（仅限日内）
+    - "month"                  # 月份
+    - "quarter"                # 季度
+    - "is_market_open"         # 是否开市时间
+
+  market_features:
+    - "vix"                    # 恐慌指数
+    - "dollar_index"           # 美元指数
+    - "sector_performance"     # 板块表现
+
+# 模型集成策略
+ensemble:
+  enabled: true
+  models:
+    - type: "kronos_base"
+      weight: 0.4
+    - type: "kronos_large"
+      weight: 0.3
+    - type: "statistical_baseline"
+      weight: 0.3
+  voting: "weighted_average"
+
+# 风险控制参数
+risk_management:
+  max_position_size: 0.1      # 单个仓位最大10%
+  stop_loss: 0.05             # 止损5%
+  take_profit: 0.15           # 止盈15%
+  max_daily_trades: 10        # 每日最大交易次数
+  confidence_threshold: 0.7   # 置信度阈值
+
+# 性能监控
+monitoring:
+  metrics:
+    - "mae"                   # 平均绝对误差
+    - "rmse"                  # 均方根误差
+    - "direction_accuracy"    # 方向准确率
+    - "sharpe_ratio"         # 夏普比率
+    - "max_drawdown"         # 最大回撤
+    - "win_rate"             # 胜率
+    - "profit_factor"        # 盈亏比
+
+  alerts:
+    performance_degradation:
+      threshold: 0.2          # 性能下降20%
+      action: "retrain"
+    consecutive_losses:
+      threshold: 5
+      action: "pause_trading"
+    high_volatility:
+      threshold: 3.0          # 3倍正常波动率
+      action: "reduce_position"
+
+# 最优参数选择逻辑
+selection_criteria:
+  market_conditions:
+    trending:
+      prefer: "daily_trading"
+      sequence_multiplier: 1.2
+    ranging:
+      prefer: "swing_trading"
+      prediction_reduce: 0.7
+    volatile:
+      prefer: "intraday_trading"
+      batch_size_increase: 2.0
+
+  data_availability:
+    high_quality:             # Polygon实时数据
+      all_configs_enabled: true
+    delayed:                  # 延迟数据
+      disable: ["high_frequency", "intraday_trading"]
+    limited:                  # 数据受限
+      only_enable: ["daily_trading"]
+
+# 自动优化参数
+auto_optimization:
+  enabled: true
+  method: "bayesian"          # 贝叶斯优化
+  trials: 50
+  optimize_params:
+    - "sequence_length"
+    - "learning_rate"
+    - "batch_size"
+    - "prediction_length"
+  target_metric: "sharpe_ratio"
+  min_improvement: 0.05       # 最小提升5%

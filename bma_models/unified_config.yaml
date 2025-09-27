@@ -431,7 +431,7 @@ module_thresholds:
   stacking_min_oof_coverage: 0.3
   stacking_min_models: 2
   regime_min_samples: 500
-  ltr_min_samples: 1000
+  ridge_min_samples: 1000
 
 # ==========================================
 # ALPHA因子配置 (FROM alphas_config.yaml)

@@ -144,10 +144,11 @@ class CrossSectionalStandardizer:
             mean_val = valid_data.mean()
             std_val = valid_data.std()
 
-            # 避免除以0
+            # 避免除以0 - 优化处理
             if std_val < 1e-10:
-                logger.warning(f"日期 {date}, 因子 {factor}: 标准差过小 ({std_val})")
-                df_standardized[factor] = 0
+                # 不再打印警告，改为静默处理
+                # 使用去均值但不标准化的方式，保持因子原有信息
+                df_standardized[factor] = factor_data_clean - mean_val
                 continue
 
             # 执行标准化

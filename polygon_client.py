@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union
 import time
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -666,7 +667,19 @@ class PolygonClient:
             return {}
             
 # Global instance - DELAYED DATA MODE
-polygon_client = PolygonClient("FExbaO1xdmrV6f6p3zHCxk8IArjeowQ1", delayed_data_mode=True)
+# Prefer environment variable, fallback to api_config if available
+def _get_polygon_api_key() -> str:
+    env_key = os.environ.get("POLYGON_API_KEY") or os.environ.get("POLYGON_API_TOKEN")
+    if env_key:
+        return env_key
+    try:
+        from api_config import POLYGON_API_KEY as CFG_KEY
+        return CFG_KEY
+    except Exception:
+        logging.getLogger(__name__).warning("POLYGON_API_KEY not set; using empty key which will fail requests")
+        return ""
+
+polygon_client = PolygonClient(_get_polygon_api_key(), delayed_data_mode=True)
 
 # Compatibility functions
 def download(tickers, start=None, end=None, **kwargs):

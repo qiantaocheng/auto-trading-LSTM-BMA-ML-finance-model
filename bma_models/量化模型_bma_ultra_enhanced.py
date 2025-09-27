@@ -4746,7 +4746,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         predictions=predictions,
                         feature_data=feature_data,
                         model_info=model_info,
-                        output_dir="result",
+                        output_dir="D:/trade/results",
                         filename=f"bma_enhanced_analysis_{timestamp}.xlsx"
                     )
                     logger.info(f"统一导出器保存成功: {result_file}")
@@ -9848,7 +9848,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                 # 应用增强底部20%惩罚
                 pre_penalty = predictions.copy()
-                predictions, diagnostics = self.enhanced_penalty_system.apply_enhanced_bottom20_penalty(
+                predictions, diagnostics = self.enhanced_penalty_system.apply_enhanced_bottom8_penalty(
                     predictions=predictions,
                     feature_data=feature_data
                 )
@@ -10024,8 +10024,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         logger.info(f"    包含 {len(predictions_latest)} 只股票的预测结果")
                     else:
                         # 使用当前日期作为预测基准日期
-                        dates = [datetime.now().date()] * len(predictions_series)
-                        tickers = predictions_series.index
+                        if len(predictions_series) > 0:
+                            dates = [datetime.now().date()] * len(predictions_series)
+                            tickers = predictions_series.index
+                        else:
+                            # 处理空预测的情况
+                            dates = []
+                            tickers = []
 
                     # 准备模型信息，包括factor contributions
                     model_info = {
@@ -10052,7 +10057,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                             model_info['factor_contributions'] = factor_contributions
 
                     # 使用 CorrectedPredictionExporter
-                    exporter = CorrectedPredictionExporter(output_dir="result")
+                    exporter = CorrectedPredictionExporter(output_dir="D:/trade/results")
                     # 优先使用在预测阶段存储的三张表；若不存在则回退为None
                     lambda_df_export = getattr(self, '_last_lambda_predictions_df', None)
                     ridge_df_export = getattr(self, '_last_ridge_predictions_df', None)
@@ -10088,10 +10093,26 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                             dates = []
                             tickers = []
 
+                    # Convert tickers to list if it's an Index
+                    if hasattr(tickers, 'tolist'):
+                        tickers = tickers.tolist()
+                    elif tickers is None:
+                        tickers = []
+
+                    # Check if we have valid data to export
+                    if len(predictions_series) == 0 or len(dates) == 0 or len(tickers) == 0:
+                        logger.warning("⚠️ No valid predictions to export to Excel")
+                        logger.warning(f"   Predictions: {len(predictions_series)}, Dates: {len(dates)}, Tickers: {len(tickers)}")
+                        # Create minimal dummy data to avoid export failure
+                        if len(predictions_series) == 0:
+                            predictions_series = pd.Series([0.0], index=['DUMMY'])
+                            dates = [datetime.now().date()]
+                            tickers = ['DUMMY']
+
                     excel_path = exporter.export_predictions(
                         predictions=predictions_series.values if len(predictions_series) > 0 else np.array([]),
                         dates=dates if dates is not None else [],
-                        tickers=tickers if tickers is not None else [],
+                        tickers=tickers if len(tickers) > 0 else [],
                         model_info=model_info,
                         filename=f"bma_analysis_{timestamp}.xlsx",
                         lambda_predictions_df=lambda_df_export,
@@ -10251,7 +10272,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     predictions = pred_series.values
 
                 # 使用CorrectedPredictionExporter的简化模式
-                exporter = CorrectedPredictionExporter(output_dir="result")
+                exporter = CorrectedPredictionExporter(output_dir="D:/trade/results")
                 return exporter.export_predictions(
                     predictions=predictions,
                     dates=dates,
@@ -10276,7 +10297,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         from pathlib import Path
 
         # 创建输出目录
-        output_dir = Path('result')
+        output_dir = Path('D:/trade/results')
         output_dir.mkdir(exist_ok=True)
 
         # 文件名

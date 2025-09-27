@@ -1,0 +1,49 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test:*)",
+      "Bash(BMA_ENFORCE_TIME_CONFIG=false python test_training_bugs.py)",
+      "Bash(python:*)",
+      "Bash(sed:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(find:*)",
+      "Bash(xargs:*)",
+      "Bash(while read f)",
+      "Bash(do python -m py_compile \"$f\")",
+      "Bash(echo \"File: $f\")",
+      "Bash(done)",
+      "Bash(dir:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(cd:*)",
+      "Bash(del temp_fix.py)",
+      "Bash(git commit:*)",
+      "Bash(grep:*)",
+      "Bash(copy:*)",
+      "Bash(git log:*)",
+      "Bash(iconv:*)",
+      "Bash(del:*)",
+      "Bash(for:*)",
+      "Bash(do echo \"Checking $file:\")",
+      "Bash(cat:*)",
+      "Bash(git reset:*)",
+      "Bash(awk:*)",
+      "Bash(git checkout:*)",
+      "Bash(git restore:*)",
+      "Bash(findstr:*)",
+      "Bash(git rm:*)",
+      "WebSearch",
+      "Bash(timeout:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(git clone:*)",
+      "Bash(pip install:*)"
+    ],
+    "deny": [],
+    "ask": [],
+    "defaultMode": "acceptEdits",
+    "additionalDirectories": [
+      "D:\\",
+      "D:\\d\\trade"
+    ]
+  }
+}

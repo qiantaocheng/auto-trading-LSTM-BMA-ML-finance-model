@@ -177,9 +177,15 @@ class UnifiedPurgedTimeSeriesCV(BaseCrossValidator):
             # 没有groups时，使用索引（但已经在上面被阻止）
             unique_groups = np.arange(n_samples)
             n_groups = n_samples
-        
-        # 计算每个fold的大小
-        test_size = self.test_size if self.test_size else n_groups // (self.n_splits + 1)
+
+        # 自适应test_size计算
+        if self.test_size and self.test_size > n_groups // 2:
+            # 如果test_size太大，自动调整
+            adaptive_test_size = max(5, min(n_groups // (self.n_splits + 1), n_groups // 10))
+            logger.warning(f"test_size={self.test_size}对于{n_groups}个groups太大，自动调整为{adaptive_test_size}")
+            test_size = adaptive_test_size
+        else:
+            test_size = self.test_size if self.test_size else n_groups // (self.n_splits + 1)
         
         for i in range(self.n_splits):
             # 计算测试集位置

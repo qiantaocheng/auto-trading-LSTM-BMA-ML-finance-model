@@ -820,7 +820,7 @@ class AlphaStrategiesEngine:
             g = df.groupby('ticker')['Close']
             
             # Simple volatility: rolling std of returns, shifted to avoid lookahead
-            returns = g.pct_change().shift(1)  # T-1 returns to avoid lookahead
+            returns = g.pct_change()  # T-1滞后由统一配置控制
             volatility = returns.rolling(window).std().fillna(0.0)
             
             # Invert volatility (low vol = high score)
@@ -1092,7 +1092,7 @@ class AlphaStrategiesEngine:
         try:
             window = windows[0] if windows else 22
             # 🔧 CRITICAL FIX: 使用安全的groupby方法，保持MultiIndex结构
-            returns_abs = self._safe_groupby_apply(df, 'ticker', lambda s: (s['Close'] / s['Close'].shift(1) - 1).abs())
+            returns_abs = self._safe_groupby_apply(df, 'ticker', lambda s: s['Close'].pct_change().abs())  # T-1滞后由统一配置控制
             if 'amount' in df.columns:
                 volume_dollar = df['amount'].replace(0, np.nan)
             elif 'volume' in df.columns:
@@ -1320,7 +1320,7 @@ class AlphaStrategiesEngine:
 
             # 计算对数收益
             close = df['Close']
-            log_returns = close.groupby(df['ticker']).apply(lambda x: np.log(x / x.shift(1))).reset_index(level=0, drop=True)
+            log_returns = close.groupby(df['ticker']).pct_change().reset_index(level=0, drop=True)  # T-1滞后由统一配置控制
 
             # 获取市场基准收益 (SPY proxy: 使用市场平均作为基准)
             # 注意: 如果有SPY数据，可以直接使用；这里使用市场平均作为proxy
@@ -2027,7 +2027,7 @@ class AlphaStrategiesEngine:
                     result_clean = result_df.copy()
                     result_clean.index = multi_idx
                     
-                    # 只保留25个Alpha因子，移除原始市场数据和元数据列
+                    # 只保留17个Alpha因子，移除原始市场数据和元数据列
                     required_17_factors = [
                         'momentum_10d',
                         'rsi', 'bollinger_squeeze',
@@ -2054,8 +2054,8 @@ class AlphaStrategiesEngine:
             logger.warning("⚠️ MultiIndex重建失败，返回原格式")
             logger.warning("⚠️ 这可能导致后续特征合并时的索引对齐问题")
         else:
-            # 对于已经是MultiIndex的情况，也只返回25个纯净因子
-            required_25_factors = [
+            # 对于已经是MultiIndex的情况，也只返回alpha因子列
+            required_alpha_factors = [
                 'momentum_10d',
                 'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
                 'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
@@ -2065,14 +2065,14 @@ class AlphaStrategiesEngine:
                 'growth_acceleration', 'quality_consistency', 'financial_resilience'
             ]
             
-            alpha_cols_available = [col for col in required_25_factors if col in result_df.columns]
-            
+            alpha_cols_available = [col for col in required_alpha_factors if col in result_df.columns]
+
             if alpha_cols_available:
                 final_result = result_df[alpha_cols_available]
-                logger.info(f"✅ 结果已是MultiIndex格式: {final_result.shape} 包含25个纯净因子: {len(alpha_cols_available)}/25")
+                logger.info(f"✅ 结果已是MultiIndex格式: {final_result.shape} 包含Alpha因子: {len(alpha_cols_available)}个")
                 return final_result
             else:
-                logger.error("❌ 没有找到任何25个因子列")
+                logger.error("❌ 没有找到任何Alpha因子列")
                 return pd.DataFrame()  # 返回空DataFrame
         
         # 如果以上都失败，返回空DataFrame
@@ -2825,7 +2825,7 @@ class AlphaStrategiesEngine:
             window = windows[0] if windows else 10
             
             g = df.groupby('ticker')['Close']
-            returns = g.pct_change().shift(1)  # T-1 returns
+            returns = g.pct_change()  # T-1滞后由统一配置控制
             
             # Sentiment = momentum (positive) - volatility (negative)  
             momentum = returns.rolling(window).mean()
@@ -2849,7 +2849,7 @@ class AlphaStrategiesEngine:
             window = windows[0] if windows else 10
             
             g = df.groupby('ticker')['Close']
-            returns = g.pct_change().shift(1)  # T-1 returns
+            returns = g.pct_change()  # T-1滞后由统一配置控制
             
             # Calculate base sentiment
             momentum = returns.rolling(window).mean()

@@ -18,6 +18,6 @@ __author__ = "Trading System"
 
 # Import only verified core components
 from .unified_feature_pipeline import UnifiedFeaturePipeline, FeaturePipelineConfig
-from .enhanced_alpha_strategies import AlphaStrategiesEngine
+# enhanced_alpha_strategies已彻底废弃，现在使用Simple 25策略
 from .unified_market_data_manager import UnifiedMarketDataManager
 from .polygon_client import PolygonClient
