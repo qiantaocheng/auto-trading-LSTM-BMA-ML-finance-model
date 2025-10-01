@@ -44,8 +44,7 @@
       "Bash(wmic:*)",
       "Bash(rd:*)",
       "Bash(nvcc:*)",
-      "Bash(pip uninstall:*)",
-      "Bash(git pull:*)"
+      "Bash(pip uninstall:*)"
     ],
     "deny": [],
     "ask": [],

@@ -320,14 +320,31 @@ class RankAwareBlender:
 
         combined_df['blended_rank'] = combined_df.groupby(level='date').apply(_rank_by_date).values
 
-        # 计算最终z-score（用于仓位分配）
-        def _zscore_by_date(group):
-            scores = group['blended_score']
-            if len(scores) <= 1:
-                return pd.Series(0.0, index=scores.index)
-            return (scores - scores.mean()) / (scores.std() + 1e-8)
+        # 仅对最终融合阶段做稳健后处理（不改上游）：
+        # 1) 日内winsorize(1%-99%) 2) tanh压缩 3) 日内去均值与定尺
 
-        combined_df['blended_z'] = combined_df.groupby(level='date').apply(_zscore_by_date).values
+        def _postprocess_final_by_date(group):
+            s = group['blended_score'].astype(float)
+            if len(s) <= 1:
+                group['blended_score_pp'] = s
+                group['blended_z'] = 0.0
+                return group
+            # winsorize
+            lo, hi = np.percentile(s, [1, 99])
+            s_w = s.clip(lower=lo, upper=hi)
+            # tanh 压缩到 [-1,1]
+            s_c = np.tanh(s_w / 2.0)
+            # 日内去均值与定尺（目标std≈1）
+            std = s_c.std()
+            if std < 1e-8:
+                z = s_c * 0.0
+            else:
+                z = (s_c - s_c.mean()) / std
+            group['blended_score_pp'] = s_c
+            group['blended_z'] = z
+            return group
+
+        combined_df = combined_df.groupby(level='date', group_keys=False).apply(_postprocess_final_by_date)
 
         # 记录权重历史
         self.weight_history.append({
@@ -347,7 +364,8 @@ class RankAwareBlender:
         logger.info(f"   融合统计: mean={blend_stats['mean']:.6f}, std={blend_stats['std']:.6f}")
         logger.info(f"   信号对比: Ridge与Lambda正相关率={blend_stats['agreement_rate']:.1%}")
 
-        return combined_df[['ridge_score', 'lambda_score', 'blended_score', 'blended_rank', 'blended_z']]
+        # 对外仍暴露 blended_score（兼容），并提供压缩后的 blended_score_pp
+        return combined_df[['ridge_score', 'lambda_score', 'blended_score', 'blended_score_pp', 'blended_rank', 'blended_z']]
 
     def _log_performance_insights(self, df: pd.DataFrame, ridge_weight: float, lambda_weight: float):
         """输出深度性能洞察"""
