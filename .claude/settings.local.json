@@ -36,7 +36,16 @@
       "Bash(timeout:*)",
       "WebFetch(domain:github.com)",
       "Bash(git clone:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(.venv/Scripts/python.exe finetune/qlib_data_preprocess.py:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(.venv/Scripts/torchrun.exe --standalone --nproc_per_node=1 finetune/train_tokenizer.py)",
+      "Bash(wmic:*)",
+      "Bash(rd:*)",
+      "Bash(nvcc:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(git pull:*)"
     ],
     "deny": [],
     "ask": [],
