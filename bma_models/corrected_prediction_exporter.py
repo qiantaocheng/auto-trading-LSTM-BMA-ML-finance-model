@@ -207,6 +207,32 @@ class CorrectedPredictionExporter:
             final_df.columns = ['Date', 'Ticker', 'Final_Score']
             final_df = final_df.sort_values('Final_Score', ascending=False).reset_index(drop=True)
             final_df.insert(0, 'Rank', range(1, len(final_df) + 1))
+            # 合并 Kronos 过滤通过信息（如有）
+            try:
+                kronos_pass_map = None
+                if kronos_top35_df is not None and isinstance(kronos_top35_df, pd.DataFrame) and not kronos_top35_df.empty:
+                    kdf = kronos_top35_df.copy()
+                    pass_col = None
+                    for c in ['kronos_pass', 'Kronos_Pass', 'pass', 'passed']:
+                        if c in kdf.columns:
+                            pass_col = c
+                            break
+                    if pass_col is not None and 'ticker' in kdf.columns:
+                        kronos_pass_map = (
+                            kdf.set_index('ticker')[pass_col]
+                            .astype(str)
+                            .str.upper()
+                            .str[0]
+                            .to_dict()
+                        )
+                # 默认未测试标记
+                final_df['Kronos_Pass'] = 'N/A'
+                if kronos_pass_map:
+                    final_df['Kronos_Pass'] = final_df['Ticker'].map(kronos_pass_map).fillna('N/A')
+                # 列顺序统一
+                final_df = final_df[['Rank', 'Date', 'Ticker', 'Final_Score', 'Kronos_Pass']]
+            except Exception as e:
+                logger.warning(f"集成Kronos通过列失败（继续导出）: {e}")
             # 统一日期格式
             try:
                 final_df['Date'] = pd.to_datetime(final_df['Date']).dt.strftime('%Y-%m-%d')
@@ -215,25 +241,77 @@ class CorrectedPredictionExporter:
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 final_df.to_excel(writer, sheet_name='Final_Predictions', index=False)
-                # Optional: Kronos Top35 positive sheet
+                # Optional: Kronos filter sheets (supports T+10 or T+3 variants)
                 try:
                     if kronos_top35_df is not None and isinstance(kronos_top35_df, pd.DataFrame) and not kronos_top35_df.empty:
                         out_df = kronos_top35_df.copy()
-                        # Normalize expected columns
-                        expected_cols = ['rank', 'ticker', 'model_score', 'kronos_t10_return']
-                        for c in expected_cols:
-                            if c not in out_df.columns:
-                                out_df[c] = np.nan
-                        out_df = out_df[expected_cols]
-                        out_df = out_df.rename(columns={
-                            'rank': 'Rank',
-                            'ticker': 'Ticker',
-                            'model_score': 'Model_Score',
-                            'kronos_t10_return': 'Kronos_T+10_Return'
-                        })
-                        out_df.to_excel(writer, sheet_name='Kronos_T10_Pos_Top35', index=False)
+
+                        # Determine variant by available return column
+                        if 'kronos_t3_return' in out_df.columns:
+                            # T+3 variant with full details
+                            # Expected columns: rank, ticker, bma_rank, model_score, t0_price, t3_price, kronos_t3_return, kronos_pass, reason
+                            display_cols = []
+                            rename_map = {}
+
+                            # Add columns in order with proper renaming
+                            if 'rank' in out_df.columns:
+                                display_cols.append('rank')
+                                rename_map['rank'] = 'Rank'
+                            if 'bma_rank' in out_df.columns:
+                                display_cols.append('bma_rank')
+                                rename_map['bma_rank'] = 'BMA_Rank'
+                            if 'ticker' in out_df.columns:
+                                display_cols.append('ticker')
+                                rename_map['ticker'] = 'Ticker'
+                            if 'model_score' in out_df.columns:
+                                display_cols.append('model_score')
+                                rename_map['model_score'] = 'BMA_Score'
+                            if 't0_price' in out_df.columns:
+                                display_cols.append('t0_price')
+                                rename_map['t0_price'] = 'Current_Price'
+                            if 't3_price' in out_df.columns:
+                                display_cols.append('t3_price')
+                                rename_map['t3_price'] = 'T+3_Predicted_Price'
+                            if 'kronos_t3_return' in out_df.columns:
+                                display_cols.append('kronos_t3_return')
+                                rename_map['kronos_t3_return'] = 'T+3_Return_%'
+                            if 'kronos_pass' in out_df.columns:
+                                display_cols.append('kronos_pass')
+                                rename_map['kronos_pass'] = 'Kronos_Pass'
+                            if 'reason' in out_df.columns:
+                                display_cols.append('reason')
+                                rename_map['reason'] = 'Status'
+
+                            # Select and rename columns
+                            if display_cols:
+                                out_df = out_df[display_cols].rename(columns=rename_map)
+
+                            # Sort by BMA rank
+                            if 'BMA_Rank' in out_df.columns:
+                                out_df = out_df.sort_values('BMA_Rank')
+                            elif 'Rank' in out_df.columns:
+                                out_df = out_df.sort_values('Rank')
+
+                            out_df.to_excel(writer, sheet_name='Kronos_T3_Filter', index=False)
+                            logger.info(f"📊 Kronos T+3过滤表已写入: {len(out_df)} 条记录")
+                        else:
+                            # T+10 variant (legacy support)
+                            expected_cols = ['rank', 'ticker', 'model_score', 'kronos_t10_return']
+                            for c in expected_cols:
+                                if c not in out_df.columns:
+                                    out_df[c] = np.nan
+                            out_df = out_df[expected_cols]
+                            out_df = out_df.rename(columns={
+                                'rank': 'Rank',
+                                'ticker': 'Ticker',
+                                'model_score': 'Model_Score',
+                                'kronos_t10_return': 'Kronos_T+10_Return'
+                            })
+                            out_df.to_excel(writer, sheet_name='Kronos_T10_Pos_Top35', index=False)
                 except Exception as e:
-                    logger.warning(f"写入Kronos_T10_Pos_Top35失败: {e}")
+                    logger.warning(f"写入Kronos过滤表失败: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
             
             logger.info(f"Predictions exported to: {output_path}")
             logger.info(f"Exported {len(results_df)} predictions")
@@ -261,6 +339,10 @@ class CorrectedPredictionExporter:
         df = results_df.copy()
         df['signal'] = pd.to_numeric(df['signal'], errors='coerce')
         df = df.dropna(subset=['signal'])
+
+        if df.empty:
+            return pd.DataFrame(columns=['as_of_date','planned_exit_date','ticker','rank','signal','weight','action']), pd.DataFrame()
+
         pos = df[df['signal'] > min_signal].sort_values('signal', ascending=False)
         if pos.empty:
             selected = df.sort_values('signal', ascending=False).head(max(1, top_k)).copy()
@@ -413,7 +495,7 @@ class CorrectedPredictionExporter:
         model_data.append(['正信号比例', f'{(pred_returns > 0).mean():.2%}'])
 
         # Additional metadata
-        model_data.append(['预测期(T+N)', model_info.get('prediction_horizon', 'T+5')])
+        model_data.append(['预测期(T+N)', model_info.get('prediction_horizon', 'T+1')])
         model_data.append(['数据频率', model_info.get('data_frequency', 'Daily')])
         model_data.append(['特征工程', model_info.get('feature_engineering', 'Enabled')])
         model_data.append(['交叉验证折数', model_info.get('cv_folds', 5)])
@@ -426,8 +508,8 @@ class CorrectedPredictionExporter:
         # Copy all predictions
         all_predictions = results_df.copy()
 
-        # Add additional columns for T+5 analysis
-        all_predictions['prediction_horizon'] = 'T+5'
+        # Add additional columns for T+1 analysis
+        all_predictions['prediction_horizon'] = 'T+1'
 
         # Categorize signals into buckets
         conditions = [
@@ -479,7 +561,7 @@ class CorrectedPredictionExporter:
             # UPDATED: Include sentiment_score and use actual 15 factors from Simple25FactorEngine
             factor_contributions = {
                 # Momentum factors (1)
-                'momentum_10d': 0.058,
+                'momentum_10d_ex1': 0.058,
 
                 # Technical indicators (2)
                 'rsi': 0.045,
@@ -497,9 +579,9 @@ class CorrectedPredictionExporter:
 
                 # High-alpha factors (4)
                 'near_52w_high': 0.078,
-                'reversal_5d': 0.055,
+                'reversal_1d': 0.055,
                 'rel_volume_spike': 0.048,
-                'mom_accel_10_5': 0.052,
+                'mom_accel_5_2': 0.052,
 
                 # Behavioral factors (3)
                 'overnight_intraday_gap': 0.035,
@@ -509,8 +591,8 @@ class CorrectedPredictionExporter:
                 # Sentiment factor (ADDED)
                 'sentiment_score': 0.025,
 
-                # Price efficiency factor
-                'price_efficiency_10d': 0.028
+                # Price efficiency factor (T+1 optimized)
+                'price_efficiency_5d': 0.028
             }
 
         # Determine if we have dual-model contributions

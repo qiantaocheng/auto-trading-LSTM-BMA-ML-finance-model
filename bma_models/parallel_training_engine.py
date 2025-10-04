@@ -269,7 +269,10 @@ class ParallelTrainingEngine:
             )
 
             lambda_input = pd.DataFrame(quick_preds, index=multi_index)
-            lambda_input['ret_fwd_5d'] = y.values
+                # 动态目标列名（默认T+1）
+                horizon_days = getattr(self.parent, 'horizon', 1)
+                target_col = f'ret_fwd_{horizon_days}d'
+                lambda_input[target_col] = y.values
 
             # 训练LambdaRank
             if len(lambda_input) >= 200:

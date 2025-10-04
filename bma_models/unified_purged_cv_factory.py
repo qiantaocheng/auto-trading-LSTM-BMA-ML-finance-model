@@ -82,9 +82,9 @@ class UnifiedPurgedTimeSeriesCV(BaseCrossValidator):
         """
         # 获取统一配置
         unified_config = get_time_config()
-        
+
         # 使用统一配置或验证传入参数
-        self.n_splits = n_splits if n_splits is not None else 5
+        self.n_splits = n_splits if n_splits is not None else unified_config.cv_n_splits
         self.gap = gap if gap is not None else unified_config.cv_gap_days
         self.embargo = embargo if embargo is not None else unified_config.cv_embargo_days
         self.test_size = test_size if test_size is not None else unified_config.validation_window_days

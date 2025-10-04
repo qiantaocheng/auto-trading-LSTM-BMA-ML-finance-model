@@ -656,7 +656,7 @@ class PolygonClient:
             'apikey': self.api_key,
             'limit': limit
         }
-        
+
         try:
             response = self.session.get(url, params=params)
             response.raise_for_status()
@@ -665,6 +665,85 @@ class PolygonClient:
         except Exception as e:
             logger.error(f"Error fetching financials for {symbol}: {e}")
             return {}
+
+    def get_market_cap(self, symbol: str) -> Optional[float]:
+        """
+        获取股票的最新市值 (market cap)
+        使用 Polygon /v3/reference/tickers/{ticker} 端点
+
+        返回:
+            float: 市值（美元），如果获取失败返回 None
+        """
+        try:
+            details = self.get_ticker_details(symbol)
+            if details:
+                market_cap = details.get('market_cap') or details.get('marketCap')
+                if market_cap is not None and not pd.isna(market_cap):
+                    return float(market_cap)
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to get market cap for {symbol}: {e}")
+            return None
+
+    def get_batch_market_caps(self, symbols: List[str],
+                             min_market_cap: Optional[float] = None,
+                             rate_limit_delay: Optional[float] = None) -> pd.DataFrame:
+        """
+        批量获取股票市值，并可选过滤小于指定市值的股票
+
+        参数:
+            symbols: 股票代码列表
+            min_market_cap: 最小市值阈值（美元），例如 1_000_000_000 表示 1B
+            rate_limit_delay: API 调用间隔（秒），None 则使用默认值
+
+        返回:
+            DataFrame: columns=['ticker', 'market_cap']，已过滤的股票列表
+        """
+        if rate_limit_delay is None:
+            rate_limit_delay = self.rate_limit_delay
+
+        logger.info(f"📊 开始批量获取 {len(symbols)} 只股票的市值数据...")
+
+        results = []
+        failed_count = 0
+
+        for i, symbol in enumerate(symbols, 1):
+            try:
+                market_cap = self.get_market_cap(symbol)
+
+                if market_cap is not None:
+                    # 如果设置了最小市值阈值，检查是否满足
+                    if min_market_cap is None or market_cap >= min_market_cap:
+                        results.append({
+                            'ticker': symbol,
+                            'market_cap': market_cap
+                        })
+                else:
+                    failed_count += 1
+
+                # 每50只股票输出一次进度
+                if i % 50 == 0:
+                    logger.info(f"   进度: {i}/{len(symbols)} ({i/len(symbols)*100:.1f}%)")
+
+                # API 限速
+                time.sleep(rate_limit_delay)
+
+            except Exception as e:
+                logger.warning(f"获取 {symbol} 市值时出错: {e}")
+                failed_count += 1
+                continue
+
+        df = pd.DataFrame(results)
+
+        logger.info(f"✅ 市值获取完成:")
+        logger.info(f"   - 成功: {len(results)} 只股票")
+        logger.info(f"   - 失败: {failed_count} 只股票")
+
+        if min_market_cap and not df.empty:
+            logger.info(f"   - 市值阈值: ${min_market_cap:,.0f}")
+            logger.info(f"   - 通过过滤: {len(df)} 只股票")
+
+        return df
             
 # Global instance - DELAYED DATA MODE
 # Prefer environment variable, fallback to api_config if available

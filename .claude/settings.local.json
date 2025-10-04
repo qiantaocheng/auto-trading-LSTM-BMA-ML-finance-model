@@ -44,7 +44,10 @@
       "Bash(wmic:*)",
       "Bash(rd:*)",
       "Bash(nvcc:*)",
-      "Bash(pip uninstall:*)"
+      "Bash(pip uninstall:*)",
+      "WebFetch(domain:polygon.io)",
+      "Bash(cmd.exe:*)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": [],

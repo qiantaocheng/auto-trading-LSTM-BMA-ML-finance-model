@@ -31,10 +31,6 @@ class MarketDataConfig:
         'minimal_data'  # 最小化数据（仅基础股票池）
     ])
     
-    # 缓存设置
-    cache_enabled: bool = True
-    cache_duration_hours: int = 24
-    cache_path: str = "data/market_cache.db"
     
     # 行业分类
     sector_classification: str = "GICS"  # GICS, ICB, 自定义
@@ -72,128 +68,6 @@ class StockInfo:
     exchange: Optional[str] = None
     currency: Optional[str] = None
     is_index_component: Dict[str, bool] = field(default_factory=dict)
-
-class MarketDataCache:
-    """市场数据缓存系统"""
-    
-    def __init__(self, cache_path: str):
-        self.cache_path = Path(cache_path)
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_cache_db()
-    
-    def _init_cache_db(self):
-        """初始化缓存数据库"""
-        conn = sqlite3.connect(self.cache_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS stock_info (
-                ticker TEXT PRIMARY KEY,
-                name TEXT,
-                sector TEXT,
-                industry TEXT,
-                country TEXT,
-                market_cap REAL,
-                float_market_cap REAL,
-                free_float_market_cap REAL,
-                gics_sector TEXT,
-                gics_industry_group TEXT,
-                gics_industry TEXT,
-                gics_sub_industry TEXT,
-                exchange TEXT,
-                currency TEXT,
-                index_components TEXT,
-                last_updated TIMESTAMP,
-                data_source TEXT
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS index_components (
-                index_ticker TEXT,
-                component_ticker TEXT,
-                weight REAL,
-                last_updated TIMESTAMP,
-                PRIMARY KEY (index_ticker, component_ticker)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-    
-    def get_stock_info(self, ticker: str) -> Optional[StockInfo]:
-        """从缓存获取股票信息"""
-        conn = sqlite3.connect(self.cache_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM stock_info WHERE ticker = ?
-        ''', (ticker,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            # 检查缓存是否过期（24小时）
-            last_updated = datetime.fromisoformat(result[15])
-            if datetime.now() - last_updated < timedelta(hours=24):
-                return self._row_to_stock_info(result)
-        
-        return None
-    
-    def save_stock_info(self, stock_info: StockInfo, data_source: str):
-        """保存股票信息到缓存"""
-        conn = sqlite3.connect(self.cache_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO stock_info VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
-        ''', (
-            stock_info.ticker,
-            stock_info.name,
-            stock_info.sector,
-            stock_info.industry,
-            stock_info.country,
-            stock_info.market_cap,
-            stock_info.float_market_cap,
-            stock_info.free_float_market_cap,
-            stock_info.gics_sector,
-            stock_info.gics_industry_group,
-            stock_info.gics_industry,
-            stock_info.gics_sub_industry,
-            stock_info.exchange,
-            stock_info.currency,
-            json.dumps(stock_info.is_index_component),
-            datetime.now().isoformat(),
-            data_source
-        ))
-        
-        conn.commit()
-        conn.close()
-    
-    def _row_to_stock_info(self, row) -> StockInfo:
-        """数据库行转换为StockInfo对象"""
-        index_components = json.loads(row[14]) if row[14] else {}
-        
-        return StockInfo(
-            ticker=row[0],
-            name=row[1],
-            sector=row[2],
-            industry=row[3],
-            country=row[4],
-            market_cap=row[5],
-            float_market_cap=row[6],
-            free_float_market_cap=row[7],
-            gics_sector=row[8],
-            gics_industry_group=row[9],
-            gics_industry=row[10],
-            gics_sub_industry=row[11],
-            exchange=row[12],
-            currency=row[13],
-            is_index_component=index_components
-        )
 
 class PolygonDataProvider:
     """Polygon.io数据提供者"""
@@ -344,7 +218,6 @@ class UnifiedMarketDataManager:
         self.config = config or MarketDataConfig()
         
         # 初始化组件
-        self.cache = MarketDataCache(self.config.cache_path) if self.config.cache_enabled else None
         self.polygon_provider = PolygonDataProvider()
         self.index_provider = IndexComponentProvider()
         
@@ -492,14 +365,7 @@ class UnifiedMarketDataManager:
         # 检查内存缓存
         if not force_refresh and ticker in self.stock_info_cache:
             return self.stock_info_cache[ticker]
-        
-        # 检查数据库缓存
-        if self.cache and not force_refresh:
-            cached_info = self.cache.get_stock_info(ticker)
-            if cached_info:
-                self.stock_info_cache[ticker] = cached_info
-                return cached_info
-        
+
         # 按优先级获取数据
         for source in self.config.data_sources:
             stock_info = None
@@ -507,9 +373,8 @@ class UnifiedMarketDataManager:
             if source == 'polygon':
                 stock_info = self.polygon_provider.get_stock_info(ticker)
             elif source == 'local_db':
-                # 尝试从本地数据库获取
-                if self.cache:
-                    stock_info = self.cache.get_stock_info(ticker)
+                # Skip local DB - cache removed
+                stock_info = None
             elif source == 'backup_api':
                 # CRITICAL FIX: 备用API数据源（可扩展）
                 stock_info = self._get_backup_api_data(ticker)
@@ -523,12 +388,10 @@ class UnifiedMarketDataManager:
             if stock_info:
                 # 增强数据：添加指数成分信息
                 stock_info = self._enhance_with_index_info(stock_info)
-                
-                # 缓存数据
+
+                # 内存缓存
                 self.stock_info_cache[ticker] = stock_info
-                if self.cache:
-                    self.cache.save_stock_info(stock_info, source)
-                
+
                 logger.info(f"从{source}获取{ticker}数据成功")
                 return stock_info
         

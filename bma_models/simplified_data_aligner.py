@@ -198,7 +198,7 @@ class SimplifiedDataAligner:
     def align_first_to_second_layer(self,
                                    oof_predictions: Dict[str, pd.Series],
                                    target: pd.Series,
-                                   target_column_name: str = 'ret_fwd_5d') -> Tuple[pd.DataFrame, Dict[str, Any]]:
+                                   target_column_name: str = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
         第一层到第二层数据对齐（简化版）
 
@@ -222,6 +222,15 @@ class SimplifiedDataAligner:
 
         if not isinstance(target, pd.Series):
             raise DataValidationError(f"目标变量必须是Series，当前类型: {type(target)}")
+
+        # Step 1.5: 动态目标列名（默认T+1）
+        if target_column_name is None:
+            try:
+                parent = getattr(self, 'parent', None)
+                horizon_days = getattr(parent, 'horizon', 1) if parent is not None else 1
+            except Exception:
+                horizon_days = 1
+            target_column_name = f'ret_fwd_{horizon_days}d'
 
         # Step 2: 标准化预测列名
         standardized_preds = self._standardize_prediction_columns(oof_predictions)

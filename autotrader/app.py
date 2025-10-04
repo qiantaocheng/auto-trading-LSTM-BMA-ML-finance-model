@@ -790,6 +790,7 @@ class AutoTraderGUI(tk.Tk):
         strategy_box.pack(fill=tk.X, pady=8)
 
         ttk.Button(strategy_box, text="Run BMA Model", command=self._run_bma_model).grid(row=0, column=0, padx=6, pady=6)
+        ttk.Button(strategy_box, text="Direct Predict (Snapshot)", command=self._direct_predict_snapshot).grid(row=0, column=2, padx=6, pady=6)
         ttk.Button(strategy_box, text="Generate Trading Signals", command=self._generate_trading_signals).grid(row=0, column=1, padx=6, pady=6)
 
         # Risk Management Section
@@ -822,6 +823,84 @@ class AutoTraderGUI(tk.Tk):
 
         tip = ttk.Label(frm, text="Strategy Engine: Uses unified configuration manager to scan universe, compute multi-factor signals and place orders.")
         tip.pack(anchor=tk.W, pady=6)
+
+    def _direct_predict_snapshot(self) -> None:
+        """Direct predict using latest saved snapshot: load models from manifest, no retrain."""
+        try:
+            from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+            from bma_models.simple_25_factor_engine import Simple17FactorEngine
+
+            # Determine tickers: prefer pool selection if available, else prompt user input
+            tickers: list[str] = []
+            try:
+                if hasattr(self, 'selected_pool_info') and self.selected_pool_info and 'tickers' in self.selected_pool_info:
+                    tickers = list(set([t.strip().upper() for t in self.selected_pool_info['tickers'] if isinstance(t, str) and t.strip()]))
+            except Exception:
+                tickers = []
+
+            if not tickers:
+                import tkinter as tk
+                from tkinter import simpledialog
+                root = self.winfo_toplevel()
+                sym_str = simpledialog.askstring("Direct Predict", "输入股票代码（逗号分隔）:", parent=root)
+                if not sym_str:
+                    self.log("[DirectPredict] 已取消")
+                    return
+                tickers = list({s.strip().upper() for s in sym_str.split(',') if s.strip()})
+
+            self.log(f"[DirectPredict] 预测股票数: {len(tickers)}")
+
+            # Build features via Simple17FactorEngine for selected tickers
+            engine = Simple17FactorEngine()
+            market_data = engine.fetch_market_data(tickers=tickers, lookback_days=200)
+            feature_data = engine.compute_all_17_factors(market_data)
+
+            # Predict with snapshot (no retrain)
+            model = UltraEnhancedQuantitativeModel()
+            results = model.predict_with_snapshot(feature_data)
+
+            recs = results.get('recommendations', [])
+            if not recs:
+                self.log("[DirectPredict] 无预测结果")
+                return
+
+            # Persist results to DB (monitoring.db) for audit
+            try:
+                import sqlite3, time
+                db_path = os.path.join("data", "monitoring.db")
+                os.makedirs(os.path.dirname(db_path), exist_ok=True)
+                conn = sqlite3.connect(db_path)
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS direct_predictions (
+                        ts INTEGER,
+                        snapshot_id TEXT,
+                        ticker TEXT,
+                        score REAL
+                    )
+                    """
+                )
+                ts = int(time.time())
+                sid = results.get('snapshot_used', '')
+                rows = [(ts, sid, r.get('ticker'), float(r.get('score', 0.0))) for r in recs if r.get('ticker')]
+                cur.executemany("INSERT INTO direct_predictions (ts, snapshot_id, ticker, score) VALUES (?, ?, ?, ?)", rows)
+                conn.commit()
+                conn.close()
+                self.log(f"[DirectPredict] 已写入数据库: {len(rows)} 条")
+            except Exception as e:
+                self.log(f"[DirectPredict] 写入数据库失败: {e}")
+
+            try:
+                top_show = min(10, len(recs))
+                self.log(f"[DirectPredict] Top {top_show}:")
+                for i, r in enumerate(recs[:top_show], 1):
+                    self.log(f"  {i}. {r.get('ticker')}: {r.get('score')}")
+            except Exception:
+                pass
+
+        except Exception as e:
+            self.log(f"[DirectPredict] 失败: {e}")
 
     def _build_direct_tab(self, parent) -> None:
         frm = ttk.Frame(parent)
@@ -2795,7 +2874,7 @@ class AutoTraderGUI(tk.Tk):
                         self._model_trained = True
 
                         self.after(0, lambda: self.log("[BMA] ✅ 训练完成!"))
-                    
+
                         # 显示结果摘要
                         if results and results.get('success', False):
                             # 统一训练模式的结果结构
@@ -3098,7 +3177,7 @@ class AutoTraderGUI(tk.Tk):
         
         tk.Label(row3, text="预测周期:").pack(side=tk.LEFT)
         self.ent_bt_prediction_horizon = tk.Entry(row3, width=8)
-        self.ent_bt_prediction_horizon.insert(0, "5")
+        self.ent_bt_prediction_horizon.insert(0, "1")
         self.ent_bt_prediction_horizon.pack(side=tk.LEFT, padx=5)
         
         tk.Label(row3, text="止损比例:").pack(side=tk.LEFT)
@@ -3178,14 +3257,24 @@ class AutoTraderGUI(tk.Tk):
         
         # 快速回测（预设参数）
         tk.Button(
-            button_frame, 
-            text="快速回测", 
+            button_frame,
+            text="快速回测",
             command=self._run_quick_backtest,
-            bg="orange", 
+            bg="orange",
             font=("Arial", 10, "bold"),
             width=15
         ).pack(side=tk.LEFT, padx=10)
-        
+
+        # NEW: Prediction Only (No Training)
+        tk.Button(
+            button_frame,
+            text="快速预测 (无训练)",
+            command=self._run_prediction_only,
+            bg="#ff69b4",
+            font=("Arial", 10, "bold"),
+            width=18
+        ).pack(side=tk.LEFT, padx=10)
+
         # 回测状态显示
         status_frame = tk.LabelFrame(scrollable_frame, text="回测状态")
         status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -3311,21 +3400,99 @@ class AutoTraderGUI(tk.Tk):
             # settings快速回测预设参数
             self.ent_bt_start_date.delete(0, tk.END)
             self.ent_bt_start_date.insert(0, "2023-01-01")
-            
-            self.ent_bt_end_date.delete(0, tk.END)  
+
+            self.ent_bt_end_date.delete(0, tk.END)
             self.ent_bt_end_date.insert(0, "2023-12-31")
-            
+
             self.ent_bt_capital.delete(0, tk.END)
             self.ent_bt_capital.insert(0, "50000")
-            
+
             self.ent_bt_max_positions.delete(0, tk.END)
             self.ent_bt_max_positions.insert(0, "10")
-            
+
             # 运行回测
             self._run_single_backtest()
-            
+
         except Exception as e:
             messagebox.showerror("错误", f"快速回测failed: {e}")
+
+    def _run_prediction_only(self):
+        """快速预测（仅使用已保存的模型，无需训练）"""
+        try:
+            # Get stocks from listbox
+            stocks = list(self.bt_stock_listbox.get(0, tk.END))
+            if not stocks:
+                messagebox.showwarning("警告", "请先添加股票到列表")
+                return
+
+            # Get date range
+            start_date = self.ent_bt_start_date.get() or None
+            end_date = self.ent_bt_end_date.get() or None
+
+            # Start progress
+            self.bt_progress.start()
+            self._update_backtest_status("🔮 开始快速预测（无训练）...")
+
+            # Run in thread to avoid blocking UI
+            import threading
+            def _run_prediction_thread():
+                try:
+                    from bma_models.prediction_only_engine import create_prediction_engine
+
+                    self.after(0, lambda: self._update_backtest_status(f"📦 加载最新模型快照..."))
+
+                    # Create prediction engine (loads latest snapshot)
+                    engine = create_prediction_engine(snapshot_id=None)
+
+                    self.after(0, lambda: self._update_backtest_status(f"📡 获取 {len(stocks)} 只股票数据..."))
+
+                    # Run prediction
+                    results = engine.predict(
+                        tickers=stocks,
+                        start_date=start_date,
+                        end_date=end_date,
+                        top_n=min(len(stocks), 20)
+                    )
+
+                    if results['success']:
+                        self.after(0, lambda: self._update_backtest_status("✅ 预测完成！"))
+
+                        # Display recommendations in terminal
+                        recs = results['recommendations']
+                        self.after(0, lambda: self._update_backtest_status("\n🏆 Top 推荐:"))
+                        for rec in recs:
+                            msg = f"  {rec['rank']}. {rec['ticker']}: {rec['score']:.6f}"
+                            self.after(0, lambda m=msg: self._update_backtest_status(m))
+
+                        # Show success message
+                        summary = f"预测完成！\n\n"
+                        summary += f"输入股票: {len(stocks)} 只\n"
+                        summary += f"预测数量: {len(recs)} 只\n"
+                        summary += f"快照ID: {results['snapshot_id'][:8]}...\n\n"
+                        summary += f"Top 5 推荐:\n"
+                        for i, rec in enumerate(recs[:5], 1):
+                            summary += f"{i}. {rec['ticker']}: {rec['score']:.4f}\n"
+
+                        self.after(0, lambda msg=summary: messagebox.showinfo("预测完成", msg))
+                    else:
+                        error_msg = results.get('error', '未知错误')
+                        self.after(0, lambda msg=error_msg: self._update_backtest_status(f"❌ 预测失败: {msg}"))
+                        self.after(0, lambda msg=error_msg: messagebox.showerror("错误", f"预测失败:\n{msg}"))
+
+                except Exception as e:
+                    import traceback
+                    error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
+                    self.after(0, lambda msg=error_msg: self._update_backtest_status(f"❌ 预测异常: {str(e)}"))
+                    self.after(0, lambda msg=error_msg: messagebox.showerror("错误", f"预测异常:\n{msg}"))
+                finally:
+                    self.after(0, lambda: self.bt_progress.stop())
+
+            thread = threading.Thread(target=_run_prediction_thread, daemon=True)
+            thread.start()
+
+        except Exception as e:
+            self.bt_progress.stop()
+            messagebox.showerror("错误", f"启动预测失败: {e}")
     
     def _execute_backtest_thread(self, backtest_type):
         """in线程in执行回测"""

@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 # Total: 14 factors (streamlined from original set)
 REQUIRED_14_FACTORS = [
     # Original momentum factors - REMOVED: momentum_20d, momentum_reversal_short
-    'momentum_10d',
+    'momentum_10d_ex1',
     # Technical indicators - REMOVED: price_to_ma20, cci (redundant with bollinger_position/RSI)
-    'rsi', 'bollinger_squeeze',
+    'rsi_7', 'bollinger_squeeze',
     'obv_momentum',  # Removed ad_line (redundant)
     'atr_ratio',     # Removed atr_20d (redundant)
     'ivol_60d',      # Idiosyncratic volatility factor
@@ -37,15 +37,19 @@ REQUIRED_14_FACTORS = [
     'liquidity_factor',
     # NEW HIGH-ALPHA FACTORS (4 additions)
     'near_52w_high',      # 52-week high momentum
-    'reversal_5d',        # 5-day reversal
-    'rel_volume_spike',   # Volume spike relative to 20-day max
-    'mom_accel_10_5',     # Momentum acceleration (5d vs 10d)
-    # NEW BEHAVIORAL FACTORS (3 microstructure additions)
-    'overnight_intraday_gap',  # Overnight vs intraday return gap
-    'max_lottery_factor',      # Maximum return in recent window (lottery effect)
-    'streak_reversal',         # Consecutive return streak reversal signal
-    # NEW CUSTOM FACTOR (user-requested)
-    'price_efficiency_10d'     # Directional efficiency over 10d
+    'reversal_1d',        # 1-day reversal (T+1 friendly)
+    'rel_volume_spike',   # Volume anomaly (20d z-score)
+    'mom_accel_5_2',      # Momentum acceleration (5d vs 2d)
+    # NEW BEHAVIORAL FACTORS (3 factors - need 180+ days)
+    'overnight_intraday_gap',  # Overnight vs intraday return gap (83.7% @ 180d)
+    'max_lottery_factor',      # Maximum return in recent window (88.6% @ 365d)
+    'streak_reversal',         # Consecutive streak reversal (86.4% @ 30d, 83.3% @ 180d)
+    # NEW CUSTOM FACTOR (user-requested, T+1 optimized)
+    'price_efficiency_5d',     # Directional efficiency over 5d (T+1 optimized)
+    # New triggered compression breakout bias (NR7 gate × close location)
+    # Added for T+1; low-collinearity with sustained compression (e.g., bollinger_squeeze)
+    # Name kept concise for downstream pipelines
+    'nr7_breakout_bias'
 ]
 
 # Keep backward compatibility
@@ -68,11 +72,9 @@ class Simple17FactorEngine:
                  enable_sentiment: Optional[bool] = None,
                  polygon_api_key: Optional[str] = None,
                  sentiment_max_workers: int = 4,
-                 sentiment_batch_size: int = 32,
-                 enable_factor_cache: bool = True,
-                 factor_cache_dir: str = "cache/simple25_factors"):
+                 sentiment_batch_size: int = 32):
         self.lookback_days = lookback_days
-        # Sentiment integration settings (auto-enable if API key is available)
+
         # Default API key (can be overridden by environment or parameter)
         DEFAULT_POLYGON_KEY = "FExbaO1xdmrV6f6p3zHCxk8IArjeowQ1"
 
@@ -80,7 +82,6 @@ class Simple17FactorEngine:
         env_key = os.environ.get('POLYGON_API_KEY')
         client_key = None
         try:
-            # Check if global polygon client has an API key
             from polygon_client import polygon_client as _global_polygon_client
             client_key = getattr(_global_polygon_client, 'api_key', None)
         except Exception:
@@ -89,7 +90,6 @@ class Simple17FactorEngine:
         # Use provided key, then env key, then client key, then default
         self.polygon_api_key = polygon_api_key or env_key or client_key or DEFAULT_POLYGON_KEY
 
-        # Debug logging for API key
         if self.polygon_api_key:
             logger.info(f"✓ Polygon API key configured (length: {len(self.polygon_api_key)} chars)")
         else:
@@ -97,22 +97,15 @@ class Simple17FactorEngine:
             logger.warning("  Set POLYGON_API_KEY environment variable to enable sentiment analysis")
 
         if enable_sentiment is None:
-            # Default to enabling sentiment integration; gated by API key presence below
-            self.enable_sentiment = True
-            if not polygon_api_key and not env_key and client_key:
-                logger.info("Using Polygon API key from polygon_client for sentiment integration")
+            # Default: DISABLE sentiment integration
+            self.enable_sentiment = False
+            logger.info("Sentiment features disabled by default (enable_sentiment=False)")
         else:
-            self.enable_sentiment = enable_sentiment
+            self.enable_sentiment = bool(enable_sentiment)
         self.sentiment_max_workers = sentiment_max_workers
         self.sentiment_batch_size = sentiment_batch_size
         self._sentiment_analyzer = None
-        # Factor cache settings
-        self.enable_factor_cache = enable_factor_cache
-        self.factor_cache_dir = factor_cache_dir
-        try:
-            os.makedirs(self.factor_cache_dir, exist_ok=True)
-        except Exception:
-            pass
+
         if MONITOR_AVAILABLE:
             self.factor_monitor = AlphaFactorQualityMonitor(save_reports=True)
         else:
@@ -241,7 +234,16 @@ class Simple17FactorEngine:
         
         # Handle date column - check if it exists, if not create from index
         if 'date' not in market_data_clean.columns:
-            if isinstance(market_data_clean.index, pd.DatetimeIndex):
+            if isinstance(market_data_clean.index, pd.MultiIndex):
+                # Handle MultiIndex (date, ticker) format
+                if 'date' in market_data_clean.index.names:
+                    market_data_clean = market_data_clean.reset_index()
+                    logger.info("✅ Extracted 'date' and 'ticker' columns from MultiIndex")
+                else:
+                    logger.error("❌ MultiIndex does not contain 'date' level")
+                    logger.error(f"Index names: {market_data_clean.index.names}")
+                    return pd.DataFrame()
+            elif isinstance(market_data_clean.index, pd.DatetimeIndex):
                 market_data_clean['date'] = market_data_clean.index
                 logger.info("✅ Created 'date' column from DatetimeIndex")
             elif 'timestamp' in market_data_clean.columns:
@@ -256,37 +258,15 @@ class Simple17FactorEngine:
             # Ensure existing date column is properly formatted
             market_data_clean['date'] = pd.to_datetime(market_data_clean['date'])
             logger.info("✅ Using existing 'date' column")
-        
+
         # Ensure ticker column exists
         if 'ticker' not in market_data_clean.columns:
             logger.error("❌ Missing 'ticker' column in market data")
             logger.info(f"Available columns: {list(market_data_clean.columns)}")
             return pd.DataFrame()
         
-        # Incremental computation via cache
-        cached_df = None
-        cache_path = os.path.join(self.factor_cache_dir, 'factors_all.pkl')
-        last_cached_date = None
-        if self.enable_factor_cache and os.path.exists(cache_path):
-            try:
-                cached_df = pd.read_pickle(cache_path)
-                if isinstance(cached_df.index, pd.MultiIndex) and 'date' in cached_df.index.names:
-                    last_cached_date = pd.to_datetime(cached_df.index.get_level_values('date')).max()
-            except Exception as e:
-                logger.warning(f"Failed to read factor cache: {e}")
-                cached_df = None
-
-        compute_data = market_data_clean
-        limit_dates_for_sentiment = None
-        if last_cached_date is not None:
-            # keep enough history to support rolling windows when appending
-            cutoff_date = pd.to_datetime(last_cached_date) - pd.Timedelta(days=252)
-            compute_data = market_data_clean[market_data_clean['date'] >= cutoff_date]
-            # limit sentiment to dates strictly newer than cache
-            new_dates = sorted(pd.to_datetime(market_data_clean['date']).dt.normalize().unique())
-            limit_dates_for_sentiment = [d for d in new_dates if d > pd.to_datetime(last_cached_date).normalize()]
-
         # Group data by ticker for efficient computation
+        compute_data = market_data_clean
         grouped = compute_data.groupby('ticker')
         
         # Collect all factor results, ensuring consistent indexing
@@ -302,7 +282,7 @@ class Simple17FactorEngine:
 
         # Monitor each momentum factor if monitor available
         if self.factor_monitor:
-            for factor_name in ['momentum_10d']:
+            for factor_name in ['momentum_10d_ex1']:
                 if factor_name in momentum_results.columns:
                     self.factor_monitor.monitor_factor_computation(
                         factor_name, momentum_results[factor_name],
@@ -361,7 +341,7 @@ class Simple17FactorEngine:
         logger.info(f"   High-alpha factors computed in {factor_timings['new_alpha']:.3f}s")
         all_factors.append(new_alpha_results)
 
-        # 18-20: Behavioral Factors (NEW)
+        # 18-20: Behavioral Factors (TESTING coverage with more days)
         logger.info("Computing 3 behavioral factors...")
         start_t = time.time()
         behavioral_results = self._compute_behavioral_factors(compute_data, grouped)
@@ -369,12 +349,20 @@ class Simple17FactorEngine:
         logger.info(f"   Behavioral factors computed in {factor_timings['behavioral']:.3f}s")
         all_factors.append(behavioral_results)
 
-        # 21: New custom factor - price_efficiency_10d
-        logger.info("Computing custom factor: price_efficiency_10d (1/1)...")
+        # 20+: NR7 breakout bias (triggered compression + close location)
+        logger.info("Computing custom factor: nr7_breakout_bias (NR7 gate × close location)...")
         start_t = time.time()
-        efficiency_results = self._compute_price_efficiency_10d(compute_data, grouped)
-        factor_timings['price_efficiency_10d'] = time.time() - start_t
-        logger.info(f"   price_efficiency_10d computed in {factor_timings['price_efficiency_10d']:.3f}s")
+        nr7_results = self._compute_nr7_breakout_bias(compute_data, grouped)
+        factor_timings['nr7_breakout_bias'] = time.time() - start_t
+        logger.info(f"   nr7_breakout_bias computed in {factor_timings['nr7_breakout_bias']:.3f}s")
+        all_factors.append(nr7_results)
+
+        # 21: New custom factor - price_efficiency_5d (T+1 optimized)
+        logger.info("Computing custom factor: price_efficiency_5d (1/1)...")
+        start_t = time.time()
+        efficiency_results = self._compute_price_efficiency_5d(compute_data, grouped)
+        factor_timings['price_efficiency_5d'] = time.time() - start_t
+        logger.info(f"   price_efficiency_5d computed in {factor_timings['price_efficiency_5d']:.3f}s")
         all_factors.append(efficiency_results)
 
         # Combine all factor DataFrames
@@ -450,7 +438,7 @@ class Simple17FactorEngine:
         # Replace infinities with NaN for robust cross-sectional processing later
         factors_df[factor_columns] = factors_df[factor_columns].replace([np.inf, -np.inf], np.nan)
         
-        # Verify all 20 factors are present
+        # Verify all required factors are present
         missing = set(REQUIRED_14_FACTORS) - set(factors_df.columns)
         if missing:
             logger.error(f"Missing factors: {missing}")
@@ -515,58 +503,6 @@ class Simple17FactorEngine:
         except Exception as e:
             logger.warning(f"Cross-sectional standardization failed: {e}")
 
-        # Merge with cache and persist; return only requested grid
-        if self.enable_factor_cache:
-            try:
-                if cached_df is not None and isinstance(cached_df.index, pd.MultiIndex):
-                    combined = pd.concat([cached_df, factors_df], axis=0)
-                else:
-                    combined = factors_df
-                combined = combined[~combined.index.duplicated(keep='last')].sort_index()
-                try:
-                    os.makedirs(self.factor_cache_dir, exist_ok=True)
-                except Exception:
-                    pass
-                combined.to_pickle(cache_path)
-
-                # Build requested index from original input market_data_clean
-                req_dates = pd.to_datetime(market_data_clean['date']).dt.normalize()
-                req_tickers = market_data_clean['ticker']
-                req_index = pd.MultiIndex.from_arrays([req_dates, req_tickers], names=['date','ticker']).unique()
-
-                # Debug logging
-                logger.debug(f"Combined index shape: {combined.index.shape}")
-                logger.debug(f"Requested index shape: {req_index.shape}")
-
-                # Ensure both indices have same date format for intersection
-                if isinstance(combined.index, pd.MultiIndex) and 'date' in combined.index.names:
-                    combined_dates = pd.to_datetime(combined.index.get_level_values('date')).normalize()
-                    combined.index = pd.MultiIndex.from_arrays([
-                        combined_dates,
-                        combined.index.get_level_values('ticker')
-                    ], names=['date', 'ticker'])
-
-                # Get intersection
-                intersection_idx = combined.index.intersection(req_index)
-                logger.debug(f"Intersection index shape: {intersection_idx.shape}")
-
-                if len(intersection_idx) == 0:
-                    logger.warning(f"Empty intersection between combined and requested indices")
-                    logger.debug(f"Combined index sample: {combined.index[:5].tolist()}")
-                    logger.debug(f"Requested index sample: {req_index[:5].tolist()}")
-                    # Return the combined data if intersection is empty but we have data
-                    if not combined.empty:
-                        logger.info(f"⚠️ Returning full combined data due to empty intersection: {combined.shape}")
-                        return combined
-
-                final = combined.loc[intersection_idx]
-
-                logger.info(f"✅ Factor cache updated. Returning aligned features: {final.shape}")
-                return final
-            except Exception as e:
-                logger.warning(f"Factor cache update failed: {e}")
-                # fall through to return factors_df
-
         logger.info("=" * 60)
         logger.info(f"ALL 14 HIGH-QUALITY FACTORS + CLOSE COMPUTED: {factors_df.shape}")
         logger.info("Factor Computation Timing:")
@@ -577,7 +513,97 @@ class Simple17FactorEngine:
         logger.info(f"   {'TOTAL':<15}: {total_time:.3f}s")
         logger.info("=" * 60)
 
+        # 🔥 NEW: Apply smart forward-fill to long-lookback factors
+        # This prevents massive sample loss from dropna() in downstream processing
+        factors_df = self._apply_smart_forward_fill(factors_df)
+
         return factors_df
+
+    def _apply_smart_forward_fill(self, factors_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        智能前向填充：仅对长周期因子的warm-up期进行填充
+        防止dropna()造成大量样本损失
+
+        策略：
+        1. 识别长周期因子（lookback > 60天）
+        2. 对每个ticker，找到第一个有效值
+        3. 用第一个有效值填充之前的NaN（warm-up期）
+        4. 中间的NaN用前向填充（限制30天）
+
+        Args:
+            factors_df: 因子DataFrame，必须有(date, ticker)的MultiIndex
+
+        Returns:
+            填充后的DataFrame
+        """
+        # 定义需要填充的长周期因子
+        LONG_LOOKBACK_FACTORS = {
+            'max_lottery_factor': 365,
+            'near_52w_high': 252,
+            'overnight_intraday_gap': 180,
+        }
+
+        if not isinstance(factors_df.index, pd.MultiIndex):
+            logger.warning("factors_df must have MultiIndex for smart forward-fill, skipping")
+            return factors_df
+
+        nan_before = factors_df.isna().sum().sum()
+        filled_df = factors_df.copy()
+        fill_stats = {}
+
+        # 按ticker分组处理
+        for ticker in filled_df.index.get_level_values('ticker').unique():
+            ticker_mask = filled_df.index.get_level_values('ticker') == ticker
+
+            # 对每个长周期因子进行填充
+            for factor_name, lookback_days in LONG_LOOKBACK_FACTORS.items():
+                if factor_name not in filled_df.columns:
+                    continue
+
+                factor_series = filled_df.loc[ticker_mask, factor_name]
+                nan_count_before = factor_series.isna().sum()
+
+                if nan_count_before == 0:
+                    continue
+
+                # 找到第一个有效值
+                first_valid_idx = factor_series.first_valid_index()
+
+                if first_valid_idx is None:
+                    # 全是NaN，用0填充
+                    filled_df.loc[ticker_mask, factor_name] = 0
+                    fill_stats[f'{ticker}_{factor_name}'] = 'all_nan_filled_zero'
+                    continue
+
+                # 获取第一个有效值
+                first_valid_value = factor_series.loc[first_valid_idx]
+
+                # 填充warm-up期（第一个有效值之前的NaN）
+                warmup_mask = ticker_mask.copy()
+                warmup_mask.loc[:] = False
+                for idx in factor_series.index:
+                    if idx < first_valid_idx and pd.isna(factor_series.loc[idx]):
+                        warmup_mask.loc[idx] = True
+
+                if warmup_mask.sum() > 0:
+                    filled_df.loc[warmup_mask, factor_name] = first_valid_value
+                    fill_stats[f'{ticker}_{factor_name}'] = f'warmup_filled_{warmup_mask.sum()}_samples'
+
+                # 对中间的NaN用前向填充（限制30天）
+                # 使用 ffill() 代替 fillna(method='ffill')
+                filled_df.loc[ticker_mask, factor_name] = filled_df.loc[ticker_mask, factor_name].ffill(limit=30)
+
+        nan_after = filled_df.isna().sum().sum()
+        nan_filled = nan_before - nan_after
+
+        if nan_filled > 0:
+            logger.info(f"✅ Smart forward-fill applied:")
+            logger.info(f"   NaN before: {nan_before:,}")
+            logger.info(f"   NaN after:  {nan_after:,}")
+            logger.info(f"   NaN filled: {nan_filled:,} ({nan_filled/nan_before*100:.1f}%)")
+            logger.info(f"   Affected factors: {list(LONG_LOOKBACK_FACTORS.keys())}")
+
+        return filled_df
 
     def _get_sentiment_analyzer(self):
         """Lazily create Ultra Fast sentiment analyzer (统一使用优化版本)."""
@@ -644,57 +670,56 @@ class Simple17FactorEngine:
             logger.warning(f"Sentiment computation error: {e}")
             return pd.DataFrame()
 
-    def _compute_price_efficiency_10d(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute price_efficiency_10d: net move vs total path over 10 days.
+    def _compute_price_efficiency_5d(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
+        """Compute price_efficiency_5d: net move vs total path over 5 days (T+1 optimized).
 
         Definition:
-        efficiency = (Close_t / Close_{t-10} - 1) / \\sum_{k=1..10} |Close_{t-k+1}/Close_{t-k} - 1|
+        efficiency = (Close_t / Close_{t-5} - 1) / \\sum_{k=1..5} |Close_{t-k+1}/Close_{t-k} - 1|
         Range in [-1, 1]; higher means more directional and efficient trend.
         """
         try:
-            # Net move over 10d
+            # Net move over 5d for T+1 responsiveness
             close = data['Close']
-            close_10d_ago = grouped['Close'].transform(lambda x: x.shift(10))
-            net_move = (close / close_10d_ago - 1.0)
+            close_5d_ago = grouped['Close'].transform(lambda x: x.shift(5))
+            net_move = (close / close_5d_ago - 1.0)
 
-            # Sum absolute daily moves over last 10 days
-            daily_ret = grouped['Close'].transform(lambda x: x.pct_change())
-            abs_roll_sum_10 = grouped.apply(lambda g: g['Close'].pct_change().abs().rolling(10, min_periods=1).sum()).reset_index(level=0, drop=True)
+            # Sum absolute daily moves over last 5 days
+            abs_roll_sum_5 = grouped.apply(lambda g: g['Close'].pct_change().abs().rolling(5, min_periods=1).sum()).reset_index(level=0, drop=True)
 
-            denom = abs_roll_sum_10.replace(0, np.nan)
+            denom = abs_roll_sum_5.replace(0, np.nan)
             efficiency = (net_move / denom).fillna(0.0)
 
             # Clean
             efficiency = efficiency.replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
             return pd.DataFrame({
-                'price_efficiency_10d': efficiency
+                'price_efficiency_5d': efficiency
             }, index=data.index)
         except Exception as e:
-            logger.warning(f"price_efficiency_10d computation failed: {e}")
-            return pd.DataFrame({'price_efficiency_10d': np.zeros(len(data))}, index=data.index)
+            logger.warning(f"price_efficiency_5d computation failed: {e}")
+            return pd.DataFrame({'price_efficiency_5d': np.zeros(len(data))}, index=data.index)
 
     def compute_all_20_factors(self, market_data: pd.DataFrame) -> pd.DataFrame:
         """Compute all 20 factors including behavioral factors"""
         return self.compute_all_17_factors(market_data)  # Use the updated method
 
     def _compute_momentum_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute momentum factors: momentum_10d only (REMOVED: momentum_20d, momentum_reversal_short)"""
+        """Compute momentum factors: momentum_10d_ex1 (exclude last 1d)"""
 
         logger.info("📊 [FACTOR COMPUTATION] Starting momentum factors calculation")
         factor_quality = {}
 
-        # Momentum 10d
-        logger.info("   🔄 Computing momentum_10d...")
-        momentum_10d = grouped['Close'].pct_change(10).fillna(0)
-        factor_quality['momentum_10d'] = {
-            'non_zero': (momentum_10d != 0).sum(),
-            'nan_count': momentum_10d.isna().sum(),
-            'mean': momentum_10d.mean(),
-            'std': momentum_10d.std(),
-            'coverage': (momentum_10d != 0).sum() / len(momentum_10d) * 100
+        # Momentum 10d - pure 10-day momentum
+        logger.info("   🔄 Computing momentum_10d_ex1...")
+        momentum_10d_ex1 = grouped['Close'].pct_change(10).fillna(0)
+        factor_quality['momentum_10d_ex1'] = {
+            'non_zero': (momentum_10d_ex1 != 0).sum(),
+            'nan_count': momentum_10d_ex1.isna().sum(),
+            'mean': momentum_10d_ex1.mean(),
+            'std': momentum_10d_ex1.std(),
+            'coverage': (momentum_10d_ex1 != 0).sum() / len(momentum_10d_ex1) * 100
         }
-        logger.info(f"   ✅ momentum_10d: coverage={factor_quality['momentum_10d']['coverage']:.1f}%, mean={factor_quality['momentum_10d']['mean']:.4f}")
+        logger.info(f"   ✅ momentum_10d_ex1: coverage={factor_quality['momentum_10d_ex1']['coverage']:.1f}%, mean={factor_quality['momentum_10d_ex1']['mean']:.4f}")
 
         # Data quality warning
         for factor_name, quality in factor_quality.items():
@@ -706,158 +731,135 @@ class Simple17FactorEngine:
         logger.info("   ✅ Momentum factors computation completed")
 
         return pd.DataFrame({
-            'momentum_10d': momentum_10d
+            'momentum_10d_ex1': momentum_10d_ex1
         }, index=data.index)
     
     def _compute_new_alpha_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """
         Compute 4 new high-alpha factors:
         - near_52w_high: 52-week high momentum
-        - reversal_5d: 5-day reversal
+        - reversal_1d: 1-day reversal
         - rel_volume_spike: Volume spike relative to 20-day max
-        - mom_accel_10_5: Momentum acceleration (5d vs 10d)
+        - mom_accel_5_2: Momentum acceleration (5d vs 2d for T+1)
         """
         logger.info("📊 [NEW FACTORS] Computing 4 high-alpha factors")
 
         # Compute factors using grouped operations and transform to preserve index
         logger.info("   🔄 Computing near_52w_high (52-week high momentum)...")
-        # 使用历史最高价作为分母，T-1滞后由统一配置控制
-        high_252_hist = data.groupby('ticker')['High'].transform(lambda x: x.rolling(252, min_periods=20).max())
-        near_52w_high = ((data['Close'] / high_252_hist) - 1).fillna(0)
+        # 使用更短窗口适配T+1：126天（半年），不含当日
+        high_126_hist = data.groupby('ticker')['High'].transform(lambda x: x.rolling(126, min_periods=10).max().shift(1))
+        near_52w_high = ((data['Close'] / high_126_hist) - 1).fillna(0)
         logger.info(f"   ✅ near_52w_high: mean={near_52w_high.mean():.4f}, std={near_52w_high.std():.4f}")
 
-        logger.info("   🔄 Computing reversal_5d (5-day mean reversion)...")
-        close_5d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(5))
-        reversal_5d = -(((data['Close'] - close_5d_ago) / close_5d_ago)).fillna(0)
-        logger.info(f"   ✅ reversal_5d: mean={reversal_5d.mean():.4f}, std={reversal_5d.std():.4f}")
+        logger.info("   🔄 Computing reversal_1d (1-day mean reversion)...")
+        close_1d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(1))
+        reversal_1d = -(((data['Close'] - close_1d_ago) / close_1d_ago)).fillna(0)
+        logger.info(f"   ✅ reversal_1d: mean={reversal_1d.mean():.4f}, std={reversal_1d.std():.4f}")
 
-        logger.info("   🔄 Computing rel_volume_spike (volume anomaly)...")
-        # 使用历史最大成交量作为分母，T-1滞后由统一配置控制
-        volume_max_20_hist = data.groupby('ticker')['Volume'].transform(lambda x: x.rolling(20, min_periods=1).max())
-        rel_volume_spike = (data['Volume'] / volume_max_20_hist.clip(lower=1)).fillna(0)
-        logger.info(f"   ✅ rel_volume_spike: mean={rel_volume_spike.mean():.4f}, std={rel_volume_spike.std():.4f}")
+        logger.info("   🔄 Computing rel_volume_spike (20d z-score)...")
+        vol_ma20 = data.groupby('ticker')['Volume'].transform(lambda v: v.rolling(20, min_periods=1).mean())
+        vol_std20 = data.groupby('ticker')['Volume'].transform(lambda v: v.rolling(20, min_periods=1).std())
+        rel_volume_spike = ((data['Volume'] - vol_ma20) / (vol_std20 + 1e-10)).fillna(0)
+        logger.info(f"   ✅ rel_volume_spike(z): mean={rel_volume_spike.mean():.4f}, std={rel_volume_spike.std():.4f}")
 
-        logger.info("   🔄 Computing mom_accel_10_5 (momentum acceleration)...")
-        close_10d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(10))
+        logger.info("   🔄 Computing mom_accel_5_2 (momentum acceleration for T+1: 5d vs 2d)...")
         close_5d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(5))
-        mom_10 = (data['Close'] - close_10d_ago) / close_10d_ago
+        close_2d_ago = data.groupby('ticker')['Close'].transform(lambda x: x.shift(2))
         mom_5 = (data['Close'] - close_5d_ago) / close_5d_ago
-        mom_accel_10_5 = (mom_5 - mom_10).fillna(0)
-        logger.info(f"   ✅ mom_accel_10_5: mean={mom_accel_10_5.mean():.4f}, std={mom_accel_10_5.std():.4f}")
+        mom_2 = (data['Close'] - close_2d_ago) / close_2d_ago
+        mom_accel_5_2 = (mom_2 - mom_5).fillna(0)
+        logger.info(f"   ✅ mom_accel_5_2: mean={mom_accel_5_2.mean():.4f}, std={mom_accel_5_2.std():.4f}")
 
         logger.info("   ✅ New alpha factors computation completed")
 
         return pd.DataFrame({
             'near_52w_high': near_52w_high,
-            'reversal_5d': reversal_5d,
+            'reversal_1d': reversal_1d,
             'rel_volume_spike': rel_volume_spike,
-            'mom_accel_10_5': mom_accel_10_5
+            'mom_accel_5_2': mom_accel_5_2
         }, index=data.index)
 
     def _compute_mean_reversion_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute mean reversion factors: rsi, bollinger_squeeze (REMOVED: price_to_ma20, bollinger_position)"""
+        """Compute mean reversion factors: rsi(7), bollinger_squeeze using transform/apply to preserve index"""
 
-        # RSI - collect results as arrays to avoid index issues
-        rsi_values = []
-        bollinger_squeeze_values = []
-
-        for ticker, group in data.groupby('ticker'):
-            # RSI computation (修正版：纯pandas rolling)
-            close_series = group['Close']
-            ret = close_series.diff()
-            gain = ret.clip(lower=0)
-            loss = (-ret).clip(lower=0)
-            gain_avg = gain.rolling(14, min_periods=1).mean()
-            loss_avg = loss.rolling(14, min_periods=1).mean()
-            rs = gain_avg / (loss_avg + 1e-10)
+        def _rsi7(x: pd.Series) -> pd.Series:
+            ret = x.diff()
+            gain = ret.clip(lower=0).rolling(7, min_periods=1).mean()
+            loss = (-ret).clip(lower=0).rolling(7, min_periods=1).mean()
+            rs = gain / (loss + 1e-10)
             rsi = 100 - (100 / (1 + rs))
-            rsi_normalized = (rsi - 50) / 50
-            rsi_values.extend(rsi_normalized.values)
+            return (rsi - 50) / 50
 
-            # Bollinger Squeeze computation
-            ma20 = close_series.rolling(20, min_periods=1).mean()
-            std20 = close_series.rolling(20, min_periods=1).std().fillna(0)
-            bb_squeeze = std20 / (ma20 + 1e-10)
-            bollinger_squeeze_values.extend(bb_squeeze.values)
+        rsi = grouped['Close'].transform(_rsi7)
+        ma20 = grouped['Close'].transform(lambda x: x.rolling(20, min_periods=1).mean())
+        std20 = grouped['Close'].transform(lambda x: x.rolling(20, min_periods=1).std().fillna(0))
+        bb_squeeze = std20 / (ma20 + 1e-10)
 
-        return pd.DataFrame({
-            'rsi': rsi_values,
-            'bollinger_squeeze': bollinger_squeeze_values
-        }, index=data.index)
+        return pd.DataFrame({'rsi_7': rsi, 'bollinger_squeeze': bb_squeeze}, index=data.index)
+
+    def _compute_nr7_breakout_bias(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
+        """
+        NR7 窄幅触发 + 收盘位置偏置:
+        - 若当日为 NR7 (True Range 为过去7日最小)，则取 (C-L)/(H-L) - 0.5；否则 0。
+        - 对 H==L 的边界返回 0（避免除零）；仅使用当日 OHLC，时间安全。
+        - 输出名: nr7_breakout_bias
+        """
+        # True Range 组件
+        prev_close = grouped['Close'].transform(lambda s: s.shift(1))
+        tr_high_low = (data['High'] - data['Low']).abs()
+        tr_high_pc = (data['High'] - prev_close).abs()
+        tr_low_pc = (data['Low'] - prev_close).abs()
+        tr = pd.concat([tr_high_low, tr_high_pc, tr_low_pc], axis=1).max(axis=1)
+
+        # 7日窗口最小TR（不含当日以避免“与自己比”引入噪声，使用shift(1)）
+        tr_rolling_min = tr.groupby(data['ticker']).transform(lambda x: x.rolling(7, min_periods=3).min().shift(1))
+        # 当日是否为NR7（与过去7日最小TR相等，考虑浮点容差）
+        eps = 1e-12
+        is_nr7 = (tr <= (tr_rolling_min + eps)).fillna(False)
+
+        # 收盘位置偏置 (C-L)/(H-L) - 0.5
+        hl_range = (data['High'] - data['Low']).replace(0, np.nan)
+        pos = ((data['Close'] - data['Low']) / hl_range) - 0.5
+        pos = pos.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        # 触发门控：非NR7日置0
+        nr7_breakout_bias = pos.where(is_nr7, 0.0)
+
+        return pd.DataFrame({'nr7_breakout_bias': nr7_breakout_bias}, index=data.index)
     
     def _compute_volume_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute volume factors: obv_momentum (removed ad_line - redundant)"""
+        """Compute volume factors: obv_momentum using transform to preserve index"""
 
-        obv_momentum_values = []
+        dir_ = grouped['Close'].transform(lambda s: s.pct_change()).fillna(0.0).pipe(np.sign)
+        obv = (dir_ * data['Volume']).groupby(data['ticker']).cumsum()
+        obv_momentum = obv.groupby(data['ticker']).pct_change(10).fillna(0)
 
-        for ticker, group in data.groupby('ticker'):
-            # OBV momentum computation (修正版：用pct_change符号)
-            close_series = group['Close']
-            volume_series = group['Volume']
-
-            dir_ = close_series.pct_change().fillna(0.0).pipe(np.sign)  # {-1,0,1}
-            obv = (dir_ * volume_series).cumsum()
-            obv_momentum = obv.pct_change(10)  # 10日动量
-            obv_momentum_values.extend(obv_momentum.fillna(0).values)
-
-        return pd.DataFrame({
-            'obv_momentum': obv_momentum_values
-        }, index=data.index)
+        return pd.DataFrame({'obv_momentum': obv_momentum}, index=data.index)
     
     def _compute_volatility_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute volatility factors: atr_ratio (removed atr_20d - redundant)"""
+        """Compute volatility factors: atr_ratio using transform/apply to preserve index"""
 
-        atr_ratio_values = []
+        prev_close = grouped['Close'].transform(lambda s: s.shift(1))
+        high_low = data['High'] - data['Low']
+        high_prev_close = (data['High'] - prev_close).abs()
+        low_prev_close = (data['Low'] - prev_close).abs()
 
-        for ticker, group in data.groupby('ticker'):
-            closes = group['Close']
-            highs = group['High']
-            lows = group['Low']
+        tr_components = pd.concat([high_low, high_prev_close, low_prev_close], axis=1)
+        true_range = tr_components.max(axis=1)
 
-            # 获取前一日收盘价 (严格使用shift(1) 防止TR偏差)
-            prev_close = closes.shift(1)
+        atr_20d = true_range.groupby(data['ticker']).transform(lambda x: x.rolling(20, min_periods=1).mean())
+        atr_5d = true_range.groupby(data['ticker']).transform(lambda x: x.rolling(5, min_periods=1).mean())
+        atr_ratio = (atr_5d / (atr_20d + 1e-10) - 1).fillna(0)
 
-            # True Range computation using prev_close (Polygon标准格式)
-            high_low = highs - lows
-            high_prev_close = (highs - prev_close).abs()
-            low_prev_close = (lows - prev_close).abs()
-
-            # 计算真实波动范围（无数据泄漏）- 使用pandas max
-            tr_components = pd.concat([high_low, high_prev_close, low_prev_close], axis=1)
-            true_range = tr_components.max(axis=1)
-
-            # 处理第一个值（无前一日收盘价）
-            true_range.iloc[0] = high_low.iloc[0]
-
-            # ATR calculations
-            atr_20d = true_range.rolling(20, min_periods=1).mean()
-            atr_5d = true_range.rolling(5, min_periods=1).mean()
-
-            atr_ratio = (atr_5d / (atr_20d + 1e-10) - 1).fillna(0)
-
-            atr_ratio_values.extend(atr_ratio.values)
-
-        return pd.DataFrame({
-            'atr_ratio': atr_ratio_values
-        }, index=data.index)
+        return pd.DataFrame({'atr_ratio': atr_ratio}, index=data.index)
     
     def _compute_fundamental_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute fundamental proxy factors (REDUCED: removed growth_proxy, profitability_momentum, growth_acceleration, value_proxy, profitability_proxy, ivol_60d, quality_proxy, mfi, financial_resilience)"""
+        """Compute fundamental proxy factors using transform to preserve index"""
 
-        liquidity_factor_values = []
+        vol_ma20_hist = grouped['Volume'].transform(lambda v: v.rolling(20, min_periods=1).mean())
+        liquidity_factor = (data['Volume'] / (vol_ma20_hist + 1e-10) - 1).fillna(0)
 
-        for ticker, group in data.groupby('ticker'):
-            closes = group['Close']
-            volumes = group['Volume']
-
-            # Liquidity factor - 使用历史均值作为分母，T-1滞后由统一配置控制
-            vol_ma20_hist = volumes.rolling(20, min_periods=1).mean()
-            liquidity_factor = (volumes / (vol_ma20_hist + 1e-10) - 1).fillna(0)
-            liquidity_factor_values.extend(liquidity_factor.values)
-
-        return pd.DataFrame({
-            'liquidity_factor': liquidity_factor_values
-        }, index=data.index)
+        return pd.DataFrame({'liquidity_factor': liquidity_factor}, index=data.index)
 
     def _compute_ivol_factor(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -872,11 +874,11 @@ class Simple17FactorEngine:
         - 加权组合两个IVOL值，提高覆盖率
         """
         try:
-            # 使用两个窗口：快速(20天)和稳定(60天)
-            window_fast = 20
-            window_stable = 60
-            min_periods_fast = 10
-            min_periods_stable = 30
+            # 使用两个窗口：快速(10天)和稳定(30天) — 为T+1加速
+            window_fast = 10
+            window_stable = 30
+            min_periods_fast = 5
+            min_periods_stable = 10
 
             # Group by ticker for processing
             grouped = data.groupby('ticker')

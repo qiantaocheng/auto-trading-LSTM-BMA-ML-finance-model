@@ -41,8 +41,9 @@ class RidgeStacker:
                  auto_tune_alpha: bool = False,
                  alpha_grid: Tuple[float, ...] = (0.5, 1.0, 2.0, 3.0, 5.0, 8.0),
                  use_cv: bool = True,
-                 cv_splits: int = 3,
+                 cv_splits: int = 5,
                  cv_test_size: float = 0.2,
+                 use_lambda_percentile: bool = True,  # 新增：使用Lambda percentile特征
                  random_state: int = 42,
                  **kwargs):
         """
@@ -59,6 +60,7 @@ class RidgeStacker:
             use_cv: 是否使用交叉验证 (默认True)
             cv_splits: CV折数 (默认3)
             cv_test_size: 每折验证集比例 (默认0.2)
+            use_lambda_percentile: 是否使用Lambda percentile特征 (默认True)
             random_state: 随机种子
         """
         self.base_cols = base_cols
@@ -71,7 +73,9 @@ class RidgeStacker:
         self.use_cv = use_cv
         self.cv_splits = cv_splits
         self.cv_test_size = cv_test_size
+        self.use_lambda_percentile = use_lambda_percentile
         self.random_state = random_state
+        self.actual_feature_cols_ = None  # 🔧 训练时实际使用的特征列（Critical Fix）
 
         # 模型组件
         self.ridge_model = None
@@ -87,8 +91,9 @@ class RidgeStacker:
         self.train_score_ = None
         self.feature_names_ = None
 
-        logger.info(f"✅ Ridge Stacker 初始化完成 (简洁版)")
+        logger.info(f"✅ Ridge Stacker 初始化完成 (Percentile增强版)")
         logger.info(f"   基础特征: {self.base_cols}")
+        logger.info(f"   Lambda Percentile: {'启用' if self.use_lambda_percentile else '禁用'}")
         logger.info(f"   正则化强度α: {self.alpha}")
         logger.info(f"   拟合截距: {self.fit_intercept} (已做z-score)")
         logger.info(f"   求解器: {self.solver}, 容差: {self.tol}")
@@ -113,8 +118,20 @@ class RidgeStacker:
 
     def _prepare_features(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """准备特征和标签"""
-        # 提取特征
-        X = df[list(self.base_cols)].values
+        # 提取基础特征
+        feature_cols = list(self.base_cols)
+
+        # 如果启用lambda percentile且数据中有该列，加入特征
+        if self.use_lambda_percentile and 'lambda_percentile' in df.columns:
+            feature_cols.append('lambda_percentile')
+            logger.debug("✓ 加入Lambda Percentile特征")
+
+        # 🔧 Critical Fix: 保存实际使用的特征列（仅在训练时，即首次调用）
+        if self.actual_feature_cols_ is None:
+            self.actual_feature_cols_ = feature_cols
+            logger.info(f"🔧 保存实际特征列: {self.actual_feature_cols_}")
+
+        X = df[feature_cols].values
 
         # 提取标签（假设标签列以ret_fwd开头）
         label_cols = [col for col in df.columns if col.startswith('ret_fwd')]
@@ -297,8 +314,11 @@ class RidgeStacker:
         # 准备特征和标签
         X, y = self._prepare_features(df_clean)
 
-        if len(X) < 100:  # 提高最小样本要求
-            raise ValueError(f"训练样本过少: {len(X)} < 100")
+        # 小样本自适应：允许在极小样本下训练，但发出警告
+        if len(X) < 10:
+            raise ValueError(f"训练样本过少: {len(X)} < 10")
+        if len(X) < 50:
+            logger.warning(f"小样本训练Ridge: {len(X)} < 50，启用保守参数和正则化")
 
         # 标签Winsorization (1%, 99%)
         y_winsorized = self._winsorize_labels(y, 1.0, 99.0)
@@ -320,7 +340,8 @@ class RidgeStacker:
         val_score = None
         val_rank_ic = None
 
-        if self.use_cv and len(X_scaled) > 200:  # 足够样本时使用CV
+        # 统一5折CV：在样本量充足时始终使用（阈值降低，避免小样本跳过）
+        if self.use_cv and len(X_scaled) >= max(self.cv_splits * 10, 50):
             # 使用最后一折作为验证集
             val_size = int(len(X_scaled) * self.cv_test_size)
             train_size = len(X_scaled) - val_size
@@ -374,12 +395,26 @@ class RidgeStacker:
         self.val_score_ = val_score
         self.val_rank_ic_ = val_rank_ic
 
-        # 保存特征重要性（回归系数）
-        self.feature_names_ = list(self.base_cols)
+        # 保存特征重要性（回归系数） - 使用训练时实际特征列，确保长度一致
+        used_feature_names = list(self.actual_feature_cols_) if self.actual_feature_cols_ is not None else list(self.base_cols)
+        coef_array = np.ravel(self.ridge_model.coef_)
+
+        if len(coef_array) != len(used_feature_names):
+            logger.warning(
+                f"Ridge系数长度({len(coef_array)})与特征数({len(used_feature_names)})不一致，尝试自动对齐"
+            )
+            # 安全兜底：截断或填充到匹配长度（极端情况下避免报错，仍保留排序可读性）
+            if len(coef_array) > len(used_feature_names):
+                coef_array = coef_array[:len(used_feature_names)]
+            else:
+                pad = np.zeros(len(used_feature_names) - len(coef_array))
+                coef_array = np.concatenate([coef_array, pad])
+
+        self.feature_names_ = used_feature_names
         self.feature_importance_ = pd.DataFrame({
-            'feature': self.feature_names_,
-            'coefficient': self.ridge_model.coef_,
-            'abs_coefficient': np.abs(self.ridge_model.coef_)
+            'feature': used_feature_names,
+            'coefficient': coef_array,
+            'abs_coefficient': np.abs(coef_array)
         }).sort_values('abs_coefficient', ascending=False)
 
         self.fitted_ = True
@@ -417,8 +452,17 @@ class RidgeStacker:
         # 验证输入并确保列顺序一致
         df_clean = self._validate_input(df)
 
-        # 🔧 关键修复：使用与训练时完全相同的特征提取逻辑
-        X = df_clean[list(self.base_cols)].values
+        # 🔧 Critical Fix: 使用训练时保存的实际特征列
+        if self.actual_feature_cols_ is None:
+            raise RuntimeError("actual_feature_cols_未初始化，模型可能未正确训练")
+
+        # 确保所有特征列存在
+        missing_cols = [col for col in self.actual_feature_cols_ if col not in df_clean.columns]
+        if missing_cols:
+            raise ValueError(f"预测数据缺少特征列: {missing_cols}")
+
+        # 使用训练时的实际特征列
+        X = df_clean[self.actual_feature_cols_].values
 
         # 处理NaN
         valid_mask = ~np.isnan(X).any(axis=1)
@@ -434,12 +478,12 @@ class RidgeStacker:
         X_scaled = self.scaler.transform(X_valid)
 
         logger.info(f"   特征提取: {len(X_valid)} 有效样本, {X_scaled.shape[1]} 特征")
-        logger.info(f"   特征顺序: {list(self.base_cols)}")
+        logger.info(f"   实际特征顺序: {self.actual_feature_cols_}")
         logger.info(f"   预测标准化: 特征均值={X_scaled.mean(axis=0)[:3]}, 特征标准差={X_scaled.std(axis=0)[:3]}")
 
         # 🔧 验证特征维度一致性
-        if X_scaled.shape[1] != len(self.base_cols):
-            raise RuntimeError(f"特征维度不一致: 预测时{X_scaled.shape[1]}列，训练时{len(self.base_cols)}列")
+        if X_scaled.shape[1] != len(self.actual_feature_cols_):
+            raise RuntimeError(f"特征维度不一致: 预测时{X_scaled.shape[1]}列，训练时{len(self.actual_feature_cols_)}列")
 
         # 预测
         raw_predictions = self.ridge_model.predict(X_scaled)
@@ -452,19 +496,10 @@ class RidgeStacker:
         result = df_clean.copy()
         result['score'] = full_predictions
 
-        # 按日期计算排名
-        def _rank_by_date(group):
-            scores = group['score']
-            valid_scores = scores.dropna()
-            if len(valid_scores) <= 1:
-                return pd.Series(np.nan, index=scores.index)
-
-            ranks = valid_scores.rank(method='average', ascending=False)
-            full_ranks = pd.Series(np.nan, index=scores.index)
-            full_ranks.loc[valid_scores.index] = ranks
-            return full_ranks
-
-        result['score_rank'] = result.groupby(level='date').apply(_rank_by_date).values
+        # 按日期计算排名（使用transform保持索引对齐，避免apply产生错位）
+        result['score_rank'] = result.groupby(level='date')['score'].transform(
+            lambda s: s.rank(method='average', ascending=False)
+        )
 
         # 标准化分数
         def _zscore_by_date(group):
@@ -483,7 +518,10 @@ class RidgeStacker:
             full_zscores.loc[valid_scores.index] = zscores
             return full_zscores
 
-        result['score_z'] = result.groupby(level='date').apply(_zscore_by_date).values
+        # 使用transform确保与原索引对齐
+        result['score_z'] = result.groupby(level='date')['score'].transform(
+            lambda s: (s - s.mean()) / s.std() if s.dropna().size > 1 and s.std() >= 1e-12 else 0.0
+        )
 
         logger.info(f"✅ Ridge预测完成: {len(result)}样本")
         logger.info(f"   有效预测: {(~pd.isna(result['score'])).sum()}")

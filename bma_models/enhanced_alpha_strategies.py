@@ -231,11 +231,11 @@ class AlphaStrategiesEngine:
         """Get default configuration with all 25 required factors enabled"""
         # Define the 25 required factors
         required_17_factors = [
-            'momentum_10d',
+            'momentum_10d_ex1',
             'rsi', 'bollinger_squeeze',
             'obv_momentum', 'atr_ratio', 'ivol_60d',
             'liquidity_factor',
-            'near_52w_high', 'reversal_5d', 'rel_volume_spike', 'mom_accel_10_5'
+            'near_52w_high', 'reversal_1d', 'rel_volume_spike', 'mom_accel_5_2'
         ]
         
         # Create alpha config for each required factor
@@ -269,7 +269,7 @@ class AlphaStrategiesEngine:
             # FOCUSED 25 FACTORS - All others commented out
             
             # Momentum factors (1/23) - REMOVED: momentum_20d, momentum_reversal_short
-            'momentum_10d': self._compute_momentum_10d,
+            'momentum_10d_ex1': self._compute_momentum_10d_ex1,
             
             # Mean reversion factors (3/17) - REMOVED: price_to_ma20
             'rsi': self._compute_rsi,
@@ -289,9 +289,9 @@ class AlphaStrategiesEngine:
 
             # High-alpha factors (4/17)
             'near_52w_high': self._compute_near_52w_high,
-            'reversal_5d': self._compute_reversal_5d,
+            'reversal_1d': self._compute_reversal_1d,
             'rel_volume_spike': self._compute_rel_volume_spike,
-            'mom_accel_10_5': self._compute_mom_accel_10_5,
+            'mom_accel_5_2': self._compute_mom_accel_5_2,
             
             # ===== ALL OTHER FACTORS COMMENTED OUT =====
             
@@ -2029,11 +2029,11 @@ class AlphaStrategiesEngine:
                     
                     # 只保留17个Alpha因子，移除原始市场数据和元数据列
                     required_17_factors = [
-                        'momentum_10d',
+                        'momentum_10d_ex1',
                         'rsi', 'bollinger_squeeze',
                         'obv_momentum', 'atr_ratio', 'ivol_60d',
                         'liquidity_factor',
-                        'near_52w_high', 'reversal_5d', 'rel_volume_spike', 'mom_accel_10_5'
+                        'near_52w_high', 'reversal_1d', 'rel_volume_spike', 'mom_accel_5_2'
                     ]
 
                     # 只保留存在的17个因子列
@@ -2056,7 +2056,7 @@ class AlphaStrategiesEngine:
         else:
             # 对于已经是MultiIndex的情况，也只返回alpha因子列
             required_alpha_factors = [
-                'momentum_10d',
+                'momentum_10d_ex1',
                 'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
                 'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
                 'macd_histogram', 'stoch_k', 'cci',
@@ -2935,15 +2935,21 @@ class AlphaStrategiesEngine:
     # ========== FOCUSED 25 FACTORS COMPUTATION METHODS ==========
     
     # Momentum factors (3/25)
-    def _compute_momentum_10d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+    def _compute_momentum_10d_ex1(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """10-day price momentum"""
         if 'Close' not in df.columns or len(df) < 11:
             return pd.Series(0, index=df.index)
         try:
+            # 10-day momentum: (price_t - price_t-10) / price_t-10
             momentum_10d = df['Close'].pct_change(10)
             return self.safe_fillna(momentum_10d, df)
         except:
             return pd.Series(0, index=df.index)
+
+    # Keep old function name for backward compatibility
+    def _compute_momentum_10d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Deprecated: Use _compute_momentum_10d_ex1 instead"""
+        return self._compute_momentum_10d_ex1(df, **kwargs)
     
     def _compute_momentum_20d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """20-day price momentum"""

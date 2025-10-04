@@ -97,10 +97,12 @@ class UnifiedParallelTrainingEngine:
             stage2_start = time.time()
             logger.info("🔄 阶段2: 并行二层训练开始...")
 
+            # 显式选择 DataFrame 避免 pandas 布尔歧义
+            af_df = alpha_factors if alpha_factors is not None else X
             parallel_results = self._parallel_second_layer_training(
                 unified_first_layer_results['oof_predictions'],
                 y, dates, tickers,
-                alpha_factors=alpha_factors or X  # 如果没有提供alpha_factors，使用X
+                alpha_factors=af_df
             )
 
             results.update({
@@ -113,9 +115,7 @@ class UnifiedParallelTrainingEngine:
 
             logger.info(f"✅ 阶段2完成，耗时: {results['timing']['stage2']:.2f}秒")
 
-            # 初始化Blender (如果两个模型都成功)
-            if results['ridge_success'] and results['lambda_success']:
-                self._init_unified_blender()
+        # 已移除Rank-aware Blender初始化，保留空操作
 
         except Exception as e:
             logger.error(f"❌ 统一并行训练失败: {e}")
@@ -127,6 +127,30 @@ class UnifiedParallelTrainingEngine:
         self._log_performance_summary(results, total_time)
 
         return results
+
+    # Backward-compatible wrapper used by UltraEnhancedQuantitativeModel
+    def train_unified_stackers(self, oof_predictions: Dict[str, pd.Series],
+                               y: pd.Series, dates: pd.Series, tickers: pd.Series,
+                               alpha_factors: pd.DataFrame = None) -> Dict[str, Any]:
+        """Compatibility API: run only stage-2 training given precomputed OOF.
+
+        Args:
+            oof_predictions: dict of first-layer OOF prediction Series
+            y: target Series aligned to dates/tickers
+            dates: date Series for index construction
+            tickers: ticker Series for index construction
+            alpha_factors: optional alpha feature DataFrame for LambdaRank
+
+        Returns:
+            Dict with ridge_success, lambda_success, stacker_data, timing, lambda_percentile_info
+        """
+        return self._parallel_second_layer_training(
+            unified_oof_predictions=oof_predictions,
+            y=y,
+            dates=dates,
+            tickers=tickers,
+            alpha_factors=alpha_factors
+        )
 
     def _unified_first_layer_training(self, X: pd.DataFrame, y: pd.Series,
                                     dates: pd.Series, tickers: pd.Series) -> Dict[str, Any]:
@@ -193,7 +217,7 @@ class UnifiedParallelTrainingEngine:
 
         # LambdaRank使用Alpha Factors
         lambda_data = self._build_lambda_data(
-            alpha_factors if alpha_factors is not None else X, y, dates, tickers
+            alpha_factors, y, dates, tickers
         )
 
         if ridge_data is None:
@@ -209,60 +233,151 @@ class UnifiedParallelTrainingEngine:
         logger.info(f"📊 LambdaRank数据形状: {lambda_data.shape}")
         results['stacker_data'] = ridge_data  # 保留兼容性
 
-        # 检查是否使用并行训练
-        use_lambda = (hasattr(self.parent, 'use_rank_aware_blending') and
-                     self.parent.use_rank_aware_blending and
-                     self._check_lambda_available() and
-                     len(ridge_data) >= 200)  # 数据量检查
+        # 启用LambdaRank：必须开启（可用且样本量足够），否则中止流程
+        lambda_available = self._check_lambda_available()
+        lambda_data_valid = (lambda_data is not None and len(lambda_data) > 0)
+        sample_count_ok = len(ridge_data) >= 12  # 放宽以支持小样本
 
-        if not use_lambda or lambda_data is None:
-            logger.info("🔄 只训练Ridge Stacker（LambdaRank不可用或数据不足）")
+        logger.info(f"📊 Lambda启用检查:")
+        logger.info(f"   Lambda可导入: {lambda_available}")
+        logger.info(f"   Lambda数据有效: {lambda_data_valid}")
+        logger.info(f"   样本数量: {len(ridge_data)} (需要>=50: {sample_count_ok})")
+
+        use_lambda = (lambda_available and sample_count_ok)
+
+        if not use_lambda:
+            logger.warning(
+                f"⚠️ LambdaRank未启用或样本不足，跳过Lambda训练并仅训练Ridge"
+            )
+            # 直接训练Ridge并返回
             ridge_start = time.time()
             ridge_success = self.parent._train_ridge_stacker(
-                unified_oof_predictions, y, dates
+                unified_oof_predictions, y, dates, ridge_data=ridge_data
             )
             results['ridge_success'] = ridge_success
-            results['timing']['ridge_only'] = time.time() - ridge_start
+            results['timing']['ridge'] = time.time() - ridge_start
+            logger.info(f"✅ Ridge训练完成，耗时: {results['timing']['ridge']:.2f}秒")
             return results
 
-        # 并行训练Ridge和LambdaRank
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="Unified-Parallel") as executor:
-            futures = {}
+        if lambda_data is None or len(lambda_data) == 0:
+            logger.error("❌ Lambda数据为空，训练中止")
+            raise RuntimeError(f"Lambda data is empty or None")
 
-            # 任务1：Ridge Stacker
-            ridge_future = executor.submit(
-                self._train_ridge_unified,
-                unified_oof_predictions, y, dates
-            )
-            futures[ridge_future] = 'ridge'
+        # 顺序训练：先Lambda生成percentile，再Ridge使用
+        logger.info("🔄 新融合策略：Lambda Percentile → Ridge Stacker")
 
-            # 任务2：LambdaRank Stacker（使用Alpha Factors）
-            lambda_future = executor.submit(
-                self._train_lambda_unified,
-                lambda_data  # Alpha Factors数据
-            )
-            futures[lambda_future] = 'lambda'
+        # 步骤1：训练LambdaRank，生成OOF预测
+        logger.info("="*60)
+        logger.info("🚀 步骤1: 开始训练LambdaRank模型")
+        logger.info(f"   Lambda数据形状: {lambda_data.shape}")
+        logger.info(f"   Lambda特征数: {lambda_data.shape[1] - 1}")  # 减去target列
+        logger.info("="*60)
 
-            # 等待完成
-            for future in as_completed(futures):
-                task_name = futures[future]
-                try:
-                    task_result = future.result(timeout=1800)  # 30分钟超时
+        lambda_start = time.time()
+        lambda_result = self._train_lambda_unified(lambda_data)
+        results['lambda_success'] = lambda_result['success']
+        results['timing']['lambda'] = time.time() - lambda_start
 
-                    if task_name == 'ridge':
-                        results['ridge_success'] = task_result['success']
-                        results['timing']['ridge'] = task_result['elapsed_time']
-                        logger.info(f"✅ Ridge完成，耗时: {task_result['elapsed_time']:.2f}秒")
+        logger.info(f"📊 Lambda训练结果: {'成功✅' if lambda_result['success'] else '失败❌'}")
+        logger.info(f"   耗时: {results['timing']['lambda']:.2f}秒")
 
-                    elif task_name == 'lambda':
-                        results['lambda_success'] = task_result['success']
-                        results['timing']['lambda'] = task_result['elapsed_time']
-                        if task_result['success']:
-                            self.parent.lambda_rank_stacker = task_result['model']
-                            logger.info(f"✅ LambdaRank完成，耗时: {task_result['elapsed_time']:.2f}秒")
+        if lambda_result['success']:
+            self.parent.lambda_rank_stacker = lambda_result['model']
+            logger.info(f"✅ LambdaRank训练完成，耗时: {results['timing']['lambda']:.2f}秒")
 
-                except Exception as e:
-                    logger.error(f"❌ {task_name} 训练失败: {e}")
+            # 步骤2：计算Lambda OOF percentile
+            logger.info("="*60)
+            logger.info("🔧 步骤2: 生成Lambda Percentile特征")
+            logger.info("="*60)
+
+            try:
+                # 获取Lambda模型的真正OOF预测（防数据泄漏）
+                lambda_model = lambda_result['model']
+
+                # 🔧 确保lambda_data对齐到ridge_data的索引
+                if not lambda_data.index.equals(ridge_data.index):
+                    logger.info(f"🔧 对齐Lambda数据到Ridge索引")
+                    logger.info(f"   Lambda原始: {len(lambda_data)} 样本")
+                    logger.info(f"   Ridge目标: {len(ridge_data)} 样本")
+                    lambda_data_aligned = lambda_data.reindex(ridge_data.index)
+                else:
+                    logger.info(f"✅ Lambda和Ridge索引已对齐")
+                    lambda_data_aligned = lambda_data
+
+                lambda_oof = lambda_model.get_oof_predictions(lambda_data_aligned)
+                logger.info(f"✅ Lambda OOF预测获取完成: {len(lambda_oof)} 样本")
+
+                # 🔧 Critical Fix: 使用一致性转换器计算percentile
+                from bma_models.lambda_percentile_transformer import LambdaPercentileTransformer
+
+                # 创建并拟合转换器
+                lambda_percentile_transformer = LambdaPercentileTransformer(method='quantile')
+                lambda_percentile_series = lambda_percentile_transformer.fit_transform(lambda_oof)
+
+                # 保存转换器供预测时使用
+                self.parent.lambda_percentile_transformer = lambda_percentile_transformer
+
+                logger.info(f"✅ Lambda Percentile转换器已创建并保存")
+                logger.info(f"   Percentile统计: 均值={lambda_percentile_series.mean():.1f}, 范围=[{lambda_percentile_series.min():.1f}, {lambda_percentile_series.max():.1f}]")
+
+                # 📊 详细索引对齐诊断
+                logger.info(f"📊 索引对齐诊断:")
+                logger.info(f"   Ridge形状: {ridge_data.shape}")
+                logger.info(f"   Lambda Percentile形状: {lambda_percentile_series.shape}")
+                logger.info(f"   索引完全匹配: {ridge_data.index.equals(lambda_percentile_series.index)}")
+
+                # 🔧 验证索引对齐
+                if not lambda_percentile_series.index.equals(ridge_data.index):
+                    logger.warning(f"⚠️ Lambda Percentile索引不匹配，强制对齐")
+                    lambda_percentile_series = lambda_percentile_series.reindex(ridge_data.index)
+
+                    # 检查NaN比例
+                    nan_count = lambda_percentile_series.isna().sum()
+                    nan_ratio = nan_count / len(ridge_data)
+                    logger.warning(f"   对齐后NaN: {nan_count} ({nan_ratio:.2%})")
+
+                    if nan_ratio > 0.05:
+                        logger.error(f"❌ Lambda Percentile NaN比例过高 ({nan_ratio:.2%})")
+                        raise ValueError("Lambda Percentile对齐失败，NaN过多")
+
+                # 步骤3：加入Ridge数据
+                logger.info("="*60)
+                logger.info("🔧 步骤3: 将Lambda Percentile加入Ridge特征")
+                logger.info("="*60)
+                logger.info(f"   Ridge原始特征: {list(ridge_data.columns)}")
+
+                ridge_data['lambda_percentile'] = lambda_percentile_series
+
+                logger.info(f"✅ Lambda Percentile已加入Ridge特征")
+                logger.info(f"   Ridge新特征: {list(ridge_data.columns)}")
+                logger.info(f"   Lambda Percentile无NaN: {lambda_percentile_series.notna().all()}")
+                logger.info(f"   Ridge数据最终形状: {ridge_data.shape}")
+
+                # 收集Lambda Percentile信息用于Excel导出
+                results['lambda_percentile_info'] = {
+                    'n_factors': len(lambda_model._alpha_factor_cols) if hasattr(lambda_model, '_alpha_factor_cols') else 15,
+                    'oof_samples': len(lambda_oof),
+                    'percentile_mean': float(lambda_percentile_series.mean()),
+                    'percentile_min': float(lambda_percentile_series.min()),
+                    'percentile_max': float(lambda_percentile_series.max()),
+                    'alignment_status': '完全对齐' if ridge_data.index.equals(lambda_percentile_series.index) else '已强制对齐',
+                    'nan_ratio': float(lambda_percentile_series.isna().sum() / len(lambda_percentile_series))
+                }
+
+            except Exception as e_perc:
+                logger.warning(f"⚠️ 计算Lambda Percentile失败: {e_perc}")
+                logger.warning("   Ridge将不使用Lambda特征")
+        else:
+            logger.warning("⚠️ LambdaRank训练失败，继续仅用Ridge流程")
+
+        # 步骤4：训练Ridge Stacker（使用OOF + Lambda Percentile）
+        ridge_start = time.time()
+        ridge_success = self.parent._train_ridge_stacker(
+            unified_oof_predictions, y, dates, ridge_data=ridge_data
+        )
+        results['ridge_success'] = ridge_success
+        results['timing']['ridge'] = time.time() - ridge_start
+        logger.info(f"✅ Ridge训练完成，耗时: {results['timing']['ridge']:.2f}秒")
 
         return results
 
@@ -296,7 +411,10 @@ class UnifiedParallelTrainingEngine:
                     )
 
             # 添加目标变量
-            stacker_dict['ret_fwd_5d'] = y_indexed
+            # 动态目标列名：根据主模型 horizon 选择，默认T+1
+            horizon_days = getattr(self.parent, 'horizon', 1)
+            target_col = f'ret_fwd_{horizon_days}d'
+            stacker_dict[target_col] = y_indexed
 
             stacker_data = pd.DataFrame(stacker_dict)
 
@@ -305,10 +423,12 @@ class UnifiedParallelTrainingEngine:
             if missing_data.any():
                 logger.warning(f"⚠️ Stacker数据缺失: {missing_data.to_dict()}")
 
-            # 移除包含NaN的行
-            clean_data = stacker_data.dropna()
+            # 仅以目标列为准移除NaN，特征列用0填充（保留全时段）
+            feature_cols = [c for c in stacker_data.columns if c != target_col]
+            stacker_data[feature_cols] = stacker_data[feature_cols].fillna(0.0)
+            clean_data = stacker_data.dropna(subset=[target_col])
             if len(clean_data) < len(stacker_data) * 0.8:
-                logger.warning(f"⚠️ 数据清理后剩余 {len(clean_data)}/{len(stacker_data)} ({len(clean_data)/len(stacker_data)*100:.1f}%)")
+                logger.warning(f"⚠️ 目标过滤后剩余 {len(clean_data)}/{len(stacker_data)} ({len(clean_data)/len(stacker_data)*100:.1f}%)")
 
             logger.info(f"📊 统一stacker数据构建完成: {clean_data.shape}")
             return clean_data
@@ -360,8 +480,9 @@ class UnifiedParallelTrainingEngine:
             from bma_models.unified_config_loader import get_time_config
             time_config = get_time_config()
 
-            # 动态确定特征列（根据实际数据）
-            feature_cols = [col for col in stacker_data.columns if col != 'ret_fwd_5d']
+            # 动态确定特征列（根据实际数据），排除目标列名（兼容多种horizon命名）
+            possible_targets = {'ret_fwd_1d', 'ret_fwd_2d', 'ret_fwd_3d', 'ret_fwd_5d', 'ret_fwd_10d'}
+            feature_cols = [col for col in stacker_data.columns if col not in possible_targets]
             logger.info(f"[Lambda-Thread] 使用特征列: {feature_cols}")
 
             # 配置LambdaRank（使用purged CV factory）
@@ -373,7 +494,7 @@ class UnifiedParallelTrainingEngine:
                 'num_boost_round': 100,
                 'early_stopping_rounds': 0,
                 'use_purged_cv': True,
-                'cv_n_splits': time_config.cv_n_splits,
+                'cv_n_splits': 5,
                 'cv_gap_days': time_config.cv_gap_days,
                 'cv_embargo_days': time_config.cv_embargo_days,
                 'random_state': 42
@@ -410,22 +531,8 @@ class UnifiedParallelTrainingEngine:
             return False
 
     def _init_unified_blender(self):
-        """初始化统一Blender"""
-        try:
-            from bma_models.rank_aware_blender import RankAwareBlender
-
-            self.parent.rank_aware_blender = RankAwareBlender(
-                lookback_window=60,
-                min_weight=0.3,
-                max_weight=0.7,
-                weight_smoothing=0.3,
-                use_copula=True,
-                use_decorrelation=True,
-                top_k_list=[5, 10, 20]
-            )
-            logger.info("✅ 统一Rank-aware Blender初始化成功")
-        except Exception as e:
-            logger.error(f"❌ Blender初始化失败: {e}")
+        """(Removed) Rank-aware blender deprecated; no-op for compatibility."""
+        return None
 
     def _validate_oof_quality(self, oof_predictions: Dict[str, pd.Series], y: pd.Series) -> Dict[str, float]:
         """验证OOF预测质量"""
@@ -555,8 +662,8 @@ class UnifiedParallelTrainingEngine:
                     lambda_data = lambda_data.drop(columns=pred_cols)
                     logger.info(f"   移除{len(pred_cols)}个预测列")
 
-            # 添加目标变量
-            lambda_data['ret_fwd_5d'] = y_indexed
+            # 添加目标变量（T+1）
+            lambda_data['ret_fwd_1d'] = y_indexed
 
             # 验证数据
             feature_count = lambda_data.shape[1] - 1  # 减去target列

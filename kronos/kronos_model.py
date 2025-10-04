@@ -1,9 +1,11 @@
 import os
-import torch
+import sys
+import subprocess
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import numpy as np
 from dataclasses import dataclass
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -32,29 +34,133 @@ class KronosModelWrapper:
         self.is_loaded = False
         self._deps_installed = False
 
+    def _locate_repo_root_with_model(self, root_path: str) -> Optional[str]:
+        """Locate the repository root that contains a usable 'model' module.
+
+        Accepts either:
+          - a file 'model.py' at repo root, or
+          - a package directory 'model' with an __init__.py at repo root.
+        Returns the repo root path (parent directory to import from), or None.
+        """
+        try:
+            # Direct root checks
+            if os.path.isfile(os.path.join(root_path, 'model.py')):
+                return root_path
+            if os.path.isdir(os.path.join(root_path, 'model')) and \
+               os.path.isfile(os.path.join(root_path, 'model', '__init__.py')):
+                return root_path
+
+            # Recursive search
+            for dirpath, dirnames, filenames in os.walk(root_path):
+                # case: .../something/model.py at dirpath → repo root is dirpath
+                if 'model.py' in filenames:
+                    return dirpath
+                # case: .../something/model/__init__.py → repo root is dirpath
+                if 'model' in dirnames:
+                    candidate = os.path.join(dirpath, 'model')
+                    if os.path.isfile(os.path.join(candidate, '__init__.py')):
+                        return dirpath
+        except Exception:
+            return None
+        return None
+
+    def _ensure_kronos_repo(self) -> Optional[str]:
+        """Ensure the original Kronos repo code is available locally; clone or download if missing.
+
+        Returns the directory path that contains model.py, or None on failure.
+        """
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        candidates = [
+            os.path.join(base_dir, 'kronos_original_repo'),
+            os.path.join(base_dir, 'kronos_original')
+        ]
+
+        # Use existing path if available
+        for cand in candidates:
+            if os.path.isdir(cand):
+                found_root = self._locate_repo_root_with_model(cand)
+                if found_root:
+                    return found_root
+
+        # Attempt to clone or download the repository
+        repo_url = os.environ.get('KRONOS_REPO_URL', 'https://github.com/shiyu-coder/Kronos')
+        target_root = candidates[0]
+        try:
+            os.makedirs(target_root, exist_ok=True)
+        except Exception:
+            pass
+
+        # Try git clone first
+        try:
+            if not os.listdir(target_root):
+                subprocess.run(['git', 'clone', '--depth', '1', repo_url, target_root], check=True)
+        except Exception:
+            # Fallback to zip download
+            try:
+                import requests, zipfile, io
+                zip_url = repo_url.rstrip('/') + '/archive/refs/heads/main.zip'
+                resp = requests.get(zip_url, timeout=60)
+                resp.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                    zf.extractall(target_root)
+            except Exception as _:
+                return None
+
+        # Locate repo root with model module
+        found_root = self._locate_repo_root_with_model(target_root)
+        return found_root
+
     def load_model(self) -> bool:
         try:
-            # Add original Kronos repository to path
-            import sys
-            import os
-
-            kronos_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kronos_original")
-            if kronos_path not in sys.path:
-                sys.path.insert(0, kronos_path)
+            # Ensure original Kronos repository code is present and importable
+            kronos_repo_root = self._ensure_kronos_repo()
+            if not kronos_repo_root:
+                raise RuntimeError("Original Kronos repo code not available (model.py not found)")
+            if kronos_repo_root not in sys.path:
+                sys.path.insert(0, kronos_repo_root)
 
             logger.info(f"Loading Kronos model: {self.config.model_size}")
 
             # Map to available models
             model_mapping = {
                 "base": "NeoQuasar/Kronos-base",
-                "large": "NeoQuasar/Kronos-large"  # Try large first
+                "large": "NeoQuasar/Kronos-large"
             }
 
             tokenizer_name = "NeoQuasar/Kronos-Tokenizer-base"
-            model_name = model_mapping.get(self.config.model_size, "NeoQuasar/Kronos-large")
+            model_name = model_mapping.get(self.config.model_size, "NeoQuasar/Kronos-base")
 
-            # Use original Kronos classes (if available in local kronos_original repository)
-            from model import Kronos, KronosTokenizer, KronosPredictor
+            # Use original Kronos classes (if available in local kronos repository)
+            Kronos = None
+            KronosTokenizer = None
+            KronosPredictor = None
+            try:
+                # First try regular import
+                from model import Kronos as _Kronos, KronosTokenizer as _KronosTokenizer, KronosPredictor as _KronosPredictor  # type: ignore
+                Kronos, KronosTokenizer, KronosPredictor = _Kronos, _KronosTokenizer, _KronosPredictor
+            except Exception as imp_err:
+                # Fallback: direct import via file path
+                try:
+                    import importlib.util
+                    model_file = os.path.join(kronos_repo_root, 'model.py')
+                    if not os.path.isfile(model_file):
+                        # Try package directory
+                        model_pkg_init = os.path.join(kronos_repo_root, 'model', '__init__.py')
+                        if not os.path.isfile(model_pkg_init):
+                            raise FileNotFoundError(model_file)
+                        model_file = model_pkg_init
+                    spec = importlib.util.spec_from_file_location('kronos_model_impl', model_file)
+                    if spec is None or spec.loader is None:
+                        raise ImportError('Cannot create import spec for model.py')
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    Kronos = getattr(mod, 'Kronos', None)
+                    KronosTokenizer = getattr(mod, 'KronosTokenizer', None)
+                    KronosPredictor = getattr(mod, 'KronosPredictor', None)
+                    if Kronos is None or KronosTokenizer is None or KronosPredictor is None:
+                        raise ImportError('model.py does not expose required classes')
+                except Exception as imp2_err:
+                    raise RuntimeError(f"Unable to import Kronos classes: {imp_err} | {imp2_err}")
 
             logger.info(f"Loading tokenizer: {tokenizer_name}")
             self.tokenizer = KronosTokenizer.from_pretrained(tokenizer_name)

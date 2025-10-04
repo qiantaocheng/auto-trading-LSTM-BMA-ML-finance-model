@@ -15,6 +15,32 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# 标准的15个Alpha因子（与Simple17FactorEngine保持一致）
+STANDARD_15_FACTORS = [
+    # Momentum factors (1)
+    'momentum_10d_ex1',
+    # Technical indicators (6)
+    'rsi', 'bollinger_squeeze', 'obv_momentum', 'atr_ratio',
+    # Special volatility factor (1)
+    'ivol_60d',
+    # Fundamental proxy factors (1)
+    'liquidity_factor',
+    # High-alpha factors (4)
+    'near_52w_high', 'reversal_1d', 'rel_volume_spike', 'mom_accel_5_2',
+    # Behavioral factors (3)
+    'overnight_intraday_gap', 'max_lottery_factor', 'streak_reversal',
+    # Custom factor (1)
+    'price_efficiency_5d'
+]
+
+# 旧因子名称到新因子名称的映射（用于向后兼容）
+LEGACY_FACTOR_MAPPING = {
+    'momentum_10d': 'momentum_10d_ex1',
+    'reversal_5d': 'reversal_1d',
+    'mom_accel_10_5': 'mom_accel_5_2',
+    'price_efficiency_10d': 'price_efficiency_5d'
+}
+
 class AlphaFactorQualityMonitor:
     """
     Alpha因子质量监控系统
@@ -33,27 +59,92 @@ class AlphaFactorQualityMonitor:
         self.factor_stats = {}
         self.quality_issues = []
         self.computation_times = {}
-        
+        self.legacy_factors_detected = set()  # 记录检测到的旧因子名
+
         if save_reports:
             os.makedirs(report_dir, exist_ok=True)
+
+    def normalize_factor_name(self, factor_name: str) -> str:
+        """
+        标准化因子名称，自动映射旧名称到新名称
+
+        Args:
+            factor_name: 原始因子名称
+
+        Returns:
+            标准化后的因子名称
+        """
+        if factor_name in LEGACY_FACTOR_MAPPING:
+            new_name = LEGACY_FACTOR_MAPPING[factor_name]
+            if factor_name not in self.legacy_factors_detected:
+                logger.warning(f"⚠️ 检测到旧因子名称 '{factor_name}'，自动映射为 '{new_name}'")
+                logger.warning(f"💡 建议更新模型训练代码使用新因子名称")
+                self.legacy_factors_detected.add(factor_name)
+            return new_name
+        return factor_name
+
+    def validate_factor_names(self, factor_names: List[str]) -> Dict[str, Any]:
+        """
+        验证因子名称列表
+
+        Args:
+            factor_names: 因子名称列表
+
+        Returns:
+            验证结果字典
+        """
+        # 标准化所有名称
+        normalized_names = [self.normalize_factor_name(name) for name in factor_names]
+
+        # 检查标准因子
+        alpha_factors = [name for name in normalized_names if name in STANDARD_15_FACTORS]
+        extra_factors = [name for name in normalized_names
+                        if name not in STANDARD_15_FACTORS + ['Close', 'sentiment_score']]
+        missing_factors = [name for name in STANDARD_15_FACTORS if name not in normalized_names]
+
+        validation = {
+            'total_factors': len(normalized_names),
+            'alpha_factors_count': len(alpha_factors),
+            'alpha_factors': alpha_factors,
+            'extra_factors': extra_factors,
+            'missing_factors': missing_factors,
+            'has_all_required': len(missing_factors) == 0,
+            'legacy_detected': list(self.legacy_factors_detected)
+        }
+
+        # 输出验证日志
+        if validation['has_all_required']:
+            logger.info(f"✅ 所有15个标准Alpha因子都存在")
+        else:
+            logger.warning(f"⚠️ 缺少 {len(missing_factors)} 个标准因子: {missing_factors}")
+
+        if extra_factors:
+            logger.info(f"📊 检测到额外因子: {extra_factors}")
+
+        return validation
     
-    def monitor_factor_computation(self, factor_name: str, factor_data: pd.Series, 
+    def monitor_factor_computation(self, factor_name: str, factor_data: pd.Series,
                                   computation_time: float = None) -> Dict[str, Any]:
         """
         监控单个因子的计算质量
-        
+
         Args:
             factor_name: 因子名称
             factor_data: 因子数据
             computation_time: 计算耗时
-            
+
         Returns:
             质量报告字典
         """
+        # 标准化因子名称（自动映射旧名称）
+        original_name = factor_name
+        factor_name = self.normalize_factor_name(factor_name)
+
         logger.info(f"🔍 [MONITOR] Analyzing {factor_name}...")
-        
+
         quality_report = {
             'factor_name': factor_name,
+            'original_name': original_name if original_name != factor_name else None,
             'timestamp': datetime.now().isoformat(),
             'data_points': len(factor_data),
             'computation_time': computation_time
@@ -705,3 +796,37 @@ factor_monitor = AlphaFactorQualityMonitor()
 def monitor_factor(factor_name: str, factor_data: pd.Series, computation_time: float = None) -> Dict[str, Any]:
     """便捷函数：监控单个因子"""
     return factor_monitor.monitor_factor_computation(factor_name, factor_data, computation_time)
+
+def monitor_all_factors(factors_df: pd.DataFrame, exclude_cols: List[str] = None) -> Dict[str, Any]:
+    """
+    便捷函数：监控DataFrame中的所有因子
+
+    Args:
+        factors_df: 包含多个因子的DataFrame
+        exclude_cols: 要排除的列名列表（如 ['Close', 'date', 'ticker', 'target']）
+
+    Returns:
+        监控汇总报告
+    """
+    if exclude_cols is None:
+        # 动态目标列名兼容（包含常见的T+1/T+5名称）
+        exclude_cols = ['Close', 'date', 'ticker', 'target', 'ret_fwd_1d', 'ret_fwd_2d', 'ret_fwd_3d', 'ret_fwd_5d', 'ret_fwd_10d']
+
+    # 首先验证因子名称
+    factor_cols = [col for col in factors_df.columns if col not in exclude_cols]
+    validation = factor_monitor.validate_factor_names(factor_cols)
+
+    logger.info(f"📊 批量监控 {len(factor_cols)} 个因子...")
+
+    # 逐个监控
+    for col in factor_cols:
+        if col in factors_df.columns:
+            factor_series = factors_df[col].dropna()
+            if len(factor_series) > 0:
+                factor_monitor.monitor_factor_computation(col, factor_series)
+
+    # 返回汇总报告
+    summary = factor_monitor.get_summary_report()
+    summary['validation'] = validation
+
+    return summary

@@ -242,15 +242,6 @@ except ImportError:
         ROBUST_ALIGNMENT_AVAILABLE = None
 import bma_models.ridge_stacker as ridge_stacker
 from bma_models.unified_purged_cv_factory import create_unified_cv
-# Rank-aware Blending方案A组件
-try:
-    from bma_models.lambda_rank_stacker import LambdaRankStacker
-    from bma_models.rank_aware_blender import RankAwareBlender
-    RANK_AWARE_AVAILABLE = True
-    # logger将在后面定义
-except ImportError as e:
-    RANK_AWARE_AVAILABLE = False
-    # logger将在后面定义
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
 from sklearn.exceptions import NotFittedError
@@ -367,11 +358,7 @@ def setup_logger():
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)  # 确保INFO级别消息被记录
 
-# 现在可以安全地记录Rank-aware Blending状态
-if RANK_AWARE_AVAILABLE:
-    logger.info("✅ Rank-aware Blending组件已加载")
-else:
-    logger.warning("⚠️ Rank-aware Blending组件不可用")
+# 已移除Rank-aware Blending组件
 
 # =============================================================================
 # UNIFIED CONFIGURATION SYSTEM - CENTRAL PARAMETER MANAGEMENT
@@ -2816,10 +2803,24 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         self.ridge_stacker = None
         self.use_ridge_stacking = True  # 默认启用 Ridge stacking
 
-        # Initialize Rank-aware Blending组件（方案A）
+        # 移除旧的Rank-aware组件，仅保留Lambda模型引用
         self.lambda_rank_stacker = None
         self.rank_aware_blender = None
-        self.use_rank_aware_blending = RANK_AWARE_AVAILABLE  # 自动检测可用性
+        self.use_rank_aware_blending = False
+
+        # Initialize Kronos model for risk validation
+        self.kronos_model = None
+        # Read from config dict first, fallback to CONFIG YAML
+        if config and 'use_kronos_validation' in config:
+            self.use_kronos_validation = config['use_kronos_validation']
+            logger.info(f"🤖 Kronos验证配置（来自config参数）: {self.use_kronos_validation}")
+        else:
+            # Load from unified_config.yaml strict_mode section
+            yaml_config = CONFIG._load_yaml_config()
+            self.use_kronos_validation = yaml_config.get('strict_mode', {}).get('use_kronos_validation', False)
+            logger.info(f"🤖 Kronos验证配置（来自YAML）: {self.use_kronos_validation}")
+            if not self.use_kronos_validation:
+                logger.info("   💡 提示: 在unified_config.yaml中设置 strict_mode.use_kronos_validation: true 以启用")
 
         self.tickers_cache = None  # Cache for tickers
         self.tickers = None  # Store original tickers
@@ -2861,7 +2862,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # 基础属性初始化
         self.config_path = config_path
         self.config = config or {}  # Initialize config attribute
-        self.horizon = CONFIG.PREDICTION_HORIZON_DAYS  # Initialize horizon attribute
+        # 强制使用T+1预测
+        self.horizon = 1
         # Define safe CV defaults to avoid missing attribute errors
         self._CV_SPLITS = getattr(CONFIG, 'CV_SPLITS', 5)
         self._CV_GAP_DAYS = getattr(CONFIG, 'CV_GAP_DAYS', getattr(CONFIG, 'cv_gap_days', 6))
@@ -3268,22 +3270,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                  dates: pd.Series, tickers: pd.Series,
                                  alpha_factors: pd.DataFrame = None) -> Dict[str, Any]:
         """
-        统一并行训练实现 - 正确的数据流架构
-
-        正确的并行策略：
-        阶段1: [统一第一层训练] → [统一OOF预测]
-        阶段2: 并行不同数据源:
-            - Ridge: 使用第一层OOF预测
-            - LambdaRank: 使用Alpha Factors原始特征
+        简化后的单层训练接口（兼容旧入口）：
+        - 直接调用 _unified_model_training 完成 4模型 + Lambda percentile + Ridge
+        - 不再执行任何“二层并行/再训Lambda”
         """
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         start_time = time.time()
-        logger.info("="*60)
-        logger.info("🔧 统一并行训练引擎启动")
-        logger.info("   修复：数据一致性 + 正确并行策略")
-        logger.info("="*60)
+        logger.info("="*80)
+        logger.info("🚀 单层训练引擎启动（第一层内完成stacking）")
+        logger.info("   架构：统一CV（4模型） + Lambda OOF→Percentile + Ridge Stacking")
+        logger.info("="*80)
 
         # 初始化结果
         result = {
@@ -3296,10 +3294,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         }
 
         try:
-            # 阶段1：统一第一层训练（使用simple17factor + purged CV）
+            # 第一层：统一CV训练（4个模型 + Percentile + Ridge）
             stage1_start = time.time()
-            logger.info("📊 阶段1: 统一第一层训练开始...")
-            logger.info("   使用: simple17factor引擎 + purged CV factory")
+            logger.info("="*80)
+            logger.info("📊 第一层训练开始")
+            logger.info("   模型: ElasticNet + XGBoost + CatBoost + LambdaRank")
+            logger.info("   策略: 统一Purged CV → OOF → Percentile → Ridge")
+            logger.info("="*80)
 
             # 使用统一配置训练第一层
             first_layer_results = self._unified_model_training(X, y, dates, tickers)
@@ -3307,6 +3308,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             if not first_layer_results.get('success'):
                 logger.error("❌ 阶段1失败，终止训练")
                 return result
+
+            # 🔧 关键修复：保存第一层结果供后续使用
+            self.first_layer_result = first_layer_results
+            logger.info("✅ 第一层训练结果已保存到 self.first_layer_result")
 
             unified_oof = first_layer_results['oof_predictions']
             stage1_time = time.time() - stage1_start
@@ -3323,50 +3328,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 'cv_scores': first_layer_results.get('cv_scores', {})
             })
 
-            # 阶段2：第二层stacking（只对前3个模型：ElasticNet + XGBoost + CatBoost）
-            if len(unified_oof) == 0:
-                logger.warning("⚠️ 无OOF预测，跳过二层训练")
-                return result
-
-            stage2_start = time.time()
-            logger.info("🔄 阶段2: 第二层stacking训练开始...")
-            logger.info("   只对前3个模型做stacking（ElasticNet + XGBoost + CatBoost）")
-            logger.info("   LambdaRank保留用于最终融合")
-
-            # 调用简化的第二层训练（只有Ridge）
-            second_layer_results = self._train_stacking_models_modular(
-                first_layer_predictions=unified_oof,
-                y=y,
-                dates=dates,
-                tickers=tickers
-            )
-
-            # LambdaRank从第一层获取
-            lambda_success = 'lambdarank' in first_layer_results.get('models', {})
-            if lambda_success:
-                self.lambda_rank_stacker = first_layer_results['models']['lambdarank']['model']
-
-            result.update({
-                'ridge_success': second_layer_results.get('ridge_success', False),
-                'lambda_success': lambda_success
-            })
-
-            stage2_time = time.time() - stage2_start
+            # 单层：直接从第一层结果设置标记并返回
+            result['ridge_success'] = first_layer_results.get('stacker_trained', False)
+            result['lambda_success'] = 'lambdarank' in first_layer_results.get('models', {})
             total_time = time.time() - start_time
-
-            # 性能报告
-            logger.info("="*60)
-            logger.info("📊 统一并行训练完成报告:")
-            logger.info(f"   阶段1（统一第一层）: {stage1_time:.2f}秒")
-            logger.info(f"   阶段2（并行二层）: {stage2_time:.2f}秒")
+            logger.info("="*80)
+            logger.info("📊 单层训练完成报告:")
+            logger.info(f"   第一层训练（4模型+Percentile+Ridge）: {stage1_time:.2f}秒")
             logger.info(f"   总耗时: {total_time:.2f}秒")
-            logger.info(f"   Ridge成功: {result['ridge_success']}")
-            logger.info(f"   Lambda成功: {result['lambda_success']}")
-            logger.info("="*60)
-
-            # 初始化Blender
-            if result['ridge_success'] and result['lambda_success']:
-                self._init_rank_aware_blender()
+            logger.info(f"   ✅ Ridge Stacker: {'成功' if result['ridge_success'] else '失败'}")
+            logger.info(f"   ✅ LambdaRank: {'成功' if result['lambda_success'] else '失败'}")
+            logger.info(f"   ✅ 训练模型数: {len(result['models'])}")
+            logger.info("="*80)
 
         except Exception as e:
             logger.error(f"❌ 统一并行训练失败: {e}")
@@ -3403,15 +3376,38 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     )
 
             # 添加目标变量
-            stacker_dict['ret_fwd_5d'] = y_indexed
+            # 🔥 FIXED: Use dynamic target column name based on horizon
+            target_col = f'ret_fwd_{self.parent.horizon}d'  # T+1 → 'ret_fwd_1d'
+            stacker_dict[target_col] = y_indexed
             stacker_data = pd.DataFrame(stacker_dict)
 
-            # 数据清理
-            clean_data = stacker_data.dropna()
-            if len(clean_data) < len(stacker_data) * 0.8:
-                logger.warning(f"⚠️ 数据清理后剩余 {len(clean_data)}/{len(stacker_data)} ({len(clean_data)/len(stacker_data)*100:.1f}%)")
+            # 🔥 NEW: 改进数据清理策略 - 使用更宽松的dropna
+            # 原策略: dropna() 删除任何包含NaN的行 → 损失49%样本
+            # 新策略: 只删除目标变量为NaN或大部分特征为NaN的行
 
+            # 1. 必须有目标变量
+            clean_data = stacker_data.dropna(subset=[target_col])
+
+            # 2. 至少要有80%的特征有值（允许少量特征缺失）
+            feature_cols = [col for col in clean_data.columns if col != target_col]
+            min_valid_features = int(len(feature_cols) * 0.8)
+            clean_data = clean_data.dropna(thresh=min_valid_features + 1)  # +1 for target
+
+            # 3. 剩余的NaN用中位数填充
+            if clean_data[feature_cols].isna().any().any():
+                for col in feature_cols:
+                    if clean_data[col].isna().any():
+                        median_val = clean_data[col].median()
+                        clean_data[col].fillna(median_val, inplace=True)
+                        logger.debug(f"   Filled {col} NaN with median: {median_val:.6f}")
+
+            retention_rate = len(clean_data) / len(stacker_data) if len(stacker_data) > 0 else 0
             logger.info(f"📊 统一stacker数据构建完成: {clean_data.shape}")
+            logger.info(f"   样本保留率: {retention_rate*100:.1f}% ({len(clean_data)}/{len(stacker_data)})")
+
+            if len(clean_data) < len(stacker_data) * 0.5:
+                logger.warning(f"⚠️ 数据清理后剩余样本过少: {retention_rate*100:.1f}%")
+
             return clean_data
 
         except Exception as e:
@@ -3446,13 +3442,32 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     logger.error(f"❌ {task_name} 训练失败: {e}")
 
             # LambdaRank现在从第一层获取
-            if 'lambdarank' in self.first_layer_result.get('models', {}):
-                self.lambda_rank_stacker = self.first_layer_result['models']['lambdarank']['model']
-                results['lambda_success'] = True
-                logger.info(f"✅ LambdaRank从第一层获取完成")
-            else:
+            logger.info("🔍 检查第一层Lambda模型可用性...")
+
+            # 安全检查：确保 first_layer_result 存在
+            if not hasattr(self, 'first_layer_result') or self.first_layer_result is None:
+                logger.error("❌ self.first_layer_result 未初始化！第一层训练可能失败")
                 results['lambda_success'] = False
-                logger.warning(f"⚠️ LambdaRank第一层训练失败")
+            elif 'lambdarank' in self.first_layer_result.get('models', {}):
+                try:
+                    lambda_model = self.first_layer_result['models']['lambdarank']['model']
+                    if lambda_model is not None:
+                        self.lambda_rank_stacker = lambda_model
+                        results['lambda_success'] = True
+                        logger.info(f"✅ LambdaRank从第一层获取完成")
+                        logger.info(f"   Lambda模型类型: {type(lambda_model).__name__}")
+                        logger.info(f"   Lambda模型已训练: {getattr(lambda_model, 'fitted_', 'Unknown')}")
+                    else:
+                        logger.error("❌ Lambda模型对象为None")
+                        results['lambda_success'] = False
+                except Exception as e:
+                    logger.error(f"❌ 提取Lambda模型时出错: {e}")
+                    results['lambda_success'] = False
+            else:
+                available_models = list(self.first_layer_result.get('models', {}).keys())
+                logger.warning(f"⚠️ LambdaRank未在第一层训练")
+                logger.warning(f"   可用模型: {available_models}")
+                results['lambda_success'] = False
 
         return results
 
@@ -4899,7 +4914,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # 检查 Ridge stacker 是否已训练
             if not self.use_ridge_stacking or self.ridge_stacker is None:
                 logger.info("Ridge stacker 未启用或未训练，使用基础预测")
-                return self._generate_base_predictions(training_results)
+                return self._generate_base_predictions(training_results, feature_data)
 
             logger.info("🎯 [预测] 生成 Ridge 二层 stacking 预测")
 
@@ -4923,6 +4938,30 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             )
 
             if feature_names:
+                # 🔧 FIX: 因子名称自动映射 - 将旧模型的因子名映射到新名称
+                FACTOR_NAME_MAPPING = {
+                    'momentum_10d': 'momentum_10d_ex1',
+                    'reversal_5d': 'reversal_1d',
+                    'mom_accel_10_5': 'mom_accel_5_2',
+                    'price_efficiency_10d': 'price_efficiency_5d'
+                }
+
+                # 映射旧名称到新名称
+                mapped_feature_names = []
+                renamed_count = 0
+                for old_name in feature_names:
+                    if old_name in FACTOR_NAME_MAPPING:
+                        new_name = FACTOR_NAME_MAPPING[old_name]
+                        mapped_feature_names.append(new_name)
+                        renamed_count += 1
+                        logger.info(f"  🔄 自动映射旧因子: '{old_name}' → '{new_name}'")
+                    else:
+                        mapped_feature_names.append(old_name)
+
+                if renamed_count > 0:
+                    logger.info(f"✅ 自动映射了 {renamed_count} 个旧因子名称")
+                    feature_names = mapped_feature_names
+
                 # 确保所有特征列都存在，缺失的用0填充
                 missing_features = [col for col in feature_names if col not in feature_data.columns]
                 if missing_features:
@@ -4937,10 +4976,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 # 🔧 FIX: 智能检测实际可用的特征，避免强制包含sentiment_score
                 # 定义标准的15个基础因子列（不包含sentiment_score，除非模型确实用了它）
                 base_features = [
-                    'momentum_10d', 'rsi', 'bollinger_squeeze', 'obv_momentum', 'atr_ratio',
-                    'ivol_60d', 'liquidity_factor', 'near_52w_high', 'reversal_5d',
-                    'rel_volume_spike', 'mom_accel_10_5', 'overnight_intraday_gap',
-                    'max_lottery_factor', 'streak_reversal', 'price_efficiency_10d'
+                    'momentum_10d_ex1', 'rsi', 'bollinger_squeeze', 'obv_momentum', 'atr_ratio',
+                    'ivol_60d', 'liquidity_factor', 'near_52w_high', 'reversal_1d',
+                    'rel_volume_spike', 'mom_accel_5_2', 'overnight_intraday_gap',
+                    'max_lottery_factor', 'streak_reversal', 'price_efficiency_5d'
                 ]
 
                 # 检查训练好的模型中任意一个的特征需求来推断训练时特征
@@ -4982,6 +5021,30 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     # 如果无法检测，使用基础15个特征（不包含sentiment_score）
                     expected_features = base_features
                     logger.info(f"⚠️ 使用基础{len(expected_features)}个特征（不包含sentiment_score）")
+
+                # 🔧 FIX: 因子名称自动映射 - 将旧模型的因子名映射到新名称
+                FACTOR_NAME_MAPPING = {
+                    'momentum_10d': 'momentum_10d_ex1',
+                    'reversal_5d': 'reversal_1d',
+                    'mom_accel_10_5': 'mom_accel_5_2',
+                    'price_efficiency_10d': 'price_efficiency_5d'
+                }
+
+                # 映射旧名称到新名称
+                mapped_expected_features = []
+                renamed_count = 0
+                for old_name in expected_features:
+                    if old_name in FACTOR_NAME_MAPPING:
+                        new_name = FACTOR_NAME_MAPPING[old_name]
+                        mapped_expected_features.append(new_name)
+                        renamed_count += 1
+                        logger.info(f"  🔄 自动映射旧因子: '{old_name}' → '{new_name}'")
+                    else:
+                        mapped_expected_features.append(old_name)
+
+                if renamed_count > 0:
+                    logger.info(f"✅ 自动映射了 {renamed_count} 个旧因子名称")
+                    expected_features = mapped_expected_features
                     # 如果sentiment_score存在且有非零值，提示用户重新训练
                     if 'sentiment_score' in feature_data.columns:
                         non_zero_sentiment = (feature_data['sentiment_score'] != 0).sum()
@@ -5158,13 +5221,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
             if len(available_cols) < 2:
                 logger.warning(f"第一层预测不足 ({len(available_cols)}/3)，无法进行 stacking")
-                return self._generate_base_predictions(training_results)
+                return self._generate_base_predictions(training_results, feature_data)
 
             # 使用安全方法构造 Ridge 输入，避免重建索引/截断
             # 使用增强版对齐器进行数据对齐
 
             try:
-
+                from bma_models.enhanced_index_aligner import EnhancedIndexAligner
                 enhanced_aligner = EnhancedIndexAligner(horizon=self.horizon, mode='inference')
 
                 ridge_input, _ = enhanced_aligner.align_first_to_second_layer(
@@ -5233,15 +5296,131 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     logger.info(f"[预测] 智能回退成功，特征顺序: {list(ridge_input.columns)}")
                 else:
                     logger.error(f"[预测] 可用特征过少({len(available_cols)}<2)，无法进行stacking: {first_layer_preds.columns.tolist()}")
-                    return self._generate_base_predictions(training_results)
+                    return self._generate_base_predictions(training_results, feature_data)
+
+            # 🔧 添加Lambda Percentile特征到Ridge输入（新融合策略）
+            # 新架构：Lambda在第二层训练，需要在这里生成预测
+            # 关键修复：检查Ridge是否需要lambda_percentile特征
+            ridge_needs_lambda_percentile = (
+                hasattr(self.ridge_stacker, 'actual_feature_cols_') and
+                self.ridge_stacker.actual_feature_cols_ is not None and
+                'lambda_percentile' in self.ridge_stacker.actual_feature_cols_
+            )
+
+            if ridge_needs_lambda_percentile:
+                logger.info("="*60)
+                logger.info("🔧 [预测] Ridge需要lambda_percentile特征")
+                logger.info("="*60)
+
+                # 🚨 严格检查：Lambda模型必须可用
+                if self.lambda_rank_stacker is None:
+                    error_msg = (
+                        "❌ CRITICAL ERROR: Ridge Stacker需要lambda_percentile特征，但Lambda模型不可用！\n"
+                        "诊断信息：\n"
+                        f"  - self.lambda_rank_stacker: {self.lambda_rank_stacker}\n"
+                        f"  - hasattr(self, 'lambda_rank_stacker'): {hasattr(self, 'lambda_rank_stacker')}\n"
+                        f"  - Ridge实际特征列: {self.ridge_stacker.actual_feature_cols_}\n"
+                        "\n可能原因：\n"
+                        "  1. Lambda模型在训练时失败\n"
+                        "  2. Lambda模型未正确从first_layer_result提取\n"
+                        "  3. first_layer_result未正确保存\n"
+                        "\n解决方案：\n"
+                        "  1. 检查训练日志中的Lambda训练状态\n"
+                        "  2. 确认'✅ LambdaRank从第一层获取完成'出现在日志中\n"
+                        "  3. 重新训练模型\n"
+                    )
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg)
+
+                try:
+                    logger.info("🎯 [预测] 计算Lambda Percentile特征用于Ridge预测")
+                    logger.info(f"   Lambda模型类型: {type(self.lambda_rank_stacker).__name__}")
+                    logger.info(f"   Lambda模型已训练: {getattr(self.lambda_rank_stacker, 'fitted_', 'Unknown')}")
+
+                    # 检查Lambda预测是否已在第一层生成（旧架构）
+                    if 'lambdarank' in raw_predictions:
+                        logger.info("   使用第一层Lambda预测（旧架构）")
+                        lambda_scores = raw_predictions['lambdarank']
+                        lambda_series = pd.Series(lambda_scores, index=ridge_input.index)
+                    else:
+                        # 新架构：在这里生成Lambda预测
+                        logger.info("   生成Lambda预测（新架构）")
+                        logger.info(f"   使用特征数据形状: {feature_data.shape}")
+                        logger.info(f"   Ridge输入索引: {ridge_input.index}")
+
+                        # Lambda使用feature_data（alpha factors）而不是第一层预测
+                        lambda_pred_result = self.lambda_rank_stacker.predict(feature_data)
+
+                        # Extract lambda_score from prediction result
+                        if isinstance(lambda_pred_result, pd.DataFrame):
+                            if 'lambda_score' in lambda_pred_result.columns:
+                                lambda_scores = lambda_pred_result['lambda_score'].values
+                            else:
+                                lambda_scores = lambda_pred_result.iloc[:, 0].values
+                        else:
+                            lambda_scores = np.array(lambda_pred_result).flatten()
+
+                        lambda_series = pd.Series(lambda_scores, index=ridge_input.index)
+                        logger.info(f"   Lambda预测完成: {len(lambda_scores)} 样本")
+                        logger.info(f"   Lambda预测范围: [{lambda_series.min():.4f}, {lambda_series.max():.4f}]")
+
+                    # 🔧 Critical Fix: 使用一致性转换器（如果有）
+                    if hasattr(self, 'lambda_percentile_transformer') and self.lambda_percentile_transformer is not None:
+                        logger.info("   使用训练时的Percentile转换器（保证一致性）")
+                        logger.info(f"   转换器方法: {self.lambda_percentile_transformer.method}")
+                        lambda_percentile = self.lambda_percentile_transformer.transform(lambda_series)
+                    else:
+                        error_msg = (
+                            "❌ CRITICAL ERROR: Lambda Percentile转换器不可用！\n"
+                            "诊断信息：\n"
+                            f"  - hasattr(self, 'lambda_percentile_transformer'): {hasattr(self, 'lambda_percentile_transformer')}\n"
+                            f"  - transformer value: {getattr(self, 'lambda_percentile_transformer', None)}\n"
+                            "\n可能原因：\n"
+                            "  1. 转换器在训练时未正确保存\n"
+                            "  2. 训练时Lambda OOF为空，未创建转换器\n"
+                            "\n解决方案：\n"
+                            "  1. 检查训练日志中'✅ Lambda Percentile转换器已创建并保存'\n"
+                            "  2. 重新训练模型\n"
+                        )
+                        logger.error(error_msg)
+                        raise RuntimeError(error_msg)
+
+                    # 添加到Ridge输入
+                    ridge_input['lambda_percentile'] = lambda_percentile
+
+                    logger.info(f"✅ Lambda Percentile已加入Ridge特征")
+                    logger.info(f"   Percentile范围: [{lambda_percentile.min():.1f}, {lambda_percentile.max():.1f}], 均值={lambda_percentile.mean():.1f}")
+
+                except Exception as e:
+                    error_msg = (
+                        f"❌ CRITICAL ERROR: Lambda Percentile计算失败！\n"
+                        f"错误: {str(e)}\n"
+                        "诊断信息：\n"
+                        f"  - Lambda模型可用: {self.lambda_rank_stacker is not None}\n"
+                        f"  - 转换器可用: {hasattr(self, 'lambda_percentile_transformer') and self.lambda_percentile_transformer is not None}\n"
+                        f"  - Ridge输入形状: {ridge_input.shape}\n"
+                        f"  - Feature data形状: {feature_data.shape}\n"
+                        f"  - Raw predictions keys: {list(raw_predictions.keys()) if raw_predictions else 'None'}\n"
+                        "\n完整错误追踪:\n"
+                    )
+                    import traceback
+                    error_msg += traceback.format_exc()
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg) from e
+
             # 生成Ridge预测
             ridge_scores = self.ridge_stacker.replace_ewa_in_pipeline(ridge_input)
             ridge_predictions = ridge_scores['score']
 
-            # Rank-aware Blending：融合Ridge和LambdaRank预测（方案A）
+            logger.info(f"✅ Ridge预测完成: {len(ridge_predictions)} 样本")
+            logger.info(f"   Ridge包含Lambda Percentile: {'lambda_percentile' in ridge_input.columns}")
+
+            # 新融合策略：Ridge已包含Lambda Percentile，直接使用Ridge作为最终预测
+            # 保留原始融合代码用于兼容性和Excel导出
             if (self.use_rank_aware_blending and
                 self.lambda_rank_stacker is not None and
-                self.rank_aware_blender is not None):
+                self.rank_aware_blender is not None and
+                False):  # 禁用旧的融合逻辑
 
                 try:
                     logger.info("🤝 [预测] 开始Rank-aware融合...")
@@ -5463,7 +5642,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         # 创建门控配置（可从config读取，这里使用温和默认值）
                         gate_config = RankGateConfig(
                             tau_long=0.65,      # 长准入阈值（温和起步）
-                            tau_short=0.35,     # 短准入阈值（温和起步）
+                            tau_short=0.20,     # 短准入阈值（后20%）
                             alpha_long=0.15,    # 长侧增益系数（温和起步）
                             alpha_short=0.15,   # 短侧增益系数（温和起步）
                             min_coverage=0.3,   # 最小覆盖率兜底
@@ -5630,10 +5809,62 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     logger.warning(f"[预测] Rank-aware融合失败，使用Ridge预测: {e}")
                     final_predictions = ridge_predictions
             else:
-                # 仅使用Ridge预测
+                # 新融合策略：Ridge已包含Lambda Percentile，直接使用Ridge预测
                 final_predictions = ridge_predictions
-                logger.info(f"✅ Ridge stacking 预测完成: {len(final_predictions)} 样本")
+                logger.info(f"✅ 最终预测完成 (Ridge + Lambda Percentile): {len(final_predictions)} 样本")
                 logger.info(f"    预测统计: mean={final_predictions.mean():.6f}, std={final_predictions.std():.6f}")
+
+                # 构造Excel导出所需的预测表（每个输入股票一条记录）
+                if isinstance(ridge_predictions.index, pd.MultiIndex):
+                    prediction_base_date = ridge_predictions.index.get_level_values('date').max()
+                    target_date = prediction_base_date + pd.Timedelta(days=1)
+
+                    # 仅保留预测基准日期的截面，并对齐到输入股票列表
+                    try:
+                        tickers_all = list(getattr(self, 'tickers', []))
+                    except Exception:
+                        tickers_all = []
+
+                    pred_latest = ridge_predictions.xs(prediction_base_date, level='date')
+                    if tickers_all:
+                        pred_latest = pred_latest.reindex(tickers_all).fillna(0.0)
+
+                    # Lambda预测表（用于Excel，若可用则同样对齐）
+                    if 'lambdarank' in raw_predictions:
+                        try:
+                            lambda_scores = raw_predictions['lambdarank']
+                            # 构建与ridge相同索引的Series（按最新日对齐）
+                            lambda_series_full = pd.Series(lambda_scores, index=ridge_predictions.index)
+                            lambda_latest = lambda_series_full.xs(prediction_base_date, level='date')
+                            if tickers_all:
+                                lambda_latest = lambda_latest.reindex(tickers_all).fillna(0.0)
+                            lambda_pct_latest = lambda_latest.rank(pct=True)
+                            lambda_sheet = pd.DataFrame({
+                                'date': [target_date] * len(lambda_latest),
+                                'ticker': lambda_latest.index,
+                                'lambda_score': lambda_latest.values,
+                                'lambda_pct': lambda_pct_latest.values
+                            })
+                            self._last_lambda_predictions_df = lambda_sheet
+                        except Exception:
+                            self._last_lambda_predictions_df = None
+
+                    # Ridge预测表（仅最新日，对齐输入股票）
+                    ridge_sheet = pd.DataFrame({
+                        'date': [target_date] * len(pred_latest),
+                        'ticker': pred_latest.index,
+                        'ridge_score': pred_latest.values,
+                        'includes_lambda_percentile': True
+                    })
+                    self._last_ridge_predictions_df = ridge_sheet
+
+                    # Final预测表（等于Ridge，因为已包含Lambda），确保每个股票一条
+                    final_sheet = pd.DataFrame({
+                        'date': [target_date] * len(pred_latest),
+                        'ticker': pred_latest.index,
+                        'final_score': pred_latest.values
+                    })
+                    self._last_final_predictions_df = final_sheet
 
             return final_predictions
 
@@ -5642,10 +5873,29 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             import traceback
             logger.debug(traceback.format_exc())
             # 回退到基础预测
-            return self._generate_base_predictions(training_results)
+            return self._generate_base_predictions(training_results, feature_data)
 
-    def _generate_base_predictions(self, training_results: Dict[str, Any]) -> pd.Series:
+    def _generate_base_predictions(self, training_results: Dict[str, Any], feature_data: Optional[pd.DataFrame] = None) -> pd.Series:
         """生成基础预测结果 - 修复版本"""
+
+        def _ensure_multiindex(series: pd.Series) -> pd.Series:
+            """确保Series有正确的MultiIndex (date, ticker)"""
+            if series is None or len(series) == 0:
+                return series
+
+            # 检查是否已经有正确的MultiIndex
+            if isinstance(series.index, pd.MultiIndex) and 'date' in series.index.names:
+                return series
+
+            # 如果有feature_data且长度匹配，使用其索引
+            if feature_data is not None and len(series) == len(feature_data):
+                logger.info(f"✅ 使用feature_data的MultiIndex重建预测Series")
+                return pd.Series(series.values, index=feature_data.index, name=series.name or 'predictions')
+
+            # 否则返回原Series（将在exporter中处理）
+            logger.warning(f"⚠️ 预测Series没有MultiIndex，长度不匹配feature_data (pred={len(series)}, feature={len(feature_data) if feature_data is not None else 0})")
+            return series
+
         try:
             if not training_results:
                 logger.warning("训练结果为空")
@@ -5662,17 +5912,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 if direct_predictions is not None and hasattr(direct_predictions, '__len__') and len(direct_predictions) > 0:
                     logger.info(f"[OK] 从直接预测源提取: {len(direct_predictions)} 条")
                     if hasattr(direct_predictions, 'index'):
-                        # 验证索引长度匹配
-                        if len(direct_predictions) == len(direct_predictions.index):
-                            return pd.Series(direct_predictions)
-                        else:
-                            logger.warning(f"直接预测索引长度不匹配: values={len(direct_predictions)}, index={len(direct_predictions.index)}")
-                            base_predictions = pd.Series(direct_predictions.values, index=range(len(direct_predictions)), name='predictions')
-                            return base_predictions
+                        return _ensure_multiindex(pd.Series(direct_predictions))
                     else:
-                        # 创建合理的索引
-                        base_predictions = pd.Series(direct_predictions, index=range(len(direct_predictions)), name='predictions')
-                        return base_predictions
+                        return _ensure_multiindex(pd.Series(direct_predictions, name='predictions'))
             
             # 2. 检查是否有有效的训练结果（放宽成功条件）
             success_indicators = [
@@ -5718,29 +5960,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                     logger.info(f"[OK] 从{best_model}模型提取预测，长度: {len(predictions)}")
                                     
                                     # [HOT] CRITICAL FIX: 确保预测结果有正确的索引
-                                    if hasattr(predictions, 'index'):
-                                        # 验证索引长度是否匹配值的长度
-                                        if len(predictions) == len(predictions.index):
-                                            return pd.Series(predictions)
-                                        else:
-                                            logger.warning(f"索引长度不匹配: values={len(predictions)}, index={len(predictions.index)}")
-                                            # 重建索引
-                                            base_predictions = pd.Series(predictions.values, name='ml_predictions')
-                                            return base_predictions
-                                    else:
-                                        # 创建基于预测值长度的索引
-                                        if hasattr(self, 'feature_data') and self.feature_data is not None:
-                                            if 'ticker' in self.feature_data.columns:
-                                                tickers = self.feature_data['ticker'].unique()
-                                                # 确保索引长度与预测值长度一致
-                                                if len(tickers) >= len(predictions):
-                                                    base_predictions = pd.Series(predictions, index=tickers[:len(predictions)], name='ml_predictions')
-                                                    return base_predictions
-                                                else:
-                                                    logger.warning(f"股票数量不足: tickers={len(tickers)}, predictions={len(predictions)}")
-                                        # 使用数值索引，确保长度匹配
-                                        base_predictions = pd.Series(predictions, index=range(len(predictions)), name='ml_predictions')
-                                        return base_predictions
+                                    return _ensure_multiindex(pd.Series(predictions, name='ml_predictions'))
                         
                         # 如果最佳模型失败，尝试其他模型
                         for model_name, model_data in models.items():
@@ -5748,32 +5968,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                 predictions = model_data['predictions']
                                 if hasattr(predictions, '__len__') and len(predictions) > 0:
                                     logger.info(f"[OK] 从备选模型{model_name}提取预测，长度: {len(predictions)}")
-                                    if hasattr(predictions, 'index'):
-                                        # 验证索引长度匹配
-                                        if len(predictions) == len(predictions.index):
-                                            return pd.Series(predictions)
-                                        else:
-                                            logger.warning(f"备选模型索引长度不匹配: {model_name}")
-                                            base_predictions = pd.Series(predictions.values, name=f'{model_name}_predictions')
-                                            return base_predictions
-                                    else:
-                                        base_predictions = pd.Series(predictions, index=range(len(predictions)), name=f'{model_name}_predictions')
-                                        return base_predictions
+                                    return _ensure_multiindex(pd.Series(predictions, name=f'{model_name}_predictions'))
 
                 # 处理非字典类型的数据
                 elif source_data is not None and hasattr(source_data, '__len__') and len(source_data) > 0:
                     logger.info(f"[OK] 从{source_key}直接提取数据，长度: {len(source_data)}")
-                    if hasattr(source_data, 'index'):
-                        # 验证索引长度
-                        if len(source_data) == len(source_data.index):
-                            return pd.Series(source_data)
-                        else:
-                            logger.warning(f"直接数据索引长度不匹配: {source_key}")
-                            base_predictions = pd.Series(source_data.values, index=range(len(source_data)), name=f'{source_key}_data')
-                            return base_predictions
-                    else:
-                        base_predictions = pd.Series(source_data, index=range(len(source_data)), name=f'{source_key}_data')
-                        return base_predictions
+                    return _ensure_multiindex(pd.Series(source_data, name=f'{source_key}_data'))
             
             # 4. 如果所有提取都失败，生成诊断信息
             logger.error("[ERROR] 所有机器学习预测提取失败")
@@ -6003,7 +6203,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.info(f"✅ Strict external target validation passed: {validation_result['summary']}")
 
                 # Use validated external target
-                feature_cols = [col for col in feature_data.columns if col != 'target']
+                # Filter out metadata columns: target, Close (Close is for target calculation only)
+                feature_cols = [col for col in feature_data.columns
+                               if col not in ['target', 'Close']]
                 X = feature_data[feature_cols].copy()
                 y = y_external
 
@@ -6038,9 +6240,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             if missing_cols:
                 raise ValueError(f"Missing required columns: {missing_cols}")
                 
-            # Extract feature columns (everything except date, ticker, target)
-            feature_cols = [col for col in feature_data.columns 
-                           if col not in ['date', 'ticker', 'target']]
+            # Extract feature columns (everything except date, ticker, target, Close)
+            # Close is only used for target calculation, not as a feature
+            feature_cols = [col for col in feature_data.columns
+                           if col not in ['date', 'ticker', 'target', 'Close']]
             
             if len(feature_cols) == 0:
                 raise ValueError("No feature columns found")
@@ -7071,9 +7274,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                 logger.info("🔍 开始17因子质量监控...")
                                 quality_reports = []
 
-                                # Monitor each of the 17 factors
+                                # Monitor each of the 15 alpha factors (skip metadata columns)
                                 for col in feature_data.columns:
-                                    if col not in ['date', 'ticker', 'target']:  # Skip non-factor columns
+                                    if col not in ['date', 'ticker', 'target', 'Close']:  # Skip non-factor columns
                                         factor_series = feature_data[col].dropna()
                                         if len(factor_series) > 0:
                                             quality_report = self.factor_quality_monitor.monitor_factor_computation(
@@ -7098,8 +7301,28 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                         # OPTIMIZED: 17因子引擎的输出已经是最终格式，无需额外标准化
 
+                        # === 清理旧因子名（避免常数列问题）===
+                        OLD_FACTOR_NAMES = ['momentum_10d', 'reversal_5d', 'mom_accel_10_5', 'price_efficiency_10d']
+                        removed_old_factors = []
+                        for old_col in OLD_FACTOR_NAMES:
+                            if old_col in feature_data.columns:
+                                feature_data = feature_data.drop(columns=[old_col])
+                                removed_old_factors.append(old_col)
+
+                        if removed_old_factors:
+                            logger.warning(f"🧹 已删除旧因子名（全0常数列）: {removed_old_factors}")
+                            logger.info("   这些因子已被重命名，新名称应该存在于数据中")
+                            logger.info("   momentum_10d → momentum_10d_ex1")
+                            logger.info("   reversal_5d → reversal_1d")
+                            logger.info("   mom_accel_10_5 → mom_accel_5_2")
+                            logger.info("   price_efficiency_10d → price_efficiency_5d")
+
                         # === 关键修复：验证并修复特征数据，防止常数预测问题 ===
                         feature_data = self.validate_and_fix_feature_data(feature_data)
+
+                        # 训练时不添加市值数据，保持全量训练
+                        # 市值过滤仅在预测输出时应用（见_finalize_analysis_results）
+                        logger.info("💰 训练模式: 使用全量数据，不应用市值过滤")
 
                         return feature_data
                     
@@ -7254,6 +7477,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     # 其他用横截面中位数填充
                     else:
                         if isinstance(feature_data.index, pd.MultiIndex) and 'date' in feature_data.index.names:
+                            # 🔧 关键修复：transform已经保持索引对齐，直接赋值
                             feature_data[col] = feature_data.groupby(level='date')[col].transform(
                                 lambda x: x.fillna(x.median()) if not x.isna().all() else x.fillna(0))
                         else:
@@ -7266,7 +7490,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.warning(f"仍有 {remaining_nan} 个NaN值，用横截面中位数最终填充")
             # 最终填充：按日横截面中位数
             if isinstance(feature_data.index, pd.MultiIndex) and 'date' in feature_data.index.names:
-                feature_data = feature_data.groupby(level='date').transform(
+                # 🔧 关键修复：逐列填充而不是整个DataFrame transform
+                # transform()对单列操作会保持索引，对DataFrame操作可能丢失索引名称
+                for col in feature_data.columns:
+                    if col in ['date', 'ticker', 'target', 'ret_fwd_5d']:
+                        continue
+                    if feature_data[col].isna().any():
+                        feature_data[col] = feature_data.groupby(level='date')[col].transform(
                     lambda x: x.fillna(x.median()) if not x.isna().all() else x.fillna(0))
             else:
                 # 使用全体中位数兜底
@@ -7860,11 +8090,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         self._validate_temporal_consistency(X_selected, y_clean, dates_clean, "pre-training")
 
         # 使用统一数据源的正确并行策略
-        use_unified_parallel = (
-            self.use_rank_aware_blending and
-            RANK_AWARE_AVAILABLE and
-            getattr(self, 'enable_parallel_training', True)
-        )
+        use_unified_parallel = getattr(self, 'enable_parallel_training', True)
 
         if use_unified_parallel:
             logger.info("🚀 使用统一并行训练架构 v3.0")
@@ -7882,6 +8108,49 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             training_results['traditional_models'] = self._unified_model_training(
                 X_selected, y_clean, dates_clean, tickers_clean
             )
+
+        # 🔧 关键修复：从训练结果中提取Lambda模型（如果还未提取）
+        if not hasattr(self, 'lambda_rank_stacker') or self.lambda_rank_stacker is None:
+            logger.info("🔍 尝试从训练结果提取Lambda模型...")
+            try:
+                trad_models = training_results.get('traditional_models', {})
+                if isinstance(trad_models, dict) and 'models' in trad_models:
+                    if 'lambdarank' in trad_models['models']:
+                        lambda_data = trad_models['models']['lambdarank']
+                        if isinstance(lambda_data, dict) and 'model' in lambda_data:
+                            self.lambda_rank_stacker = lambda_data['model']
+                            logger.info("✅ Lambda模型已从training_results提取")
+                            logger.info(f"   模型类型: {type(self.lambda_rank_stacker).__name__}")
+            except Exception as e:
+                logger.warning(f"⚠️ 提取Lambda模型失败: {e}")
+
+        # 自动保存模型快照（独立文件夹）
+        try:
+            from bma_models.model_registry import save_model_snapshot
+            snapshot_tag = f"auto_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
+            # 兼容快照导出需要的键：如果缺少'traditional_models'或其内部'models'，提供空默认
+            snapshot_payload = dict(training_results)
+            if 'traditional_models' not in snapshot_payload:
+                snapshot_payload['traditional_models'] = {}
+            if isinstance(snapshot_payload['traditional_models'], dict) and 'models' not in snapshot_payload['traditional_models']:
+                snapshot_payload['traditional_models']['models'] = {}
+            snapshot_id = save_model_snapshot(
+                training_results=snapshot_payload,
+                ridge_stacker=self.ridge_stacker,
+                lambda_rank_stacker=self.lambda_rank_stacker if hasattr(self, 'lambda_rank_stacker') else None,
+                rank_aware_blender=None,
+                lambda_percentile_transformer=getattr(self, 'lambda_percentile_transformer', None),
+                tag=snapshot_tag,
+            )
+            logger.info(f"[SNAPSHOT] 已自动保存模型快照: {snapshot_tag}")
+            # 设置活动快照ID供仅预测模式使用
+            try:
+                self.active_snapshot_id = snapshot_id
+                logger.info(f"[SNAPSHOT] active_snapshot_id 设置为: {self.active_snapshot_id}")
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"[SNAPSHOT] 自动保存模型快照失败: {e}")
 
         # Mark as successful (first layer complete)
         training_results['success'] = True
@@ -7919,6 +8188,301 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         logger.info(f"🎯 [FACTOR MODE] FORCING ALL {X.shape[1]} FEATURES - NO SELECTION")
         logger.info(f"✅ [FACTOR MODE] Using all available alpha factors without filtering")
         return X
+
+    # ========== Inference without retraining: load snapshot models ==========
+    def predict_with_snapshot(self, feature_data: pd.DataFrame, snapshot_id: str | None = None,
+                              tickers_file: str | None = None, universe_tickers: list[str] | None = None) -> Dict[str, Any]:
+        """
+        使用已保存快照进行推理（不重训练）：
+        - 还原一层模型，生成第一层预测
+        - 还原RidgeStacker与LambdaRankStacker，做融合
+        - 应用Kronos T+3筛选
+        - 接入股票池管理系统：支持通过 tickers_file 或 universe_tickers 指定股票池
+        """
+        from typing import List
+        results: Dict[str, Any] = {'success': False}
+
+        try:
+            from bma_models.model_registry import load_manifest
+            import joblib
+            import json
+            import lightgbm as lgb
+            try:
+                from xgboost import XGBRegressor
+            except Exception:
+                XGBRegressor = None
+            try:
+                from catboost import CatBoostRegressor
+            except Exception:
+                CatBoostRegressor = None
+            from bma_models.ridge_stacker import RidgeStacker
+
+            # 默认使用活动快照或数据库最新
+            effective_snapshot_id = snapshot_id or getattr(self, 'active_snapshot_id', None)
+            manifest = load_manifest(effective_snapshot_id)
+            paths = manifest.get('paths', {}) or {}
+            feature_names = manifest.get('feature_names') or []
+            logger.info(f"[SNAPSHOT] 加载快照: {manifest.get('snapshot_id')}")
+
+            # 仅预测模式：允许没有target/Close。构造最小标准格式（MultiIndex + 数值因子）
+            try:
+                X, y, dates, tickers = self._prepare_standard_data_format(feature_data)
+            except Exception:
+                # Fallback：直接使用传入因子作为X，构造MultiIndex索引
+                df = feature_data.copy()
+                if not isinstance(df.index, pd.MultiIndex):
+                    # 尝试用提供的列或生成占位索引
+                    date_col = 'date' if 'date' in df.columns else None
+                    ticker_col = 'ticker' if 'ticker' in df.columns else None
+                    if date_col and ticker_col:
+                        idx = pd.MultiIndex.from_arrays(
+                            [pd.to_datetime(df[date_col]).dt.tz_localize(None).dt.normalize(),
+                             df[ticker_col].astype(str).str.strip()],
+                            names=['date','ticker']
+                        )
+                        df = df.drop(columns=[c for c in ['date','ticker'] if c in df.columns])
+                    else:
+                        n = len(df)
+                        idx = pd.MultiIndex.from_arrays([
+                            pd.to_datetime(pd.Series([pd.Timestamp.today().normalize()]*n)),
+                            pd.Series([f'S{i:03d}' for i in range(n)])
+                        ], names=['date','ticker'])
+                    df.index = idx
+                # 仅保留数值列
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                if not numeric_cols:
+                    raise ValueError("仅预测模式需要数值型因子列")
+                X = df[numeric_cols].copy()
+                y = pd.Series(index=X.index, dtype=float)
+                dates = pd.Series(X.index.get_level_values('date'), index=X.index)
+                tickers = pd.Series(X.index.get_level_values('ticker'), index=X.index)
+            X_df = X.copy()
+            if feature_names:
+                missing = [c for c in feature_names if c not in X_df.columns]
+                for c in missing:
+                    X_df[c] = 0.0
+                X_df = X_df[feature_names].copy()
+
+            # 第一层预测
+            first_layer_preds = pd.DataFrame(index=X_df.index)
+
+            # ElasticNet
+            try:
+                if paths.get('elastic_net_pkl') and os.path.isfile(paths['elastic_net_pkl']):
+                    enet = joblib.load(paths['elastic_net_pkl'])
+                    pred = enet.predict(X_df.values)
+                    first_layer_preds['pred_elastic'] = pred
+            except Exception as e:
+                logger.warning(f"[SNAPSHOT] ElasticNet预测失败: {e}")
+
+            # XGBoost
+            try:
+                if XGBRegressor is not None and paths.get('xgb_json') and os.path.isfile(paths['xgb_json']):
+                    xgb_model = XGBRegressor()
+                    xgb_model.load_model(paths['xgb_json'])
+                    pred = xgb_model.predict(X_df.values)
+                    first_layer_preds['pred_xgb'] = pred
+            except Exception as e:
+                logger.warning(f"[SNAPSHOT] XGBoost预测失败: {e}")
+
+            # CatBoost
+            try:
+                if CatBoostRegressor is not None and paths.get('catboost_cbm') and os.path.isfile(paths['catboost_cbm']):
+                    cat_model = CatBoostRegressor()
+                    cat_model.load_model(paths['catboost_cbm'])
+                    pred = cat_model.predict(X_df.values)
+                    first_layer_preds['pred_catboost'] = pred
+            except Exception as e:
+                logger.warning(f"[SNAPSHOT] CatBoost预测失败: {e}")
+
+            # 还原RidgeStacker
+            ridge_meta = {}
+            try:
+                if paths.get('ridge_meta_json') and os.path.isfile(paths['ridge_meta_json']):
+                    with open(paths['ridge_meta_json'], 'r', encoding='utf-8') as f:
+                        ridge_meta = json.load(f)
+            except Exception:
+                ridge_meta = {}
+
+            ridge_base_cols = tuple(ridge_meta.get('base_cols') or ('pred_catboost', 'pred_elastic', 'pred_xgb'))
+            ridge_actual_cols = ridge_meta.get('actual_feature_cols') or list(ridge_base_cols)
+            ridge_stacker = RidgeStacker(base_cols=ridge_base_cols)
+            try:
+                if paths.get('ridge_model_pkl') and os.path.isfile(paths['ridge_model_pkl']):
+                    ridge_stacker.ridge_model = joblib.load(paths['ridge_model_pkl'])
+                if paths.get('ridge_scaler_pkl') and os.path.isfile(paths['ridge_scaler_pkl']):
+                    ridge_stacker.scaler = joblib.load(paths['ridge_scaler_pkl'])
+                ridge_stacker.feature_names_ = list(ridge_base_cols)
+                try:
+                    # 初始化训练时保存的实际特征列（可能包含 lambda_percentile）
+                    ridge_stacker.actual_feature_cols_ = list(ridge_actual_cols)
+                except Exception:
+                    ridge_stacker.actual_feature_cols_ = list(ridge_base_cols)
+                ridge_stacker.fitted_ = True
+            except Exception as e:
+                logger.warning(f"[SNAPSHOT] 加载RidgeStacker失败: {e}")
+
+            ridge_input = first_layer_preds.copy()
+            for col in ridge_base_cols:
+                if col not in ridge_input.columns:
+                    ridge_input[col] = 0.0
+            # 预先按base_cols排序
+            ridge_input = ridge_input[list(ridge_base_cols)].copy()
+
+            # 将索引设为MultiIndex以匹配stacker接口
+            if not isinstance(ridge_input.index, pd.MultiIndex) and isinstance(dates, pd.Series) and isinstance(tickers, pd.Series):
+                ridge_input.index = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
+
+            # 还原LambdaRank（可选）
+            lambda_predictions = None
+            lambda_percentile_series = None
+            try:
+                if paths.get('lambdarank_txt') and os.path.isfile(paths['lambdarank_txt']):
+                    ltr_meta = {}
+                    if paths.get('lambdarank_meta_json') and os.path.isfile(paths['lambdarank_meta_json']):
+                        with open(paths['lambdarank_meta_json'], 'r', encoding='utf-8') as f:
+                            ltr_meta = json.load(f)
+                    ltr_cols = ltr_meta.get('base_cols') or feature_names or list(X_df.columns)
+                    X_ltr = X.copy()
+                    missing_ltr = [c for c in ltr_cols if c not in X_ltr.columns]
+                    for c in missing_ltr:
+                        X_ltr[c] = 0.0
+                    X_ltr = X_ltr[ltr_cols].copy()
+
+                    scaler = None
+                    if paths.get('lambdarank_scaler_pkl') and os.path.isfile(paths['lambdarank_scaler_pkl']):
+                        scaler = joblib.load(paths['lambdarank_scaler_pkl'])
+                        X_ltr_vals = scaler.transform(X_ltr.values)
+                    else:
+                        X_ltr_vals = X_ltr.values
+
+                    booster = lgb.Booster(model_file=paths['lambdarank_txt'])
+                    raw_pred = booster.predict(X_ltr_vals)
+                    lambda_scores = pd.Series(raw_pred, index=X_ltr.index)
+                    lambda_df = pd.DataFrame({'lambda_score': lambda_scores})
+                    # 优先使用训练期保存的Lambda Percentile转换器
+                    try:
+                        if paths.get('lambda_percentile_meta_json') and os.path.isfile(paths['lambda_percentile_meta_json']):
+                            from bma_models.lambda_percentile_transformer import LambdaPercentileTransformer
+                            with open(paths['lambda_percentile_meta_json'], 'r', encoding='utf-8') as f:
+                                lpt_meta = json.load(f)
+                            lpt = LambdaPercentileTransformer(method=lpt_meta.get('method', 'quantile'))
+                            # 还原参数
+                            lpt.oof_mean_ = float(lpt_meta.get('oof_mean', 0.0))
+                            lpt.oof_std_ = float(lpt_meta.get('oof_std', 1.0))
+                            oof_q = lpt_meta.get('oof_quantiles', []) or []
+                            lpt.oof_quantiles_ = np.array(oof_q, dtype=float)
+                            lpt.fitted_ = True
+                            lambda_percentile_series = lpt.transform(lambda_scores)
+                        else:
+                            # 禁止任何fallback：若缺少transformer参数则报错
+                            raise RuntimeError("Missing lambda_percentile_meta; abort prediction")
+                    except Exception:
+                        # 回退：按日rank成百分位
+                        lambda_percentile_series = lambda_df.groupby(level='date')['lambda_score'].rank(pct=True) * 100
+
+                    # 组装预测输出
+                    if isinstance(lambda_percentile_series, pd.Series):
+                        lambda_df['lambda_pct'] = lambda_percentile_series
+                    else:
+                        lambda_df['lambda_pct'] = lambda_df.groupby(level='date')['lambda_score'].rank(pct=True)
+                    lambda_predictions = lambda_df
+            except Exception as e:
+                logger.error(f"[SNAPSHOT] LambdaRank预测失败: {e}")
+                raise
+
+            # 若训练时Ridge包含lambda_percentile，则在预测前补齐该列
+            try:
+                if hasattr(ridge_stacker, 'actual_feature_cols_') and 'lambda_percentile' in ridge_stacker.actual_feature_cols_:
+                    if lambda_percentile_series is None and lambda_predictions is not None and 'lambda_pct' in lambda_predictions.columns:
+                        # 使用lambda_df中的百分位
+                        lambda_percentile_series = lambda_predictions['lambda_pct'] * 1.0
+                    if lambda_percentile_series is None:
+                        raise RuntimeError("lambda_percentile missing; abort prediction")
+                    ridge_input['lambda_percentile'] = lambda_percentile_series.reindex(ridge_input.index)
+            except Exception:
+                pass
+
+            # 现在进行Ridge预测
+            ridge_predictions_df = ridge_stacker.predict(ridge_input)
+
+            # 最终结果直接使用Ridge（已包含lambda_percentile）
+            final_df = ridge_predictions_df.rename(columns={'score': 'blended_score'})
+
+            # 若训练时Ridge包含lambda_percentile，则在预测时补齐该列
+            try:
+                if hasattr(ridge_stacker, 'actual_feature_cols_') and 'lambda_percentile' in ridge_stacker.actual_feature_cols_:
+                    if lambda_percentile_series is None and lambda_predictions is not None and 'lambda_pct' in lambda_predictions.columns:
+                        # 使用lambda_df中的百分位
+                        lambda_percentile_series = lambda_predictions['lambda_pct'] * 1.0
+                    if lambda_percentile_series is None:
+                        # 最后兜底：用50常数保证列存在
+                        lambda_percentile_series = pd.Series(50.0, index=ridge_input.index, name='lambda_percentile')
+                    # 写入Ridge输入用于一致性（便于调试导出）
+                    ridge_input['lambda_percentile'] = lambda_percentile_series.reindex(ridge_input.index)
+            except Exception:
+                pass
+
+            # 生成推荐列表
+            pred_series = final_df['blended_score'] if 'blended_score' in final_df.columns else final_df.iloc[:, 0]
+            pred_df = pd.DataFrame({'ticker': pred_series.index.get_level_values('ticker'), 'score': pred_series.values})
+            pred_df = pred_df.sort_values('score', ascending=False)
+
+            analysis_results: Dict[str, Any] = {'start_time': pd.Timestamp.now()}
+            analysis_results['predictions'] = pred_series
+            analysis_results['feature_data'] = feature_data
+
+            # Kronos T+3过滤（Top 35）
+            kronos_filter_df = None
+            try:
+                if not hasattr(self, 'use_kronos_validation'):
+                    self.use_kronos_validation = True
+                if self.use_kronos_validation:
+                    if self.kronos_model is None:
+                        try:
+                            from kronos.kronos_service import KronosService
+                            self.kronos_model = KronosService()
+                            self.kronos_model.initialize(model_size="base")
+                        except Exception:
+                            self.kronos_model = None
+                            self.use_kronos_validation = False
+
+                if self.kronos_model is not None and self.use_kronos_validation:
+                    top_35 = pred_df.head(min(35, len(pred_df))).copy()
+                    kronos_results: List[Dict[str, Any]] = []
+                    for i, row in top_35.iterrows():
+                        symbol = row['ticker']
+                        try:
+                            res = self.kronos_model.predict_stock(symbol=symbol, period="1y", interval="1d", pred_len=3, model_size="base", temperature=0.1)
+                            if res['status'] == 'success':
+                                hist = res['historical_data']
+                                cur_px = hist['close'].iloc[-1]
+                                t3_px = res['predictions']['close'].iloc[2] if 'close' in res['predictions'].columns else res['predictions'].iloc[2, 3]
+                                t3_ret = (t3_px - cur_px) / cur_px
+                                kronos_results.append({'ticker': symbol, 'bma_score': row['score'], 't3_return_pct': t3_ret * 100.0, 'kronos_pass': 'Y' if t3_ret > 0 else 'N'})
+                            else:
+                                kronos_results.append({'ticker': symbol, 'bma_score': row['score'], 't3_return_pct': None, 'kronos_pass': 'N'})
+                        except Exception:
+                            kronos_results.append({'ticker': symbol, 'bma_score': row['score'], 't3_return_pct': None, 'kronos_pass': 'N'})
+                            continue
+                    if kronos_results:
+                        kronos_filter_df = pd.DataFrame(kronos_results)
+                analysis_results['kronos_top35'] = kronos_filter_df
+            except Exception as e:
+                logger.warning(f"[SNAPSHOT] Kronos过滤失败: {e}")
+                analysis_results['kronos_top35'] = None
+
+            # 汇总
+            analysis_results['recommendations'] = pred_df.head(min(20, len(pred_df))).to_dict('records')
+            analysis_results['end_time'] = pd.Timestamp.now()
+            analysis_results['execution_time'] = (analysis_results['end_time'] - analysis_results['start_time']).total_seconds()
+            results.update({'success': True, **analysis_results, 'snapshot_used': manifest.get('snapshot_id')})
+            return results
+
+        except Exception as e:
+            logger.error(f"[SNAPSHOT] 预测失败: {e}")
+            results['error'] = str(e)
+            return results
     
     def _ensure_two_level_index(
         self,
@@ -7987,14 +8551,16 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.warning(f"_ensure_two_level_index failed, keep original index: {e}")
             return df
     
-    def _train_ridge_stacker(self, oof_predictions: Dict[str, pd.Series], y: pd.Series, dates: pd.Series) -> bool:
+    def _train_ridge_stacker(self, oof_predictions: Dict[str, pd.Series], y: pd.Series, dates: pd.Series, ridge_data: Optional[pd.DataFrame] = None, lambda_percentile_series: Optional[pd.Series] = None) -> bool:
         """
-        训练 Ridge 二层 Stacker - 集成时间对齐修复
+        训练 Ridge 二层 Stacker - 集成时间对齐修复 + Lambda Percentile特征
 
         Args:
-            oof_predictions: 第一层模型的 OOF 预测
+            oof_predictions: 第一层模型的 OOF 预测（包含 elastic_net, xgboost, catboost, lambdarank）
             y: 目标变量
             dates: 日期索引
+            ridge_data: 预构建的Ridge数据（包含lambda_percentile）- 第二层调用时使用
+            lambda_percentile_series: Lambda OOF 的 percentile 转换（第一层调用时使用）
 
         Returns:
             是否训练成功
@@ -8008,24 +8574,46 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.info("🚀 [二层] 开始训练 Ridge Stacker (时间对齐优化版，无CV全量训练)")
             logger.info(f"[二层] 输入验证 - OOF预测数量: {len(oof_predictions)}")
 
+            # 🔧 关键修复：排除 lambda 原始 OOF，只使用 lambda_percentile
+            # 原因：lambda原始输出 scale 不匹配，percentile 已经是归一化的排名信号
+            oof_for_ridge = {k: v for k, v in oof_predictions.items() if k != 'lambdarank'}
+
+            if 'lambdarank' in oof_predictions:
+                logger.info("=" * 80)
+                logger.info("[二层] ⚠️ 排除 lambda 原始 OOF（将使用 lambda_percentile 替代）")
+                logger.info(f"   原始 OOF 包含: {list(oof_predictions.keys())}")
+                logger.info(f"   Ridge 实际使用: {list(oof_for_ridge.keys())} + lambda_percentile")
+                logger.info("=" * 80)
+
             # 应用时间对齐工具验证（内置实现）
             TIME_ALIGNMENT_AVAILABLE = True
             logger.info("✅ [二层] 使用内置时间对齐工具")
 
-            # 验证输入数据
-            if not oof_predictions:
+            # 验证输入数据（使用过滤后的OOF）
+            if not oof_for_ridge:
                 raise ValueError("OOF预测为空，无法训练二层模型")
 
             expected_models = {'elastic_net', 'xgboost', 'catboost'}
-            available_models = set(oof_predictions.keys())
+            available_models = set(oof_for_ridge.keys())
             logger.info(f"[二层] 可用模型: {available_models}")
 
             if not expected_models.issubset(available_models):
                 missing = expected_models - available_models
                 logger.warning(f"[二层] 缺少预期模型: {missing}")
 
+            # 如果提供了预构建的ridge_data（包含lambda_percentile），直接使用
+            if ridge_data is not None:
+                logger.info(f"✅ [二层] 使用预构建Ridge数据 (包含Lambda Percentile特征)")
+                logger.info(f"   数据形状: {ridge_data.shape}")
+                logger.info(f"   特征列: {list(ridge_data.columns)}")
+                stacker_data = ridge_data
+                robust_alignment_successful = True  # 跳过后续对齐逻辑
+            else:
+                logger.info("[二层] 未提供ridge_data，执行标准对齐流程")
+                robust_alignment_successful = False
+
             # 使用安全方法基于MultiIndex严格对齐并构造二层训练数据
-            first_pred = next(iter(oof_predictions.values()))
+            first_pred = next(iter(oof_for_ridge.values()))
             logger.info(f"[二层] 第一个预测形状: {getattr(first_pred, 'shape', len(first_pred))}")
             logger.info(f"[二层] 第一个预测索引类型: {type(first_pred.index)}")
 
@@ -8043,8 +8631,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         min_samples=100          # 最小样本要求
                     )
 
-                    # 执行数据对齐
-                    stacker_data, alignment_report = alignment_engine.align_data(oof_predictions, y)
+                    # 执行数据对齐（使用过滤后的OOF，不包含lambda原始）
+                    stacker_data, alignment_report = alignment_engine.align_data(oof_for_ridge, y)
 
                     logger.info(f"[二层] ✅ 健壮对齐成功: {alignment_report['method']}")
                     logger.info(f"[二层] 样本数: {len(stacker_data)}, 自动修复: {len(alignment_report.get('auto_fixes_applied', []))}")
@@ -8060,7 +8648,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                     enhanced_aligner = EnhancedIndexAligner(horizon=self.horizon, mode='train')
                     stacker_data, alignment_report = enhanced_aligner.align_first_to_second_layer(
-                        first_layer_preds=oof_predictions,
+                        first_layer_preds=oof_for_ridge,  # 使用过滤后的OOF
                         y=y,
                         dates=dates
                     )
@@ -8073,16 +8661,16 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     # 基础回退：手动构建stacker_data
                     required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb']
 
-                    # 获取第一个预测作为基准索引
-                    first_pred = next(iter(oof_predictions.values()))
+                    # 获取第一个预测作为基准索引（使用过滤后的OOF）
+                    first_pred = next(iter(oof_for_ridge.values()))
                     base_index = first_pred.index
 
                     # 构建DataFrame
                     stacker_data = pd.DataFrame(index=base_index)
 
                     for col in required_cols:
-                        if col in oof_predictions:
-                            stacker_data[col] = oof_predictions[col]
+                        if col in oof_for_ridge:
+                            stacker_data[col] = oof_for_ridge[col]
                         else:
                             logger.warning(f"[二层] 缺失特征 {col}")
 
@@ -8091,12 +8679,15 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.info(f"[二层] 二层训练输入就绪: {stacker_data.shape}, 索引={stacker_data.index.names}")
 
             # 验证目标变量处理（健壮对齐引擎已处理目标变量对齐）
-            if ROBUST_ALIGNMENT_AVAILABLE and 'ret_fwd_5d' in stacker_data.columns:
+            # 动态目标列名
+            horizon_days = getattr(self, 'horizon', 1)
+            target_col = f'ret_fwd_{horizon_days}d'
+            if ROBUST_ALIGNMENT_AVAILABLE and target_col in stacker_data.columns:
                 # 健壮对齐引擎已经处理了目标变量
                 logger.info("✅ [二层] 目标变量已通过健壮对齐引擎处理")
 
                 # 验证目标变量质量
-                target_values = stacker_data['ret_fwd_5d']
+                target_values = stacker_data[target_col]
                 nan_count = target_values.isna().sum()
                 if nan_count > 0:
                     logger.warning(f"[二层] 目标变量包含 {nan_count} 个NaN值")
@@ -8136,7 +8727,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                 except Exception as e:
                                     logger.warning(f"[二层] 无法计算目标变量统计: {e}")
 
-                        stacker_data['ret_fwd_5d'] = target_values
+                        stacker_data[target_col] = target_values
                         logger.info("✅ [二层] 目标变量添加成功")
                     else:
                         logger.error(f"[二层] 目标变量长度不匹配: y={len(y)}, stacker_data={len(stacker_data)}")
@@ -8147,7 +8738,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                             logger.info(f"[二层] 尝试截断到最小长度: {min_len}")
                             stacker_data = stacker_data.iloc[:min_len]
                             target_values = y.values[:min_len] if hasattr(y, 'values') else y[:min_len]
-                            stacker_data['ret_fwd_5d'] = target_values
+                            stacker_data[target_col] = target_values
                             logger.info("✅ [二层] 截断后目标变量添加成功")
                         else:
                             logger.error("[二层] 无法截断：最小长度为0，使用虚拟目标")
@@ -8169,6 +8760,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 'solver': "auto",
                 'tol': 1e-6,
                 'auto_tune_alpha': False,  # 禁用调参
+                'use_lambda_percentile': True,  # 🔧 CRITICAL: Enable Lambda Percentile feature
                 'random_state': 42
             }
             logger.info("[二层] 🔧 使用固定Ridge参数（α=1.0，禁用网格搜索）")
@@ -8200,6 +8792,37 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         logger.warning("[二层] stacker_data 索引不是MultiIndex，Ridge训练可能失败")
                 except Exception as e:
                     logger.debug(f"索引规范化失败: {e}")
+
+            # 🔧 添加 Lambda Percentile 特征（如果有）
+            if lambda_percentile_series is not None:
+                logger.info("=" * 80)
+                logger.info("[二层] ✅ 添加 Lambda Percentile 特征到 Ridge 数据")
+                logger.info("=" * 80)
+                logger.info(f"   stacker_data原始特征: {list(stacker_data.columns)}")
+                logger.info(f"   stacker_data形状: {stacker_data.shape}")
+                logger.info(f"   lambda_percentile形状: {lambda_percentile_series.shape if hasattr(lambda_percentile_series, 'shape') else len(lambda_percentile_series)}")
+
+                # 对齐索引
+                if not stacker_data.index.equals(lambda_percentile_series.index):
+                    logger.info("   对齐 lambda_percentile 索引到 stacker_data")
+                    lambda_percentile_aligned = lambda_percentile_series.reindex(stacker_data.index)
+
+                    nan_count = lambda_percentile_aligned.isna().sum()
+                    if nan_count > 0:
+                        logger.warning(f"   对齐后产生 {nan_count} 个NaN ({nan_count/len(stacker_data)*100:.2f}%)，填充为50.0")
+                        lambda_percentile_aligned = lambda_percentile_aligned.fillna(50.0)
+                else:
+                    logger.info("   lambda_percentile 索引已对齐")
+                    lambda_percentile_aligned = lambda_percentile_series
+
+                # 添加到 stacker_data
+                stacker_data['lambda_percentile'] = lambda_percentile_aligned
+
+                logger.info(f"✅ Lambda Percentile已加入Ridge数据")
+                logger.info(f"   stacker_data新特征: {list(stacker_data.columns)}")
+                logger.info(f"   最终形状: {stacker_data.shape}")
+                logger.info(f"   Percentile统计: 均值={lambda_percentile_aligned.mean():.1f}, 范围=[{lambda_percentile_aligned.min():.1f}, {lambda_percentile_aligned.max():.1f}]")
+                logger.info("=" * 80)
 
             # Debug stacker_data before fitting
             logger.info(f"[DEBUG] stacker_data before Ridge fit:")
@@ -8342,24 +8965,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.warning(f"Removing {len(constant_features)} constant features")
             X = X.drop(columns=constant_features)
 
-        # 4. Memory optimization for large datasets
+        # 4. 禁用内存优化（强制保持原始dtype与日志安静）
         sample_count = len(X)
-        if sample_count > 50000:  # 降低阈值适配更多股票
-            logger.info(f"Large dataset detected ({sample_count} samples), applying memory optimizations...")
-            float_cols = X.select_dtypes(include=['float64']).columns
-            if len(float_cols) > 0:
-                X[float_cols] = X[float_cols].astype('float32')
-            y = y.astype('float32')
-
-            # 额外优化：对于超大数据集
-            if sample_count > 500000:  # 2600股票约200万样本
-                logger.info(f"Ultra-large dataset ({sample_count} samples), applying aggressive optimizations...")
-                # 减少内存占用
-                int_cols = X.select_dtypes(include=['int64']).columns
-                if len(int_cols) > 0:
-                    X[int_cols] = X[int_cols].astype('int32')
-
-            logger.info(f"Memory usage: {X.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
 
         # 5. Validate index alignment
         if not X.index.equals(y.index):
@@ -8472,27 +9079,31 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         except ImportError:
             logger.warning("CatBoost not available")
 
-        # 第一层训练4个模型：elastic + xgboost + catboost + lambdarank
-        if RANK_AWARE_AVAILABLE:
-            try:
-                from bma_models.lambda_rank_stacker import LambdaRankStacker
-                # LambdaRank配置 - 用于排序优化
-                lambda_config = {
+        # 4. LambdaRank（使用相同的CV策略，与其他模型统一）
+        lambda_config_global = None  # 保存配置供后续使用
+        try:
+            from bma_models.lambda_rank_stacker import LambdaRankStacker
+            from bma_models.unified_config_loader import get_time_config
+            time_config = get_time_config()
+
+            # 使用与其他模型一致的CV参数
+            lambda_config_global = {
+                'base_cols': tuple(X.columns),  # 使用所有特征
                     'n_quantiles': 64,
                     'winsorize_quantiles': (0.01, 0.99),
                     'label_gain_power': 1.5,
-                    'num_boost_round': 100,
-                    'early_stopping_rounds': 10,
-                    'use_purged_cv': True,
-                    'cv_n_splits': self._CV_N_SPLITS,
-                    'cv_gap_days': self._CV_GAP_DAYS,
-                    'cv_embargo_days': self._CV_EMBARGO_DAYS,
-                    'random_state': 42
-                }
-                models['lambdarank'] = LambdaRankStacker(**lambda_config)
-                logger.info("[FIRST_LAYER] 第一层训练4个模型: elastic + xgboost + catboost + lambdarank")
-            except Exception as e:
-                logger.warning(f"LambdaRank不可用: {e}")
+                'num_boost_round': 100 if not is_very_small_sample else 50,
+                'early_stopping_rounds': 0,
+                'use_purged_cv': False,  # 🔧 禁用内部CV，使用外部统一CV
+                'random_state': CONFIG._RANDOM_STATE
+            }
+
+            # 创建LambdaRank（将在CV循环中训练）
+            models['lambdarank'] = lambda_config_global  # 存储配置，稍后在CV中创建实例
+            logger.info(f"[FIRST_LAYER] LambdaRank配置完成（将在统一CV循环中训练）")
+
+        except ImportError:
+            logger.warning("LambdaRank dependencies not available, skipping")
         
         # 初始化训练相关变量（确保这些变量总是被定义）
         trained_models = {}
@@ -8508,7 +9119,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # Initialize groups parameter for CV splitting
         groups = None
         
-        # Train each model and collect OOF predictions (second layer removed)
+        # 🔧 新架构：Lambda将在统一CV循环中训练，不再单独处理
+        # Lambda配置保留在models字典中，将与其他模型使用相同的CV split
+
+        # Train each model and collect OOF predictions (CV循环训练 ElasticNet/XGBoost/CatBoost)
         for name, model in models.items():
             logger.info(f"[FIRST_LAYER] Training {name}")
 
@@ -8594,59 +9208,85 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 # 统一早停：树模型使用验证集早停；线性模型正常fit
                 is_xgb = hasattr(model, 'get_xgb_params')
                 is_catboost = hasattr(model, 'get_all_params') or str(type(model)).find('CatBoost') >= 0
-                is_lambdarank = hasattr(model, 'fit') and 'LambdaRankStacker' in str(type(model))
+                is_lambdarank = (name == 'lambdarank')
 
+                # 🔧 新架构：Lambda在统一CV循环中训练
                 if is_lambdarank:
-                    # 第一层训练LambdaRank（用全部特征）
-                    logger.info("[FIRST_LAYER] 训练LambdaRankStacker（用全部特征）")
-                    # LambdaRankStacker需要不同的参数格式: df + target_col
-                    # 合并X_train和y_train为一个DataFrame
-                    train_data = X_train.copy()
-                    train_data['ret_fwd_5d'] = y_train  # 添加目标变量
+                    # Lambda需要特殊的数据格式（MultiIndex）
+                    from bma_models.lambda_rank_stacker import LambdaRankStacker
 
-                    # 🔧 DIAGNOSTIC: 检查LambdaRank训练数据质量
-                    logger.info(f"   LambdaRank训练数据: {train_data.shape}")
-                    logger.info(f"   目标变量质量: {train_data['ret_fwd_5d'].notna().sum()}/{len(train_data)} 非NaN")
-
-                    model.fit(train_data, target_col='ret_fwd_5d')
-
-                    # 🔧 DIAGNOSTIC: 验证LambdaRank训练成功
-                    if hasattr(model, 'fitted_') and model.fitted_:
-                        logger.info("✅ LambdaRank训练成功")
-                        # 兼容检查：LambdaRankStacker将LightGBM模型保存在 model.model 中
-                        try:
-                            booster_obj = getattr(model, 'model', None)
-                            if booster_obj is not None:
-                                logger.info(f"   LightGBM模型存在: {type(booster_obj)}")
-                            else:
-                                logger.warning("⚠️ LightGBM模型为空 (model.model is None)")
-                        except Exception:
-                            logger.warning("⚠️ 无法确认LightGBM模型对象，跳过检查")
+                    # 准备MultiIndex格式的训练/验证数据
+                    if isinstance(X_train.index, pd.MultiIndex):
+                        X_train_lambda = X_train.copy()
+                        X_val_lambda = X_val.copy()
                     else:
-                        logger.error("❌ LambdaRank训练失败! fitted_=False")
-                        raise ValueError("LambdaRank训练失败，无法继续预测")
+                        # 从dates和tickers构建MultiIndex
+                        train_dates = dates.iloc[train_idx] if hasattr(dates, 'iloc') else dates[train_idx]
+                        train_tickers = tickers.iloc[train_idx] if hasattr(tickers, 'iloc') else tickers[train_idx]
+                        val_dates = dates.iloc[val_idx] if hasattr(dates, 'iloc') else dates[val_idx]
+                        val_tickers = tickers.iloc[val_idx] if hasattr(tickers, 'iloc') else tickers[val_idx]
 
-                    # 🔧 FIX: LambdaRank预测只需要特征，不需要目标变量
-                    val_pred_raw = model.predict(X_val)
-                    logger.info(f"   LambdaRank预测输出: {val_pred_raw.shape if hasattr(val_pred_raw, 'shape') else type(val_pred_raw)}")
+                        train_idx_lambda = pd.MultiIndex.from_arrays([train_dates, train_tickers], names=['date', 'ticker'])
+                        val_idx_lambda = pd.MultiIndex.from_arrays([val_dates, val_tickers], names=['date', 'ticker'])
 
-                    # 确保预测是单列格式（用于OOF分配）
-                    if isinstance(val_pred_raw, pd.DataFrame):
-                        if val_pred_raw.shape[1] == 1:
-                            val_pred = val_pred_raw.iloc[:, 0].values
+                        X_train_lambda = pd.DataFrame(X_train.values, index=train_idx_lambda, columns=X_train.columns)
+                        X_val_lambda = pd.DataFrame(X_val.values, index=val_idx_lambda, columns=X_val.columns)
+
+                    # 添加target列（Lambda需要）
+                    X_train_lambda['ret_fwd_1d'] = y_train.values
+                    X_val_lambda['ret_fwd_1d'] = y_val.values
+
+                    # 使用配置创建Lambda实例（每个fold独立）
+                    # 注意：不可使用循环变量 model（可能已被上一fold覆盖为实例）
+                    if lambda_config_global is not None and isinstance(lambda_config_global, dict):
+                        lambda_config = lambda_config_global
+                    else:
+                        # 回退：从初始models字典获取，或构造最小配置
+                        base_cols_tuple = tuple(X.columns)
+                        fallback_cfg = {
+                            'base_cols': base_cols_tuple,
+                            'n_quantiles': 64,
+                            'winsorize_quantiles': (0.01, 0.99),
+                            'label_gain_power': 1.5,
+                            'num_boost_round': 100 if not is_very_small_sample else 50,
+                            'early_stopping_rounds': 0,
+                            'use_purged_cv': False,
+                            'random_state': CONFIG._RANDOM_STATE
+                        }
+                        lambda_cfg_from_models = models.get('lambdarank') if isinstance(models, dict) else None
+                        lambda_config = lambda_cfg_from_models if isinstance(lambda_cfg_from_models, dict) else fallback_cfg
+
+                    # 🔧 关键：配置中已设置use_purged_cv=False，Lambda直接fit训练集
+                    if not isinstance(lambda_config, dict):
+                        logger.warning("[FIRST_LAYER][Lambda] 配置对象不是dict，重建配置映射以避免实例被**解包")
+                        lambda_config = {
+                            'base_cols': tuple(X.columns),
+                            'n_quantiles': 64,
+                            'winsorize_quantiles': (0.01, 0.99),
+                            'label_gain_power': 1.5,
+                            'num_boost_round': 100 if not is_very_small_sample else 50,
+                            'early_stopping_rounds': 0,
+                            'use_purged_cv': False,
+                            'random_state': CONFIG._RANDOM_STATE
+                        }
+                    fold_lambda_model = LambdaRankStacker(**lambda_config)
+                    fold_lambda_model.fit(X_train_lambda)
+
+                    # 预测验证集
+                    lambda_pred_result = fold_lambda_model.predict(X_val_lambda)
+
+                    # 提取lambda_score
+                    if isinstance(lambda_pred_result, pd.DataFrame):
+                        if 'lambda_score' in lambda_pred_result.columns:
+                            val_pred = lambda_pred_result['lambda_score'].values
                         else:
-                            # LambdaRank返回3列: lambda_score, lambda_rank, lambda_pct
-                            # 优先选择lambda_score作为主预测
-                            if 'lambda_score' in val_pred_raw.columns:
-                                val_pred = val_pred_raw['lambda_score'].values
-                                logger.info(f"LambdaRank: 使用lambda_score作为主预测 ({val_pred_raw.shape}->1D)")
-                            else:
-                                val_pred = val_pred_raw.iloc[:, 0].values
-                                logger.warning(f"LambdaRank: 未找到lambda_score，使用第一列 ({val_pred_raw.shape}->1D)")
-                    elif isinstance(val_pred_raw, pd.Series):
-                        val_pred = val_pred_raw.values
+                            val_pred = lambda_pred_result.iloc[:, 0].values
                     else:
-                        val_pred = val_pred_raw  # 已经是numpy array
+                        val_pred = np.array(lambda_pred_result).flatten()
+
+                    # 更新model引用为训练好的实例（用于后续保存）
+                    model = fold_lambda_model
+
                 elif is_xgb:
                     # 完全禁用早停：直接普通fit，避免任何不兼容与冗余日志
                     try:
@@ -8814,43 +9454,39 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # Final training on all data for production inference
             logger.info(f"[FIRST_LAYER] {name}: 使用全量数据进行最终训练")
             try:
-                # 回退到全量训练（生产推理需要）
-                if 'lambdarank' in name:
-                    # LambdaRank全量训练：使用原始特征数据
-                    try:
-                        # 构造完整训练数据
-                        full_data = X.copy()
-                        full_data['ret_fwd_5d'] = y  # LambdaRank expects 'ret_fwd_5d' column name
-                        # Reset index to make date/ticker regular columns (avoid date column/index conflict)
-                        if isinstance(full_data.index, pd.MultiIndex):
-                            full_data = full_data.reset_index()
-                            # Set index back to MultiIndex using date and ticker columns
-                            full_data = full_data.set_index(['date', 'ticker'])
-                        model.fit(full_data)
-                        logger.info(f"[FIRST_LAYER] LambdaRank full-fit完成")
-                        # 验证模型训练成功
-                        if hasattr(model, 'fitted_') and model.fitted_:
-                            logger.info(f"[FIRST_LAYER] LambdaRank模型验证成功: fitted_={model.fitted_}")
-                        else:
-                            logger.warning(f"[FIRST_LAYER] LambdaRank模型状态异常: fitted_={getattr(model, 'fitted_', 'N/A')}")
-                    except Exception as e:
-                        logger.error(f"LambdaRank全量训练失败: {e}")
-                        import traceback
-                        logger.error(f"Stack trace: {traceback.format_exc()}")
-                        # 回退到简单fit：构造基本数据格式
-                        try:
-                            fallback_full_data = X.copy()
-                            fallback_full_data['ret_fwd_5d'] = y
-                            # Reset index to make date/ticker regular columns (avoid date column/index conflict)
-                            if isinstance(fallback_full_data.index, pd.MultiIndex):
-                                fallback_full_data = fallback_full_data.reset_index()
-                                # Set index back to MultiIndex using date and ticker columns
-                                fallback_full_data = fallback_full_data.set_index(['date', 'ticker'])
-                            model.fit(fallback_full_data)
-                            logger.info(f"[FIRST_LAYER] LambdaRank fallback训练完成")
-                        except Exception as e2:
-                            logger.error(f"LambdaRank fallback训练也失败: {e2}")
-                            raise
+                # 🔧 新架构：Lambda在第一层，需要全量训练
+                if name == 'lambdarank':
+                    from bma_models.lambda_rank_stacker import LambdaRankStacker
+
+                    # 准备MultiIndex全量数据
+                    if isinstance(X.index, pd.MultiIndex):
+                        X_full_lambda = X.copy()
+                    else:
+                        full_idx_lambda = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
+                        X_full_lambda = pd.DataFrame(X.values, index=full_idx_lambda, columns=X.columns)
+
+                    X_full_lambda['ret_fwd_1d'] = y.values
+
+                    # 使用全局配置创建最终Lambda模型
+                    if lambda_config_global is not None:
+                        final_lambda_model = LambdaRankStacker(**lambda_config_global)
+                    else:
+                        # 降级配置（如果global config不可用）
+                        final_lambda_model = LambdaRankStacker(**{
+                            'base_cols': tuple(X.columns),
+                            'n_quantiles': 64,
+                            'winsorize_quantiles': (0.01, 0.99),
+                            'label_gain_power': 1.5,
+                            'num_boost_round': 100,
+                            'early_stopping_rounds': 0,
+                            'use_purged_cv': False,
+                            'random_state': CONFIG._RANDOM_STATE
+                        })
+
+                    final_lambda_model.fit(X_full_lambda)
+                    model = final_lambda_model
+                    logger.info(f"✅ LambdaRank全量训练完成")
+
                 elif 'xgboost' in name:
                     try:
                         iters = best_iter_map.get('xgboost', [])
@@ -9010,9 +9646,59 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.error(f"Error formatting model {name}: {e}")
                 continue
         
-        # 训练 Ridge 二层 Stacker
+        # 🔧 在第一层完成后立即计算 Lambda Percentile（新架构）
+        lambda_percentile_transformer = None
+        lambda_percentile_series = None
+
+        # 安全获取lambda_oof（如果存在且非空）
+        lambda_oof = oof_predictions.get('lambdarank') if isinstance(oof_predictions, dict) else None
+
+        logger.info("=" * 80)
+        logger.info("[FIRST_LAYER] 🔍 检查Lambda Percentile转换器需求")
+        logger.info("=" * 80)
+        logger.info(f"  - oof_predictions类型: {type(oof_predictions)}")
+        logger.info(f"  - oof_predictions keys: {list(oof_predictions.keys()) if isinstance(oof_predictions, dict) else 'N/A'}")
+        logger.info(f"  - lambda_oof存在: {lambda_oof is not None}")
+        if lambda_oof is not None:
+            logger.info(f"  - lambda_oof类型: {type(lambda_oof)}")
+            logger.info(f"  - lambda_oof长度: {len(lambda_oof) if hasattr(lambda_oof, '__len__') else 'N/A'}")
+
+        if lambda_oof is not None and hasattr(lambda_oof, '__len__') and len(lambda_oof) > 0:
+            logger.info("=" * 80)
+            logger.info("[FIRST_LAYER] 🎯 计算 Lambda Percentile（训练-预测一致性转换）")
+            logger.info("=" * 80)
+
+            try:
+                from bma_models.lambda_percentile_transformer import LambdaPercentileTransformer
+
+                # 创建并拟合转换器
+                lambda_percentile_transformer = LambdaPercentileTransformer(method='quantile')
+                lambda_percentile_series = lambda_percentile_transformer.fit_transform(lambda_oof)
+
+                # 保存转换器供预测时使用
+                self.lambda_percentile_transformer = lambda_percentile_transformer
+
+                logger.info(f"✅ Lambda Percentile转换器已创建并保存")
+                logger.info(f"   转换器方法: {lambda_percentile_transformer.method}")
+                logger.info(f"   转换器已拟合: {lambda_percentile_transformer.fitted_}")
+                logger.info(f"   OOF统计: mean={lambda_percentile_transformer.oof_mean_:.4f}, std={lambda_percentile_transformer.oof_std_:.4f}")
+                logger.info(f"   Percentile统计: 均值={lambda_percentile_series.mean():.1f}, 范围=[{lambda_percentile_series.min():.1f}, {lambda_percentile_series.max():.1f}]")
+                logger.info(f"   ✅ self.lambda_percentile_transformer 已设置")
+
+            except Exception as e:
+                logger.error(f"❌ Lambda Percentile转换器创建失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise RuntimeError(f"Lambda Percentile转换器创建失败: {e}") from e
+        else:
+            logger.warning("⚠️ Lambda OOF不可用，跳过Percentile转换器创建")
+            logger.warning("   这将导致预测时无法使用lambda_percentile特征")
+
+        # 训练 Ridge 二层 Stacker（使用 OOF + 可选 lambda_percentile）
         # Pass tickers as well for proper MultiIndex construction
-        stacker_success = self._train_ridge_stacker(oof_predictions, y, dates)
+        stacker_success = self._train_ridge_stacker(
+            oof_predictions, y, dates, lambda_percentile_series=lambda_percentile_series
+        )
 
         return {
             'success': True,
@@ -9022,6 +9708,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             'oof_predictions': oof_predictions,
             'feature_names': list(X.columns),
             'ridge_stacker': self.ridge_stacker,
+            'lambda_percentile_transformer': lambda_percentile_transformer,  # 新增：返回转换器
             'stacker_trained': stacker_success,
             # CV-BAGGING FIX: 返回CV fold模型以支持推理一致性
             'cv_fold_models': cv_fold_models,
@@ -9667,6 +10354,23 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 else:
                     raise ValueError("17因子数据缺少 date/ticker，无法构建MultiIndex")
             else:
+                # 🔧 关键修复：检查MultiIndex是否有正确的级别名称
+                if 'date' not in feature_data.index.names or 'ticker' not in feature_data.index.names:
+                    logger.warning(f"MultiIndex级别名称不正确: {feature_data.index.names}，尝试修复...")
+                    # 如果有两个级别但名称错误，重命名
+                    if feature_data.index.nlevels == 2:
+                        feature_data.index.names = ['date', 'ticker']
+                        logger.info(f"✅ 已将索引名称重命名为 ['date', 'ticker']")
+                    else:
+                        # 如果级别数不对，尝试从列重建
+                        if 'date' in feature_data.columns and 'ticker' in feature_data.columns:
+                            feature_data = feature_data.reset_index(drop=True)
+                            feature_data['date'] = pd.to_datetime(feature_data['date']).dt.tz_localize(None).dt.normalize()
+                            feature_data['ticker'] = feature_data['ticker'].astype(str).str.strip()
+                            feature_data = feature_data.set_index(['date','ticker']).sort_index()
+                        else:
+                            raise ValueError(f"MultiIndex级别错误且无法修复: {feature_data.index.names}")
+
                 # normalize index
                 dates_idx = pd.to_datetime(feature_data.index.get_level_values('date')).tz_localize(None).normalize()
                 tickers_idx = feature_data.index.get_level_values('ticker').astype(str).str.strip()
@@ -9796,7 +10500,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             if predictions is None or len(predictions) == 0:
                 # 如果 Ridge stacking 失败，回退到基础预测
                 logger.warning("Ridge stacking 预测失败，回退到第一层预测")
-                predictions = self._generate_base_predictions(training_results)
+                predictions = self._generate_base_predictions(training_results, feature_data)
                 if predictions is None or len(predictions) == 0:
                     raise ValueError("预测生成失败")
 
@@ -9840,11 +10544,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     # 按股票计算收益率
                     feature_data['returns'] = feature_data.groupby(level='ticker')['Close'].pct_change()
 
-                # 计算市值（如果不存在）
-                if 'market_cap' not in feature_data.columns:
-                    # 使用近似：价格 × 成交量作为市值代理
-                    if 'Close' in feature_data.columns and 'Volume' in feature_data.columns:
-                        feature_data['market_cap'] = feature_data['Close'] * feature_data['Volume'] * 1000
+                # 市值数据应该已经在get_data_and_features中添加，这里不需要重复添加
 
                 # 应用增强底部20%惩罚
                 pre_penalty = predictions.copy()
@@ -9886,7 +10586,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.info(f"✅ 增强底部20%惩罚系统完成：低初始惩罚+快速加速，保护80%股票")
             logger.info("=" * 80)
 
-            # 大规模内存优化
+            # 训练时不使用市值数据，因此无需保存
+            # 市值过滤仅在输出结果时通过yfinance实时获取
+            market_cap_data = None
+
             if is_large_scale:
                 # 清理不再需要的大型对象
                 if 'feature_data' in locals() and hasattr(feature_data, 'memory_usage'):
@@ -9897,11 +10600,17 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
             # 4) Excel输出
             logger.info("📊 生成分析结果")
-            return self._finalize_analysis_results(analysis_results, training_results, predictions,
-                                                   feature_data if 'feature_data' in locals() else None)
+            # Pass market_cap_data instead of full feature_data to save memory
+            return self._finalize_analysis_results(
+                analysis_results, training_results, predictions,
+                market_cap_data if market_cap_data is not None else (feature_data if 'feature_data' in locals() else None)
+            )
 
         except Exception as e:
             logger.error(f"完整分析流程失败: {e}")
+            import traceback
+            logger.error("完整错误堆栈:")
+            logger.error(traceback.format_exc())
             analysis_results['error'] = str(e)
             analysis_results['success'] = False
             return analysis_results
@@ -9913,11 +10622,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         """
         整理最终分析结果并输出到 Excel
 
+        注: 市值过滤在此阶段通过yfinance实时获取，不依赖feature_data
+
         Args:
             analysis_results: 分析结果字典
             training_results: 训练结果
             predictions: 预测结果
-            feature_data: 特征数据
+            feature_data: 特征数据（仅用于兼容性，市值过滤不使用此参数）
 
         Returns:
             完整的分析结果
@@ -9950,6 +10661,72 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         'ticker': pred_last.index.get_level_values('ticker'),
                         'score': pred_last.values
                     })
+
+                    # 🔧 Market-cap filter (>= $1B) - DISABLED
+                    try:
+                        MCAP_THRESHOLD = 1_000_000_000  # $1B
+                        USE_LIVE_MCAP = False  # 已禁用市值过滤
+                        MAX_LIVE_MCAP_FETCH = 3000  # 处理全部股票
+
+                        mcap_slice = None
+
+                        # 1) Try live yfinance market caps (最新实时数据)
+                        if USE_LIVE_MCAP:
+                            try:
+                                import yfinance as yf
+                                tickers_list = pred_df['ticker'].astype(str).unique().tolist()
+
+                                # 优先按模型得分排序后截取前N只，减少调用
+                                top_ordered = pred_df[['ticker', 'score']].drop_duplicates('ticker')\
+                                    .sort_values('score', ascending=False)['ticker'].tolist()
+                                fetch_list = top_ordered[:min(MAX_LIVE_MCAP_FETCH, len(top_ordered))]
+
+                                logger.info(f"💰 使用yfinance批量获取 {len(fetch_list)} 只股票的最新市值...")
+
+                                # 批量获取市值数据（逐个获取以保证稳定性）
+                                market_caps = []
+                                success_count = 0
+                                for ticker in fetch_list:
+                                    try:
+                                        stock = yf.Ticker(ticker)
+                                        info = stock.info
+                                        mcap = info.get('marketCap', None)
+
+                                        # 只保留通过阈值的股票
+                                        if mcap and mcap >= MCAP_THRESHOLD:
+                                            market_caps.append({
+                                                'ticker': ticker,
+                                                'market_cap': mcap
+                                            })
+                                            success_count += 1
+                                    except Exception as e:
+                                        logger.debug(f"获取{ticker}市值失败: {e}")
+                                        continue
+
+                                if market_caps:
+                                    mcap_slice = pd.DataFrame(market_caps)
+                                    logger.info(f"💰 市值过滤: 使用yfinance实时市值（{len(mcap_slice)}/{len(fetch_list)} 通过>=${MCAP_THRESHOLD/1e9:.0f}B阈值）")
+                                    logger.info(f"   成功获取: {success_count}/{len(fetch_list)} 股票")
+                                else:
+                                    logger.warning(f"💰 yfinance返回空结果，回退到特征数据")
+                                    mcap_slice = None
+
+                            except Exception as e_live:
+                                logger.warning(f"实时市值获取失败，回退到特征数据: {e_live}")
+                                mcap_slice = None
+
+                        # 2) Apply filter if we have any market caps from yfinance
+                        if mcap_slice is not None and not mcap_slice.empty:
+                            mcap_slice['market_cap'] = pd.to_numeric(mcap_slice['market_cap'], errors='coerce')
+                            pred_df = pred_df.merge(mcap_slice, on='ticker', how='left')
+                            before_cnt = len(pred_df)
+                            pred_df = pred_df[pred_df['market_cap'].fillna(0) >= MCAP_THRESHOLD].copy()
+                            after_cnt = len(pred_df)
+                            logger.info(f"💰 市值过滤: >= ${MCAP_THRESHOLD:,}  保留 {after_cnt}/{before_cnt}")
+                        else:
+                            logger.info("💰 市值过滤跳过: 未获取到有效市值数据")
+                    except Exception as e_mcap:
+                        logger.warning(f"市值过滤失败（继续流程）: {e_mcap}")
                 else:
                     pred_df = pd.DataFrame({
                         'ticker': predictions.index,
@@ -9957,6 +10734,170 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     })
 
                 pred_df = pred_df.sort_values('score', ascending=False)
+
+                # 你的app严格输入股票列表，预测不再进行本地过滤
+
+                # 🔧 Kronos T+3 filtering for Top 35 stocks
+                kronos_filter_df = None
+                try:
+                    # Ensure toggle exists; default ON
+                    if not hasattr(self, 'use_kronos_validation'):
+                        self.use_kronos_validation = True
+                    if self.use_kronos_validation:
+                        logger.info("=" * 80)
+                        logger.info("🤖 Kronos T+3过滤器：对融合后Top 35进行盈利性验证")
+                        logger.info("   参数：T+3预测，温度0.1，过去1年数据")
+
+                        # Initialize Kronos if not already done
+                        if self.kronos_model is None:
+                            try:
+                                from kronos.kronos_service import KronosService
+                                self.kronos_model = KronosService()
+                                self.kronos_model.initialize(model_size="base")
+                                logger.info("✅ Kronos模型初始化成功")
+                            except Exception as e_init:
+                                logger.warning(f"Kronos模型初始化失败: {e_init}")
+                                self.use_kronos_validation = False
+
+                        if self.kronos_model is not None and self.use_kronos_validation:
+                            # Get top 35 candidates from BMA fusion results
+                            top_35_candidates = pred_df.head(min(35, len(pred_df))).copy()
+
+                            logger.info(f"   对Top {len(top_35_candidates)} 股票进行Kronos T+3验证...")
+
+                            # Run Kronos predictions for each candidate
+                            kronos_results = []
+                            for idx, row in top_35_candidates.iterrows():
+                                ticker = row['ticker']
+                                bma_rank = idx + 1
+                                try:
+                                    # T+3 prediction with temperature 0.1, 1 year history
+                                    kronos_result = self.kronos_model.predict_stock(
+                                        symbol=ticker,
+                                        period="1y",           # 1 year history
+                                        interval="1d",
+                                        pred_len=3,            # T+3 prediction
+                                        model_size="base",
+                                        temperature=0.1        # Low temperature for conservative prediction
+                                    )
+
+                                    if kronos_result['status'] == 'success':
+                                        pred_df_k = kronos_result['predictions']
+                                        if len(pred_df_k) >= 3:
+                                            hist_data = kronos_result['historical_data']
+                                            current_price = hist_data['close'].iloc[-1]
+                                            t3_price = pred_df_k['close'].iloc[2]  # T+3 (0-indexed: day 2)
+                                            t3_return = (t3_price - current_price) / current_price
+
+                                            # Determine if passed filter (positive return)
+                                            passed_filter = t3_return > 0
+
+                                            kronos_results.append({
+                                                'bma_rank': bma_rank,
+                                                'ticker': ticker,
+                                                'bma_score': row['score'],
+                                                't0_price': current_price,
+                                                't3_price': t3_price,
+                                                't3_return_pct': t3_return * 100,
+                                                'kronos_pass': 'Y' if passed_filter else 'N',
+                                                'reason': 'Profitable' if passed_filter else 'Negative Return'
+                                            })
+
+                                            status = "✓ PASS" if passed_filter else "✗ FAIL"
+                                            logger.info(f"  {status} #{bma_rank} {ticker}: T+3收益 {t3_return:+.2%} "
+                                                      f"(${current_price:.2f} → ${t3_price:.2f})")
+                                        else:
+                                            kronos_results.append({
+                                                'bma_rank': bma_rank,
+                                                'ticker': ticker,
+                                                'bma_score': row['score'],
+                                                't0_price': None,
+                                                't3_price': None,
+                                                't3_return_pct': None,
+                                                'kronos_pass': 'N',
+                                                'reason': 'Insufficient Data'
+                                            })
+                                            logger.warning(f"  ✗ FAIL #{bma_rank} {ticker}: 预测数据不足")
+                                    else:
+                                        kronos_results.append({
+                                            'bma_rank': bma_rank,
+                                            'ticker': ticker,
+                                            'bma_score': row['score'],
+                                            't0_price': None,
+                                            't3_price': None,
+                                            't3_return_pct': None,
+                                            'kronos_pass': 'N',
+                                            'reason': f"API Error: {kronos_result.get('error', 'Unknown')}"
+                                        })
+                                        logger.warning(f"  ✗ FAIL #{bma_rank} {ticker}: {kronos_result.get('error', 'Unknown error')}")
+                                except Exception as e_pred:
+                                    kronos_results.append({
+                                        'bma_rank': bma_rank,
+                                        'ticker': ticker,
+                                        'bma_score': row['score'],
+                                        't0_price': None,
+                                        't3_price': None,
+                                        't3_return_pct': None,
+                                        'kronos_pass': 'N',
+                                        'reason': f"Exception: {str(e_pred)[:50]}"
+                                    })
+                                    logger.warning(f"  ✗ FAIL #{bma_rank} {ticker}: 异常 - {e_pred}")
+                                    continue
+
+                            # Create Kronos filter DataFrame
+                            if kronos_results:
+                                kronos_filter_df = pd.DataFrame(kronos_results)
+
+                                # Add rank column and rename for Excel export compatibility
+                                kronos_filter_df['rank'] = range(1, len(kronos_filter_df) + 1)
+
+                                # Create export-compatible version with required columns
+                                # Rename columns to match exporter expectations
+                                export_df = kronos_filter_df.copy()
+                                export_df = export_df.rename(columns={
+                                    'bma_score': 'model_score',
+                                    't3_return_pct': 'kronos_t3_return'
+                                })
+                                # Ensure required columns exist
+                                if 'model_score' not in export_df.columns:
+                                    export_df['model_score'] = 0.0
+                                if 'kronos_t3_return' not in export_df.columns:
+                                    export_df['kronos_t3_return'] = 0.0
+
+                                # Replace the original with export-compatible version
+                                kronos_filter_df = export_df
+
+                                # Statistics
+                                total_tested = len(kronos_filter_df)
+                                passed = (kronos_filter_df['kronos_pass'] == 'Y').sum()
+                                failed = total_tested - passed
+
+                                logger.info(f"\n✅ Kronos T+3过滤完成:")
+                                logger.info(f"   测试股票: {total_tested} 只")
+                                logger.info(f"   通过过滤 (T+3收益>0): {passed} 只 ({passed/total_tested*100:.1f}%)")
+                                logger.info(f"   未通过过滤: {failed} 只 ({failed/total_tested*100:.1f}%)")
+
+                                # Calculate average return for passed stocks
+                                passed_df = kronos_filter_df[kronos_filter_df['kronos_pass'] == 'Y']
+                                if len(passed_df) > 0:
+                                    avg_return = passed_df['kronos_t3_return'].mean()
+                                    logger.info(f"   通过股票平均T+3收益: {avg_return:+.2f}%")
+                                    logger.info(f"\n🎯 Kronos验证通过的股票 (共{len(passed_df)}只):")
+                                    for i, row in passed_df.head(10).iterrows():
+                                        logger.info(f"  #{row['bma_rank']} {row['ticker']}: T+3收益 {row['kronos_t3_return']:+.2f}%")
+                                else:
+                                    logger.warning("   ⚠️ 没有股票通过Kronos T+3盈利性验证")
+                            else:
+                                logger.warning("⚠️ Kronos预测失败，无过滤结果")
+
+                        logger.info("=" * 80)
+                    else:
+                        logger.info("💰 Kronos验证未启用 (use_kronos_validation=False)")
+                except Exception as e_kronos:
+                    logger.error(f"Kronos验证失败（继续流程）: {e_kronos}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                    kronos_filter_df = None
 
                 # Excel使用Top 20，终端显示Top 10
                 top_20_for_excel = min(20, len(pred_df))
@@ -9967,11 +10908,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 analysis_results['recommendations'] = recommendations
 
                 # 终端显示 (Top 10)
-                logger.info(f"\n🏆 Top {top_10_for_display} 推荐股票:")
+                logger.info(f"\n🏆 BMA Top {top_10_for_display} 推荐股票:")
                 for i, rec in enumerate(recommendations[:top_10_for_display], 1):
                     logger.info(f"  {i}. {rec['ticker']}: {rec['score']:.6f}")
             else:
                 analysis_results['recommendations'] = []
+                kronos_filter_df = None
 
             # 模型性能统计
             if 'traditional_models' in training_results:
@@ -9991,149 +10933,49 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         }
                         logger.info(f"\n📊 Ridge Stacker 性能:")
                         
-            # Excel 输出 - 使用 CorrectedPredictionExporter
+            # Excel 输出 - 使用 RobustExcelExporter (全新防御性导出器)
             if EXCEL_EXPORT_AVAILABLE:
                 try:
-                    from bma_models.corrected_prediction_exporter import CorrectedPredictionExporter
+                    from bma_models.robust_excel_exporter import RobustExcelExporter
 
-                    # 准备预测数据供 Excel 导出
+                    # 使用全新的 RobustExcelExporter
+                    exporter = RobustExcelExporter(output_dir="D:/trade/result")
+
+                    # 准备数据
                     predictions_series = analysis_results.get('predictions', pd.Series())
+                    lambda_df = getattr(self, '_last_lambda_predictions_df', None)
+                    ridge_df = getattr(self, '_last_ridge_predictions_df', None)
+                    final_df = getattr(self, '_last_final_predictions_df', None)
 
-                    # 过滤到预测基准日期的结果（基于真正当前时间的预测）
-                    if isinstance(predictions_series.index, pd.MultiIndex):
-                        # 使用真正当前时间作为预测基准（与主流程逻辑保持一致）
-                        from datetime import datetime
-                        current_date = pd.Timestamp(datetime.now().date())
-                        available_dates = predictions_series.index.get_level_values('date').unique()
+                    # Kronos过滤数据
+                    kronos_df = None
+                    if hasattr(self, 'kronos_filter') and self.kronos_filter is not None:
+                        try:
+                            kronos_df = self.kronos_filter.get_last_filter_results()
+                        except:
+                            pass
 
-                        if current_date in available_dates:
-                            prediction_base_date = current_date
-                        else:
-                            prediction_base_date = available_dates.max()
-                        # 只保留预测基准日期的结果
-                        base_mask = predictions_series.index.get_level_values('date') == prediction_base_date
-                        predictions_latest = predictions_series[base_mask]
-
-                        dates = predictions_latest.index.get_level_values('date')
-                        tickers = predictions_latest.index.get_level_values('ticker')
-                        predictions_series = predictions_latest  # 更新为基准日期的预测结果
-
-                        # 计算预测目标日期
-                        target_date = prediction_base_date + pd.Timedelta(days=5)
-                        logger.info(f"📊 Excel导出: 基于 {prediction_base_date} 预测 {target_date} (T+5)")
-                        logger.info(f"    包含 {len(predictions_latest)} 只股票的预测结果")
-                    else:
-                        # 使用当前日期作为预测基准日期
-                        if len(predictions_series) > 0:
-                            dates = [datetime.now().date()] * len(predictions_series)
-                            tickers = predictions_series.index
-                        else:
-                            # 处理空预测的情况
-                            dates = []
-                            tickers = []
-
-                    # 准备模型信息，包括factor contributions
-                    model_info = {
-                        'model_type': 'BMA Ultra Enhanced (Ridge Stacker)',
-                        'model_version': 'v3.0',
-                        'n_samples': len(feature_data) if 'feature_data' in locals() else 'N/A',
-                        'n_features': feature_data.shape[1] if 'feature_data' in locals() else 25,
-                        'training_time': f"{analysis_results.get('execution_time', 0):.1f}s",
-                    }
-
-                    # 添加CV分数
+                    # 提取Lambda Percentile信息（如果有）
+                    lambda_percentile_info = None
                     if 'training_results' in analysis_results:
                         tr = analysis_results['training_results']
-                        if 'traditional_models' in tr and 'cv_scores' in tr['traditional_models']:
-                            cv_scores = tr['traditional_models']['cv_scores']
-                            model_info['cv_score'] = np.mean(list(cv_scores.values()))
-                            model_info['model_weights'] = cv_scores
+                        if 'traditional_models' in tr and isinstance(tr['traditional_models'], dict):
+                            lambda_percentile_info = tr['traditional_models'].get('lambda_percentile_info')
 
-                    # 添加factor contributions (如果有factor重要性信息)
-                    if 'training_results' in analysis_results:
-                        # 从训练结果中提取factor contributions
-                        factor_contributions = self._extract_factor_contributions(analysis_results['training_results'])
-                        if factor_contributions:
-                            model_info['factor_contributions'] = factor_contributions
-
-                    # 使用 CorrectedPredictionExporter
-                    exporter = CorrectedPredictionExporter(output_dir="D:/trade/results")
-                    # 优先使用在预测阶段存储的三张表；若不存在则回退为None
-                    lambda_df_export = getattr(self, '_last_lambda_predictions_df', None)
-                    ridge_df_export = getattr(self, '_last_ridge_predictions_df', None)
-                    final_df_export = getattr(self, '_last_final_predictions_df', None)
-
-                    # 诊断Lambda数据状态
-                    if lambda_df_export is not None:
-                        if 'error_flag' in lambda_df_export.columns:
-                            logger.error(f"⚠️ Lambda数据包含错误标记: {lambda_df_export['error_flag'].iloc[0]}")
-                        else:
-                            logger.info(f"✅ Lambda T+5数据正常: {len(lambda_df_export)}条记录")
-                            if 'target_date' in lambda_df_export.columns:
-                                t5_date = lambda_df_export['target_date'].iloc[0]
-                                logger.info(f"   T+5目标日期: {t5_date}")
-                    else:
-                        logger.error("❌ CRITICAL: Lambda预测数据完全缺失!")
-                        logger.error("   Excel中的Lambda_T5_Predictions表将使用模拟数据!")
-
-                    # 确保dates和tickers不为None
-                    if dates is None or tickers is None:
-                        logger.error("Excel 输出失败: dates或tickers为None")
-                        if dates is None:
-                            logger.error("  - dates is None")
-                        if tickers is None:
-                            logger.error("  - tickers is None")
-                        # 创建默认值以避免错误
-                        if len(predictions_series) > 0:
-                            if dates is None:
-                                dates = [datetime.now().date()] * len(predictions_series)
-                            if tickers is None:
-                                tickers = [f"STOCK_{i:04d}" for i in range(len(predictions_series))]
-                        else:
-                            dates = []
-                            tickers = []
-
-                    # Convert tickers to list if it's an Index
-                    if hasattr(tickers, 'tolist'):
-                        tickers = tickers.tolist()
-                    elif tickers is None:
-                        tickers = []
-
-                    # Check if we have valid data to export
-                    if len(predictions_series) == 0 or len(dates) == 0 or len(tickers) == 0:
-                        logger.warning("⚠️ No valid predictions to export to Excel")
-                        logger.warning(f"   Predictions: {len(predictions_series)}, Dates: {len(dates)}, Tickers: {len(tickers)}")
-                        # Create minimal dummy data to avoid export failure
-                        if len(predictions_series) == 0:
-                            predictions_series = pd.Series([0.0], index=['DUMMY'])
-                            dates = [datetime.now().date()]
-                            tickers = ['DUMMY']
-
-                    excel_path = exporter.export_predictions(
-                        predictions=predictions_series.values if len(predictions_series) > 0 else np.array([]),
-                        dates=dates if dates is not None else [],
-                        tickers=tickers if len(tickers) > 0 else [],
-                        model_info=model_info,
-                        filename=f"bma_analysis_{timestamp}.xlsx",
-                        lambda_predictions_df=lambda_df_export,
-                        ridge_predictions_df=ridge_df_export,
-                        final_predictions_df=final_df_export,
-                        # 使用专业预测模式：包含所有模型的预测结果和分析
-                        professional_t5_mode=True,  # 使用专业预测模式
-                        only_core_sheets=False,     # 保留完整分析结果
-                        minimal_t5_only=False      # 不使用精简模式
+                    # 执行导出
+                    excel_path = exporter.safe_export(
+                        predictions_series=predictions_series,
+                        analysis_results=analysis_results,
+                        feature_data=feature_data if 'feature_data' in locals() else None,
+                        lambda_df=lambda_df,
+                        ridge_df=ridge_df,
+                        final_df=final_df,
+                        kronos_df=kronos_df,
+                        lambda_percentile_info=lambda_percentile_info
                     )
 
-                    analysis_results['excel_path'] = excel_path
-                    logger.info(f"\n📄 结果已保存到: {excel_path}")
-                    if lambda_df_export is not None and ridge_df_export is not None and final_df_export is not None:
-                        logger.info(f"   专业预测模式 - 包含4个表格:")
-                        logger.info(f"   1. Lambda_Predictions - LambdaRank模型预测")
-                        logger.info(f"   2. Stacking_Predictions - Ridge Stacker模型预测")
-                        logger.info(f"   3. Final_Predictions - 最终融合预测结果")
-                        logger.info(f"   4. Factor_Contributions - 因子贡献分析")
-                    else:
-                        logger.info(f"   使用精简预测模式")
+                    if excel_path:
+                        analysis_results['excel_path'] = excel_path
                 except Exception as e:
                     logger.error(f"Excel 输出失败: {e}")
                     import traceback
@@ -10182,7 +11024,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     # 使用真实的20个因子名称（来自Simple25FactorEngine，增加行为金融因子）
                     feature_cols = [
                         # Momentum factors (1) - REMOVED: momentum_20d, momentum_reversal_short
-                        'momentum_10d',
+                        'momentum_10d_ex1',
                         # Technical indicators (6) - REMOVED: price_to_ma20, cci (redundant with bollinger_position/RSI)
                         'rsi', 'bollinger_squeeze',
                         'obv_momentum', 'atr_ratio',
@@ -10191,7 +11033,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         # Fundamental proxy factors (2) - REMOVED: growth_proxy, profitability_momentum, growth_acceleration, value_proxy, profitability_proxy, quality_proxy, mfi (redundant/unstable)
                         'liquidity_factor',
                         # High-alpha factors (4)
-                        'near_52w_high', 'reversal_5d', 'rel_volume_spike', 'mom_accel_10_5',
+                        'near_52w_high', 'reversal_1d', 'rel_volume_spike', 'mom_accel_5_2',
                         # Behavioral factors (3) - NEW: market microstructure effects
                         'overnight_intraday_gap', 'max_lottery_factor', 'streak_reversal'
                     ]

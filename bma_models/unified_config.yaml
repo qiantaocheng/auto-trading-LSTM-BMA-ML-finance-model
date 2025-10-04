@@ -12,22 +12,22 @@ temporal:
   random_state: 42                     # 统一随机种子
   
   # === 核心预测参数 ===
-  prediction_horizon_days: 5           # T+5预测
-  holding_period_days: 5               # 5天持有期
+  prediction_horizon_days: 1           # T+1预测
+  holding_period_days: 1               # 1天持有期（与T+1一致）
   
-  # === 时间隔离参数 (CRITICAL: CORRECTLY ALIGNED) ===
-  feature_lag_days: 1                  # T-1特征滞后 (optimal for T+5 predictions - maximizes info while preventing leakage)
-  cv_gap_days: 6                       # Gap >= horizon to prevent leakage
-  cv_embargo_days: 5                   # Embargo >= horizon for safety
-  oos_embargo_days: 5                  # OOS embargo aligned with horizon
-  effective_isolation_days: 5          # 有效隔离期
-  safety_gap_days: 1                   # 安全间隔
-  min_total_gap_days: 21               # 最小总间隔 (approx gap+embargo+buffer)
-  
-  # === 交叉验证参数 ===
-  cv_n_splits: 5                       # CV折数
-  cv_test_ratio: 0.2                   # 测试集比例
-  min_train_test_gap_days: 12          # 训练测试最小间隔
+  # === 时间隔离参数 (OPTIMIZED FOR T+1) ===
+  feature_lag_days: 1                  # T-1特征滞后 (适用于T+1，防止泄漏)
+  cv_gap_days: 1                       # T+1优化: Gap = 1天 (特征T-1 → 预测T+1之间只需1天gap)
+  cv_embargo_days: 0                   # T+1优化: Embargo = 0天 (目标已经是次日，无需额外embargo)
+  oos_embargo_days: 1                  # OOS embargo 保持最小1天
+  effective_isolation_days: 1          # 有效隔离期（核心由horizon决定）
+  safety_gap_days: 1                   # 安全间隔 最小1天
+  min_total_gap_days: 10               # 最小总间隔 (降低以提升数据利用率)
+
+  # === 交叉验证参数 (OPTIMIZED FOR T+1) ===
+  cv_n_splits: 7                       # CV折数 (统一所有模型使用7折CV)
+  cv_test_ratio: 0.1                   # 测试集比例 (降低到10%，更多数据用于训练)
+  min_train_test_gap_days: 5           # 训练测试最小间隔 (降低到5天)
   
   # === 样本权重参数 ===
   sample_weight_half_life_days: 75     # 样本权重半衰期（天）
@@ -85,6 +85,7 @@ strict_mode:
   enable_determinism_strict: true      # 严格确定性模式
   enable_temporal_strict: true         # 严格时间验证
   enable_feature_validation: true     # 严格特征验证
+  use_kronos_validation: true         # Kronos风险验证和Top 35筛选（已启用）
 
 # ==========================================
 # DATA CONFIGURATION - SINGLE FORMAT ONLY (NO FALLBACKS)
@@ -127,7 +128,7 @@ data:
 features:
   # 技术指标配置
   beta_calculation_window: 60
-  rsi_period: 14
+  rsi_period: 7
   volatility_window: 20
   momentum_window: 20
   
@@ -179,13 +180,13 @@ training:
   incremental_days: 14
   full_rebuild_days: 28
   
-  # 交叉验证 - NO FALLBACKS
+  # 交叉验证 - OPTIMIZED FOR T+1
   cv_method: "time_series_split"          # ONLY TimeSeriesSplit accepted
-  cv_splits: 5                           # Fixed number of splits
-  cv_gap_days: 6                         # Match temporal config
-  cv_embargo_days: 5                     # Match temporal config
+  cv_splits: 7                            # 统一所有模型使用7折CV
+  cv_gap_days: 1                         # T+1优化: Gap = 1天
+  cv_embargo_days: 0                     # T+1优化: Embargo = 0天
   cv_min_train_size: 252                 # Match CONFIG.MIN_TRAIN_SIZE (1 year)
-  test_size: 63                          # Match CONFIG.TEST_SIZE (3 months)
+  test_size: 42                          # 减少到2个月 (原3个月过大)
   cv_no_fallback: true                   # NO FALLBACK CV METHODS
   
   # 基础ML模型 - SIMPLIFIED

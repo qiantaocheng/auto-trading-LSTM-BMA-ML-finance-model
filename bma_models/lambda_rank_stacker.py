@@ -57,9 +57,9 @@ class LambdaRankStacker:
                  num_boost_round: int = 500,  # 大数据集需要更多轮数
                  early_stopping_rounds: int = 200,  # 放宽早停，提升稳定性
                  use_purged_cv: bool = True,  # 强制使用PurgedCV防止数据泄露
-                 cv_n_splits: int = 5,        # CV折数（大数据集可用更多fold）
-                 cv_gap_days: int = 6,        # T+5预测精确gap：T+1到T+5不可用，T+6开始可用
-                 cv_embargo_days: int = 5,    # T+5预测精确embargo：保护预测期
+                 cv_n_splits: int = 5,        # CV折数（统一5折）
+                 cv_gap_days: int = 2,        # T+1预测：gap=2（feature_lag 1 + horizon 1）
+                 cv_embargo_days: int = 1,    # T+1预测：embargo=1
                  random_state: int = 42):
         """
         初始化LambdaRank排序模型
@@ -95,7 +95,7 @@ class LambdaRankStacker:
         # 设置最小迭代下限，避免 best_iteration 过低
         self.early_stopping_rounds = max(early_stopping_rounds, 100)
         self.use_purged_cv = use_purged_cv
-        self.cv_n_splits = cv_n_splits
+        self.cv_n_splits = 5
         self.cv_gap_days = cv_gap_days
         self.cv_embargo_days = cv_embargo_days
         self.random_state = random_state
@@ -137,6 +137,8 @@ class LambdaRankStacker:
         self.model = None
         self.scaler = None
         self.fitted_ = False
+        self._oof_predictions = None  # OOF预测（防数据泄漏）
+        self._oof_index = None  # OOF索引（用于对齐）
 
         logger.info("🏆 LambdaRank 排序模型初始化完成")
         logger.info(f"   特征模式: {'Alpha Factors' if self.base_cols is None else 'Custom'}")
@@ -146,7 +148,7 @@ class LambdaRankStacker:
         if self.use_purged_cv:
             logger.info(f"   CV参数: splits={self.cv_n_splits}, gap={self.cv_gap_days}天, embargo={self.cv_embargo_days}天")
 
-    def _convert_to_rank_labels(self, df: pd.DataFrame, target_col: str = 'ret_fwd_5d') -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    def _convert_to_rank_labels(self, df: pd.DataFrame, target_col: str = 'ret_fwd_1d') -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
         将连续目标变量转换为稳定的固定档位等级（64/128档软离散）
 
@@ -229,7 +231,7 @@ class LambdaRankStacker:
 
         return df_processed, conversion_report
 
-    def fit(self, df: pd.DataFrame, target_col: str = 'ret_fwd_5d', alpha_factors: pd.DataFrame = None) -> 'LambdaRankStacker':
+    def fit(self, df: pd.DataFrame, target_col: str = 'ret_fwd_1d', alpha_factors: pd.DataFrame = None) -> 'LambdaRankStacker':
         """
         训练LambdaRank模型
 
@@ -308,8 +310,24 @@ class LambdaRankStacker:
         X_valid = X[valid_mask]
         y_valid = y[valid_mask]
 
-        if len(X_valid) < 100:
-            raise ValueError(f"有效训练样本过少: {len(X_valid)} < 100")
+        # 小样本自适应：放宽最小样本限制并动态调整LightGBM参数
+        min_required = 30 if not self.use_purged_cv else max(30, self.cv_n_splits * 2)
+        if len(X_valid) < min_required:
+            logger.warning(
+                f"有效训练样本过少: {len(X_valid)} < {min_required}，启用小样本自适应参数以继续训练"
+            )
+            small_n = int(len(X_valid))
+            # 动态降低复杂度，避免叶子样本要求过高导致训练失败
+            self.lgb_params['min_data_in_leaf'] = max(1, small_n // 5)
+            self.lgb_params['num_leaves'] = min(self.lgb_params.get('num_leaves', 31), max(7, small_n // 2))
+            self.lgb_params['max_depth'] = min(self.lgb_params.get('max_depth', 6), 6)
+            self.lgb_params['learning_rate'] = min(self.lgb_params.get('learning_rate', 0.1), 0.1)
+            # 缩短训练轮数以防过拟合和过长训练
+            self.num_boost_round = min(self.num_boost_round, 100)
+        elif len(X_valid) < 200:
+            # 中等小样本的温和自适应
+            small_n = int(len(X_valid))
+            self.lgb_params['min_data_in_leaf'] = max(5, min(self.lgb_params.get('min_data_in_leaf', 50), small_n // 4))
 
         # 重新计算组大小（基于有效样本）
         df_valid = df_processed.iloc[valid_mask]
@@ -408,6 +426,7 @@ class LambdaRankStacker:
         # 执行CV训练
         cv_models = []
         cv_scores = []
+        oof_predictions = np.zeros(len(X_scaled))  # 初始化OOF数组（防数据泄漏）
 
         try:
             # 为CV创建日期索引映射
@@ -480,6 +499,9 @@ class LambdaRankStacker:
 
             # 计算验证集NDCG - 使用NDCG@50作为主要CV指标
             val_pred = model.predict(X_val_fold)
+
+            # 保存OOF预测（关键：防止数据泄漏）
+            oof_predictions[val_idx] = val_pred
             if len(val_group_sizes) > 0:
                 # 根据数据量选择合适的主要评估指标
                 max_group_size = max(val_group_sizes)
@@ -500,10 +522,53 @@ class LambdaRankStacker:
         if cv_models:
             primary_k_desc = "50" if max([max(fold_sizes) for fold_sizes in [val_group_sizes] if fold_sizes]) >= 50 else "20"
             logger.info(f"   CV平均NDCG@{primary_k_desc}: {np.mean(cv_scores):.4f} ± {np.std(cv_scores):.4f}")
-            # 返回第一个模型（或可以实现模型ensemble）
-            return cv_models[0]
+
+            # 保存OOF预测和索引（用于后续融合）
+            self._oof_predictions = oof_predictions
+            self._oof_index = pd.Series(dates).reset_index(drop=True)  # 保存原始索引
+            logger.info(f"   ✓ OOF预测已生成: {len(oof_predictions)} 个样本")
+
+            # 返回最后一个模型（见过最多数据）
+            return cv_models[-1]
         else:
             raise RuntimeError("所有CV fold都失败，无法训练模型")
+
+    def get_oof_predictions(self, df: pd.DataFrame) -> pd.Series:
+        """
+        获取OOF预测（Out-of-Fold predictions）
+
+        重要：这是真正的OOF预测，每个样本只被未见过它的模型预测，防止数据泄漏。
+
+        Args:
+            df: 原始训练数据（用于提取MultiIndex）
+
+        Returns:
+            OOF预测Series（带MultiIndex: date, ticker）
+
+        Raises:
+            RuntimeError: 如果OOF预测未生成（模型未使用CV训练）
+            ValueError: 如果df没有MultiIndex或索引长度不匹配
+        """
+        if self._oof_predictions is None:
+            raise RuntimeError("OOF预测未生成，可能模型未使用CV训练")
+
+        if not isinstance(df.index, pd.MultiIndex):
+            raise ValueError("df必须有MultiIndex(date, ticker)")
+
+        if len(self._oof_predictions) != len(df):
+            raise ValueError(
+                f"OOF预测长度({len(self._oof_predictions)})与df长度({len(df)})不匹配"
+            )
+
+        # 创建Series（使用df的MultiIndex）
+        oof_series = pd.Series(
+            self._oof_predictions,
+            index=df.index,
+            name='lambda_oof'
+        )
+
+        logger.info(f"✓ 返回Lambda OOF预测: {len(oof_series)} 个样本")
+        return oof_series
 
     def predict(self, df: pd.DataFrame, alpha_factors: pd.DataFrame = None) -> pd.DataFrame:
         """

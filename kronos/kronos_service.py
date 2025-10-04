@@ -21,11 +21,20 @@ class KronosService:
         self.last_predictions = None
         self.last_symbol = None
 
-    def initialize(self, model_size: str = "large") -> bool:
+    def initialize(self, model_size: str = "base") -> bool:
         """Initialize the Kronos model wrapper"""
         try:
-            config = KronosConfig(model_size=model_size)
+            config = KronosConfig(
+                model_size=model_size,
+                allow_fallback=False,
+                allow_model_downgrade=False,
+                attempt_dependency_install_on_failure=True
+            )
             self.model_wrapper = KronosModelWrapper(config)
+            # Eagerly load the model so failures are surfaced now
+            loaded = self.model_wrapper.load_model()
+            if not loaded:
+                raise RuntimeError("Kronos load_model() returned False")
             return True
         except Exception as e:
             logger.error(f"Failed to initialize Kronos: {str(e)}")
@@ -36,12 +45,18 @@ class KronosService:
                      period: str = "3mo",
                      interval: str = "1d",
                      pred_len: int = 30,
-                     model_size: str = "large",
+                     model_size: str = "base",
                      temperature: float = 0.7) -> Dict[str, Any]:
         """Generate predictions for a stock"""
         try:
-            # Initialize or reconfigure model if needed
-            if self.model_wrapper is None or self.model_wrapper.config.model_size != model_size:
+            # Initialize or reconfigure model if needed (defensive reload when not loaded)
+            needs_init = (
+                self.model_wrapper is None or
+                getattr(self.model_wrapper, 'config', None) is None or
+                getattr(self.model_wrapper.config, 'model_size', None) != model_size or
+                not getattr(self.model_wrapper, 'is_loaded', False)
+            )
+            if needs_init:
                 if not self.initialize(model_size):
                     return {"status": "error", "error": "Failed to initialize model"}
 

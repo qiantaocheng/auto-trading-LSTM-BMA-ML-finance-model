@@ -346,16 +346,16 @@ class EnhancedIndexAligner:
 
         # 添加目标变量（预测模式时可能是虚拟变量）
         if self.mode == 'inference':
-            # 预测模式：创建虚拟目标变量
-            stacker_data['ret_fwd_5d'] = np.zeros(len(stacker_data))
+            # 预测模式：创建虚拟目标变量（T+1）
+            stacker_data['ret_fwd_1d'] = np.zeros(len(stacker_data))
         else:
             # 训练模式：使用真实目标变量
             if hasattr(y, 'values'):
-                stacker_data['ret_fwd_5d'] = y.values
+                stacker_data['ret_fwd_1d'] = y.values
             elif isinstance(y, np.ndarray):
-                stacker_data['ret_fwd_5d'] = y
+                stacker_data['ret_fwd_1d'] = y
             else:
-                stacker_data['ret_fwd_5d'] = np.array(y)
+                stacker_data['ret_fwd_1d'] = np.array(y)
 
         # 确保索引名称正确
         if stacker_data.index.names != ['date', 'ticker']:
