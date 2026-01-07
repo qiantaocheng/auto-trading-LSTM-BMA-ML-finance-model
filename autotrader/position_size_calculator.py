@@ -668,10 +668,29 @@ class PositionSizeCalculator:
                     'atr_value': None
                 }
             
-            # 计算ATR (简化版，使用价格变化)
-            prices = np.array(price_history[:self.config.atr_period + 1])
-            price_changes = np.abs(np.diff(prices))
-            atr = np.mean(price_changes)
+            # 计算ATR（改进版 True Range 近似）
+            # 允许传入OHLC列表时提升精度，否则回退到收盘差近似
+            try:
+                import numpy as np  # 已使用np，确保存在
+                # 如果price_history为字典序列，尝试解析高低收
+                if isinstance(price_history[0], dict) and all(k in price_history[0] for k in ('High', 'Low', 'Close')):
+                    highs = np.array([bar['High'] for bar in price_history[-(self.config.atr_period + 1):]], dtype=float)
+                    lows = np.array([bar['Low'] for bar in price_history[-(self.config.atr_period + 1):]], dtype=float)
+                    closes = np.array([bar['Close'] for bar in price_history[-(self.config.atr_period + 1):]], dtype=float)
+                    prev_closes = closes[:-1]
+                    tr = np.maximum.reduce([highs[1:] - lows[1:],
+                                            np.abs(highs[1:] - prev_closes),
+                                            np.abs(lows[1:] - prev_closes)])
+                    atr = float(np.mean(tr))
+                else:
+                    # 回退：使用收盘差绝对值的均值
+                    prices = np.array(price_history[:self.config.atr_period + 1], dtype=float)
+                    price_changes = np.abs(np.diff(prices))
+                    atr = float(np.mean(price_changes))
+            except Exception:
+                prices = np.array(price_history[:self.config.atr_period + 1], dtype=float)
+                price_changes = np.abs(np.diff(prices))
+                atr = float(np.mean(price_changes))
             
             # 风险预算计算
             max_loss_dollar = available_cash * self.config.max_single_loss_pct

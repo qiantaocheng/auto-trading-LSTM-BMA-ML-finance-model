@@ -12,34 +12,37 @@ from typing import Dict, List, Any, Tuple
 from datetime import datetime
 import json
 import os
+from bma_models.simple_25_factor_engine import T10_ALPHA_FACTORS
 
 logger = logging.getLogger(__name__)
 
-# 标准的15个Alpha因子（与Simple17FactorEngine保持一致）
-STANDARD_15_FACTORS = [
-    # Momentum factors (1)
-    'momentum_10d_ex1',
-    # Technical indicators (6)
-    'rsi', 'bollinger_squeeze', 'obv_momentum', 'atr_ratio',
-    # Special volatility factor (1)
-    'ivol_60d',
-    # Fundamental proxy factors (1)
-    'liquidity_factor',
-    # High-alpha factors (4)
-    'near_52w_high', 'reversal_1d', 'rel_volume_spike', 'mom_accel_5_2',
-    # Behavioral factors (3)
-    'overnight_intraday_gap', 'max_lottery_factor', 'streak_reversal',
-    # Custom factor (1)
-    'price_efficiency_5d'
-]
+# 🔥 标准的核心T+10 Alpha因子（与Simple17FactorEngine保持一致）
+STANDARD_T10_FACTORS = list(T10_ALPHA_FACTORS)
 
-# 旧因子名称到新因子名称的映射（用于向后兼容）
+# 🔥 旧因子名称到新因子名称的映射（用于向后兼容）- T+10更新
+
 LEGACY_FACTOR_MAPPING = {
-    'momentum_10d': 'momentum_10d_ex1',
-    'reversal_5d': 'reversal_1d',
-    'mom_accel_10_5': 'mom_accel_5_2',
-    'price_efficiency_10d': 'price_efficiency_5d'
+    # 旧T+1因子 → 新T+10因子
+    'momentum_10d': 'liquid_momentum',
+    'momentum_10d_ex1': 'liquid_momentum',
+    'momentum_20d': 'liquid_momentum',
+    'rsi_7': 'rsi_21',
+    'rsi': 'rsi_21',
+    'mom_accel_5_2': 'liquid_momentum',
+    'mom_accel_10_5': 'liquid_momentum',
+    'obv_momentum': 'obv_divergence',
+    'obv_momentum_20d': 'obv_divergence',
+    # 删除的因子 - 映射到最接近的替代因子
+    'reversal_5d': 'price_ma60_deviation',
+    'price_efficiency_5d': 'trend_r2_60',
+    'price_efficiency_10d': 'trend_r2_60',
+    'nr7_breakout_bias': 'atr_ratio',
+    'overnight_intraday_gap': 'ret_skew_20d',
+    'max_lottery_factor': 'ret_skew_20d',
+    'stability_score': 'hist_vol_40d',
+    'liquidity_factor': 'vol_ratio_20d'
 }
+
 
 class AlphaFactorQualityMonitor:
     """
@@ -97,10 +100,10 @@ class AlphaFactorQualityMonitor:
         normalized_names = [self.normalize_factor_name(name) for name in factor_names]
 
         # 检查标准因子
-        alpha_factors = [name for name in normalized_names if name in STANDARD_15_FACTORS]
+        alpha_factors = [name for name in normalized_names if name in STANDARD_T10_FACTORS]
         extra_factors = [name for name in normalized_names
-                        if name not in STANDARD_15_FACTORS + ['Close', 'sentiment_score']]
-        missing_factors = [name for name in STANDARD_15_FACTORS if name not in normalized_names]
+                        if name not in STANDARD_T10_FACTORS + ['Close', 'sentiment_score']]
+        missing_factors = [name for name in STANDARD_T10_FACTORS if name not in normalized_names]
 
         validation = {
             'total_factors': len(normalized_names),
@@ -809,7 +812,7 @@ def monitor_all_factors(factors_df: pd.DataFrame, exclude_cols: List[str] = None
         监控汇总报告
     """
     if exclude_cols is None:
-        # 动态目标列名兼容（包含常见的T+1/T+5名称）
+        # 动态目标列名兼容（包含常见的T+1名称）
         exclude_cols = ['Close', 'date', 'ticker', 'target', 'ret_fwd_1d', 'ret_fwd_2d', 'ret_fwd_3d', 'ret_fwd_5d', 'ret_fwd_10d']
 
     # 首先验证因子名称

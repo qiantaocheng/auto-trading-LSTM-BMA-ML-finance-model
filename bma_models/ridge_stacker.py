@@ -16,7 +16,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr
 from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import TimeSeriesSplit
+
+# 🔥 导入统一PurgedCV，防止数据泄露
+try:
+    from bma_models.unified_purged_cv_factory import create_unified_cv
+    from bma_models.unified_config_loader import get_time_config
+    PURGED_CV_AVAILABLE = True
+except ImportError:
+    PURGED_CV_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +48,20 @@ class RidgeStacker:
                  auto_tune_alpha: bool = False,
                  alpha_grid: Tuple[float, ...] = (0.5, 1.0, 2.0, 3.0, 5.0, 8.0),
                  use_cv: bool = True,
-                 cv_splits: int = 5,
+                 use_purged_cv: bool = True,  # 🔥 使用PurgedCV防止数据泄露
+                 cv_splits: int = 6,  # 🔥 T+5: 6折CV
+                 cv_gap_days: int = 5,  # 🔥 T+5: gap=5
+                 cv_embargo_days: int = 5,  # 🔥 T+5: embargo=5
                  cv_test_size: float = 0.2,
                  use_lambda_percentile: bool = True,  # 新增：使用Lambda percentile特征
                  random_state: int = 42,
+                 # ---- Nested CV & constraints (new) ----
+                 use_nested_cv: bool = False,
+                 nested_outer_splits: int = 4,
+                 nested_gap_days: int = 5,
+                 nested_embargo_days: int = 5,
+                 aggregate_alpha: str = 'median',  # 'median' | 'ir_weighted'
+                 use_convex_constraint: bool = True,  # 非负且和为1
                  **kwargs):
         """
         初始化Ridge Stacker
@@ -58,11 +75,23 @@ class RidgeStacker:
             auto_tune_alpha: 是否自动调参 (默认False，保持简洁)
             alpha_grid: 调参网格 (默认[0.5,1,2,3,5,8])
             use_cv: 是否使用交叉验证 (默认True)
-            cv_splits: CV折数 (默认3)
+            use_purged_cv: 🔥 是否使用PurgedCV (默认True，防止数据泄露)
+            cv_splits: CV折数 (默认6，T+5优化)
+            cv_gap_days: 🔥 CV gap天数 (默认5，T+5)
+            cv_embargo_days: 🔥 CV embargo天数 (默认5，T+5)
             cv_test_size: 每折验证集比例 (默认0.2)
             use_lambda_percentile: 是否使用Lambda percentile特征 (默认True)
             random_state: 随机种子
         """
+        if not use_cv:
+            raise ValueError("RidgeStacker requires cross-validation; disabling CV violates the enforced T+5 protocol.")
+        if not use_purged_cv:
+            raise ValueError("RidgeStacker requires purged CV to protect the T+5 horizon; do not disable it.")
+        if not PURGED_CV_AVAILABLE:
+            raise RuntimeError("Unified Purged CV factory is unavailable. Install the required components to enable T+5 training.")
+        if (cv_splits, cv_gap_days, cv_embargo_days) != (6, 5, 5):
+            raise ValueError("RidgeStacker enforces T+5 CV settings: splits=6, gap=5, embargo=5.")
+
         self.base_cols = base_cols
         self.alpha = alpha
         self.fit_intercept = fit_intercept
@@ -70,12 +99,23 @@ class RidgeStacker:
         self.tol = tol
         self.auto_tune_alpha = auto_tune_alpha
         self.alpha_grid = alpha_grid
-        self.use_cv = use_cv
-        self.cv_splits = cv_splits
+        self.use_cv = True
+        self.use_purged_cv = True
+        self.cv_splits = 6
+        self.cv_gap_days = 5
+        self.cv_embargo_days = 5
         self.cv_test_size = cv_test_size
         self.use_lambda_percentile = use_lambda_percentile
         self.random_state = random_state
         self.actual_feature_cols_ = None  # 🔧 训练时实际使用的特征列（Critical Fix）
+
+        # Nested CV & constraints
+        self.use_nested_cv = use_nested_cv
+        self.nested_outer_splits = nested_outer_splits
+        self.nested_gap_days = nested_gap_days
+        self.nested_embargo_days = nested_embargo_days
+        self.aggregate_alpha = aggregate_alpha
+        self.use_convex_constraint = use_convex_constraint
 
         # 模型组件
         self.ridge_model = None
@@ -99,6 +139,7 @@ class RidgeStacker:
         logger.info(f"   求解器: {self.solver}, 容差: {self.tol}")
         logger.info(f"   自动调参: {self.auto_tune_alpha}")
         logger.info(f"   使用CV: {self.use_cv}, 折数: {self.cv_splits}")
+        logger.info(f"   嵌套CV: {'启用' if self.use_nested_cv else '禁用'} (outer_splits={self.nested_outer_splits})")
         logger.info(f"   特征标准化: 横截面z-score")
 
     def _validate_input(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -171,29 +212,42 @@ class RidgeStacker:
         except:
             return 0.0
 
-    def _time_series_cv_split(self, n_samples: int):
-        """创建时间序列CV分割"""
-        splits = []
-        test_size = int(n_samples * self.cv_test_size)
-        train_min_size = max(100, int(n_samples * 0.3))  # 至少30%训练数据
+    def _create_purged_cv_split(self, dates: pd.Series):
+        """🔥 使用统一的 PurgedCV 分割，防止数据泄露"""
+        if not self.use_purged_cv:
+            raise RuntimeError('PurgedCV is mandatory for RidgeStacker T+5 training.')
 
-        for i in range(self.cv_splits):
-            # 递增训练集大小
-            train_end = train_min_size + i * ((n_samples - test_size - train_min_size) // self.cv_splits)
-            test_start = train_end
-            test_end = min(test_start + test_size, n_samples)
+        cv = create_unified_cv(
+            n_splits=self.cv_splits,
+            gap=self.cv_gap_days,
+            embargo=self.cv_embargo_days
+        )
 
-            if test_end > n_samples or test_start >= test_end:
-                break
+        unique_dates = sorted(dates.unique())
+        if not unique_dates:
+            raise ValueError('PurgedCV requires non-empty date information.')
+        date_to_idx = {date: i for i, date in enumerate(unique_dates)}
+        groups = dates.map(date_to_idx).values
 
-            train_idx = np.arange(0, train_end)
-            test_idx = np.arange(test_start, test_end)
+        logger.info(f"✅ 使用PurgedCV: splits={self.cv_splits}, gap={self.cv_gap_days}, embargo={self.cv_embargo_days}")
+        logger.info(f"   时间范围: {unique_dates[0]} ~ {unique_dates[-1]} ({len(unique_dates)}天)")
 
-            splits.append((train_idx, test_idx))
+        return cv.split(X=np.zeros((len(dates), 1)), y=None, groups=groups)
 
-        return splits
+    def _create_purged_cv_split_params(self, dates: pd.Series, n_splits: int, gap: int, embargo: int):
+        """根据指定参数创建PurgedCV分割。"""
+        if not PURGED_CV_AVAILABLE:
+            raise RuntimeError('Unified Purged CV factory unavailable.')
+        cv = create_unified_cv(n_splits=n_splits, gap=gap, embargo=embargo)
+        unique_dates = sorted(dates.unique())
+        if not unique_dates:
+            raise ValueError('PurgedCV requires non-empty date information.')
+        date_to_idx = {date: i for i, date in enumerate(unique_dates)}
+        groups = dates.map(date_to_idx).values
+        logger.info(f"✅ 使用PurgedCV(n_splits={n_splits}, gap={gap}, embargo={embargo})")
+        return cv.split(X=np.zeros((len(dates), 1)), y=None, groups=groups)
 
-    def _auto_tune_alpha(self, X: np.ndarray, y: np.ndarray, df: pd.DataFrame) -> float:
+    def _auto_tune_alpha(self, X: np.ndarray, y: np.ndarray, df: pd.DataFrame, dates: pd.Series = None) -> float:
         """
         自动调参选择最优alpha - 增强CV版本
         """
@@ -202,20 +256,26 @@ class RidgeStacker:
 
         logger.info(f"🎯 开始自动调参，网格: {self.alpha_grid}")
 
-        if self.use_cv:
-            logger.info(f"   使用时间序列CV，折数: {self.cv_splits}")
-            return self._auto_tune_alpha_with_cv(X, y)
-        else:
-            logger.info(f"   使用全量训练（无CV）")
-            return self._auto_tune_alpha_no_cv(X, y)
+        if not self.use_cv:
+            raise RuntimeError("RidgeStacker requires PurgedCV-based CV for T+5 training.")
 
-    def _auto_tune_alpha_with_cv(self, X: np.ndarray, y: np.ndarray) -> float:
-        """使用CV进行调参"""
+        return self._auto_tune_alpha_with_cv(X, y, dates)
+
+    def _auto_tune_alpha_with_cv(self, X: np.ndarray, y: np.ndarray, dates: pd.Series = None) -> float:
+        """
+        使用CV进行调参（严格PurgedCV）
+        """
+        if dates is None:
+            raise ValueError("PurgedCV tuning requires aligned date information.")
+        if not self.use_purged_cv:
+            raise RuntimeError("PurgedCV must be enabled for alpha tuning.")
+
+        logger.info(f"   使用PurgedCV，折数: {self.cv_splits}")
+
         best_alpha = self.alpha
         best_score = -999
 
-        # 创建时间序列分割
-        cv_splits = self._time_series_cv_split(len(X))
+        cv_splits = list(self._create_purged_cv_split(dates))
 
         for alpha in self.alpha_grid:
             cv_scores = []
@@ -224,7 +284,6 @@ class RidgeStacker:
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y[train_idx], y[test_idx]
 
-                # 训练模型
                 model = Ridge(
                     alpha=alpha,
                     fit_intercept=self.fit_intercept,
@@ -234,7 +293,6 @@ class RidgeStacker:
                 )
                 model.fit(X_train, y_train)
 
-                # 验证集预测
                 y_pred = model.predict(X_test)
                 rank_ic = self._calculate_rank_ic(y_test, y_pred)
                 cv_scores.append(rank_ic)
@@ -245,7 +303,6 @@ class RidgeStacker:
 
             logger.info(f"   α={alpha}: CV RankIC={avg_score:.4f} (±{std_score:.4f})")
 
-            # 选择最优alpha
             if avg_score > best_score:
                 best_score = avg_score
                 best_alpha = alpha
@@ -253,324 +310,254 @@ class RidgeStacker:
         logger.info(f"✅ 最优α: {best_alpha}, CV RankIC: {best_score:.4f}")
         return best_alpha
 
-    def _auto_tune_alpha_no_cv(self, X: np.ndarray, y: np.ndarray) -> float:
-        """不使用CV的调参（原版）"""
-        best_alpha = self.alpha
-        best_score = -999
+    def _project_to_simplex(self, w: np.ndarray) -> np.ndarray:
+        """将向量投影到概率单纯形：w>=0, sum(w)=1。"""
+        if w.ndim != 1:
+            w = w.flatten()
+        # Algorithm from: Efficient Projections onto the l1-Ball for Learning in High Dimensions (Duchi et al.)
+        u = np.sort(np.maximum(w, 0))[::-1]
+        cssv = np.cumsum(u)
+        rho = np.nonzero(u * np.arange(1, len(u) + 1) > (cssv - 1))[0]
+        if len(rho) == 0:
+            # all zeros, return uniform
+            m = len(w)
+            return np.full(m, 1.0 / m)
+        rho = rho[-1]
+        theta = (cssv[rho] - 1) / (rho + 1.0)
+        w_proj = np.maximum(w - theta, 0)
+        s = w_proj.sum()
+        if s <= 0:
+            m = len(w)
+            return np.full(m, 1.0 / m)
+        return w_proj / s
 
+    def _fit_ridge_with_constraint(self, X: np.ndarray, y: np.ndarray, alpha: float, fit_intercept: bool = False) -> Tuple[np.ndarray, float]:
+        """拟合Ridge并对权重投影到非负且和为1的单纯形。"""
+        model = Ridge(
+            alpha=alpha,
+            fit_intercept=fit_intercept,
+            solver=self.solver,
+            tol=self.tol,
+            random_state=self.random_state
+        )
+        model.fit(X, y)
+        w = np.asarray(model.coef_).flatten()
+        b = float(model.intercept_) if fit_intercept else 0.0
+        if self.use_convex_constraint:
+            w = self._project_to_simplex(np.maximum(w, 0))
+            b = 0.0  # 保持可解释性：凸组合通常不需要截距
+        return w, b
+
+    def _inner_tune_alpha(self, X_train: np.ndarray, y_train: np.ndarray, dates_train: pd.Series) -> float:
+        """在外层训练段上进行内层PurgedCV调参。"""
+        best_alpha = None
+        best_score = -1e9
+        # dates_train 可能是 Series/Index/ndarray，统一为Series
+        if not isinstance(dates_train, pd.Series):
+            dates_train = pd.Series(np.asarray(dates_train))
+        inner_splits = list(self._create_purged_cv_split_params(dates_train, self.cv_splits, self.cv_gap_days, self.cv_embargo_days))
         for alpha in self.alpha_grid:
-            try:
-                # 全量训练模型
-                model = Ridge(
-                    alpha=alpha,
-                    fit_intercept=self.fit_intercept,
-                    solver=self.solver,
-                    tol=self.tol,
-                    random_state=self.random_state
-                )
-                model.fit(X, y)
+            scores = []
+            for (tr_idx, te_idx) in inner_splits:
+                # 使用仅基于训练的标准化，避免泄露
+                scaler = StandardScaler()
+                X_tr = scaler.fit_transform(X_train[tr_idx])
+                X_te = scaler.transform(X_train[te_idx])
+                w, b = self._fit_ridge_with_constraint(X_tr, y_train[tr_idx], alpha, fit_intercept=self.fit_intercept)
+                y_hat = X_te @ w + b
+                scores.append(self._calculate_rank_ic(y_train[te_idx], y_hat))
+            avg = float(np.nanmean(scores)) if scores else -1e9
+            self.alpha_scores_[alpha] = avg
+            if avg > best_score:
+                best_score = avg
+                best_alpha = alpha
+        return best_alpha if best_alpha is not None else self.alpha
 
-                # 全量数据预测并计算RankIC
-                y_pred = model.predict(X)
-                rank_ic = self._calculate_rank_ic(y, y_pred)
-
-                # 使用RankIC作为主要评分
-                score = rank_ic
-                self.alpha_scores_[alpha] = rank_ic
-
-                logger.info(f"   α={alpha}: RankIC={rank_ic:.4f}")
-
-                # 如果RankIC更好，则更新
-                tolerance = 0.001
-                if (score > best_score + tolerance) or \
-                   (abs(score - best_score) <= tolerance and alpha > best_alpha):
-                    best_score = score
-                    best_alpha = alpha
-
-            except Exception as e:
-                logger.debug(f"调参异常 alpha={alpha}: {e}")
-                self.alpha_scores_[alpha] = 0.0
-
-        self.best_alpha_ = best_alpha
-        logger.info(f"✅ 最优α: {best_alpha} (RankIC: {self.alpha_scores_[best_alpha]:.4f}, 无CV)")
-
-        return best_alpha
-
-    def fit(self, df: pd.DataFrame, **kwargs) -> 'RidgeStacker':
+    def _nested_cv_oof(self, X: np.ndarray, y: np.ndarray, dates: pd.Series) -> Tuple[np.ndarray, List[float], List[float]]:
         """
-        训练Ridge Stacker（增强CV版）
-
-        Args:
-            df: 包含第一层预测和标签的DataFrame
-            **kwargs: 兼容参数（max_train_to_today等）
+        外层PurgedCV生成OOF预测；内层在外层训练段时间CV选择alpha。
+        返回: y_oof_pred, alphas_per_fold, ic_per_fold
         """
-        logger.info("🚀 开始训练Ridge Stacker")
-        logger.info(f"   期望特征顺序: {list(self.base_cols)}")
-        logger.info(f"   CV模式: {'启用' if self.use_cv else '禁用'}")
+        n = len(y)
+        y_oof = np.full(n, np.nan, dtype=float)
+        alphas = []
+        ics = []
+        outer_splits = list(self._create_purged_cv_split_params(dates, self.nested_outer_splits, self.nested_gap_days, self.nested_embargo_days))
+        for k, (train_idx, test_idx) in enumerate(outer_splits):
+            # 内层调参（dates 可能是 DatetimeIndex/Series，统一转换为numpy数组再按位置索引）
+            dates_array = np.asarray(dates)
+            dates_train = pd.Series(dates_array[train_idx])
+            alpha_k = self._inner_tune_alpha(X[train_idx], y[train_idx], dates_train)
+            alphas.append(alpha_k)
+            # 基于训练段拟合，并在测试段预测
+            scaler = StandardScaler()
+            X_tr = scaler.fit_transform(X[train_idx])
+            X_te = scaler.transform(X[test_idx])
+            w, b = self._fit_ridge_with_constraint(X_tr, y[train_idx], alpha_k, fit_intercept=self.fit_intercept)
+            y_hat = X_te @ w + b
+            y_oof[test_idx] = y_hat
+            ic_k = self._calculate_rank_ic(y[test_idx], y_hat)
+            ics.append(float(ic_k))
+            logger.info(f"[NestedCV] outer_fold={k+1}/{len(outer_splits)} alpha={alpha_k} OOS RankIC={ic_k:.4f}")
+        return y_oof, alphas, ics
 
-        # 验证数据
-        df_clean = self._validate_input(df)
+    def fit(self, df: pd.DataFrame, max_train_to_today: bool = True) -> "RidgeStacker":
+        """
+        训练Ridge二层Stacker。输入为包含第一层预测与标签的DataFrame。
 
-        # 准备特征和标签
-        X, y = self._prepare_features(df_clean)
+        必需列: self.base_cols 中的列，以及一个以 'ret_fwd' 开头的标签列。
+        索引: 需要MultiIndex(date, ticker)。
+        """
+        df_validated = self._validate_input(df)
+        X, y = self._prepare_features(df_validated)
 
-        # 小样本自适应：允许在极小样本下训练，但发出警告
-        if len(X) < 10:
-            raise ValueError(f"训练样本过少: {len(X)} < 10")
-        if len(X) < 50:
-            logger.warning(f"小样本训练Ridge: {len(X)} < 50，启用保守参数和正则化")
+        # 标签Winsorize，增强稳健性
+        y_proc = self._winsorize_labels(y, lower_pct=1.0, upper_pct=99.0)
 
-        # 标签Winsorization (1%, 99%)
-        y_winsorized = self._winsorize_labels(y, 1.0, 99.0)
-
-        # 特征标准化（横截面z-score）
+        # 特征标准化
         self.scaler = StandardScaler()
         X_scaled = self.scaler.fit_transform(X)
 
-        logger.info(f"   标准化完成: 特征均值={X_scaled.mean(axis=0)[:3]}, 特征标准差={X_scaled.std(axis=0)[:3]}")
+        dates = df_validated.index.get_level_values('date')
 
-        # 直接使用指定alpha（无调参）
-        if self.auto_tune_alpha:
-            optimal_alpha = self._auto_tune_alpha(X_scaled, y_winsorized, df_clean)
-        else:
-            optimal_alpha = self.alpha
-            logger.info(f"🎯 使用指定α: {optimal_alpha} (无调参)")
-
-        # 使用CV验证最终模型性能
-        val_score = None
-        val_rank_ic = None
-
-        # 统一5折CV：在样本量充足时始终使用（阈值降低，避免小样本跳过）
-        if self.use_cv and len(X_scaled) >= max(self.cv_splits * 10, 50):
-            # 使用最后一折作为验证集
-            val_size = int(len(X_scaled) * self.cv_test_size)
-            train_size = len(X_scaled) - val_size
-
-            X_train = X_scaled[:train_size]
-            y_train = y_winsorized[:train_size]
-            X_val = X_scaled[train_size:]
-            y_val = y_winsorized[train_size:]
-
-            # 训练模型
-            self.ridge_model = Ridge(
-                alpha=optimal_alpha,
-                fit_intercept=self.fit_intercept,
-                solver=self.solver,
-                tol=self.tol,
-                random_state=self.random_state
-            )
-            self.ridge_model.fit(X_train, y_train)
-
-            # 验证集评估
-            y_val_pred = self.ridge_model.predict(X_val)
-            val_score = self.ridge_model.score(X_val, y_val)
-            val_rank_ic = self._calculate_rank_ic(y_val, y_val_pred)
-
-            logger.info(f"   验证集R²: {val_score:.4f}")
-            logger.info(f"   验证集RankIC: {val_rank_ic:.4f}")
-
-            # 重新使用全量数据训练最终模型
-            self.ridge_model.fit(X_scaled, y_winsorized)
-        else:
-            # 直接全量训练
-            self.ridge_model = Ridge(
-                alpha=optimal_alpha,
-                fit_intercept=self.fit_intercept,
-                solver=self.solver,
-                tol=self.tol,
-                random_state=self.random_state
-            )
-            self.ridge_model.fit(X_scaled, y_winsorized)
-
-        # 计算训练性能
-        y_pred = self.ridge_model.predict(X_scaled)
-        self.train_score_ = self.ridge_model.score(X_scaled, y_winsorized)
-        train_rmse = np.sqrt(mean_squared_error(y_winsorized, y_pred))
-        train_rank_ic = self._calculate_rank_ic(y_winsorized, y_pred)
-
-        # 计算原始标签的RankIC
-        original_rank_ic = self._calculate_rank_ic(y, y_pred)
-
-        # 保存验证分数
-        self.val_score_ = val_score
-        self.val_rank_ic_ = val_rank_ic
-
-        # 保存特征重要性（回归系数） - 使用训练时实际特征列，确保长度一致
-        used_feature_names = list(self.actual_feature_cols_) if self.actual_feature_cols_ is not None else list(self.base_cols)
-        coef_array = np.ravel(self.ridge_model.coef_)
-
-        if len(coef_array) != len(used_feature_names):
-            logger.warning(
-                f"Ridge系数长度({len(coef_array)})与特征数({len(used_feature_names)})不一致，尝试自动对齐"
-            )
-            # 安全兜底：截断或填充到匹配长度（极端情况下避免报错，仍保留排序可读性）
-            if len(coef_array) > len(used_feature_names):
-                coef_array = coef_array[:len(used_feature_names)]
+        if self.use_nested_cv:
+            # 嵌套CV：生成OOF并聚合alpha，然后在全量上再训练一次
+            logger.info("🚀 使用严谨嵌套CV训练二层 (外层滚动 + 内层PurgedCV调参)")
+            # 使用未缩放X进行嵌套CV，内部各fold单独标准化
+            y_oof, alphas, ics = self._nested_cv_oof(X, y_proc, dates)
+            # 选择聚合alpha
+            if self.aggregate_alpha == 'ir_weighted' and len(ics) > 1 and np.nanstd(ics) > 0:
+                weights = np.maximum(np.array(ics), 0)
+                if weights.sum() == 0:
+                    self.best_alpha_ = float(np.median(alphas))
+                else:
+                    self.best_alpha_ = float(np.average(alphas, weights=weights))
             else:
-                pad = np.zeros(len(used_feature_names) - len(coef_array))
-                coef_array = np.concatenate([coef_array, pad])
+                self.best_alpha_ = float(np.median(alphas)) if len(alphas) > 0 else self.alpha
+            logger.info(f"[NestedCV] 聚合alpha={self.best_alpha_} (strategy={self.aggregate_alpha})")
+            # 在全量上拟合最终模型（先全量标准化，再拟合+投影）
+            self.scaler = StandardScaler()
+            X_scaled = self.scaler.fit_transform(X)
+            w, b = self._fit_ridge_with_constraint(X_scaled, y_proc, self.best_alpha_, fit_intercept=self.fit_intercept)
+            # 存入sklearn Ridge对象以保持接口一致
+            self.ridge_model = Ridge(alpha=self.best_alpha_, fit_intercept=False)
+            # 确保coef_为1D，避免predict输出(n,1)造成下游"Data must be 1-dimensional"错误
+            self.ridge_model.coef_ = w.reshape(-1)
+            self.ridge_model.intercept_ = 0.0
+            # 显式设置特征维度，提升sklearn一致性
+            try:
+                self.ridge_model.n_features_in_ = X_scaled.shape[1]
+            except Exception:
+                pass
+        else:
+            # 可选：自动调参（单层CV）
+            if self.auto_tune_alpha:
+                self.best_alpha_ = self._auto_tune_alpha(X_scaled, y_proc, df_validated, dates)
+            else:
+                self.best_alpha_ = self.alpha
 
-        self.feature_names_ = used_feature_names
-        self.feature_importance_ = pd.DataFrame({
-            'feature': used_feature_names,
-            'coefficient': coef_array,
-            'abs_coefficient': np.abs(coef_array)
-        }).sort_values('abs_coefficient', ascending=False)
+            # 使用Ridge训练
+            self.ridge_model = Ridge(
+                alpha=self.best_alpha_,
+                fit_intercept=self.fit_intercept,
+                solver=self.solver,
+                tol=self.tol,
+                random_state=self.random_state
+            )
+            self.ridge_model.fit(X_scaled, y_proc)
+            # 训练后进行凸约束投影（可选）
+            if self.use_convex_constraint:
+                w = np.asarray(self.ridge_model.coef_).flatten()
+                w = self._project_to_simplex(np.maximum(w, 0))
+                self.ridge_model.coef_ = w.reshape(-1)
+                if self.fit_intercept:
+                    self.ridge_model.intercept_ = 0.0
+            try:
+                self.ridge_model.n_features_in_ = X_scaled.shape[1]
+            except Exception:
+                pass
+
+        # 训练分数与特征重要性
+        y_pred_train = self.ridge_model.predict(X_scaled)
+        self.train_score_ = float(self._calculate_rank_ic(y_proc, y_pred_train))
+        self.feature_names_ = list(self.actual_feature_cols_ or self.base_cols)
+        # 线性模型的重要性可用系数绝对值
+        try:
+            coefs = np.asarray(self.ridge_model.coef_).flatten()
+            self.feature_importance_ = {name: float(abs(w)) for name, w in zip(self.feature_names_, coefs)}
+        except Exception:
+            self.feature_importance_ = None
 
         self.fitted_ = True
-
-        logger.info("✅ Ridge Stacker 训练完成")
-        logger.info(f"   使用α: {optimal_alpha}")
-        logger.info(f"   训练R²: {self.train_score_:.4f}")
-        logger.info(f"   训练RMSE: {train_rmse:.6f}")
-        logger.info(f"   RankIC(winsorized): {train_rank_ic:.4f}")
-        logger.info(f"   RankIC(原始): {original_rank_ic:.4f}")
-        if self.val_score_ is not None:
-            logger.info(f"   CV验证R²: {self.val_score_:.4f}")
-            logger.info(f"   CV验证RankIC: {self.val_rank_ic_:.4f}")
-        logger.info("   特征重要性 (系数):")
-        for _, row in self.feature_importance_.head(3).iterrows():
-            logger.info(f"     {row['feature']}: {row['coefficient']:.4f}")
-
         return self
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        使用Ridge模型进行预测
-
-        Args:
-            df: 包含第一层预测的DataFrame
-
-        Returns:
-            包含预测分数和排名的DataFrame
+        使用训练好的RidgeStacker进行预测。
+        返回包含'score'列的DataFrame（索引与输入对齐）。
         """
-        if not self.fitted_:
-            raise RuntimeError("模型未训练，请先调用fit()")
+        if not self.fitted_ or self.ridge_model is None or self.scaler is None:
+            raise RuntimeError("RidgeStacker not fitted")
 
-        logger.info("📊 Ridge Stacker 开始预测...")
+        # 确保列顺序与训练一致；允许缺失标签列
+        if not isinstance(df.index, pd.MultiIndex) or df.index.names != ['date', 'ticker']:
+            raise ValueError("预测数据必须具有MultiIndex(date, ticker)")
 
-        # 验证输入并确保列顺序一致
-        df_clean = self._validate_input(df)
+        feature_cols = list(self.actual_feature_cols_ or self.base_cols)
+        missing = [c for c in feature_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"预测缺少必需特征列: {missing}")
 
-        # 🔧 Critical Fix: 使用训练时保存的实际特征列
-        if self.actual_feature_cols_ is None:
-            raise RuntimeError("actual_feature_cols_未初始化，模型可能未正确训练")
-
-        # 确保所有特征列存在
-        missing_cols = [col for col in self.actual_feature_cols_ if col not in df_clean.columns]
-        if missing_cols:
-            raise ValueError(f"预测数据缺少特征列: {missing_cols}")
-
-        # 使用训练时的实际特征列
-        X = df_clean[self.actual_feature_cols_].values
-
-        # 处理NaN
-        valid_mask = ~np.isnan(X).any(axis=1)
-        X_valid = X[valid_mask]
-
-        if len(X_valid) == 0:
-            raise ValueError("所有样本都包含NaN，无法预测")
-
-        # 🔧 关键修复：使用训练时拟合的标准化器
-        if self.scaler is None:
-            raise RuntimeError("标准化器未初始化，模型可能未正确训练")
-
-        X_scaled = self.scaler.transform(X_valid)
-
-        logger.info(f"   特征提取: {len(X_valid)} 有效样本, {X_scaled.shape[1]} 特征")
-        logger.info(f"   实际特征顺序: {self.actual_feature_cols_}")
-        logger.info(f"   预测标准化: 特征均值={X_scaled.mean(axis=0)[:3]}, 特征标准差={X_scaled.std(axis=0)[:3]}")
-
-        # 🔧 验证特征维度一致性
-        if X_scaled.shape[1] != len(self.actual_feature_cols_):
-            raise RuntimeError(f"特征维度不一致: 预测时{X_scaled.shape[1]}列，训练时{len(self.actual_feature_cols_)}列")
-
-        # 预测
-        raw_predictions = self.ridge_model.predict(X_scaled)
-
-        # 创建完整预测数组
-        full_predictions = np.full(len(X), np.nan)
-        full_predictions[valid_mask] = raw_predictions
-
-        # 构建结果DataFrame
-        result = df_clean.copy()
-        result['score'] = full_predictions
-
-        # 按日期计算排名（使用transform保持索引对齐，避免apply产生错位）
-        result['score_rank'] = result.groupby(level='date')['score'].transform(
-            lambda s: s.rank(method='average', ascending=False)
-        )
-
-        # 标准化分数
-        def _zscore_by_date(group):
-            scores = group['score']
-            valid_scores = scores.dropna()
-            if len(valid_scores) <= 1:
-                return pd.Series(0.0, index=scores.index)
-
-            mean_score = valid_scores.mean()
-            std_score = valid_scores.std()
-            if std_score < 1e-12:
-                return pd.Series(0.0, index=scores.index)
-
-            zscores = (valid_scores - mean_score) / std_score
-            full_zscores = pd.Series(0.0, index=scores.index)
-            full_zscores.loc[valid_scores.index] = zscores
-            return full_zscores
-
-        # 使用transform确保与原索引对齐
-        result['score_z'] = result.groupby(level='date')['score'].transform(
-            lambda s: (s - s.mean()) / s.std() if s.dropna().size > 1 and s.std() >= 1e-12 else 0.0
-        )
-
-        logger.info(f"✅ Ridge预测完成: {len(result)}样本")
-        logger.info(f"   有效预测: {(~pd.isna(result['score'])).sum()}")
-
-        return result[['score', 'score_rank', 'score_z']]
+        X = df[feature_cols].values
+        X_scaled = self.scaler.transform(X)
+        y_pred = self.ridge_model.predict(X_scaled)
+        return pd.DataFrame({'score': y_pred}, index=df.index)
 
     def replace_ewa_in_pipeline(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        替代EWA的管道接口 - 兼容现有调用
+        """Compatibility shim for the legacy EWA interface used in the pipeline."""
+        if not self.fitted_ or self.ridge_model is None or self.scaler is None:
+            raise RuntimeError('RidgeStacker not fitted; call fit before replace_ewa_in_pipeline.')
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError('replace_ewa_in_pipeline expects a pandas DataFrame.')
+        if df.empty:
+            raise ValueError('replace_ewa_in_pipeline received an empty DataFrame.')
+        if not isinstance(df.index, pd.MultiIndex) or df.index.names != ['date', 'ticker']:
+            raise ValueError('Input to replace_ewa_in_pipeline must have MultiIndex(date, ticker).')
 
-        Args:
-            df: 输入数据
+        feature_cols = list(self.actual_feature_cols_ or self.base_cols)
+        sanitized = df.copy()
+        label_cols = [col for col in sanitized.columns if col.startswith('ret_fwd')]
+        if label_cols:
+            sanitized = sanitized.drop(columns=label_cols)
 
-        Returns:
-            预测结果
-        """
-        return self.predict(df)
+        missing = [col for col in feature_cols if col not in sanitized.columns]
+        if missing:
+            raise ValueError(f'replace_ewa_in_pipeline is missing required features: {missing}')
 
-    def get_model_info(self) -> Dict:
-        """
-        获取模型信息 - 兼容LTR接口
+        sanitized = sanitized[feature_cols]
+        valid_mask = ~sanitized.isna().any(axis=1)
+        if not valid_mask.any():
+            raise ValueError('replace_ewa_in_pipeline found no valid rows after dropping NaNs.')
 
-        Returns:
-            模型信息字典
-        """
-        if not self.fitted_:
-            return {}
+        if not valid_mask.all():
+            logger.debug('replace_ewa_in_pipeline dropping %d rows with NaN features', (~valid_mask).sum())
 
+        valid_features = sanitized.loc[valid_mask]
+        predictions = self.predict(valid_features)
+
+        if valid_mask.all():
+            return predictions
+
+        full_output = pd.DataFrame(index=sanitized.index, columns=predictions.columns, dtype=float)
+        full_output.loc[valid_mask] = predictions.values
+        return full_output
+
+    def get_model_info(self) -> Dict[str, any]:
         return {
-            'model_type': 'Ridge Regression (开箱即用版)',
-            'n_features': len(self.feature_names_) if self.feature_names_ else 0,
-            'alpha': self.best_alpha_,  # 使用最优alpha
-            'alpha_grid': list(self.alpha_grid),
-            'alpha_scores': dict(self.alpha_scores_),
-            'train_score': self.train_score_,
-            'solver': self.solver,
-            'tol': self.tol,
-            'fit_intercept': self.fit_intercept,
-            'auto_tune_alpha': self.auto_tune_alpha,
-            'intercept': self.ridge_model.intercept_ if self.fit_intercept and self.ridge_model else 0.0,
-            'feature_importance': self.feature_importance_.to_dict('records') if self.feature_importance_ is not None else None,
-            'feature_names': self.feature_names_,
-            'configuration': 'Optimized for 2600 stocks × 3 years, T→T+5 horizon'
+            'alpha': float(self.best_alpha_),
+            'use_lambda_percentile': bool(self.use_lambda_percentile),
+            'train_rank_ic': float(self.train_score_) if self.train_score_ is not None else None,
+            'feature_importance': self.feature_importance_,
+            'features': list(self.feature_names_ or []),
+            'n_iterations': 1
         }
-
-    @property
-    def best_iteration_(self):
-        """兼容LTR接口的属性"""
-        return 1 if self.fitted_ else None
-
-# 兼容导入
-LtrIsotonicStacker = RidgeStacker  # 提供向后兼容的别名

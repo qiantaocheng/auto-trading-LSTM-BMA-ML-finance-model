@@ -6,6 +6,8 @@ from .error_handling_system import (
 )
 from bma_models.unified_config_loader import get_time_config
 
+from .config_helpers import get_config_manager
+
 """
 IBKR automated trading minimal closed-loop script（connection→market data→order placement/order cancellation→reports→account/positions→risk control/tools）
 
@@ -786,10 +788,27 @@ class IbkrAutoTrader:
         """兼容性属性：retrievalpositions字典"""
         return {symbol: pos.quantity for symbol, pos in self.position_manager.get_all_positions().items()}
     
-    @positions.setter  
+    @positions.setter
     def positions(self, value: Dict[str, int]):
-        """兼容性属性：settingspositions字典（not推荐使use）"""
-        self.logger.warning("直接settingspositions属性弃use，请使useposition_manager")
+        """兼容性属性：同步更新到position_manager"""
+        self.logger.warning("直接设置positions已弃用，建议使用position_manager.update_position()")
+
+        # 同步更新到position_manager（保证数据一致性）
+        for symbol, qty in (value or {}).items():
+            try:
+                current_price = self.get_price(symbol) if hasattr(self, 'get_price') else 0.0
+                if current_price <= 0:
+                    current_price = 100.0  # fallback价格
+
+                self.position_manager.update_position(
+                    symbol=symbol,
+                    quantity=int(qty),
+                    current_price=float(current_price)
+                )
+            except Exception as e:
+                self.logger.error(f"同步持仓{symbol}到position_manager失败: {e}")
+
+        # 保留legacy字段用于向后兼容（但不作为主数据源）
         self._legacy_positions = value
 
     def _load_dynamic_risk_params(self) -> Dict[str, Any]:
@@ -3784,7 +3803,7 @@ class IbkrAutoTrader:
                 calibrated_signals = model_signals
         
         try:
-            from .engine import Quote  # Signal, Metrics classes not defined
+            from .trading_types import Quote, Signal, Metrics
             signals: List[Signal] = []
             for s in calibrated_signals:
                 sym = s.get('symbol')

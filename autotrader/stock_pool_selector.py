@@ -9,7 +9,7 @@ from tkinter import ttk, messagebox
 import json
 from typing import Optional, Dict, List
 import logging
-from stock_pool_manager import StockPoolManager
+from autotrader.stock_pool_manager import StockPoolManager
 
 logger = logging.getLogger(__name__)
 

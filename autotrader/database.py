@@ -3,32 +3,34 @@
 SQLite database module - Manages stock lists and trading configurations
 """
 
+from __future__ import annotations
+
 import sqlite3
 import os
+from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import logging
+import threading
+
+from .system_paths import DEFAULT_DB_FILENAME, resolve_data_path
 
 class StockDatabase:
-    def __init__(self, db_path: str = "autotrader_stocks.db"):
-        # Persist DB under project data directory to avoid CWD-dependent paths
-        try:
-            if not os.path.isabs(db_path):
-                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-                data_dir = os.path.join(base_dir, "data")
-                os.makedirs(data_dir, exist_ok=True)
-                self.db_path = os.path.join(data_dir, db_path)
-            else:
-                # Ensure parent exists
-                os.makedirs(os.path.dirname(db_path), exist_ok=True)
-                self.db_path = db_path
-        except Exception:
-            # Fallback to current directory if path prep fails
-            self.db_path = db_path
+    def __init__(self, db_path: str | os.PathLike[str] = DEFAULT_DB_FILENAME):
+        self._conn_lock = threading.RLock()
+        self.db_path = self._resolve_db_path(db_path)
         self.logger = logging.getLogger("StockDatabase")
         self._connection = None
         self._connection_count = 0  # 跟踪连接数量
         self._init_database()
+
+    def _resolve_db_path(self, db_path: str | os.PathLike[str]) -> str:
+        """Return an absolute path for the SQLite database file."""
+        path = Path(db_path)
+        if not path.is_absolute():
+            path = resolve_data_path(str(path))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return str(path)
     
     def __enter__(self):
         """Context manager entry"""
@@ -44,6 +46,7 @@ class StockDatabase:
     
     def _get_connection(self):
         """Get database connection with proper timeout and concurrency settings"""
+        self._conn_lock.acquire()
         try:
             self._connection_count += 1
             self.logger.debug(f"Creating database connection #{self._connection_count}")
@@ -91,6 +94,8 @@ class StockDatabase:
             self._connection_count -= 1  # 回滚计数
             self.logger.error(f"Database connection failed: {e}")
             raise
+        finally:
+            self._conn_lock.release()
     
     def close(self):
         """Close database connection"""

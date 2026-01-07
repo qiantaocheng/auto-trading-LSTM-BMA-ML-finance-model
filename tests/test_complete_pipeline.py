@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 完整管道集成测试
@@ -205,7 +205,7 @@ class TestDataProcessingPipeline(TestCompletePipeline):
         try:
             from bma_models.index_aligner import IndexAligner
             
-            aligner = IndexAligner(horizon=10, mode='train')
+            aligner = IndexAligner(horizon=5, mode='train')
             
             # 准备数据
             feature_cols = [col for col in self.test_data.columns 

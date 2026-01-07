@@ -137,7 +137,7 @@ class TestStackingIntegration(unittest.TestCase):
             self.assertEqual(stacker_data.index.names, ['date', 'ticker'], "索引名称应该正确")
 
             # 验证列
-            expected_columns = ['pred_elastic', 'pred_xgb', 'pred_catboost', 'ret_fwd_5d']
+            expected_columns = ['pred_elastic', 'pred_xgb', 'pred_catboost', 'ret_fwd_10d']
             for col in expected_columns:
                 self.assertIn(col, stacker_data.columns, f"应该包含列: {col}")
 
@@ -208,6 +208,47 @@ class TestStackingIntegration(unittest.TestCase):
         except ImportError as e:
             self.skipTest(f"Ridge Stacker模块不可用: {e}")
 
+
+    def test_ridge_replace_ewa_interface(self):
+        """RidgeStacker should expose legacy replace_ewa_in_pipeline helper."""
+        try:
+            from bma_models.robust_alignment_engine import create_robust_alignment_engine
+            from bma_models.ridge_stacker import RidgeStacker
+
+            oof_predictions = self.create_realistic_oof_predictions()
+            target = self.create_realistic_target()
+
+            engine = create_robust_alignment_engine(strict_validation=False, auto_fix=True)
+            stacker_data, _ = engine.align_data(oof_predictions, target)
+
+            ridge_stacker = RidgeStacker(
+                base_cols=('pred_catboost', 'pred_elastic', 'pred_xgb'),
+                alpha=1.0,
+                fit_intercept=False,
+                auto_tune_alpha=False,
+                random_state=42
+            )
+
+            ridge_stacker.fit(stacker_data)
+
+            feature_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb']
+            valid_mask = ~stacker_data[feature_cols].isna().any(axis=1)
+
+            compat_predictions = ridge_stacker.replace_ewa_in_pipeline(stacker_data)
+            direct_predictions = ridge_stacker.predict(stacker_data.loc[valid_mask])
+
+            valid_scores = compat_predictions.loc[valid_mask, 'score']
+            pd.testing.assert_series_equal(
+                valid_scores,
+                direct_predictions['score'],
+                check_names=False
+            )
+
+            if not valid_mask.all():
+                self.assertTrue(compat_predictions['score'].isna().any())
+        except ImportError as exc:
+            self.skipTest(f"RidgeStacker dependencies unavailable: {exc}")
+
     def test_end_to_end_pipeline(self):
         """测试端到端流程"""
         try:
@@ -257,7 +298,7 @@ class TestStackingIntegration(unittest.TestCase):
 
             # 计算信息比率（简单版本）
             if len(valid_scores) > 10:
-                target_aligned = stacker_data['ret_fwd_5d'].reindex(valid_scores.index).dropna()
+                target_aligned = stacker_data['ret_fwd_10d'].reindex(valid_scores.index).dropna()
                 if len(target_aligned) > 10:
                     correlation = np.corrcoef(valid_scores.reindex(target_aligned.index), target_aligned)[0, 1]
                     if not np.isnan(correlation):

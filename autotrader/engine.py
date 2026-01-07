@@ -1,10 +1,12 @@
 # 清理：移除未使use导入
 # from __future__ import annotations
-# import asyncio
+import asyncio
 # import logging
 # from typing import Dict
 
 import math
+import asyncio
+from types import SimpleNamespace
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Tuple
 
@@ -12,7 +14,12 @@ from typing import List, Optional, Dict, Any, Tuple
 # from .config import HotConfig
 # 使用统一Polygon因子库，替代原有因子函数
 from .unified_polygon_factors import get_unified_polygon_factors, zscore, atr, get_trading_signal_for_autotrader
-from typing import TYPE_CHECKING
+from .hetrs_signal_adapter import get_hetrs_signal_provider
+from .config_helpers import get_config_manager
+
+# 使用新的共享类型和接口（打破循环依赖）
+from .trading_types import Quote, Signal, Metrics, OrderRequest
+from .trading_interfaces import IBrokerInterface
 
 # Enhanced error handling
 from .error_handling_system import (
@@ -20,20 +27,79 @@ from .error_handling_system import (
     ErrorSeverity, ErrorCategory, ErrorContext
 )
 
-if TYPE_CHECKING:
-    from .ibkr_auto_trader import IbkrAutoTrader
 
+# ===============================
+# 动态阈值计算（缺失函数补全）
+# ===============================
+def compute_dynamic_threshold(symbol: str,
+                              base_threshold: float,
+                              polygon_signal_payload: dict,
+                              quote: Quote,
+                              config_manager,
+                              micro_decision: object = None) -> SimpleNamespace:
+    """
+    基于报价与成本的简单动态阈值调整，确保函数存在且健壮。
+    返回对象包含:
+      - threshold: 最终阈值
+      - volatility_adj: 由价差推导的波动调整
+      - liquidity_adj: 由盘口尺寸推导的流动性调整
+      - cost_adj: 由微结构成本推导的成本调整
+    """
+    try:
+        # 基础阈值安全边界
+        thr = float(base_threshold) if base_threshold is not None else 0.6
+        thr = max(0.0, min(0.95, thr))
 
-@dataclass
-class Quote:
-    bid: float
-    ask: float
-    bidSize: float = 0.0
-    askSize: float = 0.0
+        # 报价安全读取
+        bid = float(getattr(quote, 'bid', 0.0) or 0.0)
+        ask = float(getattr(quote, 'ask', 0.0) or 0.0)
+        bid_size = float(getattr(quote, 'bidSize', 0.0) or 0.0)
+        ask_size = float(getattr(quote, 'askSize', 0.0) or 0.0)
+
+        # 计算中间价与相对价差
+        mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else max(bid, ask)
+        spread = (abs(ask - bid) / mid) if (mid and mid > 0) else 0.0
+
+        # 波动性调整：价差越大，提高阈值（0~0.1）
+        volatility_adj = min(0.10, max(0.0, spread * 2.0))
+
+        # 流动性调整：盘口不平衡时略微提高阈值（0~0.05）
+        liq_ratio = 0.0
+        if (bid_size + ask_size) > 0:
+            liq_ratio = abs(bid_size - ask_size) / max(1.0, (bid_size + ask_size))
+        liquidity_adj = min(0.05, max(0.0, liq_ratio * 0.05))
+
+        # 成本调整：根据微结构决策的总成本bps（若可用）
+        cost_adj = 0.0
+        try:
+            if micro_decision is not None:
+                total_cost_bps = float(getattr(micro_decision, 'total_cost_bps', 0.0) or 0.0)
+                # 转为比例，并限制到 0~0.1
+                cost_adj = min(0.10, max(0.0, total_cost_bps / 10000.0))
+        except Exception:
+            cost_adj = 0.0
+
+        final_thr = thr + volatility_adj + liquidity_adj + cost_adj
+        final_thr = max(thr, min(0.95, final_thr))
+
+        return SimpleNamespace(
+            threshold=final_thr,
+            volatility_adj=volatility_adj,
+            liquidity_adj=liquidity_adj,
+            cost_adj=cost_adj
+        )
+    except Exception:
+        # 任何异常返回保守阈值，确保调用端不崩溃
+        return SimpleNamespace(
+            threshold=max(0.0, min(0.95, base_threshold or 0.6)),
+            volatility_adj=0.0,
+            liquidity_adj=0.0,
+            cost_adj=0.0
+        )
 
 
 class DataFeed:
-    def __init__(self, broker: "IbkrAutoTrader", logger) -> None:
+    def __init__(self, broker: IBrokerInterface, logger) -> None:
         self.broker = broker
         self.logger = logger
 
@@ -555,7 +621,7 @@ class OrderRouter:
 
 
 class Engine:
-    def __init__(self, config_manager, broker: "IbkrAutoTrader") -> None:
+    def __init__(self, config_manager, broker: IBrokerInterface) -> None:
         self.config_manager = config_manager
         self.broker = broker
         # 使use事件系统日志适配器 - 安全导入
@@ -588,6 +654,8 @@ class Engine:
         self.risk = RiskEngine(config_manager, self.logger)  # 传递config_manager
         self.router = OrderRouter(config_dict, self.logger)
         self.signal = SignalHub(self.logger)
+        # 并发安全：按标的锁，避免仓位检查与下单之间的竞态
+        self._symbol_locks: Dict[str, asyncio.Lock] = {}
         
         # retrieval统一positions管理器引use - 安全初始化
         try:
@@ -612,6 +680,14 @@ class Engine:
         except Exception as e:
             self.unified_factors = None
             self.logger.warning(f"Failed to initialize unified factors: {e}")
+
+        try:
+            self.hetrs_provider = get_hetrs_signal_provider()
+            if self.hetrs_provider:
+                self.logger.info("HETRS Nasdaq signal provider已启用")
+        except Exception as e:
+            self.hetrs_provider = None
+            self.logger.warning(f"HETRS signal provider unavailable: {e}")
 
     async def start(self) -> None:
         # connection IB - 安全连接
@@ -727,6 +803,17 @@ class Engine:
             get_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
             return False
     
+    def _maybe_get_hetrs_signal(self, symbol: str, threshold: float) -> Optional[Dict[str, Any]]:
+        """Return cached HETRS signal when configured; otherwise None."""
+        provider = getattr(self, 'hetrs_provider', None)
+        if not provider:
+            return None
+        try:
+            return provider.get_signal(symbol, threshold=threshold)
+        except Exception as exc:
+            self.logger.debug(f"{symbol} HETRS信号不可用: {exc}")
+            return None
+
     def get_next_delay(self) -> float:
         """🔧 指数退避延迟计算"""
         if self._consecutive_errors == 0:
@@ -803,48 +890,74 @@ class Engine:
                     self.logger.debug(f"{sym} nohas效报价（nobid/ask/last/close），跳过")
                     continue
                     
-                # 使用统一Polygon因子库计算信号（替代IBKR历史数据）
-                try:
-                    polygon_signal = self.unified_factors.get_trading_signal(sym, threshold=self.config_manager.get("signals.acceptance_threshold", 0.6))
-                    
-                    # 检查信号质量和可交易性
-                    if not polygon_signal.get('can_trade', False):
-                        reason = polygon_signal.get('delay_reason') or '信号不满足交易条件'
-                        self.logger.debug(f"{sym} Polygon信号不可交易: {reason}")
-                        continue
-                    
-                    score = polygon_signal['signal_value']
-                    signal_strength = polygon_signal['signal_strength']
-                    confidence = polygon_signal['confidence']
-                    
-                    self.logger.debug(f"{sym} Polygon信号 | 值={score:.3f}, 强度={signal_strength:.3f}, 置信度={confidence:.3f}")
-                    
-                    # 使用信号强度检查阈值
-                    thr = self.config_manager.get("signals.acceptance_threshold", 0.6)
-                    if signal_strength < thr:
-                        self.logger.debug(f"{sym} Polygon信号强度不足 | {signal_strength:.3f} < {thr:.3f}")
-                        continue
-                    
-                except Exception as e:
-                    self.logger.warning(f"{sym} Polygon因子计算失败，回退到IBKR数据: {e}")
-                    
-                    # 继续使用Polygon数据作为备选
-                    market_data = self.unified_factors.get_market_data(sym, days=60)
-                    if market_data.empty or len(market_data) < 60:
-                        self.logger.debug(f"{sym} Polygon备选数据不足，跳过")
-                        continue
+                # 使用统一因子或HETRS信号生成买卖指令
+                base_threshold = self.config_manager.get("signals.acceptance_threshold", 0.6)
+                polygon_signal = None
+                signal_origin = "HETRS"
 
-                    closes_all: List[float] = market_data['Close'].tolist()
-                    closes_50 = closes_all[-60:]
-                    highs = market_data['High'].tolist()[-60:]
-                    lows = market_data['Low'].tolist()[-60:]
-                    vols = market_data['Volume'].tolist()[-60:]
-                    score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
+                if self.hetrs_provider:
+                    polygon_signal = self._maybe_get_hetrs_signal(sym, base_threshold)
 
-                    thr = self.config_manager.get("signals.acceptance_threshold", 0.6)
-                    if abs(score) < thr:
-                        self.logger.debug(f"{sym} Polygon备选信号强度不足 | score={score:.3f}, thr={thr:.3f}，跳过")
+                if polygon_signal is None:
+                    signal_origin = "Polygon"
+                    if not self.unified_factors:
+                        self.logger.debug(f"{sym} 缺少统一因子库实例，跳过")
                         continue
+                    try:
+                        polygon_signal = self.unified_factors.get_trading_signal(sym, threshold=base_threshold)
+                    except Exception as e:
+                        self.logger.warning(f"{sym} Polygon因子计算失败，回退到IBKR数据: {e}")
+
+                        market_data = self.unified_factors.get_market_data(sym, days=60)
+                        if market_data.empty or len(market_data) < 60:
+                            self.logger.debug(f"{sym} Polygon备选数据不足，跳过")
+                            continue
+
+                        closes_all: List[float] = market_data['Close'].tolist()
+                        closes_50 = closes_all[-60:]
+                        highs = market_data['High'].tolist()[-60:]
+                        lows = market_data['Low'].tolist()[-60:]
+                        vols = market_data['Volume'].tolist()[-60:]
+                        score = self.signal.multi_factor_signal(closes_50, highs, lows, vols)
+                        signal_strength = abs(score)
+                        confidence = 0.4
+
+                        thr = self.config_manager.get("signals.acceptance_threshold", 0.6)
+                        if signal_strength < thr:
+                            self.logger.debug(f"{sym} Polygon备选信号强度不足 | score={score:.3f}, thr={thr:.3f}，跳过")
+                            continue
+                        polygon_signal = {
+                            'signal_value': score,
+                            'signal_strength': signal_strength,
+                            'confidence': confidence,
+                            'can_trade': True,
+                            'metadata': {'source': 'polygon_fallback'},
+                        }
+
+                if not polygon_signal:
+                    continue
+
+                if not polygon_signal.get('can_trade', False):
+                    reason = polygon_signal.get('delay_reason') or '信号不满足交易条件'
+                    self.logger.debug(f"{sym} {signal_origin}信号不可交易: {reason}")
+                    continue
+
+                score = float(polygon_signal.get('signal_value', polygon_signal.get('raw_score', 0.0)))
+                signal_strength = float(polygon_signal.get('signal_strength', abs(score)))
+                confidence = float(polygon_signal.get('confidence', 0.0))
+
+                self.logger.debug(
+                    f"{sym} {signal_origin}信号 | 值={score:.3f}, 强度={signal_strength:.3f}, 置信度={confidence:.3f}"
+                )
+
+                dyn_threshold = compute_dynamic_threshold(sym, base_threshold, polygon_signal, q, self.config_manager)
+                thr = dyn_threshold.threshold
+                if signal_strength < thr:
+                    self.logger.debug(
+                        f"{sym} 动态阈值过滤 | 强度={signal_strength:.3f} < dyn_thr={thr:.3f} "
+                        f"(vol_adj={dyn_threshold.volatility_adj:.2f}, liq_adj={dyn_threshold.liquidity_adj:.2f})"
+                    )
+                    continue
 
                 # 可选微结构 α>成本 门槛（若可用）
                 try:
@@ -855,7 +968,18 @@ class Engine:
                         self.logger.debug(f"{sym} 微结构门槛拒绝: {decision.decision_reason}")
                         continue
                     micro_side = "BUY" if decision.calibrated_alpha_bps > 0 else "SELL"
-                    self.logger.debug(f"{sym} 微结构门槛通过 | α={decision.calibrated_alpha_bps:.1f}bps 置信={decision.confidence:.2f} 侧={micro_side} 成本={decision.total_cost_bps:.1f}bps POV={decision.optimal_pov:.3f}")
+                    self.logger.debug(
+                        f"{sym} 微结构门槛通过 | α={decision.calibrated_alpha_bps:.1f}bps 置信={decision.confidence:.2f} "
+                        f"侧={micro_side} 成本={decision.total_cost_bps:.1f}bps POV={decision.optimal_pov:.3f}"
+                    )
+                    polygon_payload = polygon_signal or {'metadata': {}}
+                    post_cost_thr = compute_dynamic_threshold(sym, base_threshold, polygon_payload, q, self.config_manager, decision)
+                    if signal_strength < post_cost_thr.threshold:
+                        self.logger.debug(
+                            f"{sym} 成本调整后阈值过滤 | 强度={signal_strength:.3f} < dyn_thr={post_cost_thr.threshold:.3f} "
+                            f"(cost_adj={post_cost_thr.cost_adj:.2f})"
+                        )
+                        continue
                 except Exception:
                     micro_side = None
 
@@ -906,10 +1030,15 @@ class Engine:
                     self.logger.warning(f"ATR计算失败 {sym}: {e}")
                     atr14 = None
                     
+                stop_buffer = max(entry * stop_pct, atr14 or entry * 0.02)
                 if side == "BUY":
-                    stop_px = min(entry * (1 - stop_pct), entry - (atr14 or entry * 0.02))
+                    stop_px = max(0.01, entry - stop_buffer)
+                elif side == "SELL" and current_position_qty > 0:
+                    # 平多仓：将保护止损设置在下方，避免方向错误
+                    stop_px = max(0.01, entry - stop_buffer)
                 else:
-                    stop_px = max(entry * (1 + stop_pct), entry + (atr14 or entry * 0.02))
+                    # 开空/加空：止损在上方
+                    stop_px = entry + stop_buffer
                     
                 # 动态头寸（基于资金/信号）
                 try:
@@ -954,79 +1083,109 @@ class Engine:
                 else:
                     qty = max(qty, min_qty_by_value)
 
-                price_plan = self.router.build_prices(sym, side, q)
-                # 统一订单验证（放在入场前）
-                try:
-                    from .unified_order_validator import get_unified_validator
-                    validator = get_unified_validator(self.config_manager)
-                    account_value = float(getattr(self.broker, 'net_liq', 0.0) or 0.0)
-                    validate_price = float(price_plan.get("limit") if price_plan.get("type") == "LMT" else entry)
-                    validation = await validator.validate_order_unified(sym, side, int(qty), float(validate_price), account_value)
-                    if not validation.is_valid:
-                        self.logger.debug(f"{sym} 统一订单验证拒绝: {validation.reason}")
-                        continue
-                except Exception as e:
-                    self.logger.debug(f"{sym} 订单验证异常，跳过: {e}")
+                order_value = abs(qty) * entry
+                if order_value <= 0:
+                    self.logger.warning(f"{sym} 订单市值无效，跳过")
                     continue
 
-                # 频率控制集成（若可用）
-                try:
-                    if hasattr(self.broker, 'frequency_controller') and self.broker.frequency_controller:
-                        from .frequency_controller import TradingRequest, TradingDecision as FreqDecision
-                        req = TradingRequest(
-                            symbol=sym,
-                            action=side,
-                            target_weight=0.0,
-                            current_weight=0.0,
-                            expected_return=float(score),
-                            confidence=float(confidence if 'confidence' in locals() else 0.8),
-                            timestamp=__import__('time').time(),
-                            estimated_cost=0.0,
-                            priority="normal",
-                            metadata={"current_price": entry, "portfolio_value": float(getattr(self.broker, 'net_liq', 0.0) or 0.0)}
-                        )
-                        decision, message = self.broker.frequency_controller.should_allow_trade(req, None)
-                        if str(getattr(decision, 'value', '')) in ('reject_cost','reject_band','reject_cooldown','reject_quota','reject_liquidity'):
-                            self.logger.debug(f"{sym} 频率控制拒绝: {message}")
-                            continue
-                        if str(getattr(decision, 'value', '')) == 'queue_batch':
-                            self.logger.debug(f"{sym} 加入批量队列: {message}（跳过即时下单）")
-                            try:
-                                self.broker.frequency_controller.batching_manager.queue_request(req)
-                            except Exception:
-                                pass
-                            continue
-                except Exception:
-                    pass
+                # 并发保护：在仓位检查到下单的关键区间加锁，避免竞态导致超限
+                lock = self._symbol_locks.get(sym)
+                if lock is None:
+                    lock = asyncio.Lock()
+                    self._symbol_locks[sym] = lock
 
-                # 做空权限：SELL 且无持仓且不允许做空时跳过
-                try:
-                    allow_short = bool(self.config_manager.get("risk.allow_short", True))
-                except Exception:
-                    allow_short = True
-                if side == "SELL" and (current_position_qty <= 0) and not allow_short:
-                    self.logger.debug(f"{sym} 不允许做空且无持仓，跳过 SELL")
-                    continue
-                self.logger.debug(f"{sym} order placement计划 | side={side} qty={qty} plan={price_plan}")
-                
-                try:
-                    # 若启用 bracket 托管止损/止盈（配置开关）
-                    use_bracket = bool(self.config_manager.get("orders.use_bracket", False))
-                    if use_bracket:
-                        stop_pct = float(self.config_manager.get("trading.default_stop_loss_pct", 0.02))
-                        tp_pct = float(self.config_manager.get("trading.default_take_profit_pct", 0.05))
-                        # bracket 使用市价入场 + 服务器端止损/止盈
-                        await self.broker.place_market_order_with_bracket(sym, side, int(qty), stop_pct=stop_pct, target_pct=tp_pct)
+                async with lock:
+                    # 重新计算价格计划（修复 price_plan 未定义问题）
+                    price_plan = self.router.build_prices(sym, side, q)
+
+                    # 重新读取当前仓位，确保决策基于最新状态
+                    current_position_qty = self.position_manager.get_quantity(sym)
+                    current_position_value = abs(current_position_qty) * entry
+
+                    # 下单后单标上限校验
+                    if side == "BUY":
+                        projected_value = current_position_value + order_value
                     else:
-                        if price_plan.get("type") == "MKT":
-                            await self.broker.place_market_order(sym, side, int(qty))
+                        if current_position_qty <= 0:
+                            projected_value = current_position_value + order_value
                         else:
-                            await self.broker.place_limit_order(sym, side, int(qty), float(price_plan["limit"]))
-                    orders_sent += 1
-                    self.logger.info(f"success提交订单: {side} {qty} {sym} 计划={price_plan} @ 参考价≈{entry} 托管={'bracket' if use_bracket else 'none'}")
-                except Exception as e:
-                    self.logger.error(f"订单提交failed {sym}: {e}")
-                    continue
+                            projected_value = max(current_position_value - order_value, 0.0)
+                    if projected_value > max_single_position:
+                        self.logger.warning(f"{sym} 下单后将超过单标上限，跳过 (预估市值=${projected_value:,.2f})")
+                        continue
+
+                    # 统一订单验证（放在入场前）
+                    try:
+                        from .unified_order_validator import get_unified_validator
+                        validator = get_unified_validator(self.config_manager)
+                        account_value = float(getattr(self.broker, 'net_liq', 0.0) or 0.0)
+                        validate_price = float(price_plan.get("limit") if price_plan.get("type") == "LMT" else entry)
+                        validation = await validator.validate_order_unified(sym, side, int(qty), float(validate_price), account_value)
+                        if not validation.is_valid:
+                            self.logger.warning(f"{sym} 统一订单验证拒绝: {validation.reason}")
+                            continue
+                    except Exception as e:
+                        self.logger.warning(f"{sym} 订单验证异常，跳过: {e}")
+                        continue
+
+                    # 频率控制集成（若可用）
+                    try:
+                        if hasattr(self.broker, 'frequency_controller') and self.broker.frequency_controller:
+                            from .frequency_controller import TradingRequest, TradingDecision as FreqDecision
+                            req = TradingRequest(
+                                symbol=sym,
+                                action=side,
+                                target_weight=0.0,
+                                current_weight=0.0,
+                                expected_return=float(score),
+                                confidence=float(confidence if 'confidence' in locals() else 0.8),
+                                timestamp=__import__('time').time(),
+                                estimated_cost=0.0,
+                                priority="normal",
+                                metadata={"current_price": entry, "portfolio_value": float(getattr(self.broker, 'net_liq', 0.0) or 0.0)}
+                            )
+                            decision, message = self.broker.frequency_controller.should_allow_trade(req, None)
+                            if str(getattr(decision, 'value', '')) in ('reject_cost','reject_band','reject_cooldown','reject_quota','reject_liquidity'):
+                                self.logger.debug(f"{sym} 频率控制拒绝: {message}")
+                                continue
+                            if str(getattr(decision, 'value', '')) == 'queue_batch':
+                                self.logger.debug(f"{sym} 加入批量队列: {message}（跳过即时下单）")
+                                try:
+                                    self.broker.frequency_controller.batching_manager.queue_request(req)
+                                except Exception:
+                                    pass
+                                continue
+                    except Exception:
+                        pass
+
+                    # 做空权限：SELL 且无持仓且不允许做空时跳过
+                    try:
+                        allow_short = bool(self.config_manager.get("risk.allow_short", True))
+                    except Exception:
+                        allow_short = True
+                    if side == "SELL" and (current_position_qty <= 0) and not allow_short:
+                        self.logger.debug(f"{sym} 不允许做空且无持仓，跳过 SELL")
+                        continue
+                    self.logger.debug(f"{sym} order placement计划 | side={side} qty={qty} plan={price_plan}")
+                    
+                    try:
+                        # 若启用 bracket 托管止损/止盈（配置开关）
+                        use_bracket = bool(self.config_manager.get("orders.use_bracket", False))
+                        if use_bracket:
+                            stop_pct = float(self.config_manager.get("trading.default_stop_loss_pct", 0.02))
+                            tp_pct = float(self.config_manager.get("trading.default_take_profit_pct", 0.05))
+                            # bracket 使用市价入场 + 服务器端止损/止盈
+                            await self.broker.place_market_order_with_bracket(sym, side, int(qty), stop_pct=stop_pct, target_pct=tp_pct)
+                        else:
+                            if price_plan.get("type") == "MKT":
+                                await self.broker.place_market_order(sym, side, int(qty))
+                            else:
+                                await self.broker.place_limit_order(sym, side, int(qty), float(price_plan["limit"]))
+                        orders_sent += 1
+                        self.logger.info(f"success提交订单: {side} {qty} {sym} 计划={price_plan} @ 参考价≈{entry} 托管={'bracket' if use_bracket else 'none'}")
+                    except Exception as e:
+                        self.logger.error(f"订单提交failed {sym}: {e}")
+                        continue
             
             self.logger.info(f"信号处理completed，共提交 {orders_sent} 个订单")
             

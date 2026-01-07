@@ -29,6 +29,8 @@ from collections import defaultdict
 from pathlib import Path
 import math
 
+from .config_helpers import get_config_manager
+
 class RiskLevel(Enum):
     """风险级别"""
     LOW = "low"
@@ -84,11 +86,15 @@ class PortfolioRisk:
 
 class UnifiedRiskManager:
     """统一风险管理器"""
-    
+
     def __init__(self, config_manager, logger: Optional[logging.Logger] = None):
         self.config_manager = config_manager
         self.logger = logger or logging.getLogger("UnifiedRiskManager")
-        
+
+        # 并发保护：持仓字典操作锁
+        import threading
+        self._positions_lock = threading.RLock()
+
         # 风险配置
         self.risk_config = {
             'max_single_position_pct': 0.15,  # 单仓最大仓位
@@ -101,12 +107,12 @@ class UnifiedRiskManager:
             'concentration_warning_pct': 0.25, # 集in度警告阈值
             'volatility_warning_pct': 0.05,   # 波动率警告阈值
         }
-        
+
         # 运行when状态
         self.daily_order_count = 0
         self.daily_pnl = 0.0
         self.last_reset_date = time.strftime('%Y-%m-%d')
-        
+
         # positionsand组合数据
         self.positions: Dict[str, PositionRisk] = {}
         self.portfolio_risk: Optional[PortfolioRisk] = None
@@ -286,6 +292,16 @@ class UnifiedRiskManager:
         self._reset_daily_counters_if_needed()
         
         try:
+            # 0. 价格有效性检查（新增）
+            if price is None or price <= 0 or price > 1_000_000:
+                violations.append(f"无效价格: {price}")
+                return RiskValidationResult(
+                    is_valid=False,
+                    risk_level=RiskLevel.CRITICAL,
+                    violations=violations,
+                    warnings=warnings
+                )
+
             # 1. 基础订单check
             order_value = quantity * price
             
@@ -402,21 +418,22 @@ class UnifiedRiskManager:
         }
     
     async def _update_portfolio_risk(self, account_value: float):
-        """updates投资组合风险指标"""
+        """更新投资组合风险指标（线程安全）"""
         try:
-            total_unrealized_pnl = sum(pos.unrealized_pnl for pos in self.positions.values())
-            
-            # 计算集in度风险（最大仓位ratio）
-            if self.positions and account_value > 0:
-                max_position_weight = max(
-                    abs(pos.quantity * pos.current_price) / account_value 
-                    for pos in self.positions.values()
-                )
-                concentration_risk = max_position_weight
-            else:
-                concentration_risk = 0.0
-            
-            # 简化投资组合风险计算
+            with self._positions_lock:
+                total_unrealized_pnl = sum(pos.unrealized_pnl for pos in self.positions.values())
+
+                # 计算集中度风险（最大仓位比例）
+                if self.positions and account_value > 0:
+                    max_position_weight = max(
+                        abs(pos.quantity * pos.current_price) / account_value
+                        for pos in self.positions.values()
+                    )
+                    concentration_risk = max_position_weight
+                else:
+                    concentration_risk = 0.0
+
+            # 简化投资组合风险计算（锁外更新，避免死锁）
             self.portfolio_risk = PortfolioRisk(
                 total_value=account_value,
                 total_unrealized_pnl=total_unrealized_pnl,
@@ -425,9 +442,9 @@ class UnifiedRiskManager:
                 sector_exposures={},  # 需要行业数据
                 concentration_risk=concentration_risk
             )
-            
+
         except Exception as e:
-            self.logger.warning(f"updates投资组合风险failed: {e}")
+            self.logger.warning(f"更新投资组合风险失败: {e}")
     
     def _calculate_recommended_size(self, symbol: str, price: float, 
                                   account_value: float, violations: List[str]) -> Optional[int]:
@@ -469,34 +486,39 @@ class UnifiedRiskManager:
             get_unified_error_handler().handle_error(e, context, ErrorSeverity.MEDIUM, ErrorCategory.SYSTEM)
             return None
     
-    def update_position(self, symbol: str, quantity: int, current_price: float, 
+    def update_position(self, symbol: str, quantity: int, current_price: float,
                        entry_price: Optional[float] = None):
-        """updatespositions信息"""
-        try:
-            if quantity == 0:
-                # 平仓
-                if symbol in self.positions:
-                    del self.positions[symbol]
-                return
-            
-            if entry_price is None:
-                entry_price = current_price
-            
-            unrealized_pnl = quantity * (current_price - entry_price)
-            unrealized_pnl_pct = (current_price / entry_price - 1) if entry_price > 0 else 0
-            
-            self.positions[symbol] = PositionRisk(
-                symbol=symbol,
-                quantity=quantity,
-                current_price=current_price,
-                entry_price=entry_price,
-                unrealized_pnl=unrealized_pnl,
-                unrealized_pnl_pct=unrealized_pnl_pct,
-                portfolio_weight=0.0  # willinupdate_portfolio_riskin计算
-            )
-            
-        except Exception as e:
-            self.logger.error(f"updatespositions信息failed {symbol}: {e}")
+        """更新持仓信息（线程安全）"""
+        with self._positions_lock:
+            try:
+                if quantity == 0:
+                    # 平仓
+                    if symbol in self.positions:
+                        del self.positions[symbol]
+                    return
+
+                # 保留原entry_price（如果存在且未提供新值）
+                if entry_price is None:
+                    if symbol in self.positions:
+                        entry_price = self.positions[symbol].entry_price
+                    else:
+                        entry_price = current_price
+
+                unrealized_pnl = quantity * (current_price - entry_price)
+                unrealized_pnl_pct = (current_price / entry_price - 1) if entry_price > 0 else 0
+
+                self.positions[symbol] = PositionRisk(
+                    symbol=symbol,
+                    quantity=quantity,
+                    current_price=current_price,
+                    entry_price=entry_price,
+                    unrealized_pnl=unrealized_pnl,
+                    unrealized_pnl_pct=unrealized_pnl_pct,
+                    portfolio_weight=0.0  # 将在update_portfolio_risk中计算
+                )
+
+            except Exception as e:
+                self.logger.error(f"更新持仓信息失败 {symbol}: {e}")
     
     def increment_order_count(self):
         """增加日订单计数"""
@@ -547,12 +569,17 @@ class UnifiedRiskManager:
             self.logger.info(f"风险事件: {event_type.value} - {details}")
     
     def get_risk_summary(self) -> Dict[str, Any]:
-        """retrieval风险状况summary"""
+        """获取风险状况摘要（线程安全）"""
         self._reset_daily_counters_if_needed()
-        
+
         # 计算风险指标
-        recent_events = [e for e in self.risk_events if time.time() - e['timestamp'] < 3600]  # 最近1小when
-        
+        recent_events = [e for e in self.risk_events if time.time() - e['timestamp'] < 3600]  # 最近1小时
+
+        # 读取持仓信息（加锁保护）
+        with self._positions_lock:
+            position_count = len(self.positions)
+            position_symbols = list(self.positions.keys())
+
         return {
             'daily_orders': {
                 'count': self.daily_order_count,
@@ -565,8 +592,8 @@ class UnifiedRiskManager:
                 'status': 'OK' if self.daily_pnl > -self.risk_config['daily_loss_limit_pct'] else 'WARNING'
             },
             'positions': {
-                'count': len(self.positions),
-                'symbols': list(self.positions.keys())
+                'count': position_count,
+                'symbols': position_symbols
             },
             'portfolio_risk': self.portfolio_risk.__dict__ if self.portfolio_risk else None,
             'recent_events': len(recent_events),
@@ -575,7 +602,11 @@ class UnifiedRiskManager:
     
     def get_position_risk(self, symbol: str) -> Optional[PositionRisk]:
         """retrieval特定positions风险信息"""
-        return self.position_manager.get_quantity(symbol)
+        try:
+            with self._positions_lock:
+                return self.positions.get(symbol)
+        except Exception:
+            return None
     
     def check_emergency_stop_conditions(self) -> Tuple[bool, List[str]]:
         """checkis否触发紧急停止 records件"""

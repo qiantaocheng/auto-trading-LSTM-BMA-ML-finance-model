@@ -5,19 +5,20 @@
 """
 
 import json
-import os
 import sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 import logging
 from pathlib import Path
 
+from autotrader.system_paths import DEFAULT_DB_FILENAME, resolve_data_path
+
 logger = logging.getLogger(__name__)
 
 class StockPoolManager:
     """股票池管理器"""
     
-    def __init__(self, db_path: str = "trading_system.db"):
+    def __init__(self, db_path: str = DEFAULT_DB_FILENAME):
         """
         初始化股票池管理器
         
@@ -127,36 +128,13 @@ class StockPoolManager:
             raise
 
     def _resolve_db_path(self, raw_path: str) -> str:
-        """将数据库路径解析到可写目录，避免权限导致的新建失败。"""
-        try:
-            p = Path(raw_path)
-            if p.is_absolute():
-                p.parent.mkdir(parents=True, exist_ok=True)
-                return str(p)
-            # 相对路径：尝试多个候选可写目录
-            candidates = []
-            module_dir = Path(__file__).resolve().parent
-            candidates.append(module_dir / 'data')
-            candidates.append(Path.cwd() / 'data')
-            # 用户目录下的应用数据
-            home_app = Path.home() / 'Autotrader' / 'data'
-            candidates.append(home_app)
-            for base in candidates:
-                try:
-                    base.mkdir(parents=True, exist_ok=True)
-                    test_file = base / '.write_test'
-                    with open(test_file, 'w', encoding='utf-8') as f:
-                        f.write('ok')
-                    os.remove(test_file)
-                    dbp = base / raw_path
-                    logger.info(f"股票池数据库路径: {dbp}")
-                    return str(dbp)
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.warning(f"数据库路径解析失败，将回退默认路径: {e}")
-        # 最后回退当前目录
-        return raw_path
+        """Resolve the SQLite path into the shared data directory."""
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = resolve_data_path(path.name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"股票池数据库路径: {path}")
+        return str(path)
     
     def _load_default_pools(self):
         """加载默认股票池"""

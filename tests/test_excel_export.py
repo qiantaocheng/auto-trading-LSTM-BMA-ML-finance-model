@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Excel导出功能单元测试
@@ -87,7 +87,7 @@ class TestExcelExport(unittest.TestCase):
                 'validation_score': 0.162
             },
             'config': {
-                'prediction_horizon': 10,
+                'prediction_horizon': 5,
                 'feature_count': 20,
                 'training_mode': 'two_layer_ml'
             }

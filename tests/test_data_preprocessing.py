@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 数据预处理单元测试
@@ -94,7 +94,7 @@ class TestIndexAligner(TestDataPreprocessing):
         """测试基础数据对齐功能"""
         from bma_models.index_aligner import IndexAligner
         
-        aligner = IndexAligner(horizon=10, mode='train')
+        aligner = IndexAligner(horizon=5, mode='train')
         
         # 准备测试数据
         feature_cols = [col for col in self.test_data.columns if col not in ['date', 'ticker', 'target']]

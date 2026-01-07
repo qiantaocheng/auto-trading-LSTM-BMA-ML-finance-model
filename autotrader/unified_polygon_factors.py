@@ -16,6 +16,8 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass
 import scipy.stats as stats
 
+from .hetrs_signal_adapter import get_hetrs_signal_provider
+
 # Polygon客户端导入
 try:
     import sys
@@ -71,6 +73,7 @@ class FactorResult:
     data_quality_score: float
 
 class UnifiedPolygonFactors:
+    MULTI_TIME_WINDOWS = (5, 21, 63, 126)
     """
     AutoTrader统一因子库
     基于Polygon 15分钟延迟数据的所有因子计算
@@ -350,6 +353,46 @@ class UnifiedPolygonFactors:
             'total_evictions': self.stats['cache_evictions']
         }
     
+    def _compute_multi_time_features(self, symbol: str) -> Dict[str, Dict[str, float]]:
+        """Compute multi-horizon metrics (momentum, volatility, volume)."""
+        try:
+            max_window = max(self.MULTI_TIME_WINDOWS)
+        except ValueError:
+            max_window = 63
+        data = self.get_market_data(symbol, days=max_window * 2)
+        if data.empty or len(data) <= max_window:
+            return {}
+
+        closes = data['Close']
+        volumes = data['Volume']
+        returns = closes.pct_change().dropna()
+        features: Dict[str, Dict[str, float]] = {
+            'momentum': {},
+            'volatility': {},
+            'volume_rate': {}
+        }
+        avg_volume = float(volumes.mean()) if volumes.mean() else 1.0
+
+        for window in self.MULTI_TIME_WINDOWS:
+            label = f"{window}d"
+            if len(closes) > window:
+                start_idx = -window - 1
+                try:
+                    window_return = (closes.iloc[-1] / closes.iloc[start_idx]) - 1
+                    features['momentum'][label] = float(window_return)
+                except Exception:
+                    features['momentum'][label] = 0.0
+            if len(returns) >= window:
+                tail = returns.tail(window)
+                vol = float(tail.std()) if not tail.empty else 0.0
+                features['volatility'][label] = vol
+            if len(volumes) >= window and avg_volume:
+                tail_vol = volumes.tail(window).mean()
+                volume_ratio = float(tail_vol / avg_volume) if avg_volume else 0.0
+                features['volume_rate'][label] = volume_ratio
+
+        return features
+
     def get_market_data(self, symbol: str, days: int = 60) -> pd.DataFrame:
         """
         获取市场数据 - 统一数据源
@@ -508,17 +551,9 @@ class UnifiedPolygonFactors:
             if math.isnan(current_z):
                 return self._create_failed_result('mean_reversion', 'Invalid Z-score')
             
-            # AutoTrader信号逻辑
-            if current_z > 2.5:
-                signal = -1.0  # 强卖出信号
-            elif current_z > 1.5:
-                signal = -0.5  # 弱卖出信号
-            elif current_z < -2.5:
-                signal = 1.0   # 强买入信号
-            elif current_z < -1.5:
-                signal = 0.5   # 弱买入信号
-            else:
-                signal = -current_z  # 线性缩放
+            # AutoTrader信号逻辑（改为连续映射，消除1.5阈值跳变）
+            # 连续线性映射到[-1, 1]区间：signal = -clip(z / 2.5, -1, 1)
+            signal = -max(-1.0, min(1.0, current_z / 2.5))
             
             # 计算置信度
             confidence = min(abs(current_z) / 2.5, 1.0) * 0.9
@@ -785,6 +820,7 @@ class UnifiedPolygonFactors:
             trend_result = self.calculate_trend_signal(symbol)
             volume_result = self.calculate_volume_signal(symbol)
             volatility_result = self.calculate_volatility_signal(symbol)
+            multi_time_features = self._compute_multi_time_features(symbol)
             
             # 构建因子字典
             factors = {
@@ -799,13 +835,13 @@ class UnifiedPolygonFactors:
             composite_score = 0.0
             total_weight = 0.0
             
-            # 使用AutoTrader权重（来自engine.py）
+            # 使用归一化后的权重，保证总和为1.0（消除系统性低估）
             weights = {
-                'trend': 0.30,
-                'momentum': 0.25,
-                'volume': 0.20,
-                'volatility': 0.15,
-                'mean_reversion': 0.30  # 主要信号
+                'trend': 0.25,
+                'momentum': 0.21,
+                'volume': 0.17,
+                'volatility': 0.12,
+                'mean_reversion': 0.25
             }
             
             for factor_name, weight in weights.items():
@@ -842,7 +878,8 @@ class UnifiedPolygonFactors:
                     'total_weight': total_weight,
                     'raw_score': composite_score,
                     'delay_adjusted': self.config.enabled,
-                    'factors_count': len([f for f in factors.values() if not math.isnan(f)])
+                    'factors_count': len([f for f in factors.values() if not math.isnan(f)]),
+                    'multi_time_features': multi_time_features
                 },
                 data_quality_score=min([r.data_quality_score for r in [mr_result, momentum_result, trend_result, volume_result, volatility_result]])
             )

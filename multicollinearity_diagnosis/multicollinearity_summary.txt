@@ -1,0 +1,10 @@
+Multicollinearity Diagnosis Summary
+============================================================
+
+condition_number: 105.24866138665398
+effective_rank: 11
+total_factors: 12
+rank_ratio: 0.9166666666666666
+severe_vif_count: 2
+moderate_vif_count: 2
+health_score: 30

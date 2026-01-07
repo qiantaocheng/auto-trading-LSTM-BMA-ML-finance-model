@@ -1,0 +1,32 @@
+{
+  "bma_prediction_file": "result\\model_backtest\\ridge_stacking_predictions_20251222_052003.parquet",
+  "hetrs_timeseries_file": "results\\hetrs_nasdaq\\backtest_v2_latest\\meta_timeseries.csv",
+  "top_n": 10,
+  "event_thresholds": {
+    "enter_long": {
+      "count": 13,
+      "top_avg_prediction": 6.828100378388404,
+      "top_min_prediction": 4.92283631033698,
+      "hetrs_position_abs": 0.2
+    },
+    "exit_long": {
+      "count": 12,
+      "top_avg_prediction": 5.807321446041809,
+      "top_min_prediction": 4.444261991106528,
+      "hetrs_position_abs": 0.0
+    }
+  },
+  "allocation_per_rank": {
+    "1": 0.1472465285330121,
+    "2": 0.1197978384858519,
+    "3": 0.1122668363174763,
+    "4": 0.10532651554177051,
+    "5": 0.09726459307124935,
+    "6": 0.09165366703439083,
+    "7": 0.08750141661397914,
+    "8": 0.08235664906739443,
+    "9": 0.07939636519230357,
+    "10": 0.07718959014257203
+  },
+  "recommended_k_by_avg_return": 7
+}

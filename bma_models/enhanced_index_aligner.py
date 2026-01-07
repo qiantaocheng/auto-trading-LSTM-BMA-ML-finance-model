@@ -43,7 +43,7 @@ TIME_ALIGNMENT_AVAILABLE = True  # 内置功能始终可用
 class EnhancedIndexAligner:
     """Enhanced Index Aligner with MultiIndex support and time standardization"""
 
-    def __init__(self, horizon: int = 5, mode: str = 'train'):
+    def __init__(self, horizon: int = 10, mode: str = 'train'):
         """
         Initialize enhanced index aligner
 
@@ -53,7 +53,7 @@ class EnhancedIndexAligner:
         """
         self.horizon = horizon
         self.mode = mode
-        logger.info(f"[EnhancedIndexAligner] 初始化 - horizon: {horizon}, mode: {mode}")
+        logger.info(f"[EnhancedIndexAligner] 初始化 - horizon: {self.horizon}, mode: {mode}")
 
     def align_all_data(self,
                       X: pd.DataFrame,
@@ -345,17 +345,18 @@ class EnhancedIndexAligner:
             raise ValueError(f"Unsupported first_layer_preds type: {type(first_layer_preds)}")
 
         # 添加目标变量（预测模式时可能是虚拟变量）
+        # 固定目标列名（统一T+5）。预测模式创建虚拟目标。
+        target_col = f'ret_fwd_{self.horizon}d'
+
         if self.mode == 'inference':
-            # 预测模式：创建虚拟目标变量（T+1）
-            stacker_data['ret_fwd_1d'] = np.zeros(len(stacker_data))
+            stacker_data[target_col] = np.zeros(len(stacker_data))
         else:
-            # 训练模式：使用真实目标变量
             if hasattr(y, 'values'):
-                stacker_data['ret_fwd_1d'] = y.values
+                stacker_data[target_col] = y.values
             elif isinstance(y, np.ndarray):
-                stacker_data['ret_fwd_1d'] = y
+                stacker_data[target_col] = y
             else:
-                stacker_data['ret_fwd_1d'] = np.array(y)
+                stacker_data[target_col] = np.array(y)
 
         # 确保索引名称正确
         if stacker_data.index.names != ['date', 'ticker']:

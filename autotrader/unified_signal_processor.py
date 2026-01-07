@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 
 # Enhanced error handling
 try:
@@ -22,6 +22,10 @@ import numpy as np
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
+from datetime import datetime
+
+from .config_helpers import get_config_manager
+from .hetrs_signal_adapter import get_hetrs_signal_provider
 
 logger = logging.getLogger(__name__)
 
@@ -48,45 +52,60 @@ class UnifiedSignalProcessor:
     def __init__(self, mode: SignalMode = SignalMode.PRODUCTION):
         self.mode = mode
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        
-        # Integration with environment config and data manager
+
         try:
             try:
                 from bma_models.unified_config_loader import get_unified_config
-                # 移除market data manager，直接使用polygon factors
                 from .unified_polygon_factors import get_unified_polygon_factors
             except ImportError:
                 from bma_models.unified_config_loader import get_unified_config
-                # 移除market data manager，直接使用polygon factors
                 from unified_polygon_factors import get_unified_polygon_factors
-            
+
             self.env_manager = get_config_manager()
-            # 直接使用Polygon因子库，不需要单独的数据管理器
-            # self.data_manager = get_unified_market_data_manager()
             self.polygon_factors = get_unified_polygon_factors()
-            
+            try:
+                self.hetrs_provider = get_hetrs_signal_provider()
+            except Exception as exc:
+                self.hetrs_provider = None
+                self.logger.debug(f"HETRS provider unavailable: {exc}")
             self.logger.info(f"UnifiedSignalProcessor initialized in {mode.value} mode")
-            
+
         except ImportError as e:
             self.logger.warning(f"Some signal components not available: {e}")
             self.env_manager = None
-            self.data_manager = None
             self.polygon_factors = None
-    
+            self.hetrs_provider = None
+
+    def _is_demo_mode(self) -> bool:
+        """统一demo模式判断"""
+        try:
+            # 优先检查env_manager
+            if self.env_manager and hasattr(self.env_manager, 'is_demo_mode'):
+                return bool(self.env_manager.is_demo_mode())
+
+            # 回退检查mode属性
+            if hasattr(self, 'mode') and self.mode == SignalMode.DEMO:
+                return True
+
+            return False
+
+        except Exception as e:
+            self.logger.debug(f"Demo模式检查异常: {e}")
+            return False
     def generate_signal(self, symbol: str, threshold: float = 0.3) -> SignalResult:
-        """主要信号生成方法 - 与app.py中的调用保持一致"""
+        """涓昏淇″彿鐢熸垚鏂规硶 - 涓巃pp.py涓殑璋冪敤淇濇寔涓€鑷?""
         return self.get_trading_signal(symbol, threshold)
     
     def get_trading_signal(self, symbol: str, threshold: float = 0.3) -> SignalResult:
         """
         Get unified trading signal for a symbol - consolidates all signal sources
         
-        🔥 This method replaces duplicate signal generation in:
-        - autotrader/app.py (GUI signal generation) ✅ FIXED
+        馃敟 This method replaces duplicate signal generation in:
+        - autotrader/app.py (GUI signal generation) 鉁?FIXED
         - autotrader/ibkr_auto_trader.py (trader signal generation) 
         - autotrader/unified_polygon_factors.py (factor signals)
-        - autotrader/engine.py (SignalHub class) 🔄 NEEDS REFACTOR
-        - autotrader/data_alignment.py (process_realtime_signal) 🔄 NEEDS REFACTOR
+        - autotrader/engine.py (SignalHub class) 馃攧 NEEDS REFACTOR
+        - autotrader/data_alignment.py (process_realtime_signal) 馃攧 NEEDS REFACTOR
         """
         import time
         timestamp = time.time()
@@ -96,15 +115,14 @@ class UnifiedSignalProcessor:
             if self.env_manager:
                 signal_params = self.env_manager.get("signals", {})
                 threshold = signal_params.get('acceptance_threshold', threshold)
-                
-                # Check if we're in demo mode
-                if self.env_manager.is_demo_mode():
-                    return self._get_demo_signal(symbol, timestamp)
-            
-            # Force demo mode for DEMO SignalMode
-            if self.mode == SignalMode.DEMO:
+
+            if self._is_demo_mode():
                 return self._get_demo_signal(symbol, timestamp)
             
+            hetrs_payload = self._get_hetrs_payload(symbol, threshold)
+            if hetrs_payload:
+                return self._payload_to_result(hetrs_payload)
+
             # Production signal generation using Polygon factors
             if self.polygon_factors:
                 polygon_signal = self.polygon_factors.get_trading_signal(symbol, threshold=threshold)
@@ -170,7 +188,45 @@ class UnifiedSignalProcessor:
             source="Demo-Active",
             timestamp=timestamp
         )
-    
+
+    def _get_hetrs_payload(self, symbol: str, threshold: float) -> Optional[Dict[str, Any]]:
+        provider = getattr(self, 'hetrs_provider', None)
+        if not provider:
+            return None
+        try:
+            return provider.get_signal(symbol, threshold=threshold)
+        except Exception as exc:
+            self.logger.debug(f"HETRS signal fetch failed for {symbol}: {exc}")
+            return None
+
+    def _payload_to_result(self, payload: Dict[str, Any]) -> SignalResult:
+        ts = payload.get('timestamp')
+        if isinstance(ts, datetime):
+            timestamp = ts.timestamp()
+        elif isinstance(ts, (int, float)):
+            timestamp = float(ts)
+        else:
+            import time as _time
+
+            timestamp = _time.time()
+
+        reason = payload.get('delay_reason')
+        if not reason:
+            metadata = payload.get('metadata') or {}
+            reason = metadata.get('source', '')
+
+        return SignalResult(
+            symbol=str(payload.get('symbol', 'UNKNOWN')),
+            signal_value=float(payload.get('signal_value', 0.0)),
+            signal_strength=float(payload.get('signal_strength', 0.0)),
+            confidence=float(payload.get('confidence', 0.0)),
+            side=str(payload.get('side', 'HOLD')),
+            can_trade=bool(payload.get('can_trade', False)),
+            reason=reason or "HETRS signal",
+            source=str(payload.get('source', 'HETRS_NASDAQ')),
+            timestamp=timestamp,
+        )
+
     def _get_fallback_signal(self, symbol: str, threshold: float, timestamp: float) -> SignalResult:
         """Fallback signal calculation when main systems unavailable"""
         try:
@@ -277,24 +333,20 @@ class UnifiedSignalProcessor:
                                 timestamp=timestamp
                             )
                 except ImportError:
-                    self.logger.warning("Polygon client not available, using symbol-based signals")
+                    self.logger.warning("Polygon client not available in PRODUCTION; disabling synthetic fallback")
                 except Exception as e:
                     self.logger.debug(f"Polygon signal generation error: {e}")
-                
-                # Fallback: Symbol-based deterministic signals for production
-                symbol_hash = hash(symbol + str(int(timestamp / 1800))) % 1000  # 30-min intervals
-                signal_base = (symbol_hash / 1000.0 - 0.5) * 0.15  # Conservative range
-                signal_strength = abs(signal_base) + 0.35  # Ensure minimum activity
-                
+
+                # Production fallback: do not generate synthetic signals
                 return SignalResult(
                     symbol=symbol,
-                    signal_value=signal_base,
-                    signal_strength=min(signal_strength, 1.0),
-                    confidence=0.7,
-                    side='BUY' if signal_base > 0 else 'SELL',
-                    can_trade=signal_strength >= threshold,
-                    reason="Production deterministic signal",
-                    source="Production-Deterministic",
+                    signal_value=0.0,
+                    signal_strength=0.0,
+                    confidence=0.0,
+                    side='HOLD',
+                    can_trade=False,
+                    reason="Data unavailable; synthetic signals disabled in PRODUCTION",
+                    source="Production-NoFallback",
                     timestamp=timestamp
                 )
             
@@ -361,3 +413,4 @@ def get_trading_signal(symbol: str, threshold: float = 0.3) -> Dict[str, Any]:
         'source': result.source,
         'timestamp': result.timestamp
     }
+

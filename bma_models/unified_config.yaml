@@ -1,4 +1,4 @@
-# BMA ULTRA ENHANCED UNIFIED CONFIGURATION
+﻿# BMA ULTRA ENHANCED UNIFIED CONFIGURATION
 # Single source of truth for all system parameters - Production-grade configuration management
 # Integrates: temporal safety, training parameters, data requirements, feature engineering, evaluation metrics
 # Used by: UnifiedTrainingConfig class, all BMA model components, trading system, risk management
@@ -12,22 +12,22 @@ temporal:
   random_state: 42                     # 统一随机种子
   
   # === 核心预测参数 ===
-  prediction_horizon_days: 1           # T+1预测
-  holding_period_days: 1               # 1天持有期（与T+1一致）
-  
-  # === 时间隔离参数 (OPTIMIZED FOR T+1) ===
-  feature_lag_days: 1                  # T-1特征滞后 (适用于T+1，防止泄漏)
-  cv_gap_days: 1                       # T+1优化: Gap = 1天 (特征T-1 → 预测T+1之间只需1天gap)
-  cv_embargo_days: 0                   # T+1优化: Embargo = 0天 (目标已经是次日，无需额外embargo)
-  oos_embargo_days: 1                  # OOS embargo 保持最小1天
-  effective_isolation_days: 1          # 有效隔离期（核心由horizon决定）
-  safety_gap_days: 1                   # 安全间隔 最小1天
-  min_total_gap_days: 10               # 最小总间隔 (降低以提升数据利用率)
+  prediction_horizon_days: 10          # 🔥 T+10预测（双周）
+  holding_period_days: 10              # 10天持有期（与T+10一致）
 
-  # === 交叉验证参数 (OPTIMIZED FOR T+1) ===
-  cv_n_splits: 7                       # CV折数 (统一所有模型使用7折CV)
-  cv_test_ratio: 0.1                   # 测试集比例 (降低到10%，更多数据用于训练)
-  min_train_test_gap_days: 5           # 训练测试最小间隔 (降低到5天)
+  # === 时间隔离参数 (🔥 OPTIMIZED FOR T+10) ===
+  feature_lag_days: 1                  # T-1特征滞后（仍然防止泄漏）
+  cv_gap_days: 10                      # Gap = 10天（与T+10对齐）
+  cv_embargo_days: 10                  # Embargo = 10天（与T+10对齐）
+  oos_embargo_days: 10                 # OOS embargo 与预测horizon一致
+  effective_isolation_days: 20         # gap+embargo = 20天
+  safety_gap_days: 1                   # 安全间隔 1天
+  min_total_gap_days: 10               # 最小总间隔 10天
+
+  # === 交叉验证参数 (🔥 OPTIMIZED FOR T+10) ===
+  cv_n_splits: 6                       # 仍用6折（如需更稳可降为5）
+  cv_test_ratio: 0.12                  # 测试集比例 12%
+  min_train_test_gap_days: 10          # 训练测试最小间隔 10天
   
   # === 样本权重参数 ===
   sample_weight_half_life_days: 75     # 样本权重半衰期（天）
@@ -86,6 +86,7 @@ strict_mode:
   enable_temporal_strict: true         # 严格时间验证
   enable_feature_validation: true     # 严格特征验证
   use_kronos_validation: true         # Kronos风险验证和Top 35筛选（已启用）
+  use_tradingagents: false            # TradingAgents多智能体深度分析（需要OpenAI API）
 
 # ==========================================
 # DATA CONFIGURATION - SINGLE FORMAT ONLY (NO FALLBACKS)
@@ -128,7 +129,7 @@ data:
 features:
   # 技术指标配置
   beta_calculation_window: 60
-  rsi_period: 7
+  rsi_period: 14                       # 🔥 RSI-14 (T+5 optimized, longer period)
   volatility_window: 20
   momentum_window: 20
   
@@ -180,29 +181,29 @@ training:
   incremental_days: 14
   full_rebuild_days: 28
   
-  # 交叉验证 - OPTIMIZED FOR T+1
+  # 交叉验证 - OPTIMIZED FOR T+5
   cv_method: "time_series_split"          # ONLY TimeSeriesSplit accepted
-  cv_splits: 7                            # 统一所有模型使用7折CV
-  cv_gap_days: 1                         # T+1优化: Gap = 1天
-  cv_embargo_days: 0                     # T+1优化: Embargo = 0天
+  cv_splits: 6                            # 统一所有模型使用6折CV（与temporal一致）
+  cv_gap_days: 5                         # Gap = 5天（与temporal一致）
+  cv_embargo_days: 5                     # Embargo = 5天
   cv_min_train_size: 252                 # Match CONFIG.MIN_TRAIN_SIZE (1 year)
-  test_size: 42                          # 减少到2个月 (原3个月过大)
+  test_size: 63                          # ~3个月窗口
   cv_no_fallback: true                   # NO FALLBACK CV METHODS
   
   # 基础ML模型 - SIMPLIFIED
   base_models:
     elastic_net:
       enable: true
-      alpha: 0.000001    # 绝对最小正则化：0.00001 → 0.000001 (10000x总减少)
-      l1_ratio: 0.001    # 超低L1比例：0.01 → 0.001，99.9%纯L2正则化
+      alpha: 0.0001      # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
+      l1_ratio: 0.1      # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
       random_state: 42
     
     xgboost:
       enable: true
-      n_estimators: 300
+      n_estimators: 400  # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
       max_depth: 5
       learning_rate: 0.05
-      min_child_weight: 30
+      min_child_weight: 3  # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
       reg_lambda: 0.05      # 轻微降低L2正则化
       reg_alpha: 0.001     # 大幅降低L1正则化，减少特征筛选
       subsample: 0.8
@@ -212,12 +213,12 @@ training:
     
     catboost:
       enable: true
-      iterations: 3000
-      depth: 6
-      learning_rate: 0.03
+      iterations: 1000      # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (tie -> smallest for speed)
+      depth: 4              # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
+      learning_rate: 0.01   # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
       l2_leaf_reg: 1
       min_data_in_leaf: 30
-      subsample: 0.8
+      subsample: 1.0        # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
       loss_function: "RMSE"
       random_state: 42
       verbose: false
@@ -225,6 +226,28 @@ training:
       thread_count: -1
       od_type: "Iter"
       od_wait: 100
+    
+    lambdarank:
+      enable: true
+      num_boost_round: 50     # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
+      learning_rate: 0.01     # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
+      num_leaves: 127         # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
+      max_depth: 6            # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
+      lambda_l2: 5          # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
+      n_quantiles: 128
+      label_gain_power: 1.5
+
+  # 二层 Ridge Stacker (tunable via scripts/train_single_model.py --model ridge)
+  ridge_stacker:
+    # Base prediction columns used by RidgeStacker. Can include pred_lambdarank to experiment.
+    # Tuned via results/ridge_grid_post_lambda_20251214: best top20_avg_return (post LambdaRank fix)
+    # Best ridge input combo (sweep max-weeks=120):
+    #   base_cols=["pred_elastic","pred_xgb","pred_lambdarank"]
+    base_cols: ["pred_elastic", "pred_xgb", "pred_lambdarank"]
+    alpha: 100.0
+    fit_intercept: false
+    solver: "auto"
+    tol: 1.0e-6
   
   # BMA权重方法
   bma_weighting:
@@ -251,7 +274,7 @@ training:
     alpha: 0.9                          # EMA平滑系数
     ic_metric: "IC"                    # "IC" 或 "ICIR"
     ic_window_days: 120                 # IC/ICIR滚动窗口（严格滞后H）
-    lag_days: 1                         # 与目标T+5对齐的滞后（H=T-1 for T+5 targets - optimal info retention）
+    lag_days: 1                         # 与目标T+1对齐的滞后（H=T-1 for T+1 targets - optimal info retention）
     negative_ic_policy: "clip0"        # 负IC处理：clip0 | flip | ignore
     logging:
       track_daily_weights: true         # 记录日度权重分布

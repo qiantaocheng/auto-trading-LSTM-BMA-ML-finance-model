@@ -9,7 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 import json
 from typing import List, Optional, Callable
 import logging
-from stock_pool_manager import StockPoolManager
+from autotrader.stock_pool_manager import StockPoolManager
 
 logger = logging.getLogger(__name__)
 
@@ -456,7 +456,7 @@ class StockPoolWindow:
         """添加股票"""
         raw = self.add_ticker_var.get()
         try:
-            from stock_pool_manager import StockPoolManager
+            from .stock_pool_manager import StockPoolManager
             ticker = StockPoolManager._sanitize_ticker(raw) or ''
         except Exception:
             ticker = (raw or '').upper().strip().replace('"','').replace("'",'')
@@ -669,7 +669,7 @@ class NewPoolDialog:
         seen = set()
         for token in tickers_text.replace(',', ' ').split():
             try:
-                from stock_pool_manager import StockPoolManager
+                from .stock_pool_manager import StockPoolManager
                 t = StockPoolManager._sanitize_ticker(token)
             except Exception:
                 t = (token or '').upper().strip().replace('"','').replace("'",'')
@@ -752,7 +752,7 @@ class BatchAddDialog:
         for line in text.split('\n'):
             for token in line.replace(',', ' ').split():
                 try:
-                    from stock_pool_manager import StockPoolManager
+                    from .stock_pool_manager import StockPoolManager
                     t = StockPoolManager._sanitize_ticker(token)
                 except Exception:
                     t = (token or '').upper().strip().replace('"','').replace("'",'')

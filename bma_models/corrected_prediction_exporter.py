@@ -11,6 +11,7 @@ from datetime import datetime
 import os
 from typing import Dict, Any, Optional, List, Union, Tuple
 import logging
+from bma_models.simple_25_factor_engine import T5_ALPHA_FACTORS
 
 logger = logging.getLogger(__name__)
 
@@ -241,15 +242,15 @@ class CorrectedPredictionExporter:
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 final_df.to_excel(writer, sheet_name='Final_Predictions', index=False)
-                # Optional: Kronos filter sheets (supports T+10 or T+3 variants)
+                # Optional: Kronos filter sheets (supports T+10 or T+5 variants)
                 try:
                     if kronos_top35_df is not None and isinstance(kronos_top35_df, pd.DataFrame) and not kronos_top35_df.empty:
                         out_df = kronos_top35_df.copy()
 
                         # Determine variant by available return column
-                        if 'kronos_t3_return' in out_df.columns:
-                            # T+3 variant with full details
-                            # Expected columns: rank, ticker, bma_rank, model_score, t0_price, t3_price, kronos_t3_return, kronos_pass, reason
+                        if 'kronos_t5_return' in out_df.columns:
+                            # T+5 variant with full details
+                            # Expected columns: rank, ticker, bma_rank, model_score, t0_price, t5_price, kronos_t5_return, kronos_pass, reason
                             display_cols = []
                             rename_map = {}
 
@@ -269,12 +270,12 @@ class CorrectedPredictionExporter:
                             if 't0_price' in out_df.columns:
                                 display_cols.append('t0_price')
                                 rename_map['t0_price'] = 'Current_Price'
-                            if 't3_price' in out_df.columns:
-                                display_cols.append('t3_price')
-                                rename_map['t3_price'] = 'T+3_Predicted_Price'
-                            if 'kronos_t3_return' in out_df.columns:
-                                display_cols.append('kronos_t3_return')
-                                rename_map['kronos_t3_return'] = 'T+3_Return_%'
+                            if 't5_price' in out_df.columns:
+                                display_cols.append('t5_price')
+                                rename_map['t5_price'] = 'T+5_Predicted_Price'
+                            if 'kronos_t5_return' in out_df.columns:
+                                display_cols.append('kronos_t5_return')
+                                rename_map['kronos_t5_return'] = 'T+5_Return_%'
                             if 'kronos_pass' in out_df.columns:
                                 display_cols.append('kronos_pass')
                                 rename_map['kronos_pass'] = 'Kronos_Pass'
@@ -292,8 +293,8 @@ class CorrectedPredictionExporter:
                             elif 'Rank' in out_df.columns:
                                 out_df = out_df.sort_values('Rank')
 
-                            out_df.to_excel(writer, sheet_name='Kronos_T3_Filter', index=False)
-                            logger.info(f"📊 Kronos T+3过滤表已写入: {len(out_df)} 条记录")
+                            out_df.to_excel(writer, sheet_name='Kronos_T5_Filter', index=False)
+                            logger.info(f"📊 Kronos T+5过滤表已写入: {len(out_df)} 条记录")
                         else:
                             # T+10 variant (legacy support)
                             expected_cols = ['rank', 'ticker', 'model_score', 'kronos_t10_return']
@@ -495,7 +496,7 @@ class CorrectedPredictionExporter:
         model_data.append(['正信号比例', f'{(pred_returns > 0).mean():.2%}'])
 
         # Additional metadata
-        model_data.append(['预测期(T+N)', model_info.get('prediction_horizon', 'T+1')])
+        model_data.append(['预测期(T+N)', model_info.get('prediction_horizon', 'T+5')])
         model_data.append(['数据频率', model_info.get('data_frequency', 'Daily')])
         model_data.append(['特征工程', model_info.get('feature_engineering', 'Enabled')])
         model_data.append(['交叉验证折数', model_info.get('cv_folds', 5)])
@@ -508,8 +509,8 @@ class CorrectedPredictionExporter:
         # Copy all predictions
         all_predictions = results_df.copy()
 
-        # Add additional columns for T+1 analysis
-        all_predictions['prediction_horizon'] = 'T+1'
+        # Add additional columns for T+5 analysis
+        all_predictions['prediction_horizon'] = 'T+5'
 
         # Categorize signals into buckets
         conditions = [
@@ -556,44 +557,8 @@ class CorrectedPredictionExporter:
         stacking_contributions = model_info.get('stacking_contributions', {})
         lambda_contributions = model_info.get('lambda_contributions', {})
 
-        # If no factor contributions, create default factors using REAL 15 factors + sentiment
         if not factor_contributions and not stacking_contributions and not lambda_contributions:
-            # UPDATED: Include sentiment_score and use actual 15 factors from Simple25FactorEngine
-            factor_contributions = {
-                # Momentum factors (1)
-                'momentum_10d_ex1': 0.058,
-
-                # Technical indicators (2)
-                'rsi': 0.045,
-                'bollinger_squeeze': 0.035,
-
-                # Volume factors (1)
-                'obv_momentum': 0.052,
-
-                # Volatility factors (2)
-                'atr_ratio': 0.038,
-                'ivol_60d': 0.062,
-
-                # Fundamental factors (1)
-                'liquidity_factor': 0.032,
-
-                # High-alpha factors (4)
-                'near_52w_high': 0.078,
-                'reversal_1d': 0.055,
-                'rel_volume_spike': 0.048,
-                'mom_accel_5_2': 0.052,
-
-                # Behavioral factors (3)
-                'overnight_intraday_gap': 0.035,
-                'max_lottery_factor': 0.042,
-                'streak_reversal': 0.038,
-
-                # Sentiment factor (ADDED)
-                'sentiment_score': 0.025,
-
-                # Price efficiency factor (T+1 optimized)
-                'price_efficiency_5d': 0.028
-            }
+            factor_contributions = {factor: 0.0 for factor in T5_ALPHA_FACTORS}
 
         # Determine if we have dual-model contributions
         has_dual_models = bool(stacking_contributions and lambda_contributions)

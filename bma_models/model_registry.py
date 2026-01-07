@@ -81,6 +81,8 @@ class SnapshotPaths:
     ridge_scaler_pkl: Optional[str]
     ridge_meta_json: Optional[str]
     blender_meta_json: Optional[str]
+    dual_head_fusion_pkl: Optional[str]  # 新增：双头融合模型
+    dual_head_fusion_meta_json: Optional[str]  # 新增：双头融合元数据
     lambda_percentile_meta_json: Optional[str]
     manifest_json: str
 
@@ -119,6 +121,7 @@ def save_model_snapshot(
     ridge_stacker: Any = None,
     lambda_rank_stacker: Any = None,
     rank_aware_blender: Any = None,
+    dual_head_fusion_manager: Any = None,  # 新增：双头融合管理器
     lambda_percentile_transformer: Any = None,
     tag: str = "default",
     snapshot_dir: Optional[str] = None,
@@ -150,6 +153,11 @@ def save_model_snapshot(
     """
     models = training_results.get('models', {}) or training_results.get('traditional_models', {}).get('models', {})
     feature_names = training_results.get('feature_names') or training_results.get('traditional_models', {}).get('feature_names')
+    feature_names_by_model = (
+        training_results.get('feature_names_by_model')
+        or training_results.get('traditional_models', {}).get('feature_names_by_model')
+        or {}
+    )
 
     if not models:
         raise ValueError("training_results缺少'models'，无法导出快照")
@@ -171,6 +179,8 @@ def save_model_snapshot(
         ridge_scaler_pkl=None,
         ridge_meta_json=None,
         blender_meta_json=None,
+        dual_head_fusion_pkl=None,
+        dual_head_fusion_meta_json=None,
         lambda_percentile_meta_json=None,
         manifest_json=os.path.join(root_dir, "manifest.json"),
     )
@@ -283,36 +293,33 @@ def save_model_snapshot(
     except Exception as e:
         logger.warning(f"导出Blender参数失败: {e}")
 
-    # Lambda Percentile Transformer meta (optional)
+    # Skip saving Lambda Percentile Transformer meta (no longer used)
+
+    # Dual Head Fusion Manager (optional)
     try:
-        if lambda_percentile_transformer is not None and bool(getattr(lambda_percentile_transformer, 'fitted_', False)):
-            # Helper to safely extract scalar from potentially numpy value
-            def _safe_float(val, default):
-                if val is None:
-                    return default
-                try:
-                    if isinstance(val, np.ndarray):
-                        return float(val.item()) if val.size == 1 else default
-                    return float(val)
-                except (ValueError, TypeError):
-                    return default
+        if dual_head_fusion_manager is not None and getattr(dual_head_fusion_manager, 'fitted_', False):
+            # 保存融合模型本身
+            if getattr(dual_head_fusion_manager, 'fusion_model', None) is not None:
+                paths.dual_head_fusion_pkl = os.path.join(root_dir, 'dual_head_fusion.pkl')
+                joblib.dump(dual_head_fusion_manager.fusion_model, paths.dual_head_fusion_pkl)
 
-            oof_mean_raw = getattr(lambda_percentile_transformer, 'oof_mean_', None)
-            oof_std_raw = getattr(lambda_percentile_transformer, 'oof_std_', None)
-            oof_quantiles_raw = getattr(lambda_percentile_transformer, 'oof_quantiles_', None)
+                # 保存融合模型元数据
+                fusion_info = dual_head_fusion_manager.fusion_model.get_model_info()
+                fusion_meta = {
+                    'enable_fusion': dual_head_fusion_manager.enable_fusion,
+                    'alpha': dual_head_fusion_manager.alpha,
+                    'beta': dual_head_fusion_manager.beta,
+                    'auto_tune': dual_head_fusion_manager.auto_tune,
+                    'fitted': dual_head_fusion_manager.fitted_,
+                    'fusion_model_info': fusion_info
+                }
+                paths.dual_head_fusion_meta_json = os.path.join(root_dir, 'dual_head_fusion_meta.json')
+                with open(paths.dual_head_fusion_meta_json, 'w', encoding='utf-8') as f:
+                    json.dump(fusion_meta, f, ensure_ascii=False, indent=2)
 
-            lpt_meta = {
-                'method': getattr(lambda_percentile_transformer, 'method', 'quantile'),
-                'oof_mean': _safe_float(oof_mean_raw, 0.0),
-                'oof_std': _safe_float(oof_std_raw, 1.0),
-                'oof_quantiles': [float(x) for x in (oof_quantiles_raw if oof_quantiles_raw is not None else [])],
-            }
-            paths.lambda_percentile_meta_json = os.path.join(root_dir, 'lambda_percentile_meta.json')
-            with open(paths.lambda_percentile_meta_json, 'w', encoding='utf-8') as f:
-                json.dump(lpt_meta, f, ensure_ascii=False, indent=2)
-            logger.info(f"✅ Lambda Percentile Transformer已保存: {paths.lambda_percentile_meta_json}")
+                logger.info(f"✅ Dual Head Fusion Manager已保存: {paths.dual_head_fusion_pkl}")
     except Exception as e:
-        logger.warning(f"导出Lambda Percentile Transformer失败: {e}")
+        logger.warning(f"导出Dual Head Fusion Manager失败: {e}")
         import traceback
         logger.debug(traceback.format_exc())
 
@@ -440,13 +447,44 @@ def save_model_snapshot(
         logger.warning(f"导出Ridge权重失败: {e}")
 
     # Manifest
+    manifest_metadata: Dict[str, Any] = {}
+    training_metadata = None
+    if isinstance(training_results, dict):
+        training_metadata = training_results.get('training_metadata')
+    if training_metadata:
+        manifest_metadata['training_date_range'] = {
+            'start_date': training_metadata.get('actual_start'),
+            'end_date': training_metadata.get('actual_end'),
+            'requested_start_date': training_metadata.get('requested_start'),
+            'requested_end_date': training_metadata.get('requested_end'),
+            'coverage_days': training_metadata.get('coverage_days'),
+            'coverage_years': training_metadata.get('coverage_years'),
+            'expected_days': training_metadata.get('expected_days'),
+            'expected_years': training_metadata.get('expected_years'),
+            'start_gap_days': training_metadata.get('start_gap_days'),
+            'end_gap_days': training_metadata.get('end_gap_days'),
+            'tolerance_days': training_metadata.get('tolerance_days'),
+            'uses_full_requested_range': training_metadata.get('uses_full_requested_range'),
+        }
+        manifest_metadata['sample_count'] = training_metadata.get('sample_count')
+        manifest_metadata['feature_count'] = training_metadata.get('feature_count')
+        manifest_metadata['ticker_count'] = training_metadata.get('unique_tickers')
+        manifest_metadata['unique_dates'] = training_metadata.get('unique_dates')
+        manifest_metadata['requested_ticker_count'] = training_metadata.get('requested_ticker_count')
+        manifest_metadata['coverage_ratio'] = training_metadata.get('coverage_ratio')
+        manifest_metadata['actual_ticker_coverage_ratio'] = training_metadata.get('actual_ticker_coverage_ratio')
+        manifest_metadata['requested_span_label'] = training_metadata.get('requested_span_label')
+        manifest_metadata['actual_span_label'] = training_metadata.get('actual_span_label')
     manifest = {
         'snapshot_id': snapshot_id,
         'created_at': int(time.time()),
         'tag': tag,
         'feature_names': list(feature_names) if feature_names else None,
+        'feature_names_by_model': feature_names_by_model if feature_names_by_model else None,
         'paths': asdict(paths),
     }
+    if manifest_metadata:
+        manifest['metadata'] = manifest_metadata
 
     with open(paths.manifest_json, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
@@ -605,8 +643,12 @@ def load_weights_from_snapshot(snapshot_id: Optional[str] = None,
         return {}
 
 
-def load_models_from_snapshot(snapshot_id: Optional[str] = None,
-                             sqlite_path: str = os.path.join("data", "model_registry.db")) -> Dict[str, Any]:
+def load_models_from_snapshot(
+    snapshot_id: Optional[str] = None,
+    sqlite_path: str = os.path.join("data", "model_registry.db"),
+    *,
+    load_catboost: bool = False,
+) -> Dict[str, Any]:
     """
     Load all trained models from a snapshot.
 
@@ -651,16 +693,20 @@ def load_models_from_snapshot(snapshot_id: Optional[str] = None,
         except Exception as e:
             logger.warning(f"XGBoost加载失败: {e}")
 
-    # Load CatBoost
-    if paths_dict.get('catboost_cbm') and os.path.exists(paths_dict['catboost_cbm']):
+    # Load CatBoost (optional; disabled by default)
+    #
+    # Rationale:
+    # - CatBoost import can pull IPython/Jupyter widget deps and can be slow / fail in some environments.
+    # - Many research/backtest workflows do not require CatBoost.
+    if load_catboost and paths_dict.get('catboost_cbm') and os.path.exists(paths_dict['catboost_cbm']):
         try:
-            from catboost import CatBoostRegressor
+            from catboost import CatBoostRegressor  # type: ignore
             cat_model = CatBoostRegressor()
             cat_model.load_model(paths_dict['catboost_cbm'])
             result['models']['catboost'] = cat_model
             logger.info(f"✅ CatBoost loaded from {paths_dict['catboost_cbm']}")
         except Exception as e:
-            logger.warning(f"CatBoost加载失败: {e}")
+            logger.warning(f"CatBoost加载失败 (skipped): {e}")
 
     # Load LambdaRankStacker
     if paths_dict.get('lambdarank_txt') and os.path.exists(paths_dict['lambdarank_txt']):
@@ -684,10 +730,16 @@ def load_models_from_snapshot(snapshot_id: Optional[str] = None,
             # Load booster
             ltr.model = lgb.Booster(model_file=paths_dict['lambdarank_txt'])
             ltr.base_cols = meta.get('base_cols', [])
+            
+            # Set alpha factor columns (required for prediction)
+            ltr._alpha_factor_cols = list(ltr.base_cols) if ltr.base_cols else None
 
             # Load scaler if exists
             if paths_dict.get('lambdarank_scaler_pkl') and os.path.exists(paths_dict['lambdarank_scaler_pkl']):
                 ltr.scaler = joblib.load(paths_dict['lambdarank_scaler_pkl'])
+
+            # Set fitted flag
+            ltr.fitted_ = True
 
             result['lambda_rank_stacker'] = ltr
             logger.info(f"✅ LambdaRankStacker loaded from {paths_dict['lambdarank_txt']}")
@@ -723,6 +775,9 @@ def load_models_from_snapshot(snapshot_id: Optional[str] = None,
             if paths_dict.get('ridge_scaler_pkl') and os.path.exists(paths_dict['ridge_scaler_pkl']):
                 ridge.scaler = joblib.load(paths_dict['ridge_scaler_pkl'])
 
+            # Set fitted flag
+            ridge.fitted_ = True
+
             result['ridge_stacker'] = ridge
             logger.info(f"✅ RidgeStacker loaded from {paths_dict['ridge_model_pkl']}")
         except Exception as e:
@@ -730,24 +785,7 @@ def load_models_from_snapshot(snapshot_id: Optional[str] = None,
             import traceback
             logger.debug(traceback.format_exc())
 
-    # Load Lambda Percentile Transformer
-    if paths_dict.get('lambda_percentile_meta_json') and os.path.exists(paths_dict['lambda_percentile_meta_json']):
-        try:
-            from bma_models.lambda_percentile_transformer import LambdaPercentileTransformer
-
-            with open(paths_dict['lambda_percentile_meta_json'], 'r') as f:
-                meta = json.load(f)
-
-            lpt = LambdaPercentileTransformer(method=meta.get('method', 'quantile'))
-            lpt.oof_mean_ = meta.get('oof_mean', 0.0)
-            lpt.oof_std_ = meta.get('oof_std', 1.0)
-            lpt.oof_quantiles_ = np.array(meta.get('oof_quantiles', []))
-            lpt.fitted_ = True
-
-            result['lambda_percentile_transformer'] = lpt
-            logger.info(f"✅ Lambda Percentile Transformer loaded")
-        except Exception as e:
-            logger.warning(f"Lambda Percentile Transformer加载失败: {e}")
+    # Skip loading Lambda Percentile Transformer (no longer used)
 
     return result
 

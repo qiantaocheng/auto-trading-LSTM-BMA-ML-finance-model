@@ -40,7 +40,8 @@ class PolygonDataAdapter:
     def get_stock_data(self,
                       symbol: str,
                       period: str = "3mo",
-                      interval: str = "1d") -> Optional[pd.DataFrame]:
+                      interval: str = "1d",
+                      end_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
         """
         Get stock data using Polygon API
 
@@ -48,6 +49,7 @@ class PolygonDataAdapter:
             symbol: Stock symbol (e.g., 'AAPL')
             period: Time period ('1mo', '3mo', '6mo', '1y', '2y', '5y')
             interval: Data interval ('1m', '5m', '15m', '30m', '1h', '1d', '1wk')
+            end_date: End date for data retrieval (defaults to now for prediction, should be training time for training)
 
         Returns:
             DataFrame with OHLCV data or None if failed
@@ -59,7 +61,9 @@ class PolygonDataAdapter:
         try:
             # Convert period to days
             period_days = self._period_to_days(period)
-            end_date = datetime.now()
+            # Use provided end_date or default to now (for GUI predictions)
+            if end_date is None:
+                end_date = datetime.now()
             start_date = end_date - timedelta(days=period_days)
 
             # Get data based on interval (map to Polygon historical bars)

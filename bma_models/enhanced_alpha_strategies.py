@@ -229,13 +229,13 @@ class AlphaStrategiesEngine:
     
     def _get_default_config(self) -> Dict:
         """Get default configuration with all 25 required factors enabled"""
-        # Define the 25 required factors
+        # Define the required factors (removed ivol_60d due to multicollinearity with stability_score)
         required_17_factors = [
             'momentum_10d_ex1',
             'rsi', 'bollinger_squeeze',
-            'obv_momentum', 'atr_ratio', 'ivol_60d',
+            'obv_momentum', 'atr_ratio', 'blowoff_ratio', 'stability_score',
             'liquidity_factor',
-            'near_52w_high', 'reversal_1d', 'rel_volume_spike', 'mom_accel_5_2'
+            'near_52w_high', 'reversal_1d', 'mom_accel_5_2'
         ]
         
         # Create alpha config for each required factor
@@ -270,27 +270,27 @@ class AlphaStrategiesEngine:
             
             # Momentum factors (1/23) - REMOVED: momentum_20d, momentum_reversal_short
             'momentum_10d_ex1': self._compute_momentum_10d_ex1,
-            
-            # Mean reversion factors (3/17) - REMOVED: price_to_ma20
+
+            # Mean reversion factors (2/17) - REMOVED: price_to_ma20
             'rsi': self._compute_rsi,
             'bollinger_squeeze': self._compute_bollinger_squeeze,
 
             # Volume factors (1/17)
             'obv_momentum': self._compute_obv_momentum,
 
-            # Volatility factors (1/17)
+            # Volatility factors (3/17)
             'atr_ratio': self._compute_atr_ratio,
+            'blowoff_ratio': self._compute_blowoff_ratio,
+            'stability_score': self._compute_stability_score,
 
-            # Special factor (1/17)
-            'ivol_60d': self._compute_ivol_60d,
+            # REMOVED: ivol_60d (multicollinearity with stability_score, r=-0.95)
 
             # Fundamental factors (2/17) - REMOVED: growth_proxy, profitability_momentum, growth_acceleration, value_proxy, profitability_proxy, quality_proxy, mfi
             'liquidity_factor': self._compute_liquidity_factor,
 
             # High-alpha factors (4/17)
-            'near_52w_high': self._compute_near_52w_high,
+            'near_52w_high': self._compute_52w_new_high_proximity,
             'reversal_1d': self._compute_reversal_1d,
-            'rel_volume_spike': self._compute_rel_volume_spike,
             'mom_accel_5_2': self._compute_mom_accel_5_2,
             
             # ===== ALL OTHER FACTORS COMMENTED OUT =====
@@ -2027,13 +2027,13 @@ class AlphaStrategiesEngine:
                     result_clean = result_df.copy()
                     result_clean.index = multi_idx
                     
-                    # 只保留17个Alpha因子，移除原始市场数据和元数据列
+                    # 只保留Alpha因子（移除了ivol_60d），移除原始市场数据和元数据列
                     required_17_factors = [
                         'momentum_10d_ex1',
                         'rsi', 'bollinger_squeeze',
-                        'obv_momentum', 'atr_ratio', 'ivol_60d',
+                        'obv_momentum', 'atr_ratio', 'blowoff_ratio', 'stability_score',
                         'liquidity_factor',
-                        'near_52w_high', 'reversal_1d', 'rel_volume_spike', 'mom_accel_5_2'
+                        'near_52w_high', 'reversal_1d', 'mom_accel_5_2'
                     ]
 
                     # 只保留存在的17个因子列
@@ -2057,14 +2057,14 @@ class AlphaStrategiesEngine:
             # 对于已经是MultiIndex的情况，也只返回alpha因子列
             required_alpha_factors = [
                 'momentum_10d_ex1',
-                'rsi', 'bollinger_position', 'price_to_ma20', 'bollinger_squeeze',
-                'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio',
+                'rsi', 'bollinger_position', 'price_to_ma20',
+                'obv_momentum', 'ad_line', 'atr_20d', 'atr_ratio', 'blowoff_ratio', 'stability_score',
                 'macd_histogram', 'stoch_k', 'cci',
                 'market_cap_proxy',
                 'liquidity_factor', 'growth_proxy', 'profitability_momentum',
                 'growth_acceleration', 'quality_consistency', 'financial_resilience'
             ]
-            
+
             alpha_cols_available = [col for col in required_alpha_factors if col in result_df.columns]
 
             if alpha_cols_available:
@@ -2972,7 +2972,29 @@ class AlphaStrategiesEngine:
             return self.safe_fillna(reversal_signal, df)
         except:
             return pd.Series(0, index=df.index)
-    
+
+    def _compute_reversal_1d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """1-day reversal: negative of 1-day return"""
+        if 'Close' not in df.columns or len(df) < 2:
+            return pd.Series(0, index=df.index)
+        try:
+            reversal_1d = -df['Close'].pct_change(1)
+            return self.safe_fillna(reversal_1d, df)
+        except:
+            return pd.Series(0, index=df.index)
+
+    def _compute_mom_accel_5_2(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Momentum acceleration: 5-day momentum - 2-day momentum"""
+        if 'Close' not in df.columns or len(df) < 6:
+            return pd.Series(0, index=df.index)
+        try:
+            mom_5d = df['Close'].pct_change(5)
+            mom_2d = df['Close'].pct_change(2)
+            mom_accel = mom_5d - mom_2d
+            return self.safe_fillna(mom_accel, df)
+        except:
+            return pd.Series(0, index=df.index)
+
     # Mean reversion factors (4/25)
     def _compute_price_to_ma20(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """Price relative to 20-day moving average"""
@@ -2996,7 +3018,7 @@ class AlphaStrategiesEngine:
             return self.safe_fillna(squeeze, df)
         except:
             return pd.Series(0, index=df.index)
-    
+
     # Volume factors (2/25)
     def _compute_obv_momentum(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """On-Balance Volume momentum"""
@@ -3094,15 +3116,40 @@ class AlphaStrategiesEngine:
         except:
             return pd.Series(0, index=df.index)
     
-    def _compute_ivol_60d(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Idiosyncratic volatility factor"""
-        if 'Close' not in df.columns or len(df) < 60:
+    # REMOVED: _compute_ivol_60d (multicollinearity with stability_score, r=-0.95, VIF=10.4)
+
+    def _compute_blowoff_ratio(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Blowoff ratio: max 5D log-return / (σ14 + ε)"""
+        if 'Close' not in df.columns or len(df) < 14:
             return pd.Series(0, index=df.index)
         try:
+            # Calculate log returns
+            log_returns = np.log(df['Close'] / df['Close'].shift(1))
+            # Get maximum 5-day log return
+            max_5d_log_return = log_returns.rolling(5, min_periods=1).max()
+            # Calculate 14-day volatility (standard deviation of returns)
             returns = df['Close'].pct_change()
-            rolling_std = returns.rolling(60, min_periods=30).std()
-            ivol_60d = -rolling_std  # Negative because low volatility is better
-            return self.safe_fillna(ivol_60d, df)
+            vol_14d = returns.rolling(14, min_periods=7).std()
+            # Compute blowoff ratio
+            epsilon = 1e-8
+            blowoff_ratio = max_5d_log_return / (vol_14d + epsilon)
+            return self.safe_fillna(blowoff_ratio, df)
+        except:
+            return pd.Series(0, index=df.index)
+
+    def _compute_stability_score(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        """Stability score: 1 / (σ20 + ε)"""
+        if 'Close' not in df.columns or len(df) < 20:
+            return pd.Series(0, index=df.index)
+        try:
+            # Calculate returns
+            returns = df['Close'].pct_change()
+            # Calculate 20-day volatility (standard deviation)
+            vol_20d = returns.rolling(20, min_periods=10).std()
+            # Compute stability score
+            epsilon = 1e-8
+            stability_score = 1.0 / (vol_20d + epsilon)
+            return self.safe_fillna(stability_score, df)
         except:
             return pd.Series(0, index=df.index)
 

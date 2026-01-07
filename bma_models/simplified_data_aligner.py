@@ -223,14 +223,9 @@ class SimplifiedDataAligner:
         if not isinstance(target, pd.Series):
             raise DataValidationError(f"目标变量必须是Series，当前类型: {type(target)}")
 
-        # Step 1.5: 动态目标列名（默认T+1）
+        # Step 1.5: 固定目标列名（T+5）
         if target_column_name is None:
-            try:
-                parent = getattr(self, 'parent', None)
-                horizon_days = getattr(parent, 'horizon', 1) if parent is not None else 1
-            except Exception:
-                horizon_days = 1
-            target_column_name = f'ret_fwd_{horizon_days}d'
+            target_column_name = 'ret_fwd_10d'
 
         # Step 2: 标准化预测列名
         standardized_preds = self._standardize_prediction_columns(oof_predictions)

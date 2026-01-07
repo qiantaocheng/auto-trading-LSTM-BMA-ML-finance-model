@@ -95,7 +95,7 @@ class TestSimplifiedDataAligner(TestDataAlignmentBase):
             self.assertIsInstance(stacker_data, pd.DataFrame)
             self.assertIsInstance(stacker_data.index, pd.MultiIndex)
             self.assertEqual(stacker_data.index.names, ['date', 'ticker'])
-            self.assertTrue('ret_fwd_5d' in stacker_data.columns)
+            self.assertTrue('ret_fwd_10d' in stacker_data.columns)
 
             # 验证预测列
             expected_pred_cols = ['pred_elastic', 'pred_xgb', 'pred_catboost']
@@ -255,7 +255,7 @@ class TestRobustAlignmentEngine(TestDataAlignmentBase):
             self.assertTrue(report['success'])
             self.assertIsInstance(stacker_data, pd.DataFrame)
             self.assertGreater(len(stacker_data), 100)
-            self.assertTrue('ret_fwd_5d' in stacker_data.columns)
+            self.assertTrue('ret_fwd_10d' in stacker_data.columns)
 
             # 验证报告结构
             self.assertIn('method', report)

@@ -13,6 +13,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Optional
+from bma_models.unified_config_loader import get_time_config
 
 logger = logging.getLogger(__name__)
 
@@ -269,29 +270,37 @@ class ParallelTrainingEngine:
             )
 
             lambda_input = pd.DataFrame(quick_preds, index=multi_index)
-                # 动态目标列名（默认T+1）
-                horizon_days = getattr(self.parent, 'horizon', 1)
-                target_col = f'ret_fwd_{horizon_days}d'
-                lambda_input[target_col] = y.values
-
+            # 严格的T+5目标对齐
+            from bma_models.unified_config_loader import get_time_config
+            time_cfg = get_time_config()
+            horizon_days = int(getattr(time_cfg, 'prediction_horizon_days', 10))
+            target_col = f'ret_fwd_{horizon_days}d'
+            lambda_input[target_col] = y.values
             # 训练LambdaRank
             if len(lambda_input) >= 200:
+                time_cfg = get_time_config()
+                cv_n_splits = int(getattr(time_cfg, 'cv_n_splits', 6))
+                cv_gap_days = int(getattr(time_cfg, 'cv_gap_days', 5))
+                cv_embargo_days = int(getattr(time_cfg, 'cv_embargo_days', 5))
+                expected = (cv_n_splits, cv_gap_days, cv_embargo_days)
+                logger.info(f"[Thread-2] LambdaRank using CV config splits={expected}")
+
                 lambda_config = {
                     'base_cols': tuple(quick_preds.keys()),
-                    'n_quantiles': 64,
+                    'n_quantiles': 128,
                     'winsorize_quantiles': (0.01, 0.99),
                     'label_gain_power': 1.5,
                     'num_boost_round': 100,
                     'early_stopping_rounds': 0,
                     'use_purged_cv': True,
-                    'cv_n_splits': 5,
-                    'cv_gap_days': 6,
-                    'cv_embargo_days': 5,
+                    'cv_n_splits': cv_n_splits,
+                    'cv_gap_days': cv_gap_days,
+                    'cv_embargo_days': cv_embargo_days,
                     'random_state': 42
                 }
 
                 lambda_stacker = LambdaRankStacker(**lambda_config)
-                lambda_stacker.fit(lambda_input)
+                lambda_stacker.fit(lambda_input, target_col=target_col)
 
                 result['success'] = True
                 result['model'] = lambda_stacker

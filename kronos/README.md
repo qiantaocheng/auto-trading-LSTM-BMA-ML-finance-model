@@ -6,7 +6,7 @@ Financial time series prediction using original Kronos model integrated with Aut
 ## Features
 - 🔮 OHLCV predictions
 - 📊 Base model by default (recommended); large model optional
-- 🌐 Polygon-only data source (US stocks)
+- 🌐 yfinance data source (Yahoo Finance)
 - 🖥️ AutoTrader GUI integration
 
 ## Usage
@@ -33,6 +33,5 @@ kronos/
 ```
 
 ## Requirements
-- Polygon API access (env `POLYGON_API_KEY` or `POLYGON_API_TOKEN`)
-- US stock symbols only (validated via Polygon reference endpoint)
+- `yfinance` installed and network access to Yahoo Finance
 - If original Kronos model cannot be loaded, a statistical fallback predictor is used automatically

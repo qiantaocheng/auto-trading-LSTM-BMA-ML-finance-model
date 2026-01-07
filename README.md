@@ -81,7 +81,7 @@ Environment overrides (optional): `BMA_START_DATE`, `BMA_END_DATE`, `BMA_EXTRA_A
 
 - Unified Polygon factor library: `polygon_factors.py`
 - Alpha engine: `enhanced_alpha_strategies.py`
-- Strict time alignment: feature lags, safety gaps, and T+1~T+5 targets
+- Strict time alignment: feature lags, safety gaps, and T+1 targets
 - PurgedGroupTimeSeriesSplit with gaps and embargo
 
 ### BMA Ultra Enhanced Model

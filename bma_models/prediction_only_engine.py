@@ -89,6 +89,16 @@ class PredictionOnlyEngine:
         logger.info(f"✅ 成功加载 {len(loaded_model_names)}/5 个模型: {', '.join(loaded_model_names)}")
         logger.info("=" * 80)
 
+
+        manifest_horizon = self.manifest.get('prediction_horizon_days')
+        if manifest_horizon is None:
+            try:
+                from bma_models.unified_config_loader import get_time_config
+                manifest_horizon = getattr(get_time_config(), 'prediction_horizon_days', 10)
+            except Exception:
+                manifest_horizon = 10
+        self.prediction_horizon_days = int(manifest_horizon)
+
     def predict(self,
                 tickers: List[str],
                 start_date: Optional[str] = None,
@@ -176,7 +186,19 @@ class PredictionOnlyEngine:
             end_dt = pd.to_datetime(end_date)
             lookback_days = (end_dt - start_dt).days + 50
 
-            engine = Simple17FactorEngine(lookback_days=lookback_days)
+            # 🔥 FIX: Skip cross-sectional standardization for single/few stocks
+            skip_cs_std = len(tickers) < 3
+            if skip_cs_std:
+                logger.info(f"⚠️ Only {len(tickers)} stock(s) - skipping cross-sectional standardization")
+
+            # 🔥 NEW: 使用predict模式初始化引擎
+            logger.info("🔮 初始化Simple17FactorEngine为PREDICT模式")
+            engine = Simple17FactorEngine(
+                lookback_days=lookback_days,
+                skip_cross_sectional_standardization=skip_cs_std,  # Skip for <3 stocks
+                mode='predict',  # 🔥 预测模式：不计算target，不dropna
+                horizon=getattr(self, 'prediction_horizon_days', 10)
+            )
 
             # Fetch market data
             market_data = engine.fetch_market_data(
@@ -192,8 +214,9 @@ class PredictionOnlyEngine:
 
             logger.info(f"✅ 市场数据: {market_data.shape}")
 
-            # Calculate all 17 factors
-            feature_data = engine.compute_all_17_factors(market_data)
+            # Calculate all 17 factors (with mode='predict' to skip target calculation)
+            logger.info("🔮 计算因子（预测模式）...")
+            feature_data = engine.compute_all_17_factors(market_data, mode='predict')
 
             if feature_data.empty:
                 logger.error("❌ 因子计算失败")
@@ -202,13 +225,16 @@ class PredictionOnlyEngine:
             logger.info(f"✅ 因子计算完成: {feature_data.shape}")
             logger.info(f"   因子列: {list(feature_data.columns)}")
 
-            # Drop rows with missing target (if exists)
+            # 🔥 预测模式：target列已经是NaN，无需drop
+            # 保留所有样本（包括最新的数据）用于预测
             if 'target' in feature_data.columns:
                 feature_data = feature_data.drop(columns=['target'])
+                logger.info("   移除空target列")
 
             # Drop Close column (not a feature)
             if 'Close' in feature_data.columns:
                 feature_data = feature_data.drop(columns=['Close'])
+                logger.info("   移除Close列（仅保留因子）")
 
             return feature_data
 
@@ -233,6 +259,17 @@ class PredictionOnlyEngine:
             feature_cols = [col for col in feature_data.columns if col not in metadata_cols]
 
             X = feature_data[feature_cols].copy()
+            # Align to training-time feature names from snapshot manifest when available
+            try:
+                if self.feature_names:
+                    cols = [c for c in self.feature_names if c in X.columns]
+                    # Append any extra columns not seen in training to the end
+                    cols += [c for c in X.columns if c not in cols]
+                    if list(X.columns) != cols:
+                        X = X[cols]
+                        logger.info(f"📐 对齐推理特征到训练特征名顺序: {len(cols)} 列")
+            except Exception:
+                pass
             dates = feature_data.index.get_level_values('date')
             tickers = feature_data.index.get_level_values('ticker')
 

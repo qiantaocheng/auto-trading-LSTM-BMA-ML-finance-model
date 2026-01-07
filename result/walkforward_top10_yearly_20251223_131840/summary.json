@@ -1,0 +1,13 @@
+{
+  "periods": 46,
+  "horizon_days": 10,
+  "purge_days": 5,
+  "train_window_periods": 252,
+  "top10_total_return": 3.5487889468131524,
+  "qqq_total_return": 0.5077910820698646,
+  "top10_sharpe": 1.378942185478194,
+  "qqq_sharpe": 1.4177445810856666,
+  "top10_max_dd": -0.19075952041808675,
+  "qqq_max_dd": -0.17335215410721394,
+  "avg_top10_turnover": 1.3956521739130439
+}

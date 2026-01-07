@@ -65,7 +65,7 @@ class TestRankAwareBlending(unittest.TestCase):
         target = pd.Series(
             base_signal * 0.3 + np.random.normal(0, 0.025, len(self.index)),
             index=self.index,
-            name='ret_fwd_5d'
+            name='ret_fwd_10d'
         )
 
         # 添加一些数据质量问题
@@ -87,7 +87,7 @@ class TestRankAwareBlending(unittest.TestCase):
 
             # 创建测试数据
             stacker_data, target = self.create_realistic_second_layer_data()
-            stacker_data['ret_fwd_5d'] = target
+            stacker_data['ret_fwd_10d'] = target
 
             # 初始化LambdaRank
             lambda_stacker = LambdaRankStacker(
@@ -188,7 +188,7 @@ class TestRankAwareBlending(unittest.TestCase):
 
             # 创建测试数据
             stacker_data, target = self.create_realistic_second_layer_data()
-            stacker_data['ret_fwd_5d'] = target
+            stacker_data['ret_fwd_10d'] = target
 
             # 初始化模型
             model = UltraEnhancedQuantitativeModel()
@@ -245,7 +245,7 @@ class TestRankAwareBlending(unittest.TestCase):
 
             # 创建测试数据
             stacker_data, target = self.create_realistic_second_layer_data()
-            stacker_data['ret_fwd_5d'] = target
+            stacker_data['ret_fwd_10d'] = target
 
             # 训练单Ridge模型
             ridge_stacker = RidgeStacker(alpha=1.0, auto_tune_alpha=False)

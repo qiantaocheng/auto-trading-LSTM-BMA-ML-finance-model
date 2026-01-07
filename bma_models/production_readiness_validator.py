@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 生产就绪验证器 - 量化Go/No-Go门槛检查
@@ -114,7 +114,7 @@ class ProductionReadinessValidator:
             try:
                 from index_aligner import create_index_aligner
                 # 🔥 CRITICAL FIX: 验证horizon必须与训练一致，避免前视偏差
-                validation_aligner = create_index_aligner(horizon=10, strict_mode=True)  # 与T+10训练horizon一致
+                validation_aligner = create_index_aligner(horizon=5, strict_mode=True)  # 与T+5训练horizon一致
                 
                 # 创建公共索引长度
                 min_len = min(len(predictions), len(labels), len(dates))

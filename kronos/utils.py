@@ -8,41 +8,124 @@ logger = logging.getLogger(__name__)
 
 def prepare_kline_data(symbol: str,
                        period: str = "1mo",
-                       interval: str = "1d") -> Optional[pd.DataFrame]:
+                       interval: str = "1d",
+                       end_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
     """
-    Prepare K-line data using Polygon API only.
+    Prepare K-line data using yfinance.
 
-    - Enforces US stock symbols and uppercase normalization
-    - Disables any yfinance fallback to guarantee a single data source
+    - Uses Yahoo Finance data (yfinance) as the single source of truth
+    - Supports an optional end_date (to prevent look-ahead during backtests / training)
+
+    Args:
+        symbol: Stock symbol
+        period: Time period for historical data
+        interval: Data interval
+        end_date: End date for data (None = now for GUI predictions, training date for training)
     """
     try:
-        from .polygon_data_adapter import polygon_adapter
+        try:
+            import yfinance as yf
+        except Exception as e_imp:
+            logger.error(f"yfinance is required for Kronos data fetch but is not available: {e_imp}")
+            return None
 
-        # Normalize and validate symbol
+        # Normalize symbol
         symbol = (symbol or "").strip().upper()
         if not symbol:
             logger.error("Empty symbol provided")
             return None
 
-        if not polygon_adapter.is_us_equity(symbol):
-            logger.error(f"Symbol {symbol} is not a US stock or not supported")
+        # Map common interval names to yfinance equivalents
+        interval_map = {
+            "1h": "60m",
+        }
+        yf_interval = interval_map.get(interval, interval)
+
+        # Convert period to a start date so we can respect end_date (yf.download period+end is inconsistent across intervals)
+        period_days_map = {
+            "1mo": 30,
+            "3mo": 90,
+            "6mo": 180,
+            "1y": 365,
+            "2y": 730,
+            "5y": 1825,
+        }
+        days = period_days_map.get(period, 90)
+
+        if end_date is None:
+            end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        # yfinance end is exclusive; add a small buffer to include end_date bars
+        end_plus = end_date + timedelta(days=1)
+
+        logger.info(f"Fetching data for {symbol} via yfinance (interval={yf_interval}, start={start_date.date()}, end={end_date.date()})...")
+        raw = yf.download(
+            tickers=symbol,
+            start=start_date,
+            end=end_plus,
+            interval=yf_interval,
+            auto_adjust=False,
+            progress=False,
+            group_by="column",
+            threads=False,
+        )
+
+        if raw is None or raw.empty:
+            logger.error(f"yfinance returned no data for {symbol}")
             return None
 
-        logger.info(f"Fetching {symbol} data via Polygon API (Polygon-only mode)...")
-        df = polygon_adapter.get_stock_data(symbol, period, interval)
+        # Standardize columns to lower-case OHLCV
+        col_map = {
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Adj Close": "adj_close",
+            "Volume": "volume",
+        }
+        df = raw.rename(columns=col_map).copy()
 
-        if df is None or df.empty:
-            logger.error(f"Polygon API returned no data for {symbol}")
+        # Some yfinance versions return multi-index columns for multiple tickers; ensure flat
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] for c in df.columns]
+            df = df.rename(columns=col_map)
+
+        required_cols = ["open", "high", "low", "close", "volume"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            logger.error(f"yfinance data missing required columns for {symbol}: {missing}")
             return None
 
-        logger.info(f"Successfully retrieved {len(df)} records from Polygon API for {symbol}")
+        df = df[required_cols]
+
+        # Normalize index to timezone-naive datetimes
+        try:
+            df.index = pd.to_datetime(df.index).tz_localize(None)
+        except Exception:
+            df.index = pd.to_datetime(df.index)
+
+        # Respect end_date cut (avoid any future bars beyond the requested end_date)
+        try:
+            df = df[df.index <= pd.to_datetime(end_date)]
+        except Exception:
+            pass
+
+        # Basic cleaning
+        df = df.sort_index()
+        df = df.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+        df = df[df["volume"].fillna(0) >= 0]
+
+        if df.empty:
+            logger.error(f"yfinance cleaned data is empty for {symbol}")
+            return None
+
+        logger.info(f"Successfully retrieved {len(df)} records from yfinance for {symbol}")
         return df
 
     except Exception as e:
         logger.error(f"Error in prepare_kline_data for {symbol}: {str(e)}")
         return None
-
-# Note: yfinance fallback intentionally removed to enforce Polygon-only data source
 
 def format_prediction_results(predictions: np.ndarray,
                              base_timestamp: Optional[datetime] = None,

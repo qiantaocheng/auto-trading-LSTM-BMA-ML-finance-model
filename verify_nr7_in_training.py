@@ -1,185 +1,91 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-验证 nr7_breakout_bias 是否被正确加入训练
-"""
+"""Sanity checks for the T+10 factor universe."""
 
-import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+import pandas as pd
 
-def verify_nr7_in_factor_list():
-    """验证1: nr7_breakout_bias 在因子列表中"""
-    from bma_models.simple_25_factor_engine import REQUIRED_14_FACTORS
+from bma_models.simple_25_factor_engine import (
+    Simple17FactorEngine,
+    T10_ALPHA_FACTORS,
+    REQUIRED_14_FACTORS,
+)
 
-    print("="*80)
-    print("验证1: nr7_breakout_bias 在因子列表中")
-    print("="*80)
-    print(f"\nREQUIRED_14_FACTORS 列表 ({len(REQUIRED_14_FACTORS)} 个因子):")
-    for i, factor in enumerate(REQUIRED_14_FACTORS, 1):
-        marker = "[*]" if factor == 'nr7_breakout_bias' else "   "
-        print(f"  {marker} {i:2d}. {factor}")
+EXPECTED_FACTORS = list(T10_ALPHA_FACTORS)
 
-    assert 'nr7_breakout_bias' in REQUIRED_14_FACTORS, "[FAIL] nr7_breakout_bias not in factor list!"
-    print("\n[PASS] nr7_breakout_bias in REQUIRED_14_FACTORS\n")
+
+def verify_factor_definition() -> bool:
+    """Ensure the exported factor list matches the canonical T+10 set."""
+    provided = list(REQUIRED_14_FACTORS)
+    if provided != EXPECTED_FACTORS:
+        missing = [f for f in EXPECTED_FACTORS if f not in provided]
+        extra = [f for f in provided if f not in EXPECTED_FACTORS]
+        raise AssertionError(f"Factor list mismatch. missing={missing}, extra={extra}")
     return True
 
-def verify_nr7_in_generated_features():
-    """验证2: nr7_breakout_bias 在生成的特征中"""
-    from bma_models.simple_25_factor_engine import Simple17FactorEngine
 
-    print("="*80)
-    print("验证2: nr7_breakout_bias 在生成的特征中")
-    print("="*80)
-
-    # 创建测试数据
+def verify_factor_generation() -> pd.DataFrame:
+    """Generate sample data and confirm the engine returns every factor."""
     dates = pd.date_range('2024-01-01', periods=30, freq='D')
-    data = []
-    for ticker in ['TEST1', 'TEST2']:
-        for i, date in enumerate(dates):
-            # 模拟NR7场景：第10天有窄幅
-            if i == 10:
-                high, low = 101, 99  # 窄幅
-            else:
-                high, low = 105, 95  # 正常幅度
-
-            data.append({
+    tickers = ['TEST1', 'TEST2']
+    rows = []
+    rng = np.random.default_rng(seed=7)
+    for ticker in tickers:
+        price = 100.0
+        for date in dates:
+            change = rng.normal(0, 1)
+            high = price + abs(change) * 1.5
+            low = price - abs(change) * 1.5
+            close = price + change
+            volume = rng.integers(1_000_000, 2_000_000)
+            rows.append({
                 'date': date,
                 'ticker': ticker,
-                'Open': 100,
+                'Open': price,
                 'High': high,
                 'Low': low,
-                'Close': 100 + (i % 3),  # 变化的收盘价
-                'Volume': 1000000
+                'Close': close,
+                'Volume': volume,
             })
-
-    market_data = pd.DataFrame(data)
-
-    # 初始化引擎并生成因子
+            price = close
+    market_data = pd.DataFrame(rows)
     engine = Simple17FactorEngine(lookback_days=60, enable_sentiment=False)
     factors = engine.compute_all_17_factors(market_data)
 
-    print(f"\n生成的因子 DataFrame 形状: {factors.shape}")
-    print(f"生成的因子列表 ({len(factors.columns)} 列):")
-
-    for i, col in enumerate(factors.columns, 1):
-        marker = "[*]" if col == 'nr7_breakout_bias' else " "
-        non_zero = (factors[col] != 0).sum()
-        print(f"  {marker} {i:2d}. {col:<30} (非零值: {non_zero}/{len(factors)})")
-
-    assert 'nr7_breakout_bias' in factors.columns, "[FAIL] nr7_breakout_bias 不在生成的因子中!"
-    print("\n[PASS] 验证通过: nr7_breakout_bias 在生成的特征 DataFrame 中")
-
-    # 额外验证: nr7_breakout_bias 有非零值
-    nr7_data = factors['nr7_breakout_bias']
-    non_zero_count = (nr7_data != 0).sum()
-    print(f"\nnr7_breakout_bias 统计:")
-    print(f"  非零值数量: {non_zero_count}/{len(nr7_data)}")
-    print(f"  最小值: {nr7_data.min():.6f}")
-    print(f"  最大值: {nr7_data.max():.6f}")
-    print(f"  均值: {nr7_data.mean():.6f}")
-    print(f"  标准差: {nr7_data.std():.6f}")
-
-    if non_zero_count > 0:
-        print("\n[PASS] nr7_breakout_bias 有非零值，因子计算正常工作\n")
-    else:
-        print("\n[WARN]  nr7_breakout_bias 全为零 (可能需要更多数据来触发NR7条件)\n")
-
+    missing = [f for f in EXPECTED_FACTORS if f not in factors.columns]
+    if missing:
+        raise AssertionError(f"Missing factors in output: {missing}")
     return factors
 
-def verify_nr7_in_training_input():
-    """验证3: 追踪 nr7_breakout_bias 到训练输入 X"""
-    print("="*80)
-    print("验证3: nr7_breakout_bias 在训练输入 X 中")
-    print("="*80)
 
-    # 模拟 _prepare_standard_data_format 的逻辑
-    from bma_models.simple_25_factor_engine import Simple17FactorEngine
+def verify_training_columns(factors: pd.DataFrame) -> pd.Index:
+    """Ensure that the training feature matrix only uses the canonical factors."""
+    feature_cols = [c for c in factors.columns if c not in {'target', 'Close', 'date', 'ticker'}]
+    extras = [c for c in feature_cols if c not in EXPECTED_FACTORS]
+    if extras:
+        raise AssertionError(f"Unexpected factors in training matrix: {extras}")
+    return pd.Index(feature_cols)
 
-    # 创建测试数据
-    dates = pd.date_range('2024-01-01', periods=30, freq='D')
-    data = []
-    for ticker in ['AAPL', 'MSFT']:
-        for date in dates:
-            data.append({
-                'date': date,
-                'ticker': ticker,
-                'Open': 100,
-                'High': 102,
-                'Low': 98,
-                'Close': 100,
-                'Volume': 1000000
-            })
 
-    market_data = pd.DataFrame(data)
+def main() -> None:
+    print('\n' + '=' * 80)
+    print('T+10 FACTOR INTEGRATION CHECKS')
+    print('=' * 80)
 
-    # 生成因子
-    engine = Simple17FactorEngine(lookback_days=60, enable_sentiment=False)
-    feature_data = engine.compute_all_17_factors(market_data)
+    verify_factor_definition()
+    print('? REQUIRED_14_FACTORS matches the canonical T+10 set')
 
-    print(f"\nfeature_data 形状: {feature_data.shape}")
-    print(f"feature_data 列: {list(feature_data.columns)}")
+    factors = verify_factor_generation()
+    print(f'? Simple17FactorEngine produced all factors (columns={len(factors.columns)})')
 
-    # 模拟 _prepare_standard_data_format 中的列过滤逻辑
-    # feature_cols = [col for col in feature_data.columns if col not in ['target', 'Close']]
-    feature_cols = [col for col in feature_data.columns if col not in ['target', 'Close']]
+    feature_cols = verify_training_columns(factors)
+    print(f'? Training feature columns aligned ({len(feature_cols)} factors)')
 
-    print(f"\n过滤后的特征列 (训练用 X，{len(feature_cols)} 列):")
-    for i, col in enumerate(feature_cols, 1):
-        marker = "[*]" if col == 'nr7_breakout_bias' else " "
-        print(f"  {marker} {i:2d}. {col}")
+    print('\nCanonical factor list (ordered):')
+    for idx, factor in enumerate(EXPECTED_FACTORS, start=1):
+        print(f'  {idx:2d}. {factor}')
 
-    assert 'nr7_breakout_bias' in feature_cols, "[FAIL] nr7_breakout_bias 不在训练特征 X 中!"
-    print("\n[PASS] 验证通过: nr7_breakout_bias 在训练输入 X 中")
+    print('\nAll checks passed.')
 
-    # 模拟创建 X
-    X = feature_data[feature_cols].copy()
-    print(f"\n最终训练矩阵 X 形状: {X.shape}")
-    print(f"X 包含的列: {list(X.columns)}")
 
-    assert 'nr7_breakout_bias' in X.columns, "[FAIL] nr7_breakout_bias 不在最终 X 中!"
-    print("\n[PASS] 验证通过: nr7_breakout_bias 在最终训练矩阵 X 中\n")
-
-    return X
-
-def main():
-    """运行所有验证"""
-    print("\n" + "="*80)
-    print("NR7_BREAKOUT_BIAS 因子训练集成验证")
-    print("="*80 + "\n")
-
-    try:
-        # 验证1: 因子定义
-        verify_nr7_in_factor_list()
-
-        # 验证2: 因子生成
-        factors = verify_nr7_in_generated_features()
-
-        # 验证3: 训练输入
-        X = verify_nr7_in_training_input()
-
-        # 最终总结
-        print("="*80)
-        print("[PASS] 所有验证通过！")
-        print("="*80)
-        print("\n总结:")
-        print("  1. [PASS] nr7_breakout_bias 在 REQUIRED_14_FACTORS 因子列表中")
-        print("  2. [PASS] nr7_breakout_bias 被 Simple17FactorEngine 正确计算")
-        print("  3. [PASS] nr7_breakout_bias 被包含在训练特征矩阵 X 中")
-        print("\n结论: nr7_breakout_bias 已正确集成到 ElasticNet, CatBoost, XGBoost 训练流程中！")
-        print("="*80 + "\n")
-
-        return True
-
-    except AssertionError as e:
-        print(f"\n[FAIL] 验证失败: {e}")
-        return False
-    except Exception as e:
-        print(f"\n[FAIL] 验证出错: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    exit(0 if success else 1)
+if __name__ == '__main__':
+    main()

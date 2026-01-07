@@ -384,12 +384,11 @@ class UnifiedParallelTrainingEngine:
     def _build_unified_stacker_data(self, oof_predictions: Dict[str, pd.Series],
                                   y: pd.Series, dates: pd.Series, tickers: pd.Series) -> Optional[pd.DataFrame]:
         """
-        构建统一的stacker输入数据
+        构建统一的stacker数据集
 
-        确保Ridge和LambdaRank使用完全相同的数据
+        确保Ridge与LambdaRank使用完全相同的数据
         """
         try:
-            # 创建MultiIndex
             if not isinstance(y.index, pd.MultiIndex):
                 multi_index = pd.MultiIndex.from_arrays(
                     [dates, tickers], names=['date', 'ticker']
@@ -398,43 +397,40 @@ class UnifiedParallelTrainingEngine:
             else:
                 y_indexed = y
 
-            # 构建stacker DataFrame
-            stacker_dict = {}
+            stacker_dict: Dict[str, pd.Series] = {}
             for model_name, pred_series in oof_predictions.items():
-                # 确保预测series有正确的索引
+                key = f'pred_{model_name}'
                 if isinstance(pred_series.index, pd.MultiIndex):
-                    stacker_dict[f'pred_{model_name}'] = pred_series
+                    stacker_dict[key] = pred_series
                 else:
-                    # 如果没有MultiIndex，使用y的索引
-                    stacker_dict[f'pred_{model_name}'] = pd.Series(
-                        pred_series.values, index=y_indexed.index
-                    )
+                    stacker_dict[key] = pd.Series(pred_series.values, index=y_indexed.index)
 
-            # 添加目标变量
-            # 动态目标列名：根据主模型 horizon 选择，默认T+1
-            horizon_days = getattr(self.parent, 'horizon', 1)
-            target_col = f'ret_fwd_{horizon_days}d'
+            parent_horizon = getattr(self.parent, 'horizon', 5)
+            if parent_horizon != 5:
+                raise ValueError(f'Unified stacker expects parent horizon=5, got {parent_horizon}.')
+
+            target_col = 'ret_fwd_10d'
             stacker_dict[target_col] = y_indexed
 
             stacker_data = pd.DataFrame(stacker_dict)
 
-            # 验证数据完整性
             missing_data = stacker_data.isnull().sum()
             if missing_data.any():
-                logger.warning(f"⚠️ Stacker数据缺失: {missing_data.to_dict()}")
+                logger.warning(f"[Stacker] 数据缺失: {missing_data.to_dict()}")
 
-            # 仅以目标列为准移除NaN，特征列用0填充（保留全时段）
             feature_cols = [c for c in stacker_data.columns if c != target_col]
             stacker_data[feature_cols] = stacker_data[feature_cols].fillna(0.0)
             clean_data = stacker_data.dropna(subset=[target_col])
-            if len(clean_data) < len(stacker_data) * 0.8:
-                logger.warning(f"⚠️ 目标过滤后剩余 {len(clean_data)}/{len(stacker_data)} ({len(clean_data)/len(stacker_data)*100:.1f}%)")
 
-            logger.info(f"📊 统一stacker数据构建完成: {clean_data.shape}")
+            if len(clean_data) < len(stacker_data) * 0.8:
+                retention = len(clean_data) / len(stacker_data) * 100
+                logger.warning(f"[Stacker] 目标列清理后剩余 {len(clean_data)}/{len(stacker_data)} ({retention:.1f}%)")
+
+            logger.info(f"[Stacker] 构建完成: {clean_data.shape}")
             return clean_data
 
         except Exception as e:
-            logger.error(f"❌ 构建stacker数据失败: {e}")
+            logger.error(f"构建stacker数据失败: {e}")
             return None
 
     def _train_ridge_unified(self, oof_predictions: Dict[str, pd.Series],
@@ -466,44 +462,62 @@ class UnifiedParallelTrainingEngine:
                 'elapsed_time': time.time() - start_time
             }
 
+
     def _train_lambda_unified(self, stacker_data: pd.DataFrame) -> Dict[str, Any]:
-        """
-        训练LambdaRank Stacker（统一数据源版本）
-        """
+        """Train LambdaRank stacker using the unified stacker dataset."""
         start_time = time.time()
         try:
             from bma_models.lambda_rank_stacker import LambdaRankStacker
-
-            logger.info("[Lambda-Thread] 开始训练LambdaRank...")
-
-            # 使用统一的时间配置
             from bma_models.unified_config_loader import get_time_config
+
+            logger.info("[Lambda-Thread] ????LambdaRank...")
+
             time_config = get_time_config()
+            time_horizon = int(getattr(time_config, 'prediction_horizon_days', getattr(self.parent, 'horizon', 10)))
+            parent_horizon = int(getattr(self.parent, 'horizon', time_horizon))
+            if parent_horizon != time_horizon:
+                logger.warning(f"[Lambda-Thread] Parent horizon {parent_horizon}d != config horizon {time_horizon}d; using config value")
 
-            # 动态确定特征列（根据实际数据），排除目标列名（兼容多种horizon命名）
-            possible_targets = {'ret_fwd_1d', 'ret_fwd_2d', 'ret_fwd_3d', 'ret_fwd_5d', 'ret_fwd_10d'}
-            feature_cols = [col for col in stacker_data.columns if col not in possible_targets]
-            logger.info(f"[Lambda-Thread] 使用特征列: {feature_cols}")
+            cv_splits = int(getattr(time_config, 'cv_n_splits', 6))
+            cv_gap = int(getattr(time_config, 'cv_gap_days', 5))
+            cv_embargo = int(getattr(time_config, 'cv_embargo_days', 5))
+            logger.info(f"[Lambda-Thread] CV config splits/gap/embargo = {(cv_splits, cv_gap, cv_embargo)}")
 
-            # 配置LambdaRank（使用purged CV factory）
+            required_target = f'ret_fwd_{time_horizon}d'
+            if required_target not in stacker_data.columns:
+                available_targets = [col for col in stacker_data.columns if col.startswith('ret_fwd_')]
+                raise KeyError(f"Missing {required_target} in stacker data. Available targets: {available_targets}")
+
+            prohibited_cols = {required_target, 'target'}
+            feature_cols = [
+                col for col in stacker_data.columns
+                if col not in prohibited_cols and not col.startswith('ret_fwd_')
+            ]
+            if not feature_cols:
+                raise ValueError('No usable feature columns for LambdaRank after enforcing target alignment.')
+
+            lambda_training_df = stacker_data[feature_cols + [required_target]].copy()
+            logger.info(f"[Lambda-Thread] ?????{required_target}")
+            logger.info(f"[Lambda-Thread] ??????: {feature_cols}")
+
             lambda_config = {
-                'base_cols': tuple(feature_cols),  # 动态使用实际可用的特征列
-                'n_quantiles': 64,
+                'base_cols': tuple(feature_cols),
+                'n_quantiles': 128,
                 'winsorize_quantiles': (0.01, 0.99),
                 'label_gain_power': 1.5,
                 'num_boost_round': 100,
                 'early_stopping_rounds': 0,
                 'use_purged_cv': True,
-                'cv_n_splits': 5,
-                'cv_gap_days': time_config.cv_gap_days,
-                'cv_embargo_days': time_config.cv_embargo_days,
+                'cv_n_splits': cv_splits,
+                'cv_gap_days': cv_gap,
+                'cv_embargo_days': cv_embargo,
                 'random_state': 42
             }
 
             lambda_stacker = LambdaRankStacker(**lambda_config)
-            lambda_stacker.fit(stacker_data)
+            lambda_stacker.fit(lambda_training_df, target_col=required_target)
 
-            logger.info("[Lambda-Thread] ✅ LambdaRank训练成功")
+            logger.info("[Lambda-Thread] ? LambdaRank????")
 
             return {
                 'success': True,
@@ -512,7 +526,7 @@ class UnifiedParallelTrainingEngine:
             }
 
         except Exception as e:
-            logger.error(f"[Lambda-Thread] 训练异常: {e}")
+            logger.error(f"[Lambda-Thread] ????: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return {
@@ -520,7 +534,6 @@ class UnifiedParallelTrainingEngine:
                 'model': None,
                 'elapsed_time': time.time() - start_time
             }
-
     def _check_lambda_available(self) -> bool:
         """检查LambdaRank是否可用"""
         try:
@@ -633,17 +646,7 @@ class UnifiedParallelTrainingEngine:
 
             # 处理不同类型的输入
             if isinstance(alpha_factors, dict):
-                # 如果是OOF predictions dict，转换为DataFrame
-                logger.info("🔄 使用OOF预测构建LambdaRank数据（fallback模式）")
-                lambda_dict = {}
-                for model_name, pred_series in alpha_factors.items():
-                    if isinstance(pred_series.index, pd.MultiIndex):
-                        lambda_dict[f'pred_{model_name}'] = pred_series
-                    else:
-                        lambda_dict[f'pred_{model_name}'] = pd.Series(
-                            pred_series.values, index=y_indexed.index
-                        )
-                lambda_data = pd.DataFrame(lambda_dict)
+                raise ValueError("Unified lambda data builder requires alpha factor DataFrame; dict-based inputs are no longer supported.")
             else:
                 # 正常的Alpha Factors DataFrame
                 logger.info("🎯 使用Alpha Factors构建LambdaRank数据")
@@ -662,8 +665,14 @@ class UnifiedParallelTrainingEngine:
                     lambda_data = lambda_data.drop(columns=pred_cols)
                     logger.info(f"   移除{len(pred_cols)}个预测列")
 
-            # 添加目标变量（T+1）
-            lambda_data['ret_fwd_1d'] = y_indexed
+            # 添加目标变量（动态T+H from unified time config）
+            # 动态目标列：严格使用T+5
+            from bma_models.unified_config_loader import get_time_config
+            horizon_days = int(get_time_config().prediction_horizon_days)
+            if horizon_days != 5:
+                raise ValueError(f'Unified lambda data builder expects prediction_horizon_days=5, got {horizon_days}.')
+            target_col = 'ret_fwd_10d'
+            lambda_data[target_col] = y_indexed
 
             # 验证数据
             feature_count = lambda_data.shape[1] - 1  # 减去target列

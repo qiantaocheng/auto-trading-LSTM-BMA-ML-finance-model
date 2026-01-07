@@ -50,16 +50,17 @@ class LambdaRankStacker:
 
     def __init__(self,
                  base_cols: Tuple[str, ...] = None,  # 将自动使用alpha factor columns
-                 n_quantiles: int = 64,  # 固定档位数量（64或128）
+                 n_quantiles: int = 128,  # 固定档位数量（64或128）
                  winsorize_quantiles: Tuple[float, float] = (0.01, 0.99),  # 异常值截断
                  label_gain_power: float = 1.0,  # 标签增益幂次（1.0=线性，1.5=强化前排）
                  lgb_params: Optional[Dict[str, Any]] = None,
                  num_boost_round: int = 500,  # 大数据集需要更多轮数
                  early_stopping_rounds: int = 200,  # 放宽早停，提升稳定性
-                 use_purged_cv: bool = True,  # 强制使用PurgedCV防止数据泄露
-                 cv_n_splits: int = 5,        # CV折数（统一5折）
-                 cv_gap_days: int = 2,        # T+1预测：gap=2（feature_lag 1 + horizon 1）
-                 cv_embargo_days: int = 1,    # T+1预测：embargo=1
+                 use_purged_cv: bool = True,  # 强制使用PurgedCV防止数据泄露（当internal CV启用时）
+                 use_internal_cv: bool = True,  # 是否在fit内部执行PurgedCV（外层已有CV时可禁用以避免fold-in-fold）
+                 cv_n_splits: int = 6,        # 🔥 CV折数（T+5: 6折，提高数据利用率）
+                 cv_gap_days: int = 5,        # 🔥 T+5预测：gap=5（与horizon对齐）
+                 cv_embargo_days: int = 5,    # 🔥 T+5预测：embargo=5（与horizon对齐）
                  random_state: int = 42):
         """
         初始化LambdaRank排序模型
@@ -73,31 +74,34 @@ class LambdaRankStacker:
             num_boost_round: 训练轮数
             early_stopping_rounds: 早停轮数（增强防过拟合）
             use_purged_cv: 是否使用PurgedCV（强烈推荐True）
-            cv_n_splits: 交叉验证折数
-            cv_gap_days: CV间隙天数（防数据泄露）
-            cv_embargo_days: CV禁运天数（防前视偏误）
+            cv_n_splits: 交叉验证折数（T+5: 6折）
+            cv_gap_days: CV间隙天数（T+5: 5天，防数据泄露）
+            cv_embargo_days: CV禁运天数（T+5: 5天，防前视偏误）
             random_state: 随机种子
         """
         if not LIGHTGBM_AVAILABLE:
             raise ImportError("LightGBM is required for LambdaRankStacker")
+        if use_internal_cv and not use_purged_cv:
+            raise ValueError("When internal CV is enabled, purged CV must be enabled for T+5 training.")
+        if not PURGED_CV_AVAILABLE:
+            raise RuntimeError("Unified Purged CV factory is unavailable. Install the required components to enable T+5 training.")
+        if use_internal_cv and (cv_n_splits, cv_gap_days, cv_embargo_days) != (6, 5, 5):
+            raise ValueError("LambdaRankStacker enforces T+5 CV settings when internal CV is enabled: splits=6, gap=5, embargo=5.")
 
-        if use_purged_cv and not PURGED_CV_AVAILABLE:
-            logger.warning("⚠️ PurgedCV不可用，将fallback到无CV训练（存在数据泄露风险）")
-            use_purged_cv = False
-
-        # base_cols将在fit时自动设置为alpha factor columns
+        # base_cols在fit时会自动检测为alpha factor columns
         self.base_cols = base_cols
         self._alpha_factor_cols = None  # 存储实际使用的alpha factor列
         self.n_quantiles = n_quantiles
         self.winsorize_quantiles = winsorize_quantiles
         self.label_gain_power = label_gain_power
         self.num_boost_round = num_boost_round
-        # 设置最小迭代下限，避免 best_iteration 过低
+        # 训练过小样本时限制，防止 best_iteration 过高
         self.early_stopping_rounds = max(early_stopping_rounds, 100)
-        self.use_purged_cv = use_purged_cv
-        self.cv_n_splits = 5
-        self.cv_gap_days = cv_gap_days
-        self.cv_embargo_days = cv_embargo_days
+        self.use_internal_cv = bool(use_internal_cv)
+        self.use_purged_cv = bool(use_purged_cv)
+        self.cv_n_splits = 6  # 🔥 使用固定的n_splits（T+5: 6）
+        self.cv_gap_days = 5
+        self.cv_embargo_days = 5
         self.random_state = random_state
 
         # 生成label_gain序列（支持幂次增强）
@@ -112,18 +116,18 @@ class LambdaRankStacker:
         self.lgb_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'ndcg_eval_at': [5, 10, 20],  # 评估Top-K
+            'ndcg_eval_at': [20, 50, 100],  # 评估Top-20/50/100，贴合前排落地
             'label_gain': self.label_gain,  # 关键：固定档位增益
-            'num_leaves': 127,  # 大数据集可用更多叶子
+            'num_leaves': 255,  # 提升表达能力（2600截面，资源允许时）
             'max_depth': 8,   # 增加深度适应复杂模式
-            'learning_rate': 0.1,  # 大数据集可用更高学习率
+            'learning_rate': 0.05,  # 大数据集更稳健
             'feature_fraction': 0.8,
             'bagging_fraction': 0.8,
             'bagging_freq': 1,  # 每轮都bagging
-            'min_data_in_leaf': 50,  # 适应大规模数据(2600股票/日)
+            'min_data_in_leaf': 350,  # 百万样本下提高叶子最小样本
             'lambda_l1': 0.1,
             'lambda_l2': 10.0,  # 大数据集可稍微减少L2正则化
-            'lambdarank_truncation_level': 1000,  # 2600股票需要更高截断层级
+            'lambdarank_truncation_level': 2600,  # 与组规模匹配
             'sigmoid': 1.2,  # Sigmoid参数
             'verbose': -1,
             'random_state': random_state,
@@ -144,11 +148,11 @@ class LambdaRankStacker:
         logger.info(f"   特征模式: {'Alpha Factors' if self.base_cols is None else 'Custom'}")
         logger.info(f"   分位数等级: {self.n_quantiles}")
         logger.info(f"   NDCG评估: {self.lgb_params['ndcg_eval_at']}")
-        logger.info(f"   使用PurgedCV: {self.use_purged_cv}")
-        if self.use_purged_cv:
+        logger.info(f"   内部CV: {'启用' if self.use_internal_cv else '禁用'}")
+        if self.use_internal_cv and self.use_purged_cv:
             logger.info(f"   CV参数: splits={self.cv_n_splits}, gap={self.cv_gap_days}天, embargo={self.cv_embargo_days}天")
 
-    def _convert_to_rank_labels(self, df: pd.DataFrame, target_col: str = 'ret_fwd_1d') -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    def _convert_to_rank_labels(self, df: pd.DataFrame, target_col: str = 'ret_fwd_10d') -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
         将连续目标变量转换为稳定的固定档位等级（64/128档软离散）
 
@@ -231,7 +235,7 @@ class LambdaRankStacker:
 
         return df_processed, conversion_report
 
-    def fit(self, df: pd.DataFrame, target_col: str = 'ret_fwd_1d', alpha_factors: pd.DataFrame = None) -> 'LambdaRankStacker':
+    def fit(self, df: pd.DataFrame, target_col: str = 'ret_fwd_10d', alpha_factors: pd.DataFrame = None) -> 'LambdaRankStacker':
         """
         训练LambdaRank模型
 
@@ -250,6 +254,7 @@ class LambdaRankStacker:
             raise ValueError("DataFrame必须有MultiIndex(date, ticker)")
 
         if target_col not in df.columns:
+            # 严格模式：不进行任何回退，要求上游明确提供正确的目标列
             raise ValueError(f"目标变量 {target_col} 不存在")
 
         # 自动检测或使用提供的alpha factors
@@ -311,7 +316,7 @@ class LambdaRankStacker:
         y_valid = y[valid_mask]
 
         # 小样本自适应：放宽最小样本限制并动态调整LightGBM参数
-        min_required = 30 if not self.use_purged_cv else max(30, self.cv_n_splits * 2)
+        min_required = max(30, self.cv_n_splits * 2)
         if len(X_valid) < min_required:
             logger.warning(
                 f"有效训练样本过少: {len(X_valid)} < {min_required}，启用小样本自适应参数以继续训练"
@@ -343,36 +348,32 @@ class LambdaRankStacker:
 
         logger.info(f"   特征标准化: 均值={X_scaled.mean(axis=0)[:3]}, 标准差={X_scaled.std(axis=0)[:3]}")
 
-        # 使用PurgedCV或直接训练
-        if self.use_purged_cv and PURGED_CV_AVAILABLE:
+        if self.use_internal_cv:
             logger.info("🏋️ 开始PurgedCV LambdaRank训练（防数据泄露）...")
             self.model = self._train_with_purged_cv(
                 X_scaled, y_valid, df_valid, valid_group_sizes
             )
         else:
-            logger.warning("⚠️ 使用全量数据训练（存在数据泄露风险）")
-            # 创建LightGBM数据集
+            logger.info("🏋️ 内部CV已禁用：在外层CV的训练子集上进行全量训练（无内部分折）")
+            # 构建LightGBM数据集（将所有样本视为一个大组；排序学习仍可运行，但主要依赖外层CV评估）
+            # 更严谨做法是按date分组构建单个训练数据的group数组
+            dates = df_valid.index.get_level_values('date')
+            unique_dates = dates.unique()
+            train_group_sizes = [len(dates[dates == d]) for d in unique_dates]
             train_data = lgb.Dataset(
-                X_scaled,
-                label=y_valid,
-                group=valid_group_sizes,  # 关键：指定组信息
+                X_scaled, label=y_valid, group=train_group_sizes,
                 feature_name=[f'f_{i}' for i in range(X_scaled.shape[1])]
             )
-
-            # 训练模型
-            logger.info("🏋️ 开始LambdaRank训练...")
-
-            eval_results = {}
+            callbacks = [lgb.log_evaluation(period=0)]
+            if self.early_stopping_rounds > 0:
+                # 无验证集时不使用早停
+                pass
             self.model = lgb.train(
                 self.lgb_params,
                 train_data,
                 num_boost_round=self.num_boost_round,
-                valid_sets=[train_data],
-                valid_names=['train'],
-                callbacks=[
-                    lgb.log_evaluation(period=0),  # 静默训练
-                    lgb.record_evaluation(eval_results)
-                ]
+                valid_sets=[],
+                callbacks=callbacks
             )
 
         # 训练后评估
@@ -428,26 +429,14 @@ class LambdaRankStacker:
         cv_scores = []
         oof_predictions = np.zeros(len(X_scaled))  # 初始化OOF数组（防数据泄漏）
 
-        try:
-            # 为CV创建日期索引映射
-            date_to_idx = {date: i for i, date in enumerate(unique_dates)}
-            sample_date_indices = [date_to_idx[date] for date in dates]
+        # 为CV创建日期索引映射
+        date_to_idx = {date: i for i, date in enumerate(unique_dates)}
+        sample_date_indices = [date_to_idx[date] for date in dates]
 
-            cv_splits = list(cv_splitter.split(X_scaled, y_valid, groups=sample_date_indices))
-            logger.info(f"   成功生成{len(cv_splits)}个CV分割")
-
-        except Exception as e:
-            logger.warning(f"PurgedCV分割失败，fallback到无CV训练: {e}")
-            # Fallback到全量训练
-            train_data = lgb.Dataset(
-                X_scaled, label=y_valid, group=group_sizes,
-                feature_name=[f'f_{i}' for i in range(X_scaled.shape[1])]
-            )
-            return lgb.train(
-                self.lgb_params, train_data,
-                num_boost_round=self.num_boost_round,
-                callbacks=[lgb.log_evaluation(period=0)]
-            )
+        cv_splits = list(cv_splitter.split(X_scaled, y_valid, groups=sample_date_indices))
+        if not cv_splits:
+            raise RuntimeError('PurgedCV did not yield any splits for LambdaRankStacker.')
+        logger.info(f"   成功生成{len(cv_splits)}个CV分割")
 
         # 遍历CV分割进行训练
         for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):

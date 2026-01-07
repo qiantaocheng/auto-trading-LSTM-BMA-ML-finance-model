@@ -6,11 +6,44 @@ IBKR自动交易系统 - 统一start器
 
 import asyncio
 import logging
+import json
+import os
+import sys
+from pathlib import Path
 from typing import Optional, Any
+
+# Fix relative import - add parent to path FIRST
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Now use absolute imports
+from autotrader.system_paths import resolve_data_path, ensure_data_dir
+from autotrader.config_helpers import get_config_manager
 # 清理：移除未使use导入
 # from typing import Dict
 # from pathlib import Path
 
+
+
+STATE_FILE = resolve_data_path('launcher_state.json')
+
+
+def _load_launcher_state() -> dict:
+    try:
+        path = Path(STATE_FILE)
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _save_launcher_state(state: dict) -> None:
+    try:
+        path = Path(STATE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception:
+        pass
 
 class AutoTraderLauncher:
     """统一交易系统启动器别名"""
@@ -22,6 +55,9 @@ class TradingSystemLauncher:
     def __init__(self):
         self.logger = logging.getLogger("Launcher")
         self._setup_imports()
+        self._last_state = _load_launcher_state()
+        if self._last_state:
+            self.logger.info("最后一次运行模式: %s", self._last_state.get('mode'))
     
     def _setup_imports(self):
         """settings导入路径，解决相for导入问题"""
@@ -45,25 +81,43 @@ class TradingSystemLauncher:
         print()
         
 
+    def _record_state(self, mode: str) -> None:
+        from datetime import datetime
+        data = {'mode': mode, 'timestamp': datetime.utcnow().isoformat()}
+        _save_launcher_state(data)
+        self._last_state = data
+
     def launch_gui_mode(self, **kwargs) -> Any:
-        """start图形界面模式"""
+        """启动图形界面模式（支持状态恢复）"""
         try:
             print("Starting GUI mode...")
-            
+
             from autotrader.app import AutoTraderGUI
-            
-            # 创建GUI应use
+            from autotrader.state_manager import get_state_manager
+
+            # 初始化状态管理器
+            state_manager = get_state_manager()
+
+            # 如果有保存的状态，显示提示
+            state_age = state_manager.get_state_age()
+            if state_age is not None:
+                print(f"[INFO] 发现上次状态（{state_age:.1f}小时前），启动后将自动验证")
+
+            # 创建GUI应用
             gui = AutoTraderGUI()
-            
+
+            # 设置状态管理器（GUI可以使用）
+            gui.state_manager = state_manager
+
             print("GUI mode started successfully")
             print("Tip: Use the interface for trading configuration and monitoring")
-            
-            # in主线程 startedGUI主循环（Tkinter必须in主线程运行）
+
+            # 在主线程启动GUI主循环（Tkinter必须在主线程运行）
             gui.mainloop()
             return gui
-            
+
         except Exception as e:
-            print(f"[ERROR] GUI模式startfailed: {e}")
+            print(f"[ERROR] GUI模式启动失败: {e}")
             self.logger.error(f"GUI mode failed: {e}")
             return None
             
@@ -176,6 +230,7 @@ class TradingSystemLauncher:
             
             if success_rate >= 80:
                 print(" 系统测试通过！")
+                self._record_state("test")
                 return True
             else:
                 print(" 系统测试发现问题，请check配置")
@@ -189,7 +244,9 @@ class TradingSystemLauncher:
     def auto_launcher(self):
         """自动start器 - 直接startGUI模式"""
         self.print_banner()
-        print("[start] 正instart专业交易界面...")
+        if getattr(self, '_last_state', None):
+            print(f"[info] 上次运行模式: {self._last_state.get('mode')} 于 {self._last_state.get('timestamp')}")
+        print("[start] 正在启动专业交易界面...")
         print("[提示] 所has功能（策略引擎、直接交易、系统测试）集成toGUIin")
         print()
         

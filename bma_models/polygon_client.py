@@ -105,8 +105,8 @@ class PolygonClient:
                     if invalid_mask.any():
                         invalid_count = invalid_mask.sum()
                         logger.warning(f"{symbol}: {invalid_count} invalid {col} values (<=0 or NaN)")
-                        # 用前值填充
-                        df.loc[invalid_mask, col] = df[col].ffill().bfill()
+                        # ✅ PIT-safe: only forward-fill (past information). NEVER backfill (future leakage).
+                        df.loc[invalid_mask, col] = df[col].ffill()
             
             # 检查异常价格变化
             if 'Close' in df.columns and len(df) > 1:

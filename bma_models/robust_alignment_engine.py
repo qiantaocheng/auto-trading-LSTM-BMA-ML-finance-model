@@ -173,7 +173,9 @@ class RobustAlignmentEngine:
                 std_name = column_mapping.get(name, name)
                 stacker_data[std_name] = pred
 
-            stacker_data['ret_fwd_1d'] = target
+            # 固定目标列：统一T+5
+            target_col = 'ret_fwd_10d'
+            stacker_data[target_col] = target
 
             # 基础验证
             if len(stacker_data) < self.min_samples:
@@ -185,7 +187,7 @@ class RobustAlignmentEngine:
                 'method': 'fallback_basic_alignment',
                 'samples': len(stacker_data),
                 'predictions': list(aligned_predictions.keys()),
-                'target_column': 'ret_fwd_1d',
+                'target_column': target_col,
                 'warnings': [],
                 'errors': []
             }

@@ -6,6 +6,8 @@ IBKR 自动交易系统
 __version__ = "2.0.0"
 __author__ = "Trading System Team"
 
+from .config_helpers import get_config_manager
+
 # 配置管理器导入
 try:
     from bma_models.unified_config_loader import get_unified_config

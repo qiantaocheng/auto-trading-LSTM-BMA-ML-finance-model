@@ -51,9 +51,8 @@ class RankGateConfig:
         self.alpha_short = alpha_short
         self.min_coverage = min_coverage
         self.neutral_band = neutral_band
-        # 优化K值设置：适应2600只股票的投资宇宙
-        # 分层策略：精选(5,10,20) + 投资组合(50,100) + 风险分散(200)
-        self.top_k_list = top_k_list or [5, 10, 20, 50, 100, 200]
+        # 监控Top-K：聚焦20/50/100覆盖
+        self.top_k_list = top_k_list or [20, 50, 100]
         self.ewma_beta = ewma_beta
         self.max_gain = max_gain
 
@@ -103,9 +102,8 @@ class RankAwareBlender:
         self.use_decorrelation = use_decorrelation
 
         if top_k_list is None:
-            # 优化K值设置：适应2600只股票的投资宇宙
-            # 分层策略：精选(5,10,20) + 投资组合(50,100) + 风险分散(200)
-            self.top_k_list = [5, 10, 20, 50, 100, 200]
+            # 监控Top-K：聚焦20/50/100覆盖
+            self.top_k_list = [20, 50, 100]
         else:
             self.top_k_list = top_k_list
 

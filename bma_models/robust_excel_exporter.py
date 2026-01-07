@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,30 @@ class RobustExcelExporter:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        self._prediction_horizon_days = self._resolve_prediction_horizon()
+
+
+    def _resolve_prediction_horizon(self) -> int:
+        """Resolve prediction horizon days from configuration (falls back to 10)."""
+        try:
+            from bma_models.unified_config_loader import get_time_config
+
+            time_config = get_time_config()
+            horizon = getattr(time_config, 'prediction_horizon_days', None)
+            if isinstance(horizon, (int, float)) and horizon > 0:
+                return int(horizon)
+        except Exception:
+            logger.debug("Falling back to default prediction horizon=10 (unable to load temporal config)")
+        return 10
+
+    def _compute_target_date(self, base_date: Optional[pd.Timestamp]) -> pd.Timestamp:
+        try:
+            base_ts = pd.Timestamp(base_date)
+        except Exception:
+            base_ts = pd.Timestamp(datetime.now().date())
+        horizon = getattr(self, '_prediction_horizon_days', 10) or 10
+        return base_ts + pd.Timedelta(days=horizon)
+
     def safe_export(
         self,
         predictions_series: Optional[pd.Series],
@@ -36,9 +60,15 @@ class RobustExcelExporter:
         lambda_df: Optional[pd.DataFrame] = None,
         ridge_df: Optional[pd.DataFrame] = None,
         final_df: Optional[pd.DataFrame] = None,
+        base_models_df: Optional[pd.DataFrame] = None,
         kronos_df: Optional[pd.DataFrame] = None,
+        kronos_pass_df: Optional[pd.DataFrame] = None,
         lambda_percentile_info: Optional[Dict[str, Any]] = None,
-        simple_mode: bool = True  # 🔧 默认只导出Final_Predictions一个表
+        tradingagents_df: Optional[pd.DataFrame] = None,
+        model_prediction_tables: Optional[Dict[str, pd.DataFrame]] = None,
+        top30_summary: Optional[pd.DataFrame] = None,
+        top30_details: Optional[Dict[str, pd.DataFrame]] = None,
+        simple_mode: bool = True  # default: only keep Final_Predictions sheet
     ) -> Optional[str]:
         """
         安全导出Excel
@@ -71,11 +101,25 @@ class RobustExcelExporter:
                     # 🎯 简化模式：优先导出Final_Predictions
                     if final_df is not None and not final_df.empty:
                         self._write_final_sheet(writer, final_df)
+                    elif base_models_df is not None and not base_models_df.empty:
+                        self._write_base_models_sheet(writer, base_models_df)
                     else:
                         # 回退：使用predictions_series
                         pred_data = self._prepare_predictions(predictions_series)
                         self._write_predictions_sheet(writer, pred_data)
                         logger.warning("Final_Predictions不可用，使用Predictions表代替")
+
+                    if kronos_df is not None and not kronos_df.empty:
+                        self._write_kronos_sheet(writer, kronos_df)
+                    if kronos_pass_df is not None and not kronos_pass_df.empty:
+                        self._write_kronos_sheet(writer, kronos_pass_df, sheet_name='Kronos_Passed_Over10')
+
+                    if model_prediction_tables:
+                        self._write_model_prediction_tables(writer, model_prediction_tables)
+                    if top30_summary is not None and not top30_summary.empty:
+                        self._write_top30_summary(writer, top30_summary)
+                    if top30_details:
+                        self._write_top30_details(writer, top30_details)
                 else:
                     # 完整模式：导出所有表
                     pred_data = self._prepare_predictions(predictions_series)
@@ -91,20 +135,37 @@ class RobustExcelExporter:
                     if lambda_df is not None and not lambda_df.empty:
                         self._write_lambda_sheet(writer, lambda_df)
 
-                    # Sheet 4: Ridge Predictions (如果有)
+                    # Sheet 4: Base Model Predictions (如果有)
+                    if base_models_df is not None and not base_models_df.empty:
+                        self._write_base_models_sheet(writer, base_models_df)
+
+                    # Sheet 5: Ridge Predictions (如果有)
                     if ridge_df is not None and not ridge_df.empty:
                         self._write_ridge_sheet(writer, ridge_df)
 
-                    # Sheet 5: Final Predictions (如果有)
+                    # Sheet 6: Final Predictions (如果有)
                     if final_df is not None and not final_df.empty:
                         self._write_final_sheet(writer, final_df)
 
-                    # Sheet 6: Kronos Filter (如果有)
+                    # Sheet 7: Kronos Filter (如果有)
                     if kronos_df is not None and not kronos_df.empty:
                         self._write_kronos_sheet(writer, kronos_df)
+                    if kronos_pass_df is not None and not kronos_pass_df.empty:
+                        self._write_kronos_sheet(writer, kronos_pass_df, sheet_name='Kronos_Passed_Over10')
 
-                    # Sheet 7: Factor Contributions
+                    # Sheet 8: TradingAgents Analysis (如果有)
+                    if tradingagents_df is not None and not tradingagents_df.empty:
+                        self._write_tradingagents_sheet(writer, tradingagents_df)
+
+                    # Sheet 9: Factor Contributions
                     self._write_factor_contributions_sheet(writer, model_info)
+
+                    if model_prediction_tables:
+                        self._write_model_prediction_tables(writer, model_prediction_tables, include_models=('catboost', 'xgboost', 'elastic_net'), use_special_handlers=False)
+                    if top30_summary is not None and not top30_summary.empty:
+                        self._write_top30_summary(writer, top30_summary)
+                    if top30_details:
+                        self._write_top30_details(writer, top30_details)
 
             logger.info("=" * 80)
             logger.info(f"✅ Excel导出成功!")
@@ -151,43 +212,46 @@ class RobustExcelExporter:
                 # 检查是否有'date'级别
                 if 'date' in predictions_series.index.names:
                     base_date = predictions_series.index.get_level_values('date').max()
+                    target_date = self._compute_target_date(base_date)
                     pred_latest = predictions_series.xs(base_date, level='date')
 
                     return {
                         'predictions': pred_latest.values,
-                        'dates': [base_date] * len(pred_latest),
+                        'dates': [target_date] * len(pred_latest),
                         'tickers': pred_latest.index.tolist(),
                         'count': len(pred_latest),
-                        'base_date': base_date,
-                        'target_date': base_date + pd.Timedelta(days=1)
+                        'base_date': pd.Timestamp(base_date),
+                        'target_date': target_date
                     }
                 else:
                     # MultiIndex但没有'date'级别，使用第一个级别
                     logger.warning(f"   MultiIndex但缺少'date'级别，索引名称: {predictions_series.index.names}")
                     # 重置索引为简单索引
                     predictions_series = predictions_series.reset_index(drop=True)
-                    current_date = datetime.now().date()
+                    base_date = datetime.now().date()
+                    target_date = self._compute_target_date(base_date)
 
                     return {
                         'predictions': predictions_series.values,
-                        'dates': [current_date] * len(predictions_series),
+                        'dates': [target_date] * len(predictions_series),
                         'tickers': [f'ticker_{i}' for i in range(len(predictions_series))],
                         'count': len(predictions_series),
-                        'base_date': current_date,
-                        'target_date': current_date
+                        'base_date': pd.Timestamp(base_date),
+                        'target_date': target_date
                     }
             else:
                 # Simple Index
                 logger.info("   检测到Simple Index格式")
-                current_date = datetime.now().date()
+                base_date = datetime.now().date()
+                target_date = self._compute_target_date(base_date)
 
                 return {
                     'predictions': predictions_series.values,
-                    'dates': [current_date] * len(predictions_series),
+                    'dates': [target_date] * len(predictions_series),
                     'tickers': predictions_series.index.tolist(),
                     'count': len(predictions_series),
-                    'base_date': current_date,
-                    'target_date': current_date
+                    'base_date': pd.Timestamp(base_date),
+                    'target_date': target_date
                 }
 
         except Exception as e:
@@ -333,6 +397,29 @@ class RobustExcelExporter:
         except Exception as e:
             logger.error(f"✗ Lambda_Predictions工作表写入失败: {e}")
 
+    def _write_base_models_sheet(self, writer, base_models_df: pd.DataFrame):
+        """写入Base Model Predictions工作表（按ticker排序并保留原始数据列）"""
+        try:
+            if not isinstance(base_models_df, pd.DataFrame):
+                df = pd.DataFrame(base_models_df)
+            else:
+                df = base_models_df.copy()
+
+            if df.empty:
+                logger.warning("⚠️ Base Model数据为空，跳过Base_Model_Predictions工作表")
+                return
+
+            if 'ticker' in df.columns:
+                sort_columns: List[str] = ['ticker']
+                if 'date' in df.columns:
+                    sort_columns.append('date')
+                df = df.sort_values(sort_columns)
+
+            df.to_excel(writer, sheet_name='Base_Model_Predictions', index=False)
+            logger.info(f"✅ Base_Model_Predictions工作表已写入 ({len(df)} 条)")
+        except Exception as e:
+            logger.error(f"❌ Base_Model_Predictions工作表写入失败: {e}")
+
     def _write_ridge_sheet(self, writer, ridge_df: pd.DataFrame):
         """写入Ridge Predictions工作表（确保每个ticker只有一条记录，按分数排序）"""
         try:
@@ -398,34 +485,49 @@ class RobustExcelExporter:
         except Exception as e:
             logger.error(f"✗ Final_Predictions工作表写入失败: {e}")
 
-    def _write_kronos_sheet(self, writer, kronos_df: pd.DataFrame):
-        """写入Kronos Filter工作表"""
+    def _write_kronos_sheet(self, writer, kronos_df: pd.DataFrame, sheet_name: str = 'Kronos_Filter'):
+        """写入Kronos相关工作表"""
         try:
-            kronos_df.to_excel(writer, sheet_name='Kronos_Filter', index=False)
-            logger.info(f"✓ Kronos_Filter工作表已写入 ({len(kronos_df)} 条)")
+            kronos_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            logger.info(f"Kronos sheet '{sheet_name}' written ({len(kronos_df)} rows)")
         except Exception as e:
-            logger.error(f"✗ Kronos_Filter工作表写入失败: {e}")
+            logger.error(f"Failed to write Kronos sheet '{sheet_name}': {e}")
+
+    def _write_tradingagents_sheet(self, writer, tradingagents_df: pd.DataFrame):
+        """写入TradingAgents Analysis工作表"""
+        try:
+            # 确保按ticker排序
+            if 'ticker' in tradingagents_df.columns:
+                tradingagents_df = tradingagents_df.sort_values('ticker').reset_index(drop=True)
+
+            # 添加排名列（如果还没有）
+            if 'rank' not in tradingagents_df.columns:
+                tradingagents_df.insert(0, 'rank', range(1, len(tradingagents_df) + 1))
+
+            tradingagents_df.to_excel(writer, sheet_name='TradingAgents_Analysis', index=False)
+            logger.info(f"✓ TradingAgents_Analysis工作表已写入 ({len(tradingagents_df)} 条)")
+        except Exception as e:
+            logger.error(f"✗ TradingAgents_Analysis工作表写入失败: {e}")
 
     def _write_factor_contributions_sheet(self, writer, model_info: Dict):
         """写入Factor Contributions工作表"""
         try:
             # 默认因子贡献（如果没有实际数据）
+            # REMOVED: ivol_60d (multicollinearity with stability_score, VIF=10.4)
             factor_data = [
-                ['momentum_10d_ex1', 0.058],
-                ['near_52w_high', 0.062],
-                ['reversal_1d', 0.045],
-                ['rel_volume_spike', 0.041],
-                ['mom_accel_5_2', 0.038],
-                ['rsi_7', 0.052],
+                ['liquid_momentum', 0.058],
+                ['obv_divergence', 0.052],
+                ['ivol_20', 0.047],
+                ['rsrs_beta_18', 0.045],
+                ['rsi_21', 0.052],
                 ['bollinger_squeeze', 0.035],
-                ['obv_momentum', 0.048],
+                ['blowoff_ratio', 0.033],
                 ['atr_ratio', 0.032],
-                ['ivol_60d', 0.056],
-                ['liquidity_factor', 0.029],
-                ['price_efficiency_5d', 0.044],
-                ['overnight_intraday_gap', 0.067],
-                ['max_lottery_factor', 0.071],
-                ['streak_reversal', 0.039]
+                ['vol_ratio_20d', 0.029],
+                ['price_ma60_deviation', 0.044],
+                ['near_52w_high', 0.062],
+                ['ret_skew_20d', 0.039],
+                ['trend_r2_60', 0.041]
             ]
 
             df = pd.DataFrame(factor_data, columns=['Factor', 'Contribution'])
@@ -435,6 +537,91 @@ class RobustExcelExporter:
 
         except Exception as e:
             logger.error(f"✗ Factor_Contributions工作表写入失败: {e}")
+
+
+    def _write_model_prediction_tables(self, writer, tables: Dict[str, pd.DataFrame], include_models: Optional[Tuple[str, ...]] = None, use_special_handlers: bool = True) -> None:
+        """Write per-model prediction tables in a consistent order."""
+        if not tables:
+            return
+
+        sheet_map = {
+            'catboost': 'CatBoost_Predictions',
+            'xgboost': 'XGBoost_Predictions',
+            'elastic_net': 'ElasticNet_Predictions',
+            'ridge': 'Ridge_Predictions',
+            'lambdarank': 'LambdaRank_Predictions',
+        }
+        order = list(include_models) if include_models is not None else ['catboost', 'xgboost', 'elastic_net', 'ridge', 'lambdarank']
+
+        for key in order:
+            df = tables.get(key)
+            if df is None or df.empty:
+                continue
+
+            try:
+                if use_special_handlers and key == 'ridge':
+                    self._write_ridge_sheet(writer, df)
+                    continue
+                if use_special_handlers and key == 'lambdarank':
+                    self._write_lambda_sheet(writer, df)
+                    continue
+
+                export_df = df.copy()
+                for col in ['date', 'actual_base_date', 'actual_target_date']:
+                    if col in export_df.columns:
+                        export_df[col] = pd.to_datetime(export_df[col], errors='coerce').dt.strftime('%Y-%m-%d')
+
+                sheet_name = sheet_map.get(key, key.title())
+                export_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                logger.info(f"[EXPORT] Wrote sheet {sheet_name} ({len(export_df)} rows)")
+            except Exception as exc:
+                logger.error(f"[EXPORT] Failed to write sheet for {key}: {exc}")
+
+    def _write_top30_summary(self, writer, summary_df: pd.DataFrame) -> None:
+        """Write summary statistics for top-30 T+5 returns."""
+        if summary_df is None or summary_df.empty:
+            return
+
+        try:
+            export_df = summary_df.copy()
+            if 'avg_t5_return_pct' in export_df.columns:
+                export_df['avg_t5_return_pct'] = pd.to_numeric(export_df['avg_t5_return_pct'], errors='coerce')
+            export_df.to_excel(writer, sheet_name='Top30_T5_Summary', index=False)
+            logger.info(f"[EXPORT] Wrote sheet Top30_T5_Summary ({len(export_df)} rows)")
+        except Exception as exc:
+            logger.error(f"[EXPORT] Failed to write Top30_T5_Summary: {exc}")
+
+    def _write_top30_details(self, writer, detail_tables: Dict[str, pd.DataFrame]) -> None:
+        """Write per-model top-30 T+5 return tables."""
+        if not detail_tables:
+            return
+
+        sheet_map = {
+            'catboost': 'CatBoost_Top30_T5',
+            'xgboost': 'XGBoost_Top30_T5',
+            'elastic_net': 'ElasticNet_Top30_T5',
+            'ridge': 'Ridge_Top30_T5',
+            'lambdarank': 'LambdaRank_Top30_T5',
+        }
+        order = ['catboost', 'xgboost', 'elastic_net', 'ridge', 'lambdarank']
+
+        for key in order:
+            df = detail_tables.get(key)
+            if df is None or df.empty:
+                continue
+
+            try:
+                export_df = df.copy()
+                for col in ['date', 'actual_base_date', 'actual_target_date']:
+                    if col in export_df.columns:
+                        export_df[col] = pd.to_datetime(export_df[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                sheet_name = sheet_map.get(key, f"{key.title()}_Top30_T5")
+                export_df = export_df.head(30)
+                export_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                logger.info(f"[EXPORT] Wrote sheet {sheet_name} ({len(export_df)} rows)")
+            except Exception as exc:
+                logger.error(f"[EXPORT] Failed to write top30 detail for {key}: {exc}")
+
 
 
 if __name__ == "__main__":

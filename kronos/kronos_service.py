@@ -46,8 +46,23 @@ class KronosService:
                      interval: str = "1d",
                      pred_len: int = 30,
                      model_size: str = "base",
-                     temperature: float = 0.7) -> Dict[str, Any]:
-        """Generate predictions for a stock"""
+                     temperature: float = 0.7,
+                     end_date: Optional[datetime] = None,
+                     historical_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+        """
+        Generate predictions for a stock
+
+        Args:
+            symbol: Stock symbol
+            period: Historical data period
+            interval: Data interval
+            pred_len: Prediction length
+            model_size: Kronos model size
+            temperature: Sampling temperature
+            end_date: End date for historical data (None=now for GUI, training date for training)
+            historical_df: Optional pre-fetched OHLCV dataframe (index datetime, cols open/high/low/close/volume).
+                          If provided, KronosService will NOT fetch from yfinance, enabling efficient backtests.
+        """
         try:
             # Initialize or reconfigure model if needed (defensive reload when not loaded)
             needs_init = (
@@ -63,11 +78,27 @@ class KronosService:
             # Update temperature
             self.model_wrapper.config.temperature = temperature
 
-            # Fetch historical data (Polygon-only, enforce US equities)
-            logger.info(f"Fetching data for {symbol} via Polygon (US equities only, interval={interval})...")
-            df = prepare_kline_data(symbol, period, interval)
+            # Use provided history (fast path) or fetch via yfinance
+            if historical_df is not None:
+                df = historical_df.copy()
+                # Standardize expected columns
+                df.columns = [str(c).lower() for c in df.columns]
+                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                missing = [c for c in required_cols if c not in df.columns]
+                if missing:
+                    return {"status": "error", "error": f"historical_df missing columns: {missing}"}
+                df = df[required_cols]
+                try:
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+                except Exception:
+                    df.index = pd.to_datetime(df.index)
+                df = df.sort_index()
+            else:
+                # Fetch historical data (yfinance)
+                logger.info(f"Fetching data for {symbol} via yfinance (interval={interval})...")
+                df = prepare_kline_data(symbol, period, interval, end_date=end_date)
             if df is None or df.empty:
-                return {"status": "error", "error": f"Failed to fetch Polygon data for {symbol} (US equities only)"}
+                return {"status": "error", "error": f"Failed to fetch yfinance data for {symbol}"}
 
             # Load model if not loaded
             if not self.model_wrapper.is_loaded:
