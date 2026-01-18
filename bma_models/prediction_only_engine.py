@@ -181,10 +181,22 @@ class PredictionOnlyEngine:
             # Initialize Simple17FactorEngine
             from bma_models.simple_25_factor_engine import Simple17FactorEngine
 
-            # Calculate lookback days
+            # 🔥 CRITICAL FIX: Calculate lookback days with minimum requirement
+            # Features like near_52w_high use rolling(252), ma200 uses rolling(200)
+            # Need at least 252 trading days (~280 calendar days) for feature calculation
+            MIN_REQUIRED_LOOKBACK_DAYS = 280  # 252 trading days + buffer for weekends/holidays
+            
             start_dt = pd.to_datetime(start_date)
             end_dt = pd.to_datetime(end_date)
-            lookback_days = (end_dt - start_dt).days + 50
+            prediction_days = (end_dt - start_dt).days
+            
+            # Use maximum of: (prediction period + buffer) OR minimum required
+            lookback_days = max(prediction_days + 50, MIN_REQUIRED_LOOKBACK_DAYS)
+            logger.info(f"📊 Lookback days: {lookback_days} (prediction period: {prediction_days} days, min required: {MIN_REQUIRED_LOOKBACK_DAYS} days)")
+            
+            # Calculate actual start date for data fetching (need lookback_days before start_date)
+            data_start_date = (start_dt - pd.Timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+            logger.info(f"📅 Fetching data from {data_start_date} to {end_date} (lookback: {lookback_days} days)")
 
             # 🔥 FIX: Skip cross-sectional standardization for single/few stocks
             skip_cs_std = len(tickers) < 3
@@ -200,11 +212,11 @@ class PredictionOnlyEngine:
                 horizon=getattr(self, 'prediction_horizon_days', 10)
             )
 
-            # Fetch market data
+            # Fetch market data with extended lookback period
             market_data = engine.fetch_market_data(
                 symbols=tickers,
                 use_optimized_downloader=True,
-                start_date=start_date,
+                start_date=data_start_date,  # Use extended start date for sufficient history
                 end_date=end_date
             )
 
@@ -235,6 +247,16 @@ class PredictionOnlyEngine:
             if 'Close' in feature_data.columns:
                 feature_data = feature_data.drop(columns=['Close'])
                 logger.info("   移除Close列（仅保留因子）")
+
+            # 🔥 CRITICAL: Filter to only prediction period (start_date to end_date)
+            # We fetched extended history for feature calculation, but only need prediction period for output
+            if isinstance(feature_data.index, pd.MultiIndex):
+                date_level = feature_data.index.get_level_values('date')
+                prediction_mask = (date_level >= start_dt) & (date_level <= end_dt)
+                feature_data = feature_data[prediction_mask]
+                logger.info(f"📅 Filtered to prediction period: {feature_data.shape[0]} rows (from {start_date} to {end_date})")
+            else:
+                logger.warning("⚠️ Feature data does not have MultiIndex - cannot filter by date")
 
             return feature_data
 

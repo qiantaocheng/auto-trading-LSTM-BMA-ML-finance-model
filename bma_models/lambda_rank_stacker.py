@@ -54,8 +54,8 @@ class LambdaRankStacker:
                  winsorize_quantiles: Tuple[float, float] = (0.01, 0.99),  # 异常值截断
                  label_gain_power: float = 1.0,  # 标签增益幂次（1.0=线性，1.5=强化前排）
                  lgb_params: Optional[Dict[str, Any]] = None,
-                 num_boost_round: int = 500,  # 大数据集需要更多轮数
-                 early_stopping_rounds: int = 200,  # 放宽早停，提升稳定性
+                 num_boost_round: int = 260,  # Updated: 260
+                 early_stopping_rounds: int = 60,  # Updated: 60
                  use_purged_cv: bool = True,  # 强制使用PurgedCV防止数据泄露（当internal CV启用时）
                  use_internal_cv: bool = True,  # 是否在fit内部执行PurgedCV（外层已有CV时可禁用以避免fold-in-fold）
                  cv_n_splits: int = 6,        # 🔥 CV折数（T+5: 6折，提高数据利用率）
@@ -112,28 +112,33 @@ class LambdaRankStacker:
             self.label_gain = [(i / (n_quantiles - 1)) ** label_gain_power * (n_quantiles - 1)
                               for i in range(n_quantiles)]
 
-        # 专业级LambdaRank参数
-        self.lgb_params = {
+        # 专业级LambdaRank参数（使用传入的lgb_params覆盖默认值，确保YAML配置生效）
+        # 默认值仅作为fallback，实际值应从YAML配置传入
+        default_lgb_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'ndcg_eval_at': [20, 50, 100],  # 评估Top-20/50/100，贴合前排落地
+            'ndcg_eval_at': [10, 30],  # Default: Top-10/30 (can be overridden by lgb_params)
             'label_gain': self.label_gain,  # 关键：固定档位增益
-            'num_leaves': 255,  # 提升表达能力（2600截面，资源允许时）
-            'max_depth': 8,   # 增加深度适应复杂模式
-            'learning_rate': 0.05,  # 大数据集更稳健
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.8,
+            'num_leaves': 127,  # Default (can be overridden by lgb_params from YAML)
+            'max_depth': 6,   # Default (can be overridden by lgb_params from YAML)
+            'learning_rate': 0.03,  # Default (can be overridden by lgb_params from YAML)
+            'feature_fraction': 0.85,  # Default (can be overridden by lgb_params from YAML)
+            'bagging_fraction': 0.8,  # Default
             'bagging_freq': 1,  # 每轮都bagging
-            'min_data_in_leaf': 350,  # 百万样本下提高叶子最小样本
-            'lambda_l1': 0.1,
-            'lambda_l2': 10.0,  # 大数据集可稍微减少L2正则化
-            'lambdarank_truncation_level': 2600,  # 与组规模匹配
+            'min_data_in_leaf': 380,  # Updated: 380
+            'lambda_l1': 0.0,  # Disabled L1 regularization
+            'lambda_l2': 10.0,  # Updated: 10.0
+            'lambdarank_truncation_level': 650,  # Updated: 650
             'sigmoid': 1.2,  # Sigmoid参数
             'verbose': -1,
             'random_state': random_state,
             'force_col_wise': True
         }
-
+        
+        # 先设置默认值
+        self.lgb_params = default_lgb_params.copy()
+        
+        # 然后用传入的lgb_params覆盖（确保YAML配置生效）
         if lgb_params:
             self.lgb_params.update(lgb_params)
 
@@ -147,7 +152,12 @@ class LambdaRankStacker:
         logger.info("🏆 LambdaRank 排序模型初始化完成")
         logger.info(f"   特征模式: {'Alpha Factors' if self.base_cols is None else 'Custom'}")
         logger.info(f"   分位数等级: {self.n_quantiles}")
+        logger.info(f"   Label gain power: {self.label_gain_power}")
         logger.info(f"   NDCG评估: {self.lgb_params['ndcg_eval_at']}")
+        logger.info(f"   训练轮数: {self.num_boost_round}, 早停: {self.early_stopping_rounds}")
+        logger.info(f"   模型容量: num_leaves={self.lgb_params.get('num_leaves')}, max_depth={self.lgb_params.get('max_depth')}, min_data_in_leaf={self.lgb_params.get('min_data_in_leaf')}")
+        logger.info(f"   采样: feature_fraction={self.lgb_params.get('feature_fraction')}, bagging_fraction={self.lgb_params.get('bagging_fraction')}")
+        logger.info(f"   LambdaRank: truncation_level={self.lgb_params.get('lambdarank_truncation_level')}, sigmoid={self.lgb_params.get('sigmoid')}")
         logger.info(f"   内部CV: {'启用' if self.use_internal_cv else '禁用'}")
         if self.use_internal_cv and self.use_purged_cv:
             logger.info(f"   CV参数: splits={self.cv_n_splits}, gap={self.cv_gap_days}天, embargo={self.cv_embargo_days}天")
@@ -249,16 +259,35 @@ class LambdaRankStacker:
         """
         logger.info("🚀 开始训练LambdaRank排序模型（使用Alpha Factors）...")
 
-        # 验证输入
+        # 🔧 统一输入处理：确保使用检测到的MultiIndex
+        # 验证输入格式
         if not isinstance(df.index, pd.MultiIndex):
             raise ValueError("DataFrame必须有MultiIndex(date, ticker)")
+        
+        # 🔧 验证MultiIndex格式正确（date, ticker）
+        if df.index.names != ['date', 'ticker']:
+            logger.warning(f"MultiIndex名称不匹配: {df.index.names}，期望: ['date', 'ticker']")
+            # 尝试修复：如果只有两层，重命名
+            if df.index.nlevels == 2:
+                df.index.names = ['date', 'ticker']
+                logger.info("✅ 已修复MultiIndex名称")
+            else:
+                raise ValueError(f"MultiIndex格式不正确: names={df.index.names}, levels={df.index.nlevels}")
 
         if target_col not in df.columns:
             # 严格模式：不进行任何回退，要求上游明确提供正确的目标列
             raise ValueError(f"目标变量 {target_col} 不存在")
 
-        # 自动检测或使用提供的alpha factors
-        if alpha_factors is not None:
+        # 🔧 统一输入处理：与其他模型（ElasticNet/XGBoost/CatBoost）保持一致
+        # 优先级：base_cols > alpha_factors > 自动检测
+        if self.base_cols is not None and len(self.base_cols) > 0:
+            # 使用指定的列（与其他模型一致的特征选择）
+            self._alpha_factor_cols = [col for col in self.base_cols if col in df.columns]
+            missing_cols = [col for col in self.base_cols if col not in df.columns]
+            if missing_cols:
+                raise ValueError(f"特征列不存在: {missing_cols}")
+            logger.info(f"   使用指定的特征列: {len(self._alpha_factor_cols)}个因子（与其他模型一致）")
+        elif alpha_factors is not None:
             # 使用提供的alpha factors
             if not isinstance(alpha_factors, pd.DataFrame):
                 raise ValueError("alpha_factors必须是pandas DataFrame")
@@ -275,29 +304,32 @@ class LambdaRankStacker:
                 raise ValueError(f"无法合并DataFrame和alpha_factors: {e}")
 
             logger.info(f"   使用提供的Alpha Factors: {len(self._alpha_factor_cols)}个因子")
-        elif self.base_cols is None:
+        else:
             # 自动检测alpha factor列（排除target和pred_开头的列）
             exclude_patterns = [target_col, 'pred_', 'lambda_', 'ridge_', 'final_', 'rank', 'weight']
             self._alpha_factor_cols = [col for col in df.columns
                                       if not any(pattern in col.lower() for pattern in exclude_patterns)]
             logger.info(f"   自动检测到{len(self._alpha_factor_cols)}个Alpha Factors")
             logger.info(f"   前5个因子: {self._alpha_factor_cols[:5]}")
-        else:
-            # 使用指定的列
-            self._alpha_factor_cols = list(self.base_cols)
-            for col in self._alpha_factor_cols:
-                if col not in df.columns:
-                    raise ValueError(f"特征列 {col} 不存在")
 
         # 更新base_cols为实际使用的列
         self.base_cols = tuple(self._alpha_factor_cols)
 
+        # 🔧 统一输入处理：确保使用与其他模型相同的样本和特征
+        # 注意：上游训练循环已经处理了NaN和索引对齐，这里只做最小必要的验证
+        
         # 转换为组内等级标签
         df_processed, conversion_report = self._convert_to_rank_labels(df, target_col)
         rank_col = f'{target_col}_rank'
 
-        # 准备特征和标签
-        X = df_processed[list(self.base_cols)].values
+        # 准备特征和标签（使用指定的特征列，确保与其他模型一致）
+        # 确保特征列顺序与base_cols一致
+        feature_cols = [col for col in self._alpha_factor_cols if col in df_processed.columns]
+        if len(feature_cols) != len(self._alpha_factor_cols):
+            missing = set(self._alpha_factor_cols) - set(feature_cols)
+            raise ValueError(f"特征列缺失: {missing}")
+        
+        X = df_processed[feature_cols].values
         y = df_processed[rank_col].values
 
         # 准备分组信息（每个交易日为一个组）
@@ -306,14 +338,19 @@ class LambdaRankStacker:
         group_sizes = [len(df_processed.loc[date]) for date in unique_dates]
 
         logger.info(f"   训练样本: {len(X)}")
-        logger.info(f"   特征维度: {X.shape[1]}")
+        logger.info(f"   特征维度: {X.shape[1]} (特征列: {feature_cols[:3]}...)")
         logger.info(f"   交易日组数: {len(group_sizes)}")
         logger.info(f"   平均组大小: {np.mean(group_sizes):.1f}")
 
-        # 处理缺失值
+        # 🔧 统一NaN处理：与其他模型保持一致
+        # 上游训练循环已经处理了NaN，但这里仍需要处理可能的NaN（来自标签转换）
         valid_mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
         X_valid = X[valid_mask]
         y_valid = y[valid_mask]
+        
+        # 记录过滤的样本数（用于调试）
+        if not valid_mask.all():
+            logger.info(f"   过滤NaN样本: {len(X)} -> {len(X_valid)} ({len(X_valid)/len(X)*100:.1f}%)")
 
         # 小样本自适应：放宽最小样本限制并动态调整LightGBM参数
         min_required = max(30, self.cv_n_splits * 2)
@@ -368,6 +405,7 @@ class LambdaRankStacker:
             if self.early_stopping_rounds > 0:
                 # 无验证集时不使用早停
                 pass
+            logger.info(f"🔧 [LambdaRank最终训练] 使用参数: feature_fraction={self.lgb_params.get('feature_fraction')}, min_data_in_leaf={self.lgb_params.get('min_data_in_leaf')}, lambdarank_truncation_level={self.lgb_params.get('lambdarank_truncation_level')}, label_gain_power={self.label_gain_power}")
             self.model = lgb.train(
                 self.lgb_params,
                 train_data,
@@ -475,6 +513,7 @@ class LambdaRankStacker:
             if self.early_stopping_rounds > 0:
                 callbacks.append(lgb.early_stopping(self.early_stopping_rounds))
 
+            logger.info(f"🔧 [LambdaRank CV Fold {fold_idx+1}] 使用参数: feature_fraction={self.lgb_params.get('feature_fraction')}, min_data_in_leaf={self.lgb_params.get('min_data_in_leaf')}, lambdarank_truncation_level={self.lgb_params.get('lambdarank_truncation_level')}, label_gain_power={self.label_gain_power}")
             model = lgb.train(
                 self.lgb_params,
                 train_data,

@@ -9,9 +9,13 @@ No external dependencies, works out of the box
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import logging
 import os
+try:
+    import requests
+except ImportError:
+    requests = None
 try:
     from bma_models.alpha_factor_quality_monitor import AlphaFactorQualityMonitor
     MONITOR_AVAILABLE = True
@@ -42,6 +46,10 @@ T5_ALPHA_FACTORS = [
     'ma30_ma60_cross',       # 30vs60-day moving-average cross trend signal
     'ret_skew_20d',          # 20-day return skewness
     'trend_r2_60',           # 60-day trend R-squared
+    '5_days_reversal',       # Short-term reversal over 5 trading days
+    # 'roa',                   # Return on assets (Polygon fundamental) - REMOVED
+    # 'ebit',                  # EBIT scaled feature - REMOVED
+    'downside_beta_ewm_21',   # Downside beta vs benchmark (QQQ) using EWMA 21-day window
 ]
 
 # 🔥 T+10 CORE ALPHA FACTORS (bi-weekly optimized)
@@ -61,6 +69,10 @@ T10_ALPHA_FACTORS = [
     'bollinger_squeeze',
     'vol_ratio_20d',
     'price_ma60_deviation',
+    '5_days_reversal',
+    # 'roa',  # REMOVED
+    # 'ebit',  # REMOVED
+    'downside_beta_ewm_21',   # Downside beta vs benchmark (QQQ) using EWMA 21-day window
 ]
 
 # Backward compatibility aliases - default to the T+10 set and fall back to T+5 only when explicitly requested.
@@ -155,6 +167,11 @@ class Simple17FactorEngine:
 
         # For IVOL calculation
         self.spy_data = None
+        self._fundamental_cache: Dict[str, pd.DataFrame] = {}
+        self._fundamental_fetch_disabled = False
+
+        # Benchmark cache for beta-style factors (e.g., downside beta vs QQQ)
+        self._benchmark_cache: Dict[str, pd.Series] = {}
         
     def fetch_market_data(self, symbols: List[str], use_optimized_downloader: bool = True, 
                          start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
@@ -323,8 +340,9 @@ class Simple17FactorEngine:
             return pd.DataFrame()
         
         # Group data by ticker for efficient computation
-        compute_data = market_data_clean
-        grouped = compute_data.groupby('ticker')
+        # CRITICAL: Ensure (ticker, date) is sorted for all rolling/shift ops.
+        compute_data = market_data_clean.sort_values(['ticker', 'date']).reset_index(drop=True)
+        grouped = compute_data.groupby('ticker', sort=False)
         
         # Collect all factor results, ensuring consistent indexing
         all_factors = []
@@ -395,6 +413,15 @@ class Simple17FactorEngine:
         factor_timings['fundamental'] = time.time() - start_t
         logger.info(f"   Fundamental factors computed in {factor_timings['fundamental']:.3f}s")
         all_factors.append(fundamental_results)
+
+        # Downside beta vs benchmark (QQQ)
+        if 'downside_beta_ewm_21' in getattr(self, 'alpha_factors', []):
+            logger.info("🔥 Computing downside_beta_ewm_21 vs QQQ (21-day EWMA)...")
+            start_t = time.time()
+            beta_results = self._compute_downside_beta_ewm_21(compute_data, grouped, benchmark='QQQ')
+            factor_timings['downside_beta'] = time.time() - start_t
+            logger.info(f"   Downside beta EWM 21 computed in {factor_timings['downside_beta']:.3f}s")
+            all_factors.append(beta_results)
 
         # High-Alpha Factors
         logger.info("🔥 Computing 3 high-alpha factors...")
@@ -894,70 +921,46 @@ class Simple17FactorEngine:
         """🔥 Compute 20-day return skewness - T+5 low-frequency factor
         Uses log returns for scale-invariance and sample skewness
         """
-        # Initialize result array
-        skew_values = []
-
-        # Process each ticker
-        for ticker, ticker_data in grouped:
-            # Calculate log returns
-            log_ret = np.log(ticker_data['Close'] / ticker_data['Close'].shift(1))
-
-            # Calculate rolling skewness
-            skew = log_ret.rolling(20, min_periods=20).apply(
-                lambda x: pd.Series(x).skew() if len(x) >= 20 else 0.0,
-                raw=False
-            )
-
-            # Clean inf/nan values
-            skew = skew.replace([np.inf, -np.inf], 0.0).fillna(0.0)
-
-            # Extend the values array
-            skew_values.extend(skew.values)
-
-        return pd.DataFrame({'ret_skew_20d': skew_values}, index=data.index)
+        # IMPORTANT: must preserve index alignment with `data`.
+        # `grouped` iteration + list extension breaks alignment if `data` is not grouped-contiguous.
+        ret_skew = grouped['Close'].transform(
+            lambda s: np.log(s / s.shift(1)).rolling(20, min_periods=20).skew()
+        )
+        ret_skew = ret_skew.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        return pd.DataFrame({'ret_skew_20d': ret_skew}, index=data.index)
 
     def _compute_trend_r2_60(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """🔥 Compute 60-day trend R² (linear regression goodness of fit) - T+5 low-frequency factor
         Uses log prices for scale-invariance and proper index alignment
         """
         window = 60
-        x_base = np.arange(window)
+        x_base = np.arange(window, dtype=float)
+        X = np.column_stack([np.ones(window, dtype=float), x_base])
 
-        # Initialize result array
-        r2_values = []
+        def _r2_from_close(arr: np.ndarray) -> float:
+            # arr is Close values for the rolling window, ordered in time
+            if arr is None or len(arr) != window:
+                return 0.0
+            # Guard against non-positive Close (log invalid) and NaNs/Infs
+            if not np.all(np.isfinite(arr)) or np.any(arr <= 0):
+                return 0.0
+            y = np.log(arr.astype(float))
+            try:
+                beta = np.linalg.lstsq(X, y, rcond=None)[0]
+                y_hat = X @ beta
+                ss_res = float(np.sum((y - y_hat) ** 2))
+                ss_tot = float(np.sum((y - y.mean()) ** 2)) + 1e-12
+                r2_val = 1.0 - ss_res / ss_tot
+                return float(max(0.0, min(1.0, r2_val)))
+            except Exception:
+                return 0.0
 
-        # Process each ticker
-        for ticker, ticker_data in grouped:
-            # Use log prices for scale-invariance
-            logp = np.log(ticker_data['Close'].values)
-            r2 = np.zeros(len(ticker_data), dtype=float)
-
-            # Rolling window linear regression
-            for i in range(window - 1, len(ticker_data)):
-                y = logp[i - window + 1:i + 1]
-
-                # Check for sufficient valid data
-                if np.isfinite(y).sum() < window:
-                    r2[i] = 0.0
-                    continue
-
-                # Linear regression: y = β0 + β1*x
-                X = np.column_stack([np.ones(window), x_base])
-                try:
-                    beta = np.linalg.lstsq(X, y, rcond=None)[0]
-                    y_hat = X @ beta
-                    ss_res = np.sum((y - y_hat) ** 2)
-                    ss_tot = np.sum((y - y.mean()) ** 2) + 1e-12
-                    r2_val = 1.0 - ss_res / ss_tot
-                    # Clamp to [0, 1]
-                    r2[i] = max(0.0, min(1.0, r2_val))
-                except Exception:
-                    r2[i] = 0.0
-
-            # Extend the values array
-            r2_values.extend(r2)
-
-        return pd.DataFrame({'trend_r2_60': r2_values}, index=data.index)
+        # IMPORTANT: preserve index alignment with `data`
+        r2 = grouped['Close'].transform(
+            lambda s: s.rolling(window, min_periods=window).apply(_r2_from_close, raw=True)
+        )
+        r2 = r2.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        return pd.DataFrame({'trend_r2_60': r2}, index=data.index)
 
     def _compute_ma_cross_30_60(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """🔥 Compute 30/60-day moving-average cross signal (1 if MA30 above MA60, else -1)."""
@@ -1035,6 +1038,16 @@ class Simple17FactorEngine:
         logger.info("   ? Momentum factors computation completed")
 
         out = {'momentum_60d': momentum_60d}
+
+        if '5_days_reversal' in getattr(self, 'alpha_factors', []):
+            try:
+                logger.info("   Computing 5_days_reversal (negative 5-day return) ...")
+                reversal = grouped['Close'].transform(lambda s: s.pct_change(5))
+                reversal = (-reversal).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+                out['5_days_reversal'] = reversal
+            except Exception as exc:
+                logger.warning(f"   ?? 5_days_reversal failed, using 0: {exc}")
+                out['5_days_reversal'] = np.zeros(len(data))
 
         # T+10: Liquid Momentum (momentum * turnover validation)
         if 'liquid_momentum' in getattr(self, 'alpha_factors', []):
@@ -1219,89 +1232,364 @@ class Simple17FactorEngine:
             logger.warning(f"⚠️ ivol_20 failed, using zeros: {e}")
             return pd.DataFrame({'ivol_20': np.zeros(len(data))}, index=data.index)
 
-    def _compute_fundamental_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """🔥 Placeholder for fundamental factors
-        Note: ma30_ma60_cross is computed in _compute_ma_cross_30_60
-        Note: hist_vol_40d is computed in _compute_blowoff_and_volatility
-        """
-        # Return empty DataFrame - all factors moved to specialized methods
-        return pd.DataFrame(index=data.index)
+    @staticmethod
+    def _coerce_polygon_value(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            for key in ('value', 'amount', 'raw', 'reported_value'):
+                if key in value and value[key] is not None:
+                    return Simple17FactorEngine._coerce_polygon_value(value[key])
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
+    @staticmethod
+    def _extract_polygon_metric(record: Dict[str, Any], candidates: List[str]) -> Optional[float]:
+        if not isinstance(record, dict):
+            return None
+        search_spaces: List[Dict[str, Any]] = [record]
+        financials = record.get('financials')
+        if isinstance(financials, dict):
+            for section in ('income_statement', 'balance_sheet', 'cash_flow_statement', 'comprehensive_income', 'ratios'):
+                block = financials.get(section)
+                if isinstance(block, dict):
+                    search_spaces.append(block)
+        for space in search_spaces:
+            for name in candidates:
+                if name in space:
+                    val = Simple17FactorEngine._coerce_polygon_value(space.get(name))
+                    if val is not None:
+                        return val
+        return None
+
+    def _fetch_polygon_financial_history(self, ticker: str) -> pd.DataFrame:
+        ticker_norm = str(ticker).upper().strip()
+        cached = self._fundamental_cache.get(ticker_norm)
+        if cached is not None:
+            return cached
+        if not self.polygon_api_key or requests is None:
+            if not self._fundamental_fetch_disabled:
+                logger.warning("?? Polygon fundamentals unavailable - using zeros for roa/ebit")
+                self._fundamental_fetch_disabled = True
+            self._fundamental_cache[ticker_norm] = pd.DataFrame()
+            return self._fundamental_cache[ticker_norm]
+        url = "https://api.polygon.io/vX/reference/financials"
+        params = {
+            'ticker': ticker_norm,
+            'timeframe': 'quarterly',
+            'limit': 8,
+            # Polygon uses 'asc' / 'desc'
+            'order': 'desc',
+            'apiKey': self.polygon_api_key,
+        }
+        try:
+            response = requests.get(url, params=params, timeout=20)
+            response.raise_for_status()
+            payload = response.json() or {}
+        except Exception as exc:
+            logger.warning(f"?? Polygon financials fetch failed for {ticker_norm}: {exc}")
+            self._fundamental_cache[ticker_norm] = pd.DataFrame()
+            return self._fundamental_cache[ticker_norm]
+        rows = []
+        for entry in payload.get('results') or []:
+            eff_date = entry.get('filing_date') or entry.get('report_date') or entry.get('end_date') or entry.get('calendar_date')
+            eff_ts = pd.to_datetime(eff_date, errors='coerce')
+            if pd.isna(eff_ts):
+                continue
+
+            # Raw fundamentals / ratios
+            roa_ratio = self._extract_polygon_metric(entry, ['return_on_assets', 'roa'])
+            ebit_q = self._extract_polygon_metric(entry, [
+                'ebit',
+                'earnings_before_interest_and_taxes',
+                'earnings_before_interest_and_tax',
+                'operating_income',
+                'operating_income_loss',
+            ])
+            net_income_q = self._extract_polygon_metric(entry, [
+                'net_income',
+                'net_income_loss',
+                'net_income_common_stockholders',
+            ])
+            total_assets = self._extract_polygon_metric(entry, [
+                'total_assets',
+                'assets',
+            ])
+            market_cap = self._extract_polygon_metric(entry, ['market_cap', 'marketCapitalization', 'market_capitalization'])
+            enterprise_value = self._extract_polygon_metric(entry, ['enterprise_value', 'enterpriseValue'])
+
+            rows.append({
+                'effective_date': eff_ts.normalize(),
+                'roa_ratio': roa_ratio,
+                'ebit_q': ebit_q,
+                'net_income_q': net_income_q,
+                'total_assets': total_assets,
+                'market_cap': market_cap,
+                'enterprise_value': enterprise_value,
+            })
+        history = pd.DataFrame(rows)
+        if not history.empty:
+            history = history.sort_values('effective_date')
+
+            # Compute TTM (rolling sum of last 4 quarters) for scale-stable yields
+            # These are aligned to effective_date and will be merged "as of" trading dates (backward only).
+            for col in ('ebit_q', 'net_income_q'):
+                if col in history.columns:
+                    history[col] = pd.to_numeric(history[col], errors='coerce')
+            history['ebit_ttm'] = history['ebit_q'].rolling(4, min_periods=1).sum()
+            history['net_income_ttm'] = history['net_income_q'].rolling(4, min_periods=1).sum()
+
+            # Compute ROA if not provided: NetIncome_TTM / TotalAssets
+            roa_calc = None
+            try:
+                roa_calc = history['net_income_ttm'] / history['total_assets']
+            except Exception:
+                roa_calc = None
+            history['roa'] = history['roa_ratio']
+            if roa_calc is not None:
+                history['roa'] = history['roa'].where(history['roa'].notna(), roa_calc)
+
+            # Compute scaled EBIT and CFO yields if denominators are available.
+            # - ebit: EBIT/EV when enterprise_value exists; fallback to EBIT_TTM
+            history['ebit'] = history['ebit_ttm']
+            if 'enterprise_value' in history.columns:
+                ev = pd.to_numeric(history['enterprise_value'], errors='coerce')
+                denom = ev.replace({0.0: np.nan})
+                history['ebit'] = (history['ebit_ttm'] / denom).where(denom.notna(), history['ebit_ttm'])
+
+            # Keep only the final factor columns + effective_date for merge_asof
+            history = history[['effective_date', 'roa', 'ebit']].copy()
+        self._fundamental_cache[ticker_norm] = history
+        return history
+
+    def _compute_fundamental_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
+        """Compute Polygon-based fundamental factors (roa, ebit)."""
+        logger.info("Computing Polygon fundamentals (roa/ebit)...")
+        fundamentals = pd.DataFrame({
+            'roa': np.nan,
+            'ebit': np.nan,
+        }, index=data.index)
+        if 'date' not in data.columns or 'ticker' not in data.columns:
+            logger.warning("Fundamental computation requires 'date' and 'ticker' columns; returning zeros")
+            return fundamentals.fillna(0.0)
+        unique_tickers = data['ticker'].dropna().astype(str).unique()
+        for ticker in unique_tickers:
+            history = self._fetch_polygon_financial_history(ticker)
+            if history.empty:
+                continue
+            ticker_mask = data['ticker'] == ticker
+            row_idx = data.index[ticker_mask]
+            ticker_dates = pd.DataFrame({
+                'row_idx': row_idx,
+                'date': pd.to_datetime(data.loc[row_idx, 'date']).dt.normalize(),
+            }).sort_values('date').reset_index(drop=True)
+            hist = history.dropna(subset=['effective_date']).copy()
+            if hist.empty:
+                continue
+            merged = pd.merge_asof(
+                ticker_dates[['date']],
+                hist.rename(columns={'effective_date': 'date'}),
+                on='date',
+                direction='backward'
+            )
+            merged['row_idx'] = ticker_dates['row_idx'].values
+            fundamentals.loc[merged['row_idx'], ['roa', 'ebit']] = merged[['roa', 'ebit']].values
+        total = len(fundamentals) or 1
+        coverage = {col: (~fundamentals[col].isna()).sum() / total * 100 for col in ['roa', 'ebit']}
+        logger.info("   Fundamental coverage: " + ', '.join(f"{col}={pct:.1f}%" for col, pct in coverage.items()))
+        return fundamentals
+
+    def _get_benchmark_returns_by_date(self, benchmark: str, dates: pd.Series) -> Optional[pd.Series]:
+        """
+        Return daily % returns for benchmark indexed by normalized date.
+        Uses cache; tries local data first if present; otherwise falls back to Polygon historical bars.
+        """
+        try:
+            bench = str(benchmark).upper().strip()
+        except Exception:
+            bench = 'QQQ'
+
+        # Cache key includes benchmark only; values are date-indexed.
+        cached = self._benchmark_cache.get(bench)
+        if cached is not None and not cached.empty:
+            return cached
+
+        # Try to fetch via polygon_client (preferred) if available.
+        try:
+            from polygon_client import polygon_client
+        except Exception:
+            polygon_client = None
+
+        # Compute date window
+        try:
+            dmin = pd.to_datetime(dates).dt.normalize().min()
+            dmax = pd.to_datetime(dates).dt.normalize().max()
+        except Exception:
+            dmin, dmax = None, None
+        if dmin is None or dmax is None or pd.isna(dmin) or pd.isna(dmax):
+            return None
+        start = pd.Timestamp(dmin).strftime('%Y-%m-%d')
+        end = pd.Timestamp(dmax).strftime('%Y-%m-%d')
+
+        # Fallback to raw Polygon REST if polygon_client is unavailable.
+        if polygon_client is None:
+            if not self.polygon_api_key or requests is None:
+                return None
+            try:
+                url = f"https://api.polygon.io/v2/aggs/ticker/{bench}/range/1/day/{start}/{end}"
+                params = {
+                    "adjusted": "true",
+                    "sort": "asc",
+                    "limit": 50000,
+                    "apiKey": self.polygon_api_key,
+                }
+                resp = requests.get(url, params=params, timeout=20)
+                resp.raise_for_status()
+                payload = resp.json() or {}
+                results = payload.get("results") or []
+                if not results:
+                    return None
+                idx = pd.to_datetime([r.get("t") for r in results], unit="ms", errors="coerce").normalize()
+                close = pd.to_numeric([r.get("c") for r in results], errors="coerce")
+                s = pd.Series(close, index=idx).sort_index()
+                ret = s.pct_change().replace([np.inf, -np.inf], np.nan)
+                self._benchmark_cache[bench] = ret
+                return ret
+            except Exception:
+                return None
+
+        try:
+            df = polygon_client.get_historical_bars(bench, start, end, 'day', 1)
+            if df is None or df.empty:
+                return None
+            df = df.sort_index()
+            # Use Close return (aligned to trading date)
+            ret = df['Close'].pct_change().replace([np.inf, -np.inf], np.nan)
+            ret_by_date = pd.Series(ret.values, index=pd.to_datetime(df.index).normalize())
+            self._benchmark_cache[bench] = ret_by_date
+            return ret_by_date
+        except Exception:
+            return None
+
+    def _compute_downside_beta_ewm_21(self, data: pd.DataFrame, grouped, benchmark: str = 'QQQ') -> pd.DataFrame:
+        """
+        Downside beta using EWMA with 21-day span (~1 month):
+        Uses only days where benchmark return < 0, weighted exponentially (recent data more important).
+        
+        Formula: beta_down_ewm = Cov_ewm(R_s, R_m | R_m < 0) / Var_ewm(R_m | R_m < 0)
+        
+        Returns:
+          - downside_beta_ewm_21
+        """
+        if 'date' not in data.columns or 'Close' not in data.columns or 'ticker' not in data.columns:
+            return pd.DataFrame(
+                {'downside_beta_ewm_21': np.zeros(len(data))},
+                index=data.index,
+            )
+
+        dates = pd.to_datetime(data['date']).dt.normalize()
+        bench_ret_by_date = self._get_benchmark_returns_by_date(benchmark, dates)
+        if bench_ret_by_date is None or bench_ret_by_date.empty:
+            # No benchmark -> return zeros
+            return pd.DataFrame(
+                {'downside_beta_ewm_21': np.zeros(len(data))},
+                index=data.index,
+            )
+
+        bench_ret = dates.map(bench_ret_by_date).astype(float)
+        stock_ret = grouped['Close'].transform(lambda s: s.pct_change()).replace([np.inf, -np.inf], np.nan)
+
+        # Downside-only series (NaN on non-down days -> EWMA ignores them)
+        is_down = bench_ret < 0
+        stock_down = stock_ret.where(is_down, np.nan)
+        bench_down = pd.Series(bench_ret, index=data.index).where(is_down, np.nan)
+
+        def _downside_beta_ewm_for_group(g: pd.DataFrame) -> pd.DataFrame:
+            """
+            Compute EWMA downside beta for a single ticker group.
+            Uses span=21 for ~1 month window with exponential decay.
+            """
+            sd = g['stock_down']
+            bd = g['bench_down']
+            
+            # EWMA parameters: span=21 days (~1 month)
+            span = 21
+            min_periods = max(5, span // 4)  # Require at least 5 down days
+            
+            # Compute EWMA means
+            ewm_sd = sd.ewm(span=span, min_periods=min_periods, adjust=False).mean()
+            ewm_bd = bd.ewm(span=span, min_periods=min_periods, adjust=False).mean()
+            
+            # Compute EWMA of product for covariance: E[XY]
+            product = (sd * bd).ewm(span=span, min_periods=min_periods, adjust=False).mean()
+            
+            # Covariance: Cov(X,Y) = E[XY] - E[X]E[Y]
+            cov_ewm = product - (ewm_sd * ewm_bd)
+            
+            # Variance: Var(Y) = E[Y^2] - E[Y]^2
+            bd_squared = (bd * bd).ewm(span=span, min_periods=min_periods, adjust=False).mean()
+            var_ewm = bd_squared - (ewm_bd * ewm_bd)
+            
+            # Beta: beta = Cov(X,Y) / Var(Y)
+            beta_down_ewm = cov_ewm / var_ewm.replace({0.0: np.nan})
+            
+            return pd.DataFrame({'downside_beta_ewm_21': beta_down_ewm}, index=g.index)
+
+        tmp = pd.DataFrame(
+            {
+                'stock_ret': stock_ret,
+                'bench_ret': bench_ret,
+                'stock_down': stock_down,
+                'bench_down': bench_down,
+            },
+            index=data.index,
+        )
+
+        betas = tmp.groupby(data['ticker'], sort=False, group_keys=False).apply(_downside_beta_ewm_for_group)
+        betas = betas.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        return betas.reindex(data.index)
     # REMOVED: _compute_ivol_factor (multicollinearity with hist_vol_40d, r=-0.95, VIF=10.4)
 
     def _compute_behavioral_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """🔥 Compute behavioral factors (T+5 optimized): only streak_reversal (removed overnight_intraday_gap, max_lottery_factor)"""
         try:
-            # Initialize result arrays to match the input data length and preserve index alignment
-            streak_reversal_values = []
+            # IMPORTANT: preserve index alignment with `data` using groupby-apply + reset_index.
+            def streak_reversal_series(close: pd.Series,
+                                      mkt_close: pd.Series | None = None,
+                                      thr: float = 0.0005,
+                                      cap: int = 5) -> pd.Series:
+                """
+                Streak reversal (mean-reversion pressure).
+                Output is negated: longer up-streak -> more negative; longer down-streak -> more positive.
+                """
+                r = close.pct_change()
+                if mkt_close is not None:
+                    rm = mkt_close.pct_change().reindex_like(close)
+                    r = r - rm
+                r = r.fillna(0.0).to_numpy()
+                s = np.where(r > thr, 1, np.where(r < -thr, -1, 0)).astype(np.int8)
 
-            for ticker, ticker_data in grouped:
-                ticker_data = ticker_data.sort_values('date')
+                run = 0
+                out = np.zeros_like(s, dtype=np.int32)
+                for i, v in enumerate(s):
+                    if v > 0:
+                        run = run + 1 if run >= 0 else 1
+                    elif v < 0:
+                        run = run - 1 if run <= 0 else -1
+                    else:
+                        run = 0
+                    out[i] = run
 
-                # Required columns
-                if not all(col in ticker_data.columns for col in ['Open', 'Close', 'High', 'Low']):
-                    logger.warning(f"Missing OHLC data for {ticker}")
-                    n_obs = len(ticker_data)
-                    # Append zeros for missing data
-                    streak_reversal_values.extend([0.0] * n_obs)
-                    continue
+                out = np.clip(out, -cap, cap)
+                return -pd.Series(out, index=close.index, name="streak_reversal")
 
-                # Return Streak Reversal (用户提供的精确版本)
-                def streak_reversal_series(close: pd.Series,
-                                         mkt_close: pd.Series | None = None,
-                                         thr: float = 0.0005,  # 5bp 阈值
-                                         cap: int = 5) -> pd.Series:
-                    """
-                    连续收益反转（streak reversal）——相对市场、带阈值、带长度上限
-                    返回值已取负号：连涨越久→值越负；连跌越久→值越正。
-                    """
-                    # 1) 相对市场超额收益（不做 shift，信号在 t 收盘生成、预测 t→t+5）
-                    r = close.pct_change()
-                    if mkt_close is not None:
-                        rm = mkt_close.pct_change().reindex_like(close)
-                        r = r - rm
-                    r = r.fillna(0.0).to_numpy()
-
-                    # 2) 微动阈值（避免极小波动翻转）
-                    s = np.where(r >  thr,  1,
-                        np.where(r < -thr, -1, 0)).astype(np.int8)
-
-                    # 3) 连续天数累计（符号一致则累加，否则重置符号为 ±1）
-                    run = 0
-                    out = np.zeros_like(s, dtype=np.int32)
-                    for i, v in enumerate(s):
-                        if v > 0:
-                            run = run + 1 if run >= 0 else 1
-                        elif v < 0:
-                            run = run - 1 if run <= 0 else -1
-                        else:
-                            run = 0
-                        out[i] = run
-
-                    # 4) 长度上限（信息递减；3~5 常见）
-                    out = np.clip(out, -cap, cap)
-
-                    # 取负号="反转"定义：连涨越久→越想回落；连跌越久→越想反弹
-                    return -pd.Series(out, index=close.index, name="streak_reversal")
-
-                # 使用报告版精确实现
-                # 注：暂时使用股票自身作为市场代理，后续可加入真实市场指数
-                streak_reversal = streak_reversal_series(
-                    close=ticker_data['Close'],
-                    mkt_close=None,  # 暂无市场数据，可后续优化
-                    thr=0.0005,      # 5bp 微动阈值
-                    cap=5            # 连续天数上限
-                )
-
-                # Clean and handle edge cases
-                streak_reversal = streak_reversal.replace([np.inf, -np.inf], 0).fillna(0)
-
-                # Extend the values arrays
-                streak_reversal_values.extend(streak_reversal.values)
-
-            return pd.DataFrame({
-                'streak_reversal': streak_reversal_values
-            }, index=data.index)
+            sr = grouped['Close'].apply(lambda s: streak_reversal_series(s, None, 0.0005, 5))
+            sr = sr.reset_index(level=0, drop=True).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            sr = sr.reindex(data.index).fillna(0.0)
+            return pd.DataFrame({'streak_reversal': sr}, index=data.index)
 
         except Exception as e:
             logger.error(f"Behavioral factors computation failed: {e}")

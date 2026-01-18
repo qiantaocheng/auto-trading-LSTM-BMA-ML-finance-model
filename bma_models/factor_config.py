@@ -19,8 +19,8 @@ LEGACY_FACTOR_MAPPING = {
     'mom_accel_10_5': 'liquid_momentum',
     'obv_momentum': 'obv_divergence',
     'obv_momentum_20d': 'obv_divergence',
-    'reversal_5d': 'price_ma60_deviation',
-    'reversal_1d': 'price_ma60_deviation',
+    'reversal_5d': '5_days_reversal',
+    'reversal_1d': '5_days_reversal',
     'price_efficiency_5d': 'trend_r2_60',
     'price_efficiency_10d': 'trend_r2_60',
     'nr7_breakout_bias': 'atr_ratio',
@@ -35,12 +35,14 @@ LEGACY_FACTOR_MAPPING = {
 
 FACTOR_CATEGORIES = {
     'momentum': ['liquid_momentum'],
-    'mean_reversion': ['price_ma60_deviation'],
+    'mean_reversion': ['price_ma60_deviation', '5_days_reversal'],
     'technical': ['rsi_21', 'bollinger_squeeze', 'blowoff_ratio'],
     'volume_liquidity': ['obv_divergence', 'vol_ratio_20d'],
     'trend': ['trend_r2_60', 'near_52w_high', 'rsrs_beta_18'],
     'volatility': ['atr_ratio', 'hist_vol_40d', 'ivol_20'],
     'distribution': ['ret_skew_20d'],
+    'fundamental': [],  # 'roa', 'ebit' - REMOVED
+    'beta_risk': ['downside_beta_ewm_21'],
 }
 
 
@@ -60,6 +62,10 @@ FACTOR_DESCRIPTIONS = {
     'bollinger_squeeze': 'Bollinger Band volatility squeeze (STD5 / STD20)',
     'vol_ratio_20d': '20-day volume spike ratio (volume vs lagged 20-day mean)',
     'price_ma60_deviation': 'Distance to 60-day moving average',
+    '5_days_reversal': 'Negative five-day return capturing short-term mean reversion',
+    # 'roa': 'Return on assets computed from Polygon financials',  # REMOVED
+    # 'ebit': 'EBIT level from Polygon fundamentals (per latest filing)',  # REMOVED
+    'downside_beta_ewm_21': 'EWMA downside beta vs QQQ (uses only benchmark down days, 21-day span, exponential weighting)',
 }
 
 

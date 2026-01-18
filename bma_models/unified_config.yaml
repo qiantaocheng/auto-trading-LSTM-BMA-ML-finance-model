@@ -1,4 +1,4 @@
-﻿# BMA ULTRA ENHANCED UNIFIED CONFIGURATION
+# BMA ULTRA ENHANCED UNIFIED CONFIGURATION
 # Single source of truth for all system parameters - Production-grade configuration management
 # Integrates: temporal safety, training parameters, data requirements, feature engineering, evaluation metrics
 # Used by: UnifiedTrainingConfig class, all BMA model components, trading system, risk management
@@ -189,65 +189,134 @@ training:
   cv_min_train_size: 252                 # Match CONFIG.MIN_TRAIN_SIZE (1 year)
   test_size: 63                          # ~3个月窗口
   cv_no_fallback: true                   # NO FALLBACK CV METHODS
-  
+
+  # 极端target过滤 (防止WW等9900%涨幅或-88%跌幅扭曲模型训练)
+  extreme_target_filter:
+    enabled: true                        # 启用极端值过滤
+    lower_pct: 0.5                       # 移除最低0.5%的极端下跌
+    upper_pct: 99.5                      # 移除最高0.5%的极端上涨
+    # 说明: 这会在所有第一层模型(ElasticNet/XGBoost/CatBoost/LambdaRank)
+    #       和Ridge Stacking训练前移除极端outliers
+    #       示例: WW在2025-05-09的9900%涨幅, -88%跌幅等
+
   # 基础ML模型 - SIMPLIFIED
   base_models:
     elastic_net:
       enable: true
-      alpha: 0.0001      # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
-      l1_ratio: 0.1      # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
+      alpha: 0.0001
+      l1_ratio: 0.05
       random_state: 42
     
     xgboost:
       enable: true
-      n_estimators: 400  # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
-      max_depth: 5
-      learning_rate: 0.05
-      min_child_weight: 3  # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
-      reg_lambda: 0.05      # 轻微降低L2正则化
-      reg_alpha: 0.001     # 大幅降低L1正则化，减少特征筛选
-      subsample: 0.8
-      colsample_bytree: 0.8
+      n_estimators: 500
+      max_depth: 4
+      learning_rate: 0.03
+      min_child_weight: 100     # ✅ 150 -> 100（更能学到弱信号）
+      reg_lambda: 5.0          # ✅ 10 -> 5（不至于太扁平）
+      reg_alpha: 0.0
+      subsample: 0.7
+      colsample_bytree: 0.7
       random_state: 42
       verbosity: 0
     
     catboost:
       enable: true
-      iterations: 1000      # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (tie -> smallest for speed)
-      depth: 4              # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
-      learning_rate: 0.01   # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
-      l2_leaf_reg: 1
-      min_data_in_leaf: 30
-      subsample: 1.0        # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full
+      iterations: 1200
+      depth: 5
+      learning_rate: 0.02
+      l2_leaf_reg: 10
+      min_data_in_leaf: 200     # ✅ 500 -> 200（关键：更可学习）
+      subsample: 0.7
       loss_function: "RMSE"
       random_state: 42
       verbose: false
       allow_writing_files: false
       thread_count: -1
       od_type: "Iter"
-      od_wait: 100
+      od_wait: 80
     
+    lightgbm_ranker:
+      enable: true
+      objective: "regression"
+      boosting_type: "gbdt"
+      n_estimators: 900
+      num_leaves: 63
+      max_depth: -1
+      learning_rate: 0.045
+      feature_fraction: 0.8
+      bagging_fraction: 0.8
+      bagging_freq: 5
+      data_sample_strategy: "bagging"
+      min_sum_hessian_in_leaf: 0.01
+      min_gain_to_split: 0.01
+      lambda_l1: 0.1
+      lambda_l2: 15.0
+      max_bin: 127
+      verbose: -1
+      random_state: 42
+      n_jobs: -1
+      fit_params:
+        early_stopping_rounds: 150
+        eval_metric: "l2"
+
     lambdarank:
       enable: true
-      num_boost_round: 50     # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
-      learning_rate: 0.01     # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
-      num_leaves: 127         # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
-      max_depth: 6            # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
-      lambda_l2: 5          # tuned (grid): best top20_avg_return from results/feature_grid_20251208_full (intermediate)
-      n_quantiles: 128
-      label_gain_power: 1.5
+      objective: "lambdarank"
+      metric: "ndcg"
+      ndcg_eval_at: [10, 30]  # NDCG evaluation at Top-10 and Top-30
+      num_boost_round: 260          # 220 -> 260（多给一点学习机会）
+      learning_rate: 0.03
+      num_leaves: 127
+      max_depth: 6
+      min_data_in_leaf: 380         # 500 -> 380（稍微更敢学）
+      lambda_l1: 0.0
+      lambda_l2: 10.0               # 12 -> 10（稍微松一点）
+      feature_fraction: 0.85
+      bagging_fraction: 0.8
+      bagging_freq: 1
+      lambdarank_truncation_level: 650   # 500 -> 650（更关注前段但不极端）
+      sigmoid: 1.2
+      n_quantiles: 64
+      label_gain_power: 2.0
+      fit_params:
+        early_stopping_rounds: 60
 
-  # 二层 Ridge Stacker (tunable via scripts/train_single_model.py --model ridge)
-  ridge_stacker:
-    # Base prediction columns used by RidgeStacker. Can include pred_lambdarank to experiment.
-    # Tuned via results/ridge_grid_post_lambda_20251214: best top20_avg_return (post LambdaRank fix)
-    # Best ridge input combo (sweep max-weeks=120):
-    #   base_cols=["pred_elastic","pred_xgb","pred_lambdarank"]
-    base_cols: ["pred_elastic", "pred_xgb", "pred_lambdarank"]
-    alpha: 100.0
-    fit_intercept: false
-    solver: "auto"
-    tol: 1.0e-6
+  # 二层 Meta Ranker Stacker (LightGBM Ranker for meta-learning)
+  # Replaces RidgeStacker with ranking-focused optimization
+  meta_ranker:
+    enable: true
+    objective: "lambdarank"
+    metric: "ndcg"
+    ndcg_eval_at: [10, 30]
+
+    num_boost_round: 140
+    learning_rate: 0.03
+
+    num_leaves: 31
+    max_depth: 4
+    min_data_in_leaf: 200      # 1000 -> 200（关键）
+
+    lambda_l1: 0.0             # 去掉l1，避免权重怪异
+    lambda_l2: 15.0            # 20 -> 15（稳但不锁死）
+
+    feature_fraction: 1.0
+    bagging_fraction: 0.8
+    bagging_freq: 1
+
+    lambdarank_truncation_level: 1200   # 300 -> 1200（关键：别极端）
+    label_gain_power: 1.7               # 2.5 -> 1.7（稳健Top10）
+    sigmoid: 1.2
+
+    n_quantiles: 64
+    verbose: -1
+    random_state: 42
+
+    # Base prediction columns (LightGBM Ranker removed from first layer)
+    base_cols: ["pred_catboost", "pred_xgb", "pred_lambdarank", "pred_elastic"]
+
+    fit_params:
+      early_stopping_rounds: 40
   
   # BMA权重方法
   bma_weighting:
@@ -379,9 +448,10 @@ adaptive_weights:
     
     # 基础模型权重
     base_models:
-      ridge: 0.3
-      xgboost: 0.4
-      catboost: 0.3
+      ridge: 0.25
+      xgboost: 0.3
+      catboost: 0.2
+      lightgbm_ranker: 0.25
 
 # ==========================================
 # 集成系统配置

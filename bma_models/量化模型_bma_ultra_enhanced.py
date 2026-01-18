@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 BMA ULTRA ENHANCED QUANTITATIVE TRADING MODEL
@@ -243,7 +243,7 @@ except ImportError:
         ROBUST_ALIGNMENT_AVAILABLE = False
     except ImportError:
         ROBUST_ALIGNMENT_AVAILABLE = None
-import bma_models.ridge_stacker as ridge_stacker
+from bma_models.meta_ranker_stacker import MetaRankerStacker
 from bma_models.unified_purged_cv_factory import create_unified_cv
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
@@ -573,8 +573,8 @@ class UnifiedTrainingConfig:
         
         elastic_config = base_models.get('elastic_net', {})
         self._ELASTIC_NET_CONFIG = {
-            'alpha': elastic_config.get('alpha', 0.0001),  # 最小正则化以最大化预测性
-            'l1_ratio': elastic_config.get('l1_ratio', 0.001),  # 保持极低L1 (99.9%L2) 最大化预测性
+            'alpha': elastic_config.get('alpha', 0.0001),  # Updated: 0.0001
+            'l1_ratio': elastic_config.get('l1_ratio', 0.05),  # Updated: 0.05
             'max_iter': 5000,  # 增加迭代确保收敛
             'random_state': elastic_config.get('random_state', self._RANDOM_STATE)
         }
@@ -584,18 +584,18 @@ class UnifiedTrainingConfig:
             # FIXED V2: 明确设置回归目标函数
             'objective': 'reg:squarederror',
 
-            # 2600股票优化配置 - 平衡预测性与大规模效率
-            'n_estimators': xgb_config.get('n_estimators', 800),
-            'max_depth': xgb_config.get('max_depth', 7),
-            'learning_rate': xgb_config.get('learning_rate', 0.06),
+            # Updated parameters
+            'n_estimators': xgb_config.get('n_estimators', 500),
+            'max_depth': xgb_config.get('max_depth', 4),
+            'learning_rate': xgb_config.get('learning_rate', 0.03),
 
-            # 大规模特征利用优化
-            'subsample': xgb_config.get('subsample', 0.9),
-            'colsample_bytree': xgb_config.get('colsample_bytree', 0.9),
+            # Updated parameters
+            'subsample': xgb_config.get('subsample', 0.7),
+            'colsample_bytree': xgb_config.get('colsample_bytree', 0.7),
             'colsample_bylevel': xgb_config.get('colsample_bylevel', 0.9),
-            'reg_alpha': xgb_config.get('reg_alpha', 0.005),
-            'reg_lambda': xgb_config.get('reg_lambda', 0.05),
-            'min_child_weight': xgb_config.get('min_child_weight', 3),
+            'reg_alpha': xgb_config.get('reg_alpha', 0.0),
+            'reg_lambda': xgb_config.get('reg_lambda', 5.0),
+            'min_child_weight': xgb_config.get('min_child_weight', 100),
             'gamma': xgb_config.get('gamma', 0),
 
             # 性能和确定性参数（2600股票优化）
@@ -618,48 +618,114 @@ class UnifiedTrainingConfig:
         
         catboost_config = base_models.get('catboost', {})
         self._CATBOOST_CONFIG = {
-            # 2600股票优化配置 - 平衡预测性与大规模效率
-            'iterations': catboost_config.get('iterations', 1000),
-            'depth': catboost_config.get('depth', 8),
-            'learning_rate': catboost_config.get('learning_rate', 0.04),
-            'l2_leaf_reg': catboost_config.get('l2_leaf_reg', 1.0),
+            # Updated parameters
+            'iterations': catboost_config.get('iterations', 1200),
+            'depth': catboost_config.get('depth', 5),
+            'learning_rate': catboost_config.get('learning_rate', 0.02),
+            'l2_leaf_reg': catboost_config.get('l2_leaf_reg', 10),
 
-            # 大规模数据优化
+            # Updated parameters
             'random_strength': catboost_config.get('random_strength', 0.2),
             'bootstrap_type': catboost_config.get('bootstrap_type', 'Bernoulli'),
-            'subsample': catboost_config.get('subsample', 0.85),
+            'subsample': catboost_config.get('subsample', 0.7),
             'rsm': catboost_config.get('rsm', 0.85),
-            'min_data_in_leaf': catboost_config.get('min_data_in_leaf', 60),
+            'min_data_in_leaf': catboost_config.get('min_data_in_leaf', 200),
 
             # 时间感知和基础设置
             'has_time': True,
             'loss_function': catboost_config.get('loss_function', 'RMSE'),
             'random_state': catboost_config.get('random_state', self._RANDOM_STATE),
-            'verbose': catboost_config.get('verbose', True),
+            'verbose': catboost_config.get('verbose', False),
             'allow_writing_files': False,
             'thread_count': catboost_config.get('thread_count', -1),
             'od_type': catboost_config.get('od_type', 'Iter'),
-            'od_wait': catboost_config.get('od_wait', 120),
+            'od_wait': catboost_config.get('od_wait', 80),
             'task_type': catboost_config.get('task_type', 'CPU'),
             'max_bin': catboost_config.get('max_bin', 255),
             'leaf_estimation_iterations': catboost_config.get('leaf_estimation_iterations', 1)
         }
 
-        # LambdaRank config (allow grid overrides)
-        lambda_config = base_models.get('lambdarank', {})
-        self._LAMBDA_RANK_CONFIG = {
-            'num_boost_round': lambda_config.get('num_boost_round', 100),
-            'learning_rate': lambda_config.get('learning_rate', 0.05),
-            'num_leaves': lambda_config.get('num_leaves', 255),
-            'max_depth': lambda_config.get('max_depth', 8),
-            'lambda_l2': lambda_config.get('lambda_l2', 10.0),
-            'n_quantiles': lambda_config.get('n_quantiles', 128),
-            'label_gain_power': lambda_config.get('label_gain_power', 1.5),
+        lightgbm_ranker_config = base_models.get('lightgbm_ranker', {})
+        lightgbm_fit_params = lightgbm_ranker_config.get('fit_params', {}) if isinstance(lightgbm_ranker_config.get('fit_params'), dict) else {}
+        self._LIGHTGBM_RANKER_CONFIG = {
+            'objective': lightgbm_ranker_config.get('objective', 'regression'),
+            'boosting_type': lightgbm_ranker_config.get('boosting_type', 'gbdt'),
+            'n_estimators': lightgbm_ranker_config.get('n_estimators', 900),
+            'num_leaves': lightgbm_ranker_config.get('num_leaves', 255),
+            'max_depth': lightgbm_ranker_config.get('max_depth', -1),
+            'learning_rate': lightgbm_ranker_config.get('learning_rate', 0.05),
+            'feature_fraction': lightgbm_ranker_config.get('feature_fraction', 0.8),
+            'bagging_fraction': lightgbm_ranker_config.get('bagging_fraction', 0.8),
+            'bagging_freq': lightgbm_ranker_config.get('bagging_freq', 5),
+            'data_sample_strategy': lightgbm_ranker_config.get('data_sample_strategy', 'bagging'),
+            'min_sum_hessian_in_leaf': lightgbm_ranker_config.get('min_sum_hessian_in_leaf', 0.01),
+            'min_gain_to_split': lightgbm_ranker_config.get('min_gain_to_split', 0.01),
+            'lambda_l1': lightgbm_ranker_config.get('lambda_l1', 0.1),
+            'lambda_l2': lightgbm_ranker_config.get('lambda_l2', 15.0),
+            'max_bin': lightgbm_ranker_config.get('max_bin', 127),
+            'verbose': lightgbm_ranker_config.get('verbose', -1),
+            'random_state': lightgbm_ranker_config.get('random_state', self._RANDOM_STATE),
+            'n_jobs': lightgbm_ranker_config.get('n_jobs', -1),
+        }
+        self._LIGHTGBM_RANKER_FIT_PARAMS = {
+            'early_stopping_rounds': lightgbm_fit_params.get('early_stopping_rounds', 150),
+            'eval_metric': lightgbm_fit_params.get('eval_metric', 'l2'),
         }
 
-        # Ridge stacker config (alpha override)
+        # LambdaRank config (allow grid overrides)
+        lambda_config = base_models.get('lambdarank', {})
+        lambda_fit_params = lambda_config.get('fit_params', {}) if isinstance(lambda_config.get('fit_params'), dict) else {}
+        self._LAMBDA_RANK_CONFIG = {
+            'num_boost_round': lambda_config.get('num_boost_round', 260),  # Updated: 260
+            'learning_rate': lambda_config.get('learning_rate', 0.03),
+            'num_leaves': lambda_config.get('num_leaves', 127),
+            'max_depth': lambda_config.get('max_depth', 6),
+            'min_data_in_leaf': lambda_config.get('min_data_in_leaf', 380),  # Updated: 380
+            'lambda_l1': lambda_config.get('lambda_l1', 0.0),
+            'lambda_l2': lambda_config.get('lambda_l2', 10.0),  # Updated: 10.0
+            'feature_fraction': lambda_config.get('feature_fraction', 0.85),
+            'bagging_fraction': lambda_config.get('bagging_fraction', 0.8),
+            'bagging_freq': lambda_config.get('bagging_freq', 1),
+            'lambdarank_truncation_level': lambda_config.get('lambdarank_truncation_level', 650),  # Updated: 650
+            'sigmoid': lambda_config.get('sigmoid', 1.2),
+            'n_quantiles': lambda_config.get('n_quantiles', 64),
+            'label_gain_power': lambda_config.get('label_gain_power', 2.0),  # Updated: 2.0
+            'ndcg_eval_at': lambda_config.get('ndcg_eval_at', [10, 30]),  # NDCG evaluation points
+            'objective': lambda_config.get('objective', 'lambdarank'),
+            'metric': lambda_config.get('metric', 'ndcg'),
+            'early_stopping_rounds': lambda_fit_params.get('early_stopping_rounds', 60),
+        }
+
+        # Meta Ranker Stacker config (replaces RidgeStacker)
+        meta_ranker_cfg = training_config.get('meta_ranker', {})
+        meta_ranker_fit_params = meta_ranker_cfg.get('fit_params', {}) if isinstance(meta_ranker_cfg.get('fit_params'), dict) else {}
+        self._META_RANKER_CONFIG = {
+            'base_cols': tuple(meta_ranker_cfg.get('base_cols', ['pred_catboost', 'pred_xgb', 'pred_lambdarank', 'pred_elastic'])),  # Updated order
+            'n_quantiles': meta_ranker_cfg.get('n_quantiles', 64),
+            'label_gain_power': meta_ranker_cfg.get('label_gain_power', 1.7),  # Updated: 1.7
+            'num_boost_round': meta_ranker_cfg.get('num_boost_round', 140),  # Updated: 140
+            'early_stopping_rounds': meta_ranker_fit_params.get('early_stopping_rounds', 40),  # Updated: 40
+            'lgb_params': {
+                'objective': meta_ranker_cfg.get('objective', 'lambdarank'),
+                'metric': meta_ranker_cfg.get('metric', 'ndcg'),
+                'ndcg_eval_at': meta_ranker_cfg.get('ndcg_eval_at', [10, 30]),
+                'num_leaves': meta_ranker_cfg.get('num_leaves', 31),  # Updated: 31
+                'max_depth': meta_ranker_cfg.get('max_depth', 4),
+                'learning_rate': meta_ranker_cfg.get('learning_rate', 0.03),  # Updated: 0.03
+                'min_data_in_leaf': meta_ranker_cfg.get('min_data_in_leaf', 200),  # Updated: 200
+                'lambda_l1': meta_ranker_cfg.get('lambda_l1', 0.0),  # Updated: 0.0
+                'lambda_l2': meta_ranker_cfg.get('lambda_l2', 15.0),  # Updated: 15.0
+                'feature_fraction': meta_ranker_cfg.get('feature_fraction', 1.0),
+                'bagging_fraction': meta_ranker_cfg.get('bagging_fraction', 0.8),
+                'bagging_freq': meta_ranker_cfg.get('bagging_freq', 1),
+                'lambdarank_truncation_level': meta_ranker_cfg.get('lambdarank_truncation_level', 1200),  # Updated: 1200
+                'sigmoid': meta_ranker_cfg.get('sigmoid', 1.2),  # Updated: 1.2
+                'verbose': meta_ranker_cfg.get('verbose', -1),
+            }
+        }
+        
+        # Keep Ridge config for backward compatibility (deprecated)
         ridge_cfg = training_config.get('ridge_stacker', {})
-        # YAML may load scientific notation as string depending on formatting; normalize types.
         _ridge_tol_raw = ridge_cfg.get('tol', 1e-6)
         try:
             _ridge_tol = float(_ridge_tol_raw)
@@ -670,7 +736,7 @@ class UnifiedTrainingConfig:
             'fit_intercept': ridge_cfg.get('fit_intercept', False),
             'solver': ridge_cfg.get('solver', 'auto'),
             'tol': _ridge_tol,
-            'base_cols': ridge_cfg.get('base_cols', ('pred_catboost', 'pred_elastic', 'pred_xgb')),
+            'base_cols': ridge_cfg.get('base_cols', ('pred_catboost', 'pred_elastic', 'pred_xgb')),  # Removed 'pred_lightgbm_ranker'
         }
 
         # === DYNAMIC PARAMETER CONTROLS (replacing hardcoded values) ===
@@ -834,7 +900,16 @@ class UnifiedTrainingConfig:
     def CATBOOST_CONFIG(self): return self._CATBOOST_CONFIG.copy()
 
     @property
+    def LIGHTGBM_RANKER_CONFIG(self): return self._LIGHTGBM_RANKER_CONFIG.copy()
+
+    @property
+    def LIGHTGBM_RANKER_FIT_PARAMS(self): return self._LIGHTGBM_RANKER_FIT_PARAMS.copy()
+
+    @property
     def LAMBDA_RANK_CONFIG(self): return self._LAMBDA_RANK_CONFIG.copy()
+
+    @property
+    def META_RANKER_CONFIG(self): return self._META_RANKER_CONFIG.copy()
 
     @property
     def RIDGE_CONFIG(self): return self._RIDGE_CONFIG.copy()
@@ -915,6 +990,13 @@ class SimpleDataAligner:
                     alignment_report['original_shapes'][name] = data.shape
                 elif hasattr(data, '__len__'):
                     alignment_report['original_shapes'][name] = (len(data),)
+                elif is_lightgbm_ranker:
+                    # DISABLED: LightGBM Ranker removed from first layer
+                    logger.warning(f"[FIRST_LAYER] LightGBM Ranker disabled - skipping CV training")
+                    val_pred = np.zeros(len(y_val))  # Placeholder to avoid errors
+                    # Skip this model - don't add to oof_predictions
+                    continue
+
                 else:
                     alignment_report['original_shapes'][name] = 'scalar'
             
@@ -1866,6 +1948,7 @@ try:
             'elastic_net': 'pred_elastic',
             'xgboost': 'pred_xgb',
             'catboost': 'pred_catboost',
+                        # REMOVED: 'lightgbm_ranker': 'pred_lightgbm_ranker',  # LightGBM Ranker disabled
             'lambdarank': 'pred_lambdarank'  # 🔧 FIX: 添加LambdaRank支持
         }
 
@@ -2885,9 +2968,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # Default MultiIndex training dataset (always prefer local export over API training)
         self.default_training_data_path = Path('data/factor_exports/factors/factors_all.parquet')
 
-        # Initialize Ridge Stacker (replaces EWA)
-        self.ridge_stacker = None
-        self.use_ridge_stacking = True  # 默认启用 Ridge stacking
+        # Initialize Meta Ranker Stacker (replaces RidgeStacker with LightGBM Ranker)
+        self.meta_ranker_stacker = None  # Meta Ranker Stacker (only stacker used)
+        self.use_ridge_stacking = True  # Uses MetaRankerStacker (kept for compatibility with existing code)
 
         # 移除旧的Rank-aware组件，仅保留Lambda模型引用
         self.lambda_rank_stacker = None
@@ -3041,6 +3124,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         self._load_persisted_training_state()
         self.feature_pipeline = None
         self.short_term_factors = None
+        
+        # === EMA Smoothing for Live Prediction ===
+        # Store prediction history for EMA smoothing: {ticker: [S_t, S_{t-1}, S_{t-2}]}
+        self._ema_prediction_history = {}
         self.final_predictions = None
         self.health_metrics = {}
         # expose instance logger for tests
@@ -5168,9 +5255,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             二层预测结果
         """
         try:
-            # 检查 Ridge stacker 是否已训练
-            if not self.use_ridge_stacking or self.ridge_stacker is None:
-                logger.info("Ridge stacker 未启用或未训练，使用基础预测")
+            # 检查 Meta Ranker stacker 是否已训练
+            if not self.use_ridge_stacking or self.meta_ranker_stacker is None:
+                logger.info("Meta Ranker stacker 未启用或未训练，使用基础预测")
                 return self._generate_base_predictions(training_results, feature_data)
 
             logger.info("🎯 [预测] 生成 Ridge 二层 stacking 预测")
@@ -5469,7 +5556,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     for col in standardized_preds.columns:
                         first_layer_preds[col] = standardized_preds[col]
                     # 动态构建可用的预测列进行日志输出
-                    available_pred_cols = [col for col in ['pred_elastic', 'pred_xgb', 'pred_catboost', 'pred_lambdarank']
+                    available_pred_cols = [col for col in ['pred_elastic', 'pred_xgb', 'pred_catboost', 'pred_lambdarank']  # Removed 'pred_lightgbm_ranker'
                                          if col in first_layer_preds.columns]
                     if available_pred_cols:
                         logger.info(f"标准化预测完成: {first_layer_preds[available_pred_cols].shape}, 列: {available_pred_cols}")
@@ -5524,7 +5611,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.info(f"✅ 第一层LambdaRank预测已添加: {len(first_layer_preds)} 个样本")
 
             # 检查是否有足够的第一层预测
-            required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb']
+            required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank']  # Removed 'pred_lightgbm_ranker'
             available_cols = [col for col in required_cols if col in first_layer_preds.columns]
 
             if len(available_cols) < 2:
@@ -5561,7 +5648,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.warning(f"[预测] ⚠️ 增强版对齐器失败，使用智能回退: {e}")
 
                 # 🔧 智能Fallback: 确保列名顺序与训练时完全一致
-                required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb']  # 与Ridge base_cols一致
+                required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank']  # Removed 'pred_lightgbm_ranker'  # 与Ridge base_cols一致
                 available_cols = [col for col in required_cols if col in first_layer_preds.columns]
 
                 if len(available_cols) >= 2:
@@ -5608,11 +5695,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
             # 双头架构：预测时Ridge不添加任何Lambda相关特征
 
-            # 生成Ridge预测
-            ridge_scores = self.ridge_stacker.replace_ewa_in_pipeline(ridge_input)
-            ridge_predictions = ridge_scores['score']
-
-            logger.info(f"✅ Ridge预测完成: {len(ridge_predictions)} 样本")
+            # 生成Meta Ranker预测 (replaces RidgeStacker)
+            if self.meta_ranker_stacker is None:
+                raise RuntimeError("MetaRankerStacker is not available for prediction. Please train the model first.")
+            meta_ranker_scores = self.meta_ranker_stacker.replace_ewa_in_pipeline(ridge_input)
+            ridge_predictions = meta_ranker_scores['score']
+            logger.info(f"✅ Meta Ranker预测完成: {len(ridge_predictions)} 样本")
 
             # 使用Rank-aware门控融合（替代DualHead/线性加权）
             if (self.lambda_rank_stacker is not None and self.rank_aware_blender is not None):
@@ -6704,7 +6792,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # Ensure compulsory features exist and are kept (same semantics as _apply_feature_subset)
         missing = [c for c in self.compulsory_features if c not in available_set]
         if missing:
-            raise ValueError(f"Compulsory features missing from dataset: {missing}")
+            logger.warning(f"[FEATURE] Compulsory features missing from dataset for {model_name}: {missing}")
 
         for c in self.compulsory_features:
             if c not in cols and c in available_set:
@@ -6740,7 +6828,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # Ensure compulsory features exist
         missing = [c for c in self.compulsory_features if c not in available_set]
         if missing:
-            raise ValueError(f"Compulsory features missing from dataset: {missing}")
+            logger.warning(f"[FEATURE] Compulsory features missing from dataset: {missing}")
 
         # Ensure compulsory features are kept
         for c in self.compulsory_features:
@@ -7562,7 +7650,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     # 计算lookback天数
                     start_dt = pd.to_datetime(start_date)
                     end_dt = pd.to_datetime(end_date)
-                    lookback_days = (end_dt - start_dt).days + 50  # 加50天buffer
+                    # 🔥 FIX: Ensure sufficient lookback for 252-day features (near_52w_high)
+                    MIN_REQUIRED_LOOKBACK_DAYS = 280  # 252 trading days + buffer for weekends/holidays
+                    lookback_days = max((end_dt - start_dt).days + 50, MIN_REQUIRED_LOOKBACK_DAYS)
 
                     self.simple_25_engine = Simple17FactorEngine(lookback_days=lookback_days, horizon=self.horizon)
                     logger.info(f"✅ Simple24FactorEngine initialized with {lookback_days} day lookback for T+5")
@@ -8168,6 +8258,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 'final_features': len(train_data.columns),
                 'outlier_guard': guard_diag
             },
+            'snapshot_id': training_results.get('snapshot_id'),
             'training_results': training_results,
             'success': training_success
         })
@@ -9235,9 +9326,30 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 snapshot_payload['traditional_models'] = {}
             if isinstance(snapshot_payload['traditional_models'], dict) and 'models' not in snapshot_payload['traditional_models']:
                 snapshot_payload['traditional_models']['models'] = {}
+            # 🔧 确保MetaRankerStacker被正确保存
+            if self.meta_ranker_stacker is None:
+                logger.error("❌ [SNAPSHOT] CRITICAL: MetaRankerStacker is None. Cannot save snapshot without stacker.")
+                raise RuntimeError("MetaRankerStacker must be trained before saving snapshot.")
+            
+            # 验证MetaRankerStacker已训练
+            is_fitted = getattr(self.meta_ranker_stacker, 'fitted_', False)
+            has_model = hasattr(self.meta_ranker_stacker, 'lightgbm_model') and self.meta_ranker_stacker.lightgbm_model is not None
+            
+            logger.info(f"[SNAPSHOT] 检查MetaRankerStacker状态:")
+            logger.info(f"    meta_ranker_stacker存在: {self.meta_ranker_stacker is not None}")
+            logger.info(f"    fitted_: {is_fitted}")
+            logger.info(f"    has_lightgbm_model: {has_model}")
+            
+            if not (is_fitted and has_model):
+                logger.error(f"❌ [SNAPSHOT] MetaRankerStacker未正确训练: fitted={is_fitted}, has_model={has_model}")
+                raise RuntimeError("MetaRankerStacker must be properly trained before saving snapshot.")
+            
+            stacker_to_save = self.meta_ranker_stacker
+            logger.info(f"✅ [SNAPSHOT] 将保存MetaRankerStacker: fitted={is_fitted}, has_model={has_model}")
+            
             snapshot_id = save_model_snapshot(
                 training_results=snapshot_payload,
-                ridge_stacker=self.ridge_stacker,
+                ridge_stacker=stacker_to_save,
                 lambda_rank_stacker=self.lambda_rank_stacker if hasattr(self, 'lambda_rank_stacker') else None,
                 rank_aware_blender=None,
                 lambda_percentile_transformer=getattr(self, 'lambda_percentile_transformer', None),
@@ -9332,17 +9444,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # Never fail training due to feature-selection guard
             pass
 
-        horizon = int(getattr(self, 'horizon', getattr(CONFIG, 'PREDICTION_HORIZON_DAYS', 10)))
-        active_universe = list(dict.fromkeys(getattr(self, 'active_alpha_factors', []) or list(X.columns)))
-
-        # Enforce T+10 factor universe when predicting 10-day horizons
-        if horizon >= 10 and active_universe:
-            keep_cols = [c for c in X.columns if c in active_universe]
-            dropped = [c for c in X.columns if c not in active_universe]
-            if keep_cols:
-                if dropped:
-                    logger.info(f"[FEATURE] Dropping non-T+10 factors: {dropped}")
-                X = X[keep_cols]
+        # REMOVED: Feature filtering based on active_universe
+        # All features from input data should be available - models will select their own features
+        # via _get_first_layer_feature_cols_for_model which respects best_features_per_model.json
+        # No extra filtering should happen here to ensure training and prediction use same features
 
         compulsory = list(getattr(self, 'compulsory_features', []))
         optional_factors = [c for c in X.columns if c not in compulsory]
@@ -9411,22 +9516,24 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         return X
 
     # ========== Inference without retraining: load snapshot models ==========
-    def predict_with_snapshot(self, feature_data: pd.DataFrame, snapshot_id: str | None = None,
+    def predict_with_snapshot(self, feature_data: pd.DataFrame = None, snapshot_id: str | None = None,
                               tickers_file: str | None = None, universe_tickers: list[str] | None = None,
-                              as_of_date: datetime | None = None) -> Dict[str, Any]:
+                              as_of_date: datetime | None = None, prediction_days: int = 3) -> Dict[str, Any]:
         """
         使用已保存快照进行推理（不重训练）：
         - 还原一层模型，生成第一层预测
         - 还原RidgeStacker与LambdaRankStacker，做融合
         - 应用Kronos T+5筛选
         - 接入股票池管理系统：支持通过 tickers_file 或 universe_tickers 指定股票池
+        - 🔥 NEW: 如果feature_data为None，自动从Polygon API获取数据并计算特征
 
         Args:
-            feature_data: 特征数据
+            feature_data: 特征数据（可选，如果为None则自动获取）
             snapshot_id: 快照ID
             tickers_file: 股票池文件
             universe_tickers: 股票池列表
             as_of_date: 预测基准日期（用于防止Kronos数据泄露），None则从输入数据推断
+            prediction_days: 预测天数（默认3天，用于自动获取数据时）
         """
         from typing import List
         results: Dict[str, Any] = {'success': False}
@@ -9444,7 +9551,91 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 from catboost import CatBoostRegressor
             except Exception:
                 CatBoostRegressor = None
-            from bma_models.ridge_stacker import RidgeStacker
+            # RidgeStacker has been completely replaced by MetaRankerStacker
+
+            # 🔥 NEW: Auto-fetch data if feature_data is None
+            if feature_data is None or (isinstance(feature_data, pd.DataFrame) and feature_data.empty):
+                logger.info("📡 [AUTO-FETCH] feature_data not provided, automatically fetching from Polygon API...")
+                
+                # Get tickers
+                tickers = universe_tickers or []
+                if not tickers and tickers_file:
+                    try:
+                        tickers = load_universe_from_file(tickers_file) or []
+                    except Exception as e:
+                        logger.warning(f"Failed to load tickers from file: {e}")
+                
+                if not tickers:
+                    raise ValueError("Either feature_data or tickers (via universe_tickers or tickers_file) must be provided")
+                
+                # Calculate required lookback days
+                # Maximum rolling window: 252 days (near_52w_high)
+                # Add buffer for weekends/holidays: 252 trading days ≈ 280-300 calendar days
+                MIN_REQUIRED_LOOKBACK_DAYS = 280  # 252 trading days + buffer
+                lookback_days = max(prediction_days + 50, MIN_REQUIRED_LOOKBACK_DAYS)
+                
+                # Determine date range
+                if as_of_date is None:
+                    as_of_date = pd.Timestamp.today()
+                elif isinstance(as_of_date, str):
+                    as_of_date = pd.to_datetime(as_of_date)
+                
+                end_date = pd.to_datetime(as_of_date).strftime('%Y-%m-%d')
+                start_date = (pd.to_datetime(as_of_date) - pd.Timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+                
+                logger.info(f"📊 [AUTO-FETCH] Lookback calculation:")
+                logger.info(f"   Prediction days: {prediction_days}")
+                logger.info(f"   Min required: {MIN_REQUIRED_LOOKBACK_DAYS} days (for 252-day features)")
+                logger.info(f"   Actual lookback: {lookback_days} days")
+                logger.info(f"   Date range: {start_date} to {end_date}")
+                
+                # Initialize Simple17FactorEngine
+                if not hasattr(self, 'simple_25_engine') or self.simple_25_engine is None:
+                    from bma_models.simple_25_factor_engine import Simple17FactorEngine
+                    self.simple_25_engine = Simple17FactorEngine(
+                        lookback_days=lookback_days,
+                        mode='predict',
+                        horizon=getattr(self, 'horizon', 10)
+                    )
+                    logger.info(f"✅ [AUTO-FETCH] Simple17FactorEngine initialized (lookback={lookback_days} days, horizon={self.horizon})")
+                
+                # Fetch market data
+                logger.info(f"📡 [AUTO-FETCH] Fetching market data for {len(tickers)} tickers from Polygon API...")
+                market_data = self.simple_25_engine.fetch_market_data(
+                    symbols=tickers,
+                    use_optimized_downloader=True,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                if market_data.empty:
+                    raise ValueError(f"Failed to fetch market data from Polygon API for {len(tickers)} tickers")
+                
+                logger.info(f"✅ [AUTO-FETCH] Market data fetched: {market_data.shape}")
+                
+                # Calculate all factors
+                logger.info(f"🔮 [AUTO-FETCH] Computing all 17 factors...")
+                feature_data = self.simple_25_engine.compute_all_17_factors(market_data, mode='predict')
+                
+                if feature_data.empty:
+                    raise ValueError("Failed to compute features from market data")
+                
+                logger.info(f"✅ [AUTO-FETCH] Features computed: {feature_data.shape}")
+                
+                # Filter to prediction period (last N days) if requested
+                if prediction_days > 0:
+                    latest_date = feature_data.index.get_level_values('date').max()
+                    cutoff_date = latest_date - pd.Timedelta(days=prediction_days)
+                    before_filter = len(feature_data)
+                    feature_data = feature_data[feature_data.index.get_level_values('date') >= cutoff_date]
+                    after_filter = len(feature_data)
+                    logger.info(f"📅 [AUTO-FETCH] Filtered to last {prediction_days} days: {before_filter} → {after_filter} rows")
+                
+                # Remove target and Close columns if present (not needed for prediction)
+                if 'target' in feature_data.columns:
+                    feature_data = feature_data.drop(columns=['target'])
+                if 'Close' in feature_data.columns:
+                    feature_data = feature_data.drop(columns=['Close'])
 
             # 默认使用活动快照或数据库最新
             effective_snapshot_id = snapshot_id or getattr(self, 'active_snapshot_id', None)
@@ -9487,11 +9678,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 dates = pd.Series(X.index.get_level_values('date'), index=X.index)
                 tickers = pd.Series(X.index.get_level_values('ticker'), index=X.index)
             X_df = X.copy()
-            if feature_names:
-                missing = [c for c in feature_names if c not in X_df.columns]
-                for c in missing:
-                    X_df[c] = 0.0
-                X_df = X_df[feature_names].copy()
+            # REMOVED: Upfront feature filtering to feature_names
+            # Keep all original features - each model will select its own features
+            # via feature_names_by_model, ensuring no feature deletion occurs
+            # Missing features for specific models will be padded with 0.0 when needed
 
             # 推理阶段：对快照推理的特征进行极值守卫
             try:
@@ -9549,7 +9739,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             except Exception as e:
                 logger.warning(f"[SNAPSHOT] CatBoost预测失败: {e}")
 
-            # 还原RidgeStacker
+            # 还原Meta Ranker Stacker (优先) 或 RidgeStacker (向后兼容)
             ridge_meta = {}
             try:
                 if paths.get('ridge_meta_json') and os.path.isfile(paths['ridge_meta_json']):
@@ -9558,25 +9748,85 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             except Exception:
                 ridge_meta = {}
 
-            ridge_base_cols = tuple(ridge_meta.get('base_cols') or ('pred_catboost', 'pred_elastic', 'pred_xgb'))
-            ridge_actual_cols = ridge_meta.get('actual_feature_cols') or list(ridge_base_cols)
-            ridge_stacker = RidgeStacker(base_cols=ridge_base_cols)
+            ridge_base_cols_raw = ridge_meta.get('base_cols') or ('pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank')
+            # Filter out 'pred_lightgbm_ranker' if present in old snapshots (backward compatibility)
+            ridge_base_cols = tuple([c for c in ridge_base_cols_raw if c != 'pred_lightgbm_ranker'])
+            ridge_actual_cols_raw = ridge_meta.get('actual_feature_cols') or list(ridge_base_cols)
+            # Filter out 'pred_lightgbm_ranker' from actual_feature_cols as well
+            ridge_actual_cols = [c for c in ridge_actual_cols_raw if c != 'pred_lightgbm_ranker']
+            
+            # Try to load MetaRankerStacker first
+            meta_ranker_stacker = None
+            ridge_stacker = None
+            
             try:
-                if paths.get('ridge_model_pkl') and os.path.isfile(paths['ridge_model_pkl']):
-                    ridge_stacker.ridge_model = joblib.load(paths['ridge_model_pkl'])
-                if paths.get('ridge_scaler_pkl') and os.path.isfile(paths['ridge_scaler_pkl']):
-                    ridge_stacker.scaler = joblib.load(paths['ridge_scaler_pkl'])
-                ridge_stacker.feature_names_ = list(ridge_base_cols)
-                try:
-                    # 初始化训练时保存的实际特征列（可能包含 lambda_percentile）
-                    ridge_stacker.actual_feature_cols_ = list(ridge_actual_cols)
-                except Exception:
-                    ridge_stacker.actual_feature_cols_ = list(ridge_base_cols)
-                ridge_stacker.fitted_ = True
+                # Check if meta_ranker model exists
+                if paths.get('meta_ranker_txt') and os.path.isfile(paths['meta_ranker_txt']):
+                    logger.info("[SNAPSHOT] 🔧 Loading MetaRankerStacker...")
+                    
+                    # 🔧 加载MetaRankerStacker元数据
+                    meta_ranker_meta = {}
+                    if paths.get('meta_ranker_meta_json') and os.path.isfile(paths['meta_ranker_meta_json']):
+                        with open(paths['meta_ranker_meta_json'], 'r', encoding='utf-8') as f:
+                            meta_ranker_meta = json.load(f)
+                        logger.info(f"[SNAPSHOT] ✅ 加载MetaRankerStacker元数据: {len(meta_ranker_meta)} 个参数")
+                    else:
+                        logger.warning("[SNAPSHOT] ⚠️  meta_ranker_meta.json不存在，使用默认配置")
+                    
+                    # 🔧 创建MetaRankerStacker实例（使用元数据中的配置）
+                    meta_base_cols_from_meta = meta_ranker_meta.get('base_cols', list(ridge_base_cols))
+                    # Filter out 'pred_lightgbm_ranker' if present (backward compatibility)
+                    meta_base_cols_filtered = [c for c in meta_base_cols_from_meta if c != 'pred_lightgbm_ranker']
+                    meta_ranker_stacker = MetaRankerStacker(
+                        base_cols=tuple(meta_base_cols_filtered),
+                        n_quantiles=meta_ranker_meta.get('n_quantiles', 64),
+                        label_gain_power=meta_ranker_meta.get('label_gain_power', 2.2),
+                        num_boost_round=meta_ranker_meta.get('num_boost_round', 300),
+                        lgb_params=meta_ranker_meta.get('lgb_params', {}),
+                        use_purged_cv=True,
+                        use_internal_cv=True,
+                        random_state=42
+                    )
+                    
+                    # 🔧 加载LightGBM模型
+                    meta_ranker_stacker.lightgbm_model = lgb.Booster(model_file=paths['meta_ranker_txt'])
+                    logger.info(f"[SNAPSHOT] ✅ LightGBM模型已加载")
+                    
+                    # 🔧 加载scaler
+                    if paths.get('meta_ranker_scaler_pkl') and os.path.isfile(paths['meta_ranker_scaler_pkl']):
+                        meta_ranker_stacker.scaler = joblib.load(paths['meta_ranker_scaler_pkl'])
+                        logger.info(f"[SNAPSHOT] ✅ Scaler已加载")
+                    else:
+                        logger.warning("[SNAPSHOT] ⚠️  meta_ranker_scaler.pkl不存在")
+                    
+                    # 🔧 设置特征列和状态
+                    meta_ranker_stacker.actual_feature_cols_ = list(meta_ranker_meta.get('actual_feature_cols', ridge_actual_cols))
+                    meta_base_cols_raw = meta_ranker_meta.get('base_cols', list(ridge_base_cols))
+                    # Filter out 'pred_lightgbm_ranker' if present (backward compatibility)
+                    meta_ranker_stacker.base_cols = tuple([c for c in meta_base_cols_raw if c != 'pred_lightgbm_ranker'])
+                    meta_ranker_stacker.fitted_ = True
+                    
+                    # 🔧 验证加载状态
+                    is_fitted = getattr(meta_ranker_stacker, 'fitted_', False)
+                    has_model = hasattr(meta_ranker_stacker, 'lightgbm_model') and meta_ranker_stacker.lightgbm_model is not None
+                    logger.info(f"[SNAPSHOT] ✅ MetaRankerStacker加载验证: fitted={is_fitted}, has_model={has_model}")
+                    
+                    if not (is_fitted and has_model):
+                        raise RuntimeError(f"MetaRankerStacker加载验证失败: fitted={is_fitted}, has_model={has_model}")
+                    
+                    self.meta_ranker_stacker = meta_ranker_stacker
+                    logger.info("[SNAPSHOT] ✅ MetaRankerStacker loaded successfully")
             except Exception as e:
-                logger.warning(f"[SNAPSHOT] 加载RidgeStacker失败: {e}")
+                logger.error(f"[SNAPSHOT] ❌ Loading MetaRankerStacker failed: {e}")
+                import traceback
+                logger.error(f"[SNAPSHOT] Full traceback:\n{traceback.format_exc()}")
+                raise RuntimeError(f"Cannot load MetaRankerStacker from snapshot. This snapshot may be corrupted or incomplete. Error: {e}")
 
             ridge_input = first_layer_preds.copy()
+            # Filter out 'pred_lightgbm_ranker' if present (backward compatibility with old snapshots)
+            if 'pred_lightgbm_ranker' in ridge_input.columns:
+                ridge_input = ridge_input.drop(columns=['pred_lightgbm_ranker'])
+                logger.info("[SNAPSHOT] Removed 'pred_lightgbm_ranker' from first_layer_preds (LightGBM Ranker disabled)")
             for col in ridge_base_cols:
                 if col not in ridge_input.columns:
                     ridge_input[col] = 0.0
@@ -9663,8 +9913,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             except Exception:
                 pass
 
-            # 现在进行Ridge预测
-            ridge_predictions_df = ridge_stacker.predict(ridge_input)
+            # 现在进行Meta Ranker预测
+            if meta_ranker_stacker is None:
+                raise RuntimeError("MetaRankerStacker is not available for prediction. Please ensure the model is loaded from snapshot.")
+            ridge_predictions_df = meta_ranker_stacker.predict(ridge_input)
 
             # 快照推理：若可用LambdaRank预测，则执行Rank-aware门控融合；否则退回Ridge
             final_df = None
@@ -9754,10 +10006,72 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             except Exception:
                 pass
 
-            pred_df = pred_df.sort_values('score', ascending=False)
+            # 🔧 Apply EMA smoothing to predictions (3-day EMA: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2})
+            logger.info("📊 Applying EMA smoothing to live predictions...")
+            
+            # Create a DataFrame with ticker and score for smoothing
+            pred_df_smooth = pred_df.copy()
+            pred_df_smooth['score_smooth'] = np.nan
+            
+            # Get prediction date from pred_series index
+            pred_date = pred_series.index.get_level_values('date')[0] if isinstance(pred_series.index, pd.MultiIndex) else pd.Timestamp.today()
+            
+            for idx, row in pred_df_smooth.iterrows():
+                ticker = str(row['ticker'])
+                score_today = row['score']
+                
+                # Initialize history if needed
+                if ticker not in self._ema_prediction_history:
+                    self._ema_prediction_history[ticker] = []
+                
+                history = self._ema_prediction_history[ticker]
+                
+                # Calculate smoothed score
+                if pd.isna(score_today):
+                    smooth_score = np.nan
+                elif len(history) == 0:
+                    # First day: use raw score
+                    smooth_score = score_today
+                elif len(history) == 1:
+                    # Second day: 0.6*S_t + 0.3*S_{t-1}
+                    if pd.isna(history[0]):
+                        smooth_score = score_today
+                    else:
+                        smooth_score = 0.6 * score_today + 0.3 * history[0]
+                else:
+                    # Third day and beyond: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2}
+                    hist_0 = history[0] if not pd.isna(history[0]) else 0.0
+                    hist_1 = history[1] if not pd.isna(history[1]) else 0.0
+                    smooth_score = 0.6 * score_today + 0.3 * hist_0 + 0.1 * hist_1
+                
+                pred_df_smooth.loc[idx, 'score_smooth'] = smooth_score
+                
+                # Update history (keep last 3 days)
+                history.insert(0, score_today)
+                if len(history) > 2:
+                    history.pop()
+            
+            # Use smoothed scores for final predictions
+            pred_df_smooth = pred_df_smooth.sort_values('score_smooth', ascending=False)
+            
+            # Reconstruct pred_series with smoothed scores, preserving original index structure
+            tickers_smooth = pred_df_smooth['ticker'].values
+            scores_smooth = pred_df_smooth['score_smooth'].values
+            
+            # Create MultiIndex matching original structure
+            if isinstance(pred_series.index, pd.MultiIndex):
+                dates_smooth = [pred_date] * len(tickers_smooth)
+                smooth_index = pd.MultiIndex.from_arrays([dates_smooth, tickers_smooth], names=['date', 'ticker'])
+            else:
+                smooth_index = pd.Index(tickers_smooth)
+            
+            pred_series_smooth = pd.Series(scores_smooth, index=smooth_index, name='score')
+            
+            logger.info(f"✅ EMA smoothing applied: {len(pred_df_smooth)} predictions smoothed (raw scores preserved in predictions_raw)")
 
             analysis_results: Dict[str, Any] = {'start_time': pd.Timestamp.now()}
-            analysis_results['predictions'] = pred_series
+            analysis_results['predictions'] = pred_series_smooth  # Use smoothed predictions
+            analysis_results['predictions_raw'] = pred_series  # Keep raw predictions for reference
             analysis_results['feature_data'] = feature_data
 
             # Kronos T+5过滤（仅对 Top 20 生效：用于交易过滤，不影响模型分数）
@@ -9796,7 +10110,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         logger.warning(f"[KRONOS] Failed to extract prediction date: {e}, will use current date")
                         current_prediction_date = None
 
-                    top_20 = pred_df.head(min(20, len(pred_df))).copy()
+                    top_20 = pred_df_smooth.head(min(20, len(pred_df_smooth))).copy()
+                    # Use smoothed scores for Kronos filtering
+                    if 'score_smooth' in top_20.columns:
+                        top_20['score'] = top_20['score_smooth']
                     kronos_results: List[Dict[str, Any]] = []
                     for i, row in top_20.iterrows():
                         symbol = row['ticker']
@@ -9848,8 +10165,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 analysis_results['kronos_top35'] = None
                 analysis_results['kronos_pass_over10'] = None
 
-            # 汇总
-            recommendations = pred_df.head(min(20, len(pred_df))).to_dict('records')
+            # 汇总 (use smoothed scores for recommendations)
+            recommendations = pred_df_smooth.head(min(20, len(pred_df_smooth))).to_dict('records')
+            # Replace score with smoothed score in recommendations
+            for rec in recommendations:
+                rec['score'] = rec.get('score_smooth', rec.get('score', 0.0))
+                if 'score_smooth' in rec:
+                    del rec['score_smooth']
             analysis_results['recommendations'] = recommendations
 
             # Trade list: Kronos pass within Top 20 only (no backfill beyond Top 20)
@@ -9973,7 +10295,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             if not oof_for_ridge:
                 raise ValueError("OOF预测为空，无法训练二层模型")
 
-            expected_models = {'elastic_net', 'xgboost', 'catboost'}
+            expected_models = {'elastic_net', 'xgboost', 'catboost', 'lightgbm_ranker'}
             available_models = set(oof_for_ridge.keys())
             logger.info(f"[二层] 可用模型: {available_models}")
 
@@ -10039,7 +10361,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     logger.warning(f"[二层] ⚠️ 所有对齐器失败，使用基础回退: {e}")
 
                     # 基础回退：手动构建stacker_data
-                    required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb']
+                    required_cols = ['pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank']  # Removed 'pred_lightgbm_ranker'
 
                     # 获取第一个预测作为基准索引（使用过滤后的OOF）
                     first_pred = next(iter(oof_for_ridge.values()))
@@ -10067,6 +10389,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         'elastic_net': 'pred_elastic',
                         'xgboost': 'pred_xgb',
                         'catboost': 'pred_catboost',
+                        # REMOVED: 'lightgbm_ranker': 'pred_lightgbm_ranker',  # LightGBM Ranker disabled
                         'lambdarank': 'pred_lambdarank',
                     }
                     present = {k: v for k, v in rename_map.items() if k in stacker_data.columns and v not in stacker_data.columns}
@@ -10148,7 +10471,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
             # 一层输出标准化与Isotonic校准（使用OOF）
             try:
-                model_cols = [c for c in ['pred_catboost', 'pred_elastic', 'pred_xgb'] if c in stacker_data.columns]
+                model_cols = [c for c in ['pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank'] if c in stacker_data.columns]  # Removed 'pred_lightgbm_ranker'
                 if model_cols:
                     # 当日截面z-score标准化
                     def _cs_z(g):
@@ -10184,29 +10507,37 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             except Exception as std_e:
                 logger.warning(f"[二层] 一层标准化/校准流程异常（继续）: {std_e}")
 
-            # 数据对齐已完成，初始化优化的Ridge Stacker
+            # 数据对齐已完成，初始化Meta Ranker Stacker (replaces RidgeStacker)
 
-            # 根据对齐结果优化Ridge Stacker配置
-            # 更保守的调参策略：只有在数据量充足且健壮对齐引擎可用时才启用
-            # 2600股票·3年固定参数（禁用网格搜索）：统一固定α，关闭auto_tune
-            ridge_cfg_override = CONFIG.RIDGE_CONFIG if hasattr(CONFIG, 'RIDGE_CONFIG') else {}
-            base_cols_cfg = ridge_cfg_override.get('base_cols', ('pred_catboost', 'pred_elastic', 'pred_xgb'))
+            # 根据对齐结果优化Meta Ranker Stacker配置
+            meta_ranker_cfg_override = CONFIG.META_RANKER_CONFIG if hasattr(CONFIG, 'META_RANKER_CONFIG') else {}
+            base_cols_cfg = meta_ranker_cfg_override.get('base_cols', ('pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank'))  # Removed 'pred_lightgbm_ranker'
             if isinstance(base_cols_cfg, list):
                 base_cols_cfg = tuple(base_cols_cfg)
-            ridge_config = {
+            
+            # Build MetaRankerStacker config
+            meta_ranker_config = {
                 'base_cols': base_cols_cfg,
-                'alpha': ridge_cfg_override.get('alpha', 1.0),
-                'fit_intercept': ridge_cfg_override.get('fit_intercept', False),
-                'solver': ridge_cfg_override.get('solver', "auto"),
-                'tol': ridge_cfg_override.get('tol', 1e-6),
-                'auto_tune_alpha': False,  # 禁用调参
-                'use_lambda_percentile': False,  # 双头架构：Ridge完全不使用Lambda相关特征
+                'n_quantiles': meta_ranker_cfg_override.get('n_quantiles', 64),
+                'label_gain_power': meta_ranker_cfg_override.get('label_gain_power', 2.2),
+                'num_boost_round': meta_ranker_cfg_override.get('num_boost_round', 300),
+                'early_stopping_rounds': meta_ranker_cfg_override.get('early_stopping_rounds', 50),
+                'lgb_params': meta_ranker_cfg_override.get('lgb_params', {}),
+                'use_purged_cv': True,
+                'use_internal_cv': True,
+                'cv_n_splits': 6,
+                'cv_gap_days': 5,
+                'cv_embargo_days': 5,
                 'random_state': 42
             }
-            logger.info(f"[二层] 🔧 使用Ridge参数（α={ridge_config['alpha']}，禁用网格搜索）")
+            logger.info(f"[二层] 🔧 使用Meta Ranker Stacker参数:")
+            logger.info(f"   num_boost_round={meta_ranker_config['num_boost_round']}, label_gain_power={meta_ranker_config['label_gain_power']}")
+            logger.info(f"   lgb_params: num_leaves={meta_ranker_config.get('lgb_params', {}).get('num_leaves')}, max_depth={meta_ranker_config.get('lgb_params', {}).get('max_depth')}")
+            logger.info(f"   lgb_params: min_data_in_leaf={meta_ranker_config.get('lgb_params', {}).get('min_data_in_leaf')}, lambda_l2={meta_ranker_config.get('lgb_params', {}).get('lambda_l2')}")
+            logger.info(f"   lgb_params: lambdarank_truncation_level={meta_ranker_config.get('lgb_params', {}).get('lambdarank_truncation_level')}")
 
-            # 初始化Ridge Stacker
-            self.ridge_stacker = ridge_stacker.RidgeStacker(**ridge_config)
+            # 初始化Meta Ranker Stacker (replaces RidgeStacker)
+            self.meta_ranker_stacker = MetaRankerStacker(**meta_ranker_config)
 
             # 验证索引格式（健壮对齐引擎应已处理）
             if ROBUST_ALIGNMENT_AVAILABLE:
@@ -10246,13 +10577,27 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # 保存stacker_data供并行训练使用
             self._last_stacker_data = stacker_data
 
-            self.ridge_stacker.fit(stacker_data, max_train_to_today=True)
+            self.meta_ranker_stacker.fit(stacker_data, max_train_to_today=True)
 
+            # 🔧 验证训练状态并确保fitted_标志正确设置
+            if not getattr(self.meta_ranker_stacker, 'fitted_', False):
+                logger.warning("[二层] MetaRankerStacker.fitted_未设置，手动设置")
+                self.meta_ranker_stacker.fitted_ = True
+            
+            # 🔧 验证lightgbm_model存在
+            if not hasattr(self.meta_ranker_stacker, 'lightgbm_model') or self.meta_ranker_stacker.lightgbm_model is None:
+                logger.error("[二层] ❌ CRITICAL: MetaRankerStacker.lightgbm_model不存在或为None！")
+                raise RuntimeError("MetaRankerStacker训练失败：lightgbm_model未创建")
+            
             # 获取模型信息
-            stacker_info = self.ridge_stacker.get_model_info()
-            logger.info(f"✅ [二层] Ridge Stacker 训练完成")
-            logger.info("✅ [二层] Ridge Stacker 训练完成（全量训练，无CV，最大化数据利用率）")
-            logger.info(f"    迭代次数: {stacker_info.get('n_iterations', 0)}")
+            stacker_info = self.meta_ranker_stacker.get_model_info()
+            logger.info(f"✅ [二层] Meta Ranker Stacker 训练完成")
+            logger.info(f"    模型类型: {stacker_info.get('model_type', 'MetaRankerStacker')}")
+            logger.info(f"    训练轮数: {stacker_info.get('num_boost_round', 0)}")
+            logger.info(f"    最佳迭代: {stacker_info.get('best_iteration', 'N/A')}")
+            logger.info(f"    Label gain power: {stacker_info.get('label_gain_power', 'N/A')}")
+            logger.info(f"    ✅ fitted_={getattr(self.meta_ranker_stacker, 'fitted_', False)}")
+            logger.info(f"    ✅ lightgbm_model存在={hasattr(self.meta_ranker_stacker, 'lightgbm_model') and self.meta_ranker_stacker.lightgbm_model is not None}")
 
             # LambdaRank已在第一层训练完成，第二层只做Ridge stacking
             logger.info("[二层] LambdaRank已在第一层完成，第二层专注Ridge stacking")
@@ -10263,11 +10608,11 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             return True
 
         except Exception as e:
-            logger.warning(f"[二层] Ridge Stacker 训练失败: {e}")
+            logger.warning(f"[二层] Meta Ranker Stacker 训练失败: {e}")
             # Always log full traceback to debug the MultiIndex issue
             import traceback
-            logger.error(f"[二层] Ridge Stacker 详细错误:\n{traceback.format_exc()}")
-            self.ridge_stacker = None
+            logger.error(f"[二层] Meta Ranker Stacker 详细错误:\n{traceback.format_exc()}")
+            self.meta_ranker_stacker = None
             # Return False but don't fail the whole pipeline
             return False
 
@@ -10341,7 +10686,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         logger.info("🚀 [FIRST_LAYER] 开始第一层模型训练")
         logger.info("=" * 80)
         logger.info(f"📊 训练数据规模: {X.shape[0]} 样本 × {X.shape[1]} 特征")
-        logger.info(f"🎯 目标模型: ElasticNet + XGBoost + CatBoost + LambdaRank")
+        logger.info(f"🎯 目标模型: ElasticNet + XGBoost + CatBoost + LightGBM Ranker + LambdaRank")
         logger.info("=" * 80)
         
         # === ROBUST DATA VALIDATION FOR LARGE DATASETS ===
@@ -10373,8 +10718,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # 3. Check for constant features
         constant_features = X.columns[X.nunique() <= 1].tolist()
         if constant_features:
-            logger.warning(f"Removing {len(constant_features)} constant features")
-            X = X.drop(columns=constant_features)
+            logger.info(f"[FEATURE] Constant columns detected but retained (count={len(constant_features)})")
 
         # 4. 禁用内存优化（强制保持原始dtype与日志安静）
         sample_count = len(X)
@@ -10500,7 +10844,27 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         except ImportError:
             logger.warning("CatBoost not available")
 
-        # 4. LambdaRank（使用相同的CV策略，与其他模型统一）
+        # 4. LightGBM ranker (DISABLED - removed from first layer)
+        # REMOVED: LightGBM Ranker has been completely disabled from first layer
+        # try:
+        #     import lightgbm as lgb
+        #     lgbm_config = CONFIG.LIGHTGBM_RANKER_CONFIG.copy()
+        #     fit_params = CONFIG.LIGHTGBM_RANKER_FIT_PARAMS.copy() if hasattr(CONFIG, 'LIGHTGBM_RANKER_FIT_PARAMS') else {}
+        #     if is_very_small_sample:
+        #         base_estimators = int(lgbm_config.get('n_estimators', 900) or 900)
+        #         lgbm_config['n_estimators'] = max(150, int(base_estimators * 0.35))
+        #         lgbm_config['num_leaves'] = min(64, int(lgbm_config.get('num_leaves', 255) or 255))
+        #     elif is_small_sample:
+        #         base_estimators = int(lgbm_config.get('n_estimators', 900) or 900)
+        #         lgbm_config['n_estimators'] = max(250, int(base_estimators * 0.5))
+        #     lightgbm_model = lgb.LGBMRegressor(**lgbm_config)
+        #     setattr(lightgbm_model, '_bma_fit_params', dict(fit_params))
+        #     models['lightgbm_ranker'] = lightgbm_model
+        # except ImportError:
+        #     logger.warning("LightGBM not available, skipping lightgbm_ranker")
+        logger.info("[FIRST_LAYER] LightGBM Ranker disabled (removed from first layer)")
+
+        # 5. LambdaRank（使用相同的CV策略，与其他模型统一）
         lambda_config_global = None  # 保存配置供后续使用
         try:
             from bma_models.lambda_rank_stacker import LambdaRankStacker
@@ -10512,23 +10876,34 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # Choose base_cols using the same per-model feature policy as training/inference
             lambda_base_cols = self._get_first_layer_feature_cols_for_model('lambdarank', list(X.columns), available_cols=X.columns)
             feature_names_by_model['lambdarank'] = list(lambda_base_cols)
+            lambda_fit_params = lc.get('fit_params', {}) if isinstance(lc.get('fit_params'), dict) else {}
             lambda_config_global = {
                 'base_cols': tuple(lambda_base_cols),
-                'n_quantiles': lc.get('n_quantiles', 128),
+                'n_quantiles': lc.get('n_quantiles', 64),
                 'winsorize_quantiles': lc.get('winsorize_quantiles', (0.01, 0.99)),
-                'label_gain_power': lc.get('label_gain_power', 1.5),
-                'num_boost_round': lc.get('num_boost_round', 100 if not is_very_small_sample else 50),
-                'early_stopping_rounds': lc.get('early_stopping_rounds', 0),
+                'label_gain_power': lc.get('label_gain_power', 2),  # Updated default: 2
+                'num_boost_round': lc.get('num_boost_round', 260),  # Updated: 260
+                'early_stopping_rounds': lambda_fit_params.get('early_stopping_rounds', 60),  # Updated default: 60
                 # 关键：在统一CV循环内训练LambdaRank，禁用其内部CV以避免二次CV要求
                 'use_internal_cv': lc.get('use_internal_cv', False),
                 'use_purged_cv': lc.get('use_purged_cv', False),
                 'random_state': CONFIG._RANDOM_STATE,
-                # 嵌套 LightGBM 参数
+                # 嵌套 LightGBM 参数（确保YAML配置的所有参数都传递到LambdaRankStacker）
                 'lgb_params': {
-                    'learning_rate': lc.get('learning_rate', 0.05),
-                    'num_leaves': lc.get('num_leaves', 255),
-                    'max_depth': lc.get('max_depth', 8),
-                    'lambda_l2': lc.get('lambda_l2', 10.0),
+                    'objective': lc.get('objective', 'lambdarank'),
+                    'metric': lc.get('metric', 'ndcg'),
+                    'ndcg_eval_at': lc.get('ndcg_eval_at', [10, 30]),  # NDCG evaluation points
+                    'learning_rate': lc.get('learning_rate', 0.03),
+                    'num_leaves': lc.get('num_leaves', 127),  # Updated default: 127
+                    'max_depth': lc.get('max_depth', 6),
+                    'min_data_in_leaf': lc.get('min_data_in_leaf', 380),  # Updated: 380
+                    'lambda_l1': lc.get('lambda_l1', 0.0),
+                    'lambda_l2': lc.get('lambda_l2', 10.0),  # Updated: 10.0
+                    'feature_fraction': lc.get('feature_fraction', 0.85),  # Updated default: 0.85
+                    'bagging_fraction': lc.get('bagging_fraction', 0.8),  # Updated default: 0.8
+                    'bagging_freq': lc.get('bagging_freq', 1),
+                    'lambdarank_truncation_level': lc.get('lambdarank_truncation_level', 650),  # Updated: 650
+                    'sigmoid': lc.get('sigmoid', 1.2),
                 },
             }
 
@@ -10544,7 +10919,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         cv_scores = {}
         cv_r2_scores = {}
         oof_predictions = {}
-        best_iter_map = {k: [] for k in ['elastic_net', 'xgboost', 'catboost', 'lambdarank']}
+        best_iter_map = {k: [] for k in ['elastic_net', 'xgboost', 'catboost', 'lambdarank']}  # Removed 'lightgbm_ranker'
 
         # CV-BAGGING FIX: 保存CV fold模型以支持推理一致性
         cv_fold_models = {}  # {fold_idx: {model_name: trained_model}}
@@ -10576,13 +10951,29 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     from bma_models.lambda_rank_stacker import LambdaRankStacker
                     cfg = only_model if isinstance(only_model, dict) else {}
                     lgb_params = cfg.get('lgb_params') or {}
+                    lambda_fit_params = cfg.get('fit_params', {}) if isinstance(cfg.get('fit_params'), dict) else {}
                     trained = LambdaRankStacker(
                         base_cols=tuple(use_cols_full),
-                        n_quantiles=int(cfg.get('n_quantiles', 128)),
-                        label_gain_power=float(cfg.get('label_gain_power', 1.0)),
-                        lgb_params=dict(lgb_params),
-                        num_boost_round=int(cfg.get('num_boost_round', 200)),
-                        early_stopping_rounds=int(cfg.get('early_stopping_rounds', 200)),
+                        n_quantiles=int(cfg.get('n_quantiles', 64)),
+                        label_gain_power=float(cfg.get('label_gain_power', 2.0)),  # Updated: 2.0
+                        lgb_params=dict(lgb_params) if lgb_params else {
+                            'objective': 'lambdarank',
+                            'metric': 'ndcg',
+                            'ndcg_eval_at': [10, 30],
+                            'learning_rate': 0.03,
+                            'num_leaves': 127,
+                            'max_depth': 6,
+                            'min_data_in_leaf': 380,  # Updated: 380
+                            'lambda_l1': 0.0,
+                            'lambda_l2': 10.0,  # Updated: 10.0
+                            'feature_fraction': 0.85,
+                            'bagging_fraction': 0.8,
+                            'bagging_freq': 1,
+                            'lambdarank_truncation_level': 650,  # Updated: 650
+                            'sigmoid': 1.2,
+                        },
+                        num_boost_round=int(cfg.get('num_boost_round', 260)),  # Updated: 260
+                        early_stopping_rounds=int(lambda_fit_params.get('early_stopping_rounds', cfg.get('early_stopping_rounds', 60))),
                         use_purged_cv=False,
                         use_internal_cv=False,
                     )
@@ -10717,18 +11108,22 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 is_xgb = hasattr(model, 'get_xgb_params')
                 is_catboost = hasattr(model, 'get_all_params') or str(type(model)).find('CatBoost') >= 0
                 is_lambdarank = (name == 'lambdarank')
+                is_lightgbm_ranker = False  # DISABLED: LightGBM Ranker removed from first layer
 
-                # 🔧 新架构：Lambda在统一CV循环中训练
+                # 🔧 统一输入处理：LambdaRank与其他模型使用相同的输入
                 if is_lambdarank:
-                    # Lambda需要特殊的数据格式（MultiIndex）
+                    # LambdaRank需要MultiIndex格式，但使用与其他模型相同的特征和样本
                     from bma_models.lambda_rank_stacker import LambdaRankStacker
 
-                    # 准备MultiIndex格式的训练/验证数据
-                    if isinstance(X_train.index, pd.MultiIndex):
+                    # 🔧 确保使用与其他模型相同的MultiIndex和特征列
+                    # X_train_use和X_val_use已经通过_get_first_layer_feature_cols_for_model选择特征
+                    # 确保MultiIndex格式正确
+                    if isinstance(X_train_use.index, pd.MultiIndex):
+                        # 已经有多层索引，直接使用
                         X_train_lambda = X_train_use.copy()
                         X_val_lambda = X_val_use.copy()
                     else:
-                        # 从dates和tickers构建MultiIndex
+                        # 从dates和tickers构建MultiIndex（确保与其他模型一致）
                         train_dates = dates.iloc[train_idx] if hasattr(dates, 'iloc') else dates[train_idx]
                         train_tickers = tickers.iloc[train_idx] if hasattr(tickers, 'iloc') else tickers[train_idx]
                         val_dates = dates.iloc[val_idx] if hasattr(dates, 'iloc') else dates[val_idx]
@@ -10737,36 +11132,60 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         train_idx_lambda = pd.MultiIndex.from_arrays([train_dates, train_tickers], names=['date', 'ticker'])
                         val_idx_lambda = pd.MultiIndex.from_arrays([val_dates, val_tickers], names=['date', 'ticker'])
 
+                        # 🔧 保持特征列顺序与其他模型一致
                         X_train_lambda = pd.DataFrame(X_train_use.values, index=train_idx_lambda, columns=X_train_use.columns)
                         X_val_lambda = pd.DataFrame(X_val_use.values, index=val_idx_lambda, columns=X_val_use.columns)
 
-                    # 添加target列（Lambda需要）
+                    # 🔧 验证数据一致性（在添加target列之前）
+                    assert len(X_train_lambda) == len(X_train_use), f"LambdaRank训练数据长度不一致: {len(X_train_lambda)} vs {len(X_train_use)}"
+                    assert len(X_val_lambda) == len(X_val_use), f"LambdaRank验证数据长度不一致: {len(X_val_lambda)} vs {len(X_val_use)}"
+                    assert list(X_train_lambda.columns) == list(X_train_use.columns), "LambdaRank特征列不一致"
+                    
+                    # 🔧 添加target列（LambdaRank需要，但使用与其他模型相同的y_train/y_val）
                     # IMPORTANT: LambdaRankStacker.fit defaults target_col='ret_fwd_10d'.
                     # Align the column name with the active horizon so it can be found and avoid silent leakage.
                     horizon_days = int(getattr(self, 'horizon', getattr(CONFIG, 'PREDICTION_HORIZON_DAYS', 10)))
                     target_col = f'ret_fwd_{horizon_days}d'
+                    # 🔧 确保target值与y_train/y_val完全一致（使用.values确保顺序一致）
                     X_train_lambda[target_col] = y_train.values
                     X_val_lambda[target_col] = y_val.values
 
-                    # 使用配置创建Lambda实例（每个fold独立）
+                    # 🔧 使用配置创建Lambda实例（每个fold独立）
                     # 注意：不可使用循环变量 model（可能已被上一fold覆盖为实例）
                     if lambda_config_global is not None and isinstance(lambda_config_global, dict):
-                        # Ensure base_cols matches the actual columns provided to fit/predict
+                        # 🔧 确保base_cols与X_train_use的列完全一致（与其他模型使用相同的特征）
                         lambda_config = dict(lambda_config_global)
-                        lambda_config['base_cols'] = tuple(X_train_use.columns)
+                        lambda_config['base_cols'] = tuple(X_train_use.columns)  # 使用与其他模型相同的特征列
+                        logger.debug(f"[FIRST_LAYER][Lambda] Fold {fold_idx+1}: 使用{len(X_train_use.columns)}个特征（与其他模型一致）")
                     else:
                         # 回退：从初始models字典获取，或构造最小配置
                         base_cols_tuple = tuple(X_train_use.columns)
                         fallback_cfg = {
                             'base_cols': base_cols_tuple,
-                            'n_quantiles': 128,
+                            'n_quantiles': 64,
                             'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 1.5,
-                            'num_boost_round': 100 if not is_very_small_sample else 50,
-                            'early_stopping_rounds': 0,
+                            'label_gain_power': 2.0,  # Updated: 2.0
+                            'num_boost_round': 260,  # Updated: 260
+                            'early_stopping_rounds': 60,
                             'use_purged_cv': False,
                             'use_internal_cv': False,
-                            'random_state': CONFIG._RANDOM_STATE
+                            'random_state': CONFIG._RANDOM_STATE,
+                            'lgb_params': {
+                                'objective': 'lambdarank',
+                                'metric': 'ndcg',
+                                'ndcg_eval_at': [10, 30],
+                                'learning_rate': 0.03,
+                                'num_leaves': 127,  # Updated default: 127
+                                'max_depth': 6,
+                                'min_data_in_leaf': 380,  # Updated: 380
+                                'lambda_l1': 0.0,
+                                'lambda_l2': 10.0,  # Updated: 10.0
+                                'feature_fraction': 0.85,
+                                'bagging_fraction': 0.8,
+                                'bagging_freq': 1,
+                                'lambdarank_truncation_level': 650,  # Updated: 650
+                                'sigmoid': 1.2,
+                            }
                         }
                         lambda_cfg_from_models = models.get('lambdarank') if isinstance(models, dict) else None
                         lambda_config = lambda_cfg_from_models if isinstance(lambda_cfg_from_models, dict) else fallback_cfg
@@ -10776,14 +11195,30 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         logger.warning("[FIRST_LAYER][Lambda] 配置对象不是dict，重建配置映射以避免实例被**解包")
                         lambda_config = {
                             'base_cols': tuple(X_train_use.columns),
-                            'n_quantiles': 128,
+                            'n_quantiles': 64,
                             'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 1.5,
-                            'num_boost_round': 100 if not is_very_small_sample else 50,
-                            'early_stopping_rounds': 0,
+                            'label_gain_power': 2.0,  # Updated: 2.0
+                            'num_boost_round': 260,  # Updated: 260
+                            'early_stopping_rounds': 60,
                             'use_purged_cv': False,
                             'use_internal_cv': False,
-                            'random_state': CONFIG._RANDOM_STATE
+                            'random_state': CONFIG._RANDOM_STATE,
+                            'lgb_params': {
+                                'objective': 'lambdarank',
+                                'metric': 'ndcg',
+                                'ndcg_eval_at': [10, 30],
+                                'learning_rate': 0.03,
+                                'num_leaves': 127,  # Updated default: 127
+                                'max_depth': 6,
+                                'min_data_in_leaf': 380,  # Updated: 380
+                                'lambda_l1': 0.0,
+                                'lambda_l2': 10.0,  # Updated: 10.0
+                                'feature_fraction': 0.85,
+                                'bagging_fraction': 0.8,
+                                'bagging_freq': 1,
+                                'lambdarank_truncation_level': 650,  # Updated: 650
+                                'sigmoid': 1.2,
+                            }
                         }
                     fold_lambda_model = LambdaRankStacker(**lambda_config)
                     fold_lambda_model.fit(X_train_lambda, target_col=target_col)
@@ -10974,30 +11409,62 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 if name == 'lambdarank':
                     from bma_models.lambda_rank_stacker import LambdaRankStacker
 
-                    # 准备MultiIndex全量数据
+                    # 🔧 统一输入处理：LambdaRank最终训练使用与其他模型相同的特征和样本
+                    # 获取该模型的特征列（与其他模型一致的特征选择）
+                    use_cols_full = self._get_first_layer_feature_cols_for_model(name, list(X.columns), available_cols=X.columns)
+                    
+                    # 🔧 统一输入处理：确保使用检测到的MultiIndex
+                    # 准备MultiIndex全量数据（使用与其他模型相同的特征列）
                     if isinstance(X.index, pd.MultiIndex):
-                        X_full_lambda = X.copy()
+                        X_full_lambda = X[use_cols_full].copy()
+                        # 🔧 验证MultiIndex格式正确
+                        if X_full_lambda.index.names != ['date', 'ticker']:
+                            logger.warning(f"LambdaRank最终训练: MultiIndex名称不匹配: {X_full_lambda.index.names}，修复为: ['date', 'ticker']")
+                            X_full_lambda.index.names = ['date', 'ticker']
                     else:
                         full_idx_lambda = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
-                        X_full_lambda = pd.DataFrame(X.values, index=full_idx_lambda, columns=X.columns)
+                        X_full_lambda = pd.DataFrame(X[use_cols_full].values, index=full_idx_lambda, columns=use_cols_full)
 
+                    # 🔧 添加target列（使用与其他模型相同的y）
                     # Align the label column name with the active horizon (LambdaRankStacker default is ret_fwd_10d)
                     horizon_days = int(getattr(self, 'horizon', getattr(CONFIG, 'PREDICTION_HORIZON_DAYS', 10)))
                     target_col = f'ret_fwd_{horizon_days}d'
                     X_full_lambda[target_col] = y.values
+                    
+                    # 🔧 验证数据一致性
+                    assert len(X_full_lambda) == len(X), f"LambdaRank全量训练数据长度不一致: {len(X_full_lambda)} vs {len(X)}"
+                    logger.info(f"[FIRST_LAYER] LambdaRank最终训练: {len(X_full_lambda)}样本 × {len(use_cols_full)}特征（与其他模型一致）")
 
-                    # 使用全局配置创建最终Lambda模型
+                    # 🔧 使用全局配置创建最终Lambda模型（确保base_cols与特征列一致）
                     if lambda_config_global is not None:
-                        final_lambda_model = LambdaRankStacker(**lambda_config_global)
+                        final_lambda_config = dict(lambda_config_global)
+                        final_lambda_config['base_cols'] = tuple(use_cols_full)  # 使用与其他模型相同的特征列
+                        final_lambda_model = LambdaRankStacker(**final_lambda_config)
                     else:
                         # 降级配置（如果global config不可用）
                         final_lambda_model = LambdaRankStacker(**{
-                            'base_cols': tuple(X.columns),
+                            'base_cols': tuple(use_cols_full),  # 使用与其他模型相同的特征列
                             'n_quantiles': 64,
                             'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 1.5,
-                            'num_boost_round': 100,
-                            'early_stopping_rounds': 0,
+                            'label_gain_power': 2.0,  # Updated: 2.0
+                            'num_boost_round': 260,  # Updated: 260
+                            'early_stopping_rounds': 60,
+                            'lgb_params': {
+                                'objective': 'lambdarank',
+                                'metric': 'ndcg',
+                                'ndcg_eval_at': [10, 30],
+                                'learning_rate': 0.03,
+                                'num_leaves': 127,  # Updated default: 127
+                                'max_depth': 6,
+                                'min_data_in_leaf': 380,  # Updated: 380
+                                'lambda_l1': 0.0,
+                                'lambda_l2': 10.0,  # Updated: 10.0
+                                'feature_fraction': 0.85,
+                                'bagging_fraction': 0.8,
+                                'bagging_freq': 1,
+                                'lambdarank_truncation_level': 650,  # Updated: 650
+                                'sigmoid': 1.2,
+                            },
                             'use_purged_cv': False,
                             'use_internal_cv': False,
                             'random_state': CONFIG._RANDOM_STATE
@@ -11005,7 +11472,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                     final_lambda_model.fit(X_full_lambda, target_col=target_col)
                     model = final_lambda_model
-                    logger.info(f"✅ LambdaRank全量训练完成")
+                    logger.info(f"✅ LambdaRank全量训练完成: {len(X_full_lambda)}样本 × {len(use_cols_full)}特征（与其他模型一致）")
 
                 elif 'xgboost' in name:
                     try:
@@ -11017,17 +11484,21 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         # 重新构建并全量拟合
                         import xgboost as xgb
                         xgb_final = xgb.XGBRegressor(**{**CONFIG.XGBOOST_CONFIG, 'n_estimators': n_est})
-                        # 🔧 FIXED 2025-10-26: XGBoost使用通用T+10安全列（drop通用4个）
-                        drop_cols_xgb = ['making_new_low_5d', 'vol_ratio_20d', 'rsi_21', 'trend_r2_60']
+                        # REMOVED: Hardcoded feature drops - use proper feature selection instead
+                        # Feature selection via _get_first_layer_feature_cols_for_model respects best_features_per_model.json
+                        use_cols_full = self._get_first_layer_feature_cols_for_model(name, list(X.columns), available_cols=X.columns)
+                        feature_names_by_model[name] = list(use_cols_full)
+                        X_full = X[use_cols_full]
                         try:
-                            X_full = X[[c for c in X.columns if c not in drop_cols_xgb]]
                             xgb_final.fit(X_full, y, verbose=True)  # 恢复详细输出
                         except Exception:
                             xgb_final.fit(X_full, y)
                         model = xgb_final
                     except Exception:
-                        drop_cols_xgb = ['making_new_low_5d', 'vol_ratio_20d', 'rsi_21', 'trend_r2_60']
-                        model.fit(X[[c for c in X.columns if c not in drop_cols_xgb]], y)
+                        # Fallback: use proper feature selection instead of hardcoded drops
+                        use_cols_full = self._get_first_layer_feature_cols_for_model(name, list(X.columns), available_cols=X.columns)
+                        X_full = X[use_cols_full]
+                        model.fit(X_full, y)
                 elif 'catboost' in name:
                     try:
                         iters = best_iter_map.get('catboost', [])
@@ -11035,12 +11506,14 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         n_est = int(np.mean(iters)) if iters else CONFIG.CATBOOST_CONFIG['iterations']
                         n_est = max(50, int(n_est))
 
-                        # 🔧 FIXED 2025-10-26: CatBoost使用通用T+10安全列（drop通用4个）
-                        drop_cols_cat = ['making_new_low_5d', 'vol_ratio_20d', 'rsi_21', 'trend_r2_60']
+                        # REMOVED: Hardcoded feature drops - use proper feature selection instead
+                        # Feature selection via _get_first_layer_feature_cols_for_model respects best_features_per_model.json
+                        use_cols_full = self._get_first_layer_feature_cols_for_model(name, list(X.columns), available_cols=X.columns)
+                        feature_names_by_model[name] = list(use_cols_full)
+                        X_full = X[use_cols_full]
 
                         # 识别分类特征
                         categorical_features = []
-                        X_full = X[[c for c in X.columns if c not in drop_cols_cat]]
                         for i, col in enumerate(X_full.columns):
                             col_lower = col.lower()
                             if any(cat_keyword in col_lower for cat_keyword in
@@ -11058,8 +11531,14 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                             catboost_final.fit(X_full, y)
                         model = catboost_final
                     except Exception:
-                        drop_cols_cat = ['making_new_low_5d', 'vol_ratio_20d', 'rsi_21', 'trend_r2_60']
-                        model.fit(X[[c for c in X.columns if c not in drop_cols_cat]], y)
+                        # Fallback: use proper feature selection instead of hardcoded drops
+                        use_cols_full = self._get_first_layer_feature_cols_for_model(name, list(X.columns), available_cols=X.columns)
+                        X_full = X[use_cols_full]
+                        model.fit(X_full, y)
+                elif name == 'lightgbm_ranker':
+                    # DISABLED: LightGBM Ranker removed from first layer
+                    logger.warning(f"[FIRST_LAYER] LightGBM Ranker disabled - skipping full-fit training")
+                    continue  # Skip this model
                 else:
                     # Fit final model on full data using the same per-model feature policy
                     if name != 'lambdarank':
@@ -11086,7 +11565,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 # RIDGE METRIC ALIGNMENT FIX: 显示模型感知的评分类型
                 if 'elastic' in name.lower() or 'ridge' in name.lower():
                     score_type = "Pearson IC + Calibration"
-                elif 'xgb' in name.lower() or 'catboost' in name.lower():
+                elif 'xgb' in name.lower() or 'catboost' in name.lower() or 'lightgbm' in name.lower():
                     score_type = "Spearman IC (Ranking)"
                 else:
                     score_type = "Pearson IC (Default)"
@@ -11212,7 +11691,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             'oof_predictions': oof_predictions,
             'feature_names': list(X.columns),
             'feature_names_by_model': feature_names_by_model,
-            'ridge_stacker': self.ridge_stacker,
+            'meta_ranker_stacker': self.meta_ranker_stacker,
+            'ridge_stacker': self.meta_ranker_stacker,  # Backward compatibility alias
             'lambda_percentile_transformer': lambda_percentile_transformer,  # 新增：返回转换器
             'stacker_trained': stacker_success,
             # CV-BAGGING FIX: 返回CV fold模型以支持推理一致性
@@ -11273,7 +11753,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     linear_models[name] = r2_score
                 else:  # R²太低时使用IC
                     linear_models[name] = score
-            elif 'xgb' in name.lower() or 'catboost' in name.lower():
+            elif 'xgb' in name.lower() or 'catboost' in name.lower() or 'lightgbm' in name.lower():
                 # 树模型：使用RankIC (Spearman)
                 tree_models[name] = score
             else:
@@ -11434,7 +11914,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 primary_score = 0.7 * pearson_ic + 0.3 * calibration_score
                 logger.debug(f"[{model_name}] Pearson IC: {pearson_ic:.4f}, Calibration: {calibration_score:.4f}, Score: {primary_score:.4f}")
 
-            elif 'xgb' in model_name.lower() or 'catboost' in model_name.lower():
+            elif 'xgb' in model_name.lower() or 'catboost' in model_name.lower() or 'lightgbm' in model_name.lower():
                 # 树模型：Spearman IC（排序性能）
                 primary_score = spearman_ic
                 logger.debug(f"[{model_name}] Spearman IC: {spearman_ic:.4f}")
@@ -12857,14 +13337,19 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         'cv_r2_scores': models_info.get('cv_r2_scores', {})
                     }
 
-                    # Ridge Stacker 信息
-                    if self.ridge_stacker is not None:
-                        stacker_info = self.ridge_stacker.get_model_info()
-                        analysis_results['model_performance']['ridge_stacker'] = {
-                            'n_iterations': stacker_info.get('n_iterations'),
+                    # Meta Ranker Stacker 信息 (replaces RidgeStacker)
+                    stacker_to_analyze = self.meta_ranker_stacker if self.meta_ranker_stacker is not None else self.ridge_stacker
+                    if stacker_to_analyze is not None:
+                        stacker_info = stacker_to_analyze.get_model_info()
+                        stacker_type = type(stacker_to_analyze).__name__
+                        analysis_results['model_performance']['meta_ranker_stacker'] = {
+                            'model_type': stacker_type,
+                            'n_iterations': stacker_info.get('n_iterations') or stacker_info.get('num_boost_round'),
                             'feature_importance': stacker_info.get('feature_importance')
                         }
-                        logger.info(f"\n📊 Ridge Stacker 性能:")
+                        # Keep backward compatibility key
+                        analysis_results['model_performance']['ridge_stacker'] = analysis_results['model_performance']['meta_ranker_stacker']
+                        logger.info(f"\n📊 Meta Ranker Stacker 性能 ({stacker_type}):")
                         
             # Excel 输出 - 使用 RobustExcelExporter (全新防御性导出器)
             if EXCEL_EXPORT_AVAILABLE:
@@ -13121,15 +13606,19 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     perf_df = pd.DataFrame(perf_data)
                     perf_df.to_excel(writer, sheet_name='模型性能', index=False)
 
-            # 4. 特征重要性 (Ridge Stacker)
+            # 4. 特征重要性 (Meta Ranker Stacker, replaces RidgeStacker)
             if ('model_performance' in results and
-                'ridge_stacker' in results['model_performance'] and
-                'feature_importance' in results['model_performance']['ridge_stacker']):
-
-                fi_dict = results['model_performance']['ridge_stacker']['feature_importance']
-                if fi_dict:
-                    fi_df = pd.DataFrame(fi_dict)
-                    fi_df.to_excel(writer, sheet_name='Ridge特征重要性', index=False)
+                ('meta_ranker_stacker' in results['model_performance'] or 'ridge_stacker' in results['model_performance'])):
+                
+                # Check meta_ranker_stacker first, fallback to ridge_stacker for backward compatibility
+                stacker_perf = results['model_performance'].get('meta_ranker_stacker') or results['model_performance'].get('ridge_stacker', {})
+                
+                if 'feature_importance' in stacker_perf:
+                    fi_dict = stacker_perf['feature_importance']
+                    if fi_dict:
+                        fi_df = pd.DataFrame(fi_dict)
+                        stacker_type = stacker_perf.get('model_type', 'MetaRankerStacker')
+                        fi_df.to_excel(writer, sheet_name=f'{stacker_type}特征重要性', index=False)
 
             # 5. 配置信息
             config_data = {

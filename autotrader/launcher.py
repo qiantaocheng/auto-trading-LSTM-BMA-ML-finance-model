@@ -92,7 +92,8 @@ class TradingSystemLauncher:
         try:
             print("Starting GUI mode...")
 
-            from autotrader.app import AutoTraderGUI
+            # Import the clean GUI entrypoint (legacy app.py may be corrupted on some Windows environments)
+            from autotrader.app_clean import AutoTraderGUI
             from autotrader.state_manager import get_state_manager
 
             # 初始化状态管理器

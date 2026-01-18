@@ -74,12 +74,16 @@ class SnapshotPaths:
     elastic_net_pkl: Optional[str]
     xgb_json: Optional[str]
     catboost_cbm: Optional[str]
+    lightgbm_ranker_pkl: Optional[str]
     lambdarank_txt: Optional[str]
     lambdarank_scaler_pkl: Optional[str]
     lambdarank_meta_json: Optional[str]
     ridge_model_pkl: Optional[str]
     ridge_scaler_pkl: Optional[str]
     ridge_meta_json: Optional[str]
+    meta_ranker_txt: Optional[str]  # MetaRankerStacker LightGBM model
+    meta_ranker_scaler_pkl: Optional[str]  # MetaRankerStacker scaler
+    meta_ranker_meta_json: Optional[str]  # MetaRankerStacker metadata
     blender_meta_json: Optional[str]
     dual_head_fusion_pkl: Optional[str]  # 新增：双头融合模型
     dual_head_fusion_meta_json: Optional[str]  # 新增：双头融合元数据
@@ -137,6 +141,7 @@ def save_model_snapshot(
                  'elastic_net': {'model': ElasticNet},
                  'xgboost': {'model': XGBRegressor},
                  'catboost': {'model': CatBoostRegressor},
+                 'lightgbm_ranker': {'model': LGBMRegressor},
                  'lambdarank': {'model': LambdaRankStacker} (optional)
               },
               'feature_names': [...]
@@ -172,12 +177,16 @@ def save_model_snapshot(
         elastic_net_pkl=None,
         xgb_json=None,
         catboost_cbm=None,
+        lightgbm_ranker_pkl=None,
         lambdarank_txt=None,
         lambdarank_scaler_pkl=None,
         lambdarank_meta_json=None,
         ridge_model_pkl=None,
         ridge_scaler_pkl=None,
         ridge_meta_json=None,
+        meta_ranker_txt=None,
+        meta_ranker_scaler_pkl=None,
+        meta_ranker_meta_json=None,
         blender_meta_json=None,
         dual_head_fusion_pkl=None,
         dual_head_fusion_meta_json=None,
@@ -222,6 +231,18 @@ def save_model_snapshot(
         import traceback
         logger.debug(traceback.format_exc())
 
+    # LightGBM ranker
+    try:
+        if 'lightgbm_ranker' in models and models['lightgbm_ranker'].get('model') is not None:
+            lgbm_model = models['lightgbm_ranker']['model']
+            paths.lightgbm_ranker_pkl = os.path.join(root_dir, 'lightgbm_ranker.pkl')
+            joblib.dump(lgbm_model, paths.lightgbm_ranker_pkl)
+            logger.info(f"✅ LightGBM ranker已保存: {paths.lightgbm_ranker_pkl}")
+    except Exception as e:
+        logger.warning(f"导出LightGBM ranker失败: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+
     # LambdaRankStacker
     try:
         ltr = None
@@ -257,29 +278,101 @@ def save_model_snapshot(
         import traceback
         logger.debug(traceback.format_exc())
 
-    # RidgeStacker
+    # MetaRankerStacker only (RidgeStacker has been completely replaced)
     try:
-        if ridge_stacker is not None and getattr(ridge_stacker, 'ridge_model', None) is not None:
-            paths.ridge_model_pkl = os.path.join(root_dir, 'ridge_model.pkl')
-            joblib.dump(ridge_stacker.ridge_model, paths.ridge_model_pkl)
-            if getattr(ridge_stacker, 'scaler', None) is not None:
-                paths.ridge_scaler_pkl = os.path.join(root_dir, 'ridge_scaler.pkl')
-                joblib.dump(ridge_stacker.scaler, paths.ridge_scaler_pkl)
-            ridge_meta = {
-                'base_cols': list(getattr(ridge_stacker, 'base_cols', []) or []),
-                'alpha': getattr(ridge_stacker, 'best_alpha_', getattr(ridge_stacker, 'alpha', None)),
-                'fit_intercept': getattr(ridge_stacker, 'fit_intercept', False),
-                'solver': getattr(ridge_stacker, 'solver', 'auto'),
-                'tol': getattr(ridge_stacker, 'tol', 1e-6),
-                'feature_names': list(getattr(ridge_stacker, 'feature_names_', []) or []),
-                'actual_feature_cols': list(getattr(ridge_stacker, 'actual_feature_cols_', []) or []),
-            }
-            paths.ridge_meta_json = os.path.join(root_dir, 'ridge_meta.json')
-            with open(paths.ridge_meta_json, 'w', encoding='utf-8') as f:
-                json.dump(ridge_meta, f, ensure_ascii=False, indent=2)
-            logger.info(f"✅ RidgeStacker已保存: {paths.ridge_model_pkl}")
+        if ridge_stacker is not None:
+            # Check if it's MetaRankerStacker (has lightgbm_model)
+            is_meta_ranker = hasattr(ridge_stacker, 'lightgbm_model') and getattr(ridge_stacker, 'lightgbm_model', None) is not None
+            is_ridge = hasattr(ridge_stacker, 'ridge_model') and getattr(ridge_stacker, 'ridge_model', None) is not None
+            
+            if is_ridge:
+                logger.error("❌ RidgeStacker is no longer supported. Please use MetaRankerStacker instead.")
+                raise ValueError("RidgeStacker has been completely replaced by MetaRankerStacker. Please retrain your model.")
+            
+            if is_meta_ranker:
+                # 🔧 Save MetaRankerStacker
+                import lightgbm as lgb
+                logger.info(f"[SNAPSHOT] 🔧 开始保存MetaRankerStacker...")
+                
+                # 保存LightGBM模型
+                paths.meta_ranker_txt = os.path.join(root_dir, 'meta_ranker.txt')
+                try:
+                    ridge_stacker.lightgbm_model.save_model(str(paths.meta_ranker_txt))
+                    logger.info(f"✅ [SNAPSHOT] LightGBM模型已保存: {paths.meta_ranker_txt}")
+                except Exception as e:
+                    logger.error(f"❌ [SNAPSHOT] 保存LightGBM模型失败: {e}")
+                    raise
+                
+                # 保存scaler
+                if getattr(ridge_stacker, 'scaler', None) is not None:
+                    paths.meta_ranker_scaler_pkl = os.path.join(root_dir, 'meta_ranker_scaler.pkl')
+                    try:
+                        joblib.dump(ridge_stacker.scaler, paths.meta_ranker_scaler_pkl)
+                        logger.info(f"✅ [SNAPSHOT] Scaler已保存: {paths.meta_ranker_scaler_pkl}")
+                    except Exception as e:
+                        logger.warning(f"⚠️  [SNAPSHOT] 保存Scaler失败: {e}")
+                else:
+                    logger.warning("[SNAPSHOT] ⚠️  MetaRankerStacker没有scaler，跳过保存")
+                
+                # 🔧 保存完整的元数据（包含所有必要参数）
+                meta_ranker_meta = {
+                    'base_cols': list(getattr(ridge_stacker, 'base_cols', []) or []),
+                    'n_quantiles': getattr(ridge_stacker, 'n_quantiles', 64),
+                    'label_gain_power': getattr(ridge_stacker, 'label_gain_power', 2.2),
+                    'num_boost_round': getattr(ridge_stacker, 'num_boost_round', 180),
+                    'early_stopping_rounds': getattr(ridge_stacker, 'early_stopping_rounds', 60),
+                    'lgb_params': getattr(ridge_stacker, 'lgb_params', {}),
+                    'actual_feature_cols': list(getattr(ridge_stacker, 'actual_feature_cols_', []) or []),
+                    'model_type': 'MetaRankerStacker',
+                    'fitted': getattr(ridge_stacker, 'fitted_', False),
+                }
+                paths.meta_ranker_meta_json = os.path.join(root_dir, 'meta_ranker_meta.json')
+                try:
+                    with open(paths.meta_ranker_meta_json, 'w', encoding='utf-8') as f:
+                        json.dump(meta_ranker_meta, f, ensure_ascii=False, indent=2)
+                    logger.info(f"✅ [SNAPSHOT] MetaRankerStacker元数据已保存: {paths.meta_ranker_meta_json}")
+                except Exception as e:
+                    logger.error(f"❌ [SNAPSHOT] 保存MetaRankerStacker元数据失败: {e}")
+                    raise
+                
+                # Also save as ridge_meta.json for backward compatibility
+                ridge_meta = {
+                    'base_cols': list(getattr(ridge_stacker, 'base_cols', []) or []),
+                    'actual_feature_cols': list(getattr(ridge_stacker, 'actual_feature_cols_', []) or []),
+                    'model_type': 'MetaRankerStacker',
+                }
+                paths.ridge_meta_json = os.path.join(root_dir, 'ridge_meta.json')
+                with open(paths.ridge_meta_json, 'w', encoding='utf-8') as f:
+                    json.dump(ridge_meta, f, ensure_ascii=False, indent=2)
+            elif is_ridge:
+                # Save RidgeStacker (backward compatibility)
+                paths.ridge_model_pkl = os.path.join(root_dir, 'ridge_model.pkl')
+                joblib.dump(ridge_stacker.ridge_model, paths.ridge_model_pkl)
+                if getattr(ridge_stacker, 'scaler', None) is not None:
+                    paths.ridge_scaler_pkl = os.path.join(root_dir, 'ridge_scaler.pkl')
+                    joblib.dump(ridge_stacker.scaler, paths.ridge_scaler_pkl)
+                ridge_meta = {
+                    'base_cols': list(getattr(ridge_stacker, 'base_cols', []) or []),
+                    'alpha': getattr(ridge_stacker, 'best_alpha_', getattr(ridge_stacker, 'alpha', None)),
+                    'fit_intercept': getattr(ridge_stacker, 'fit_intercept', False),
+                    'solver': getattr(ridge_stacker, 'solver', 'auto'),
+                    'tol': getattr(ridge_stacker, 'tol', 1e-6),
+                    'feature_names': list(getattr(ridge_stacker, 'feature_names_', []) or []),
+                    'actual_feature_cols': list(getattr(ridge_stacker, 'actual_feature_cols_', []) or []),
+                    'direction_calibration': bool(getattr(ridge_stacker, 'direction_calibration', False)),
+                    'direction_calibration_min_n': int(getattr(ridge_stacker, 'direction_calibration_min_n', 0) or 0),
+                    'direction_sign_map': dict(getattr(ridge_stacker, 'direction_sign_map_', {}) or {}),
+                    'direction_ic_mean': dict(getattr(ridge_stacker, 'direction_ic_mean_', {}) or {}),
+                    'output_sign': float(getattr(ridge_stacker, 'output_sign_', 1.0) or 1.0),
+                    'add_rank_features': bool(getattr(ridge_stacker, 'add_rank_features', False)),
+                    'model_type': 'RidgeStacker',
+                }
+                paths.ridge_meta_json = os.path.join(root_dir, 'ridge_meta.json')
+                with open(paths.ridge_meta_json, 'w', encoding='utf-8') as f:
+                    json.dump(ridge_meta, f, ensure_ascii=False, indent=2)
+                logger.info(f"✅ RidgeStacker已保存: {paths.ridge_model_pkl}")
     except Exception as e:
-        logger.warning(f"导出RidgeStacker失败: {e}")
+        logger.warning(f"导出Stacker失败: {e}")
         import traceback
         logger.debug(traceback.format_exc())
 
@@ -409,6 +502,24 @@ def save_model_snapshot(
         logger.warning(f"导出CatBoost权重失败: {e}")
 
     try:
+        # LightGBM ranker feature importance
+        if 'lightgbm_ranker' in models and models['lightgbm_ranker'].get('model') is not None:
+            lgbm_model = models['lightgbm_ranker']['model']
+            try:
+                import numpy as _np  # local import
+                imps = list(map(float, getattr(lgbm_model, 'feature_importances_', [])))
+                fn = feature_names or getattr(lgbm_model, 'feature_name_', []) or getattr(lgbm_model, 'feature_names_in_', [])
+                if fn and len(fn) == len(imps):
+                    weights = dict(zip(fn, imps))
+                else:
+                    weights = {f'feat_{i}': float(imps[i]) for i in range(len(imps))}
+                weights_paths['lightgbm_ranker'] = _safe_write_json(weights, 'weights_lightgbm_ranker.json')
+            except Exception as e:
+                logger.warning(f"导出LightGBM ranker权重失败: {e}")
+    except Exception as e:
+        logger.warning(f"导出LightGBM ranker权重失败: {e}")
+
+    try:
         # LambdaRank (LightGBM) feature importance
         ltr = None
         if lambda_rank_stacker is not None:
@@ -434,17 +545,42 @@ def save_model_snapshot(
         logger.warning(f"导出LambdaRank权重失败: {e}")
 
     try:
-        # Ridge stacking coefficients（包含lambda_percentile时也会自然记录）
-        if ridge_stacker is not None and getattr(ridge_stacker, 'ridge_model', None) is not None:
-            coefs = list(map(float, getattr(ridge_stacker.ridge_model, 'coef_', [])))
-            feat_cols = list(getattr(ridge_stacker, 'actual_feature_cols_', []) or getattr(ridge_stacker, 'feature_names_', []) or [])
-            if feat_cols and len(feat_cols) == len(coefs):
-                weights = dict(zip(feat_cols, coefs))
-            else:
-                weights = {f'x{i}': coefs[i] for i in range(len(coefs))}
-            weights_paths['ridge_stacking'] = _safe_write_json(weights, 'weights_ridge_stacking.json')
+        # Ridge stacking coefficients or MetaRankerStacker feature importance
+        if ridge_stacker is not None:
+            # Check if it's MetaRankerStacker or RidgeStacker
+            is_meta_ranker = hasattr(ridge_stacker, 'lightgbm_model') and getattr(ridge_stacker, 'lightgbm_model', None) is not None
+            is_ridge = hasattr(ridge_stacker, 'ridge_model') and getattr(ridge_stacker, 'ridge_model', None) is not None
+            
+            if is_meta_ranker:
+                # MetaRankerStacker: Use feature importance from LightGBM
+                try:
+                    booster = ridge_stacker.lightgbm_model
+                    feat_cols = list(getattr(ridge_stacker, 'actual_feature_cols_', []) or getattr(ridge_stacker, 'base_cols', []) or [])
+                    try:
+                        fn = booster.feature_name() or []
+                        gain = list(map(float, booster.feature_importance(importance_type='gain')))
+                        if fn and len(fn) == len(gain):
+                            weights = dict(zip(fn, gain))
+                        elif feat_cols and len(feat_cols) == len(gain):
+                            weights = dict(zip(feat_cols, gain))
+                        else:
+                            weights = {f'f{i}': gain[i] for i in range(len(gain))}
+                    except Exception:
+                        weights = {col: 1.0 for col in feat_cols} if feat_cols else {}
+                    weights_paths['ridge_stacking'] = _safe_write_json(weights, 'weights_ridge_stacking.json')
+                except Exception as e:
+                    logger.warning(f"导出MetaRankerStacker权重失败: {e}")
+            elif is_ridge:
+                # RidgeStacker: Use coefficients
+                coefs = list(map(float, getattr(ridge_stacker.ridge_model, 'coef_', [])))
+                feat_cols = list(getattr(ridge_stacker, 'actual_feature_cols_', []) or getattr(ridge_stacker, 'feature_names_', []) or [])
+                if feat_cols and len(feat_cols) == len(coefs):
+                    weights = dict(zip(feat_cols, coefs))
+                else:
+                    weights = {f'x{i}': coefs[i] for i in range(len(coefs))}
+                weights_paths['ridge_stacking'] = _safe_write_json(weights, 'weights_ridge_stacking.json')
     except Exception as e:
-        logger.warning(f"导出Ridge权重失败: {e}")
+        logger.warning(f"导出Stacker权重失败: {e}")
 
     # Manifest
     manifest_metadata: Dict[str, Any] = {}
@@ -505,8 +641,12 @@ def save_model_snapshot(
                     'elastic_net_pkl': paths.elastic_net_pkl,
                     'xgb_json': paths.xgb_json,
                     'catboost_cbm': paths.catboost_cbm,
+                    'lightgbm_ranker_pkl': paths.lightgbm_ranker_pkl,
                     'lambdarank_txt': paths.lambdarank_txt,
                     'ridge_model_pkl': paths.ridge_model_pkl,
+                    'meta_ranker_txt': paths.meta_ranker_txt,
+                    'meta_ranker_scaler_pkl': paths.meta_ranker_scaler_pkl,
+                    'meta_ranker_meta_json': paths.meta_ranker_meta_json,
                 }, ensure_ascii=False),
             ),
         )
@@ -540,6 +680,8 @@ def save_model_snapshot(
         saved_models.append("XGBoost")
     if paths.catboost_cbm and os.path.exists(paths.catboost_cbm):
         saved_models.append("CatBoost")
+    if paths.lightgbm_ranker_pkl and os.path.exists(paths.lightgbm_ranker_pkl):
+        saved_models.append("LightGBM Ranker")
     if paths.lambdarank_txt and os.path.exists(paths.lambdarank_txt):
         saved_models.append("LambdaRank")
     if paths.ridge_model_pkl and os.path.exists(paths.ridge_model_pkl):
@@ -550,9 +692,9 @@ def save_model_snapshot(
     logger.info(f"快照ID: {snapshot_id}")
     logger.info(f"标签: {tag}")
     logger.info(f"保存路径: {root_dir}")
-    logger.info(f"成功保存 {len(saved_models)}/5 个模型: {', '.join(saved_models)}")
-    if len(saved_models) < 5:
-        missing = set(['ElasticNet', 'XGBoost', 'CatBoost', 'LambdaRank', 'Ridge']) - set(saved_models)
+    logger.info(f"成功保存 {len(saved_models)}/6 个模型: {', '.join(saved_models)}")
+    if len(saved_models) < 6:
+        missing = set(['ElasticNet', 'XGBoost', 'CatBoost', 'LightGBM Ranker', 'LambdaRank', 'Ridge']) - set(saved_models)
         logger.warning(f"⚠️  未保存的模型: {', '.join(missing)}")
     logger.info(f"清单文件: {paths.manifest_json}")
     logger.info("=" * 80)
@@ -608,6 +750,7 @@ def load_weights_from_snapshot(snapshot_id: Optional[str] = None,
       'xgboost_gain': {...},
       'xgboost_weight': {...},
       'catboost': {...},
+      'lightgbm_ranker': {...},
       'lambdarank_gain': {...},
       'ridge_stacking': {...},
       'lambda_percentile_meta': {...}
@@ -633,6 +776,7 @@ def load_weights_from_snapshot(snapshot_id: Optional[str] = None,
         result['xgboost_gain'] = _load_json_if_exists('weights_xgboost_gain.json')
         result['xgboost_weight'] = _load_json_if_exists('weights_xgboost_weight.json')
         result['catboost'] = _load_json_if_exists('weights_catboost.json')
+        result['lightgbm_ranker'] = _load_json_if_exists('weights_lightgbm_ranker.json')
         result['lambdarank_gain'] = _load_json_if_exists('weights_lambdarank_gain.json')
         result['ridge_stacking'] = _load_json_if_exists('weights_ridge_stacking.json')
         result['lambda_percentile_meta'] = _load_json_if_exists('lambda_percentile_meta.json')
@@ -657,7 +801,8 @@ def load_models_from_snapshot(
         'models': {
             'elastic_net': ElasticNet model,
             'xgboost': XGBoost model,
-            'catboost': CatBoost model
+            'catboost': CatBoost model,
+            'lightgbm_ranker': LightGBM ranker
         },
         'ridge_stacker': RidgeStacker instance,
         'lambda_rank_stacker': LambdaRankStacker instance,
@@ -708,6 +853,14 @@ def load_models_from_snapshot(
         except Exception as e:
             logger.warning(f"CatBoost加载失败 (skipped): {e}")
 
+    # Load LightGBM ranker
+    if paths_dict.get('lightgbm_ranker_pkl') and os.path.exists(paths_dict['lightgbm_ranker_pkl']):
+        try:
+            result['models']['lightgbm_ranker'] = joblib.load(paths_dict['lightgbm_ranker_pkl'])
+            logger.info(f"✅ LightGBM ranker loaded from {paths_dict['lightgbm_ranker_pkl']}")
+        except Exception as e:
+            logger.warning(f"LightGBM ranker加载失败: {e}")
+
     # Load LambdaRankStacker
     if paths_dict.get('lambdarank_txt') and os.path.exists(paths_dict['lambdarank_txt']):
         try:
@@ -748,42 +901,61 @@ def load_models_from_snapshot(
             import traceback
             logger.debug(traceback.format_exc())
 
-    # Load RidgeStacker
-    if paths_dict.get('ridge_model_pkl') and os.path.exists(paths_dict['ridge_model_pkl']):
+    # Load MetaRankerStacker (priority) or RidgeStacker (fallback)
+    # Try MetaRankerStacker first
+    if paths_dict.get('meta_ranker_txt') and os.path.exists(paths_dict['meta_ranker_txt']):
         try:
-            from bma_models.ridge_stacker import RidgeStacker
+            import lightgbm as lgb
+            from bma_models.meta_ranker_stacker import MetaRankerStacker
 
             # Load metadata
             meta = {}
-            if paths_dict.get('ridge_meta_json') and os.path.exists(paths_dict['ridge_meta_json']):
+            if paths_dict.get('meta_ranker_meta_json') and os.path.exists(paths_dict['meta_ranker_meta_json']):
+                with open(paths_dict['meta_ranker_meta_json'], 'r') as f:
+                    meta = json.load(f)
+            elif paths_dict.get('ridge_meta_json') and os.path.exists(paths_dict['ridge_meta_json']):
+                # Fallback to ridge_meta.json for backward compatibility
                 with open(paths_dict['ridge_meta_json'], 'r') as f:
                     meta = json.load(f)
 
-            # Create RidgeStacker instance
-            ridge = RidgeStacker(
-                alpha=meta.get('alpha', 1.0),
-                fit_intercept=meta.get('fit_intercept', False)
+            # Create MetaRankerStacker instance
+            meta_ranker = MetaRankerStacker(
+                base_cols=tuple(meta.get('base_cols', [])),
+                n_quantiles=meta.get('n_quantiles', 64),
+                label_gain_power=meta.get('label_gain_power', 2.2),
+                num_boost_round=meta.get('num_boost_round', 180),
+                lgb_params=meta.get('lgb_params', {}),
+                use_purged_cv=True,
+                use_internal_cv=True,
+                random_state=42
             )
 
-            # Load ridge model
-            ridge.ridge_model = joblib.load(paths_dict['ridge_model_pkl'])
-            ridge.base_cols = meta.get('base_cols', [])
-            ridge.feature_names_ = meta.get('feature_names', [])
-            ridge.actual_feature_cols_ = meta.get('actual_feature_cols', [])
+            # Load LightGBM model
+            meta_ranker.lightgbm_model = lgb.Booster(model_file=paths_dict['meta_ranker_txt'])
+            meta_ranker.base_cols = tuple(meta.get('base_cols', []))
+            meta_ranker.actual_feature_cols_ = meta.get('actual_feature_cols', [])
 
             # Load scaler if exists
-            if paths_dict.get('ridge_scaler_pkl') and os.path.exists(paths_dict['ridge_scaler_pkl']):
-                ridge.scaler = joblib.load(paths_dict['ridge_scaler_pkl'])
+            if paths_dict.get('meta_ranker_scaler_pkl') and os.path.exists(paths_dict['meta_ranker_scaler_pkl']):
+                meta_ranker.scaler = joblib.load(paths_dict['meta_ranker_scaler_pkl'])
 
             # Set fitted flag
-            ridge.fitted_ = True
+            meta_ranker.fitted_ = True
 
-            result['ridge_stacker'] = ridge
-            logger.info(f"✅ RidgeStacker loaded from {paths_dict['ridge_model_pkl']}")
+            result['ridge_stacker'] = meta_ranker  # Use same key for compatibility (backward compatibility)
+            logger.info(f"✅ MetaRankerStacker loaded from {paths_dict['meta_ranker_txt']}")
         except Exception as e:
-            logger.warning(f"RidgeStacker加载失败: {e}")
+            logger.error(f"❌ MetaRankerStacker加载失败: {e}")
             import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
+            raise RuntimeError(f"Cannot load MetaRankerStacker from snapshot. This snapshot may be corrupted or incomplete. Error: {e}")
+    
+    # RidgeStacker has been completely replaced by MetaRankerStacker
+    # No fallback to RidgeStacker - if MetaRankerStacker is not found, raise an error
+    elif paths_dict.get('ridge_model_pkl') and os.path.exists(paths_dict['ridge_model_pkl']):
+        logger.error("❌ Found old RidgeStacker snapshot but RidgeStacker has been replaced by MetaRankerStacker.")
+        logger.error("   Please retrain the model to generate a new snapshot with MetaRankerStacker.")
+        raise RuntimeError("RidgeStacker is no longer supported. Please retrain the model to use MetaRankerStacker.")
 
     # Skip loading Lambda Percentile Transformer (no longer used)
 
@@ -812,6 +984,7 @@ def summarize_weights(snapshot_id: Optional[str] = None,
         'elastic_net_top': _topn(weights.get('elastic_net'), top_n),
         'xgboost_gain_top': _topn(weights.get('xgboost_gain'), top_n),
         'catboost_top': _topn(weights.get('catboost'), top_n),
+        'lightgbm_ranker_top': _topn(weights.get('lightgbm_ranker'), top_n),
         'lambdarank_gain_top': _topn(weights.get('lambdarank_gain'), top_n),
         'ridge_stacking': weights.get('ridge_stacking') or {},
         'lambda_percentile_meta': weights.get('lambda_percentile_meta') or {}
@@ -830,6 +1003,8 @@ def summarize_weights(snapshot_id: Optional[str] = None,
             _print_block("XGBoost gain (top)", summary['xgboost_gain_top'])
         if summary['catboost_top']:
             _print_block("CatBoost (top)", summary['catboost_top'])
+        if summary['lightgbm_ranker_top']:
+            _print_block("LightGBM ranker (top)", summary['lightgbm_ranker_top'])
         if summary['lambdarank_gain_top']:
             _print_block("LambdaRank gain (top)", summary['lambdarank_gain_top'])
         if summary['ridge_stacking']:

@@ -61,7 +61,9 @@
       "Bash(tee:*)",
       "Bash(pkill:*)",
       "Bash(taskkill:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(powershell:*)",
+      "Bash(git pull:*)"
     ],
     "deny": [],
     "ask": [],

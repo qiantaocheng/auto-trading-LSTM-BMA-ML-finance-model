@@ -40,7 +40,7 @@ class RidgeStacker:
     """
 
     def __init__(self,
-                 base_cols: Tuple[str, ...] = ('pred_catboost', 'pred_elastic', 'pred_xgb'),
+                 base_cols: Tuple[str, ...] = ('pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lightgbm_ranker'),
                  alpha: float = 1.0,
                  fit_intercept: bool = False,
                  solver: str = "auto",
@@ -54,6 +54,10 @@ class RidgeStacker:
                  cv_embargo_days: int = 5,  # 🔥 T+5: embargo=5
                  cv_test_size: float = 0.2,
                  use_lambda_percentile: bool = True,  # 新增：使用Lambda percentile特征
+                 # ---- Direction calibration & feature augmentation (new) ----
+                 direction_calibration: bool = False,  # 🔥 DISABLED: IC signs reverse across regime changes
+                 direction_calibration_min_n: int = 30,
+                 add_rank_features: bool = True,
                  random_state: int = 42,
                  # ---- Nested CV & constraints (new) ----
                  use_nested_cv: bool = False,
@@ -62,6 +66,10 @@ class RidgeStacker:
                  nested_embargo_days: int = 5,
                  aggregate_alpha: str = 'median',  # 'median' | 'ir_weighted'
                  use_convex_constraint: bool = True,  # 非负且和为1
+                 # 🔥 新增: 极端target过滤
+                 filter_extreme_targets: bool = True,  # 是否过滤极端target
+                 extreme_lower_pct: float = 0.5,       # 过滤下界百分位 (移除WW -88%等)
+                 extreme_upper_pct: float = 99.5,      # 过滤上界百分位 (移除WW 9900%等)
                  **kwargs):
         """
         初始化Ridge Stacker
@@ -106,8 +114,14 @@ class RidgeStacker:
         self.cv_embargo_days = 5
         self.cv_test_size = cv_test_size
         self.use_lambda_percentile = use_lambda_percentile
+        self.direction_calibration = bool(direction_calibration)
+        self.direction_calibration_min_n = int(direction_calibration_min_n)
+        self.add_rank_features = bool(add_rank_features)
         self.random_state = random_state
         self.actual_feature_cols_ = None  # 🔧 训练时实际使用的特征列（Critical Fix）
+        self.direction_sign_map_ = {}  # col -> +1 / -1
+        self.direction_ic_mean_ = {}   # col -> mean per-date RankIC (train window)
+        self.output_sign_ = 1.0        # final output direction (score sign)
 
         # Nested CV & constraints
         self.use_nested_cv = use_nested_cv
@@ -116,6 +130,11 @@ class RidgeStacker:
         self.nested_embargo_days = nested_embargo_days
         self.aggregate_alpha = aggregate_alpha
         self.use_convex_constraint = use_convex_constraint
+
+        # 🔥 极端值过滤
+        self.filter_extreme_targets = filter_extreme_targets
+        self.extreme_lower_pct = extreme_lower_pct
+        self.extreme_upper_pct = extreme_upper_pct
 
         # 模型组件
         self.ridge_model = None
@@ -134,7 +153,11 @@ class RidgeStacker:
         logger.info(f"✅ Ridge Stacker 初始化完成 (Percentile增强版)")
         logger.info(f"   基础特征: {self.base_cols}")
         logger.info(f"   Lambda Percentile: {'启用' if self.use_lambda_percentile else '禁用'}")
+        logger.info(f"   方向校正(IC<0翻转): {'启用' if self.direction_calibration else '禁用'} (min_n={self.direction_calibration_min_n})")
+        logger.info(f"   Rank特征增强(截面rank_pct): {'启用' if self.add_rank_features else '禁用'}")
         logger.info(f"   正则化强度α: {self.alpha}")
+        logger.info(f"   极端target过滤: {'启用' if self.filter_extreme_targets else '禁用'} "
+                   f"(阈值: {self.extreme_lower_pct}%-{self.extreme_upper_pct}%)")
         logger.info(f"   拟合截距: {self.fit_intercept} (已做z-score)")
         logger.info(f"   求解器: {self.solver}, 容差: {self.tol}")
         logger.info(f"   自动调参: {self.auto_tune_alpha}")
@@ -158,40 +181,80 @@ class RidgeStacker:
         return df[list(self.base_cols) + [col for col in df.columns if col not in self.base_cols]]
 
     def _prepare_features(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-        """准备特征和标签"""
-        # 提取基础特征
-        feature_cols = list(self.base_cols)
+        """准备特征和标签（含方向校正 + rank增强）"""
+        if not isinstance(df.index, pd.MultiIndex) or df.index.names != ['date', 'ticker']:
+            raise ValueError("RidgeStacker expects MultiIndex(date, ticker)")
 
-        # 如果启用lambda percentile且数据中有该列，加入特征
-        if self.use_lambda_percentile and 'lambda_percentile' in df.columns:
-            feature_cols.append('lambda_percentile')
-            logger.debug("✓ 加入Lambda Percentile特征")
-
-        # 🔧 Critical Fix: 保存实际使用的特征列（仅在训练时，即首次调用）
-        if self.actual_feature_cols_ is None:
-            self.actual_feature_cols_ = feature_cols
-            logger.info(f"🔧 保存实际特征列: {self.actual_feature_cols_}")
-
-        X = df[feature_cols].values
-
-        # 提取标签（假设标签列以ret_fwd开头）
+        # ---- label ----
         label_cols = [col for col in df.columns if col.startswith('ret_fwd')]
         if not label_cols:
             raise ValueError("未找到标签列 (ret_fwd_*)")
+        label_col = label_cols[0]
 
-        label_col = label_cols[0]  # 使用第一个找到的标签列
-        y = df[label_col].values
+        # ---- raw base features ----
+        base_feature_cols = list(self.base_cols)
+        if self.use_lambda_percentile and 'lambda_percentile' in df.columns:
+            base_feature_cols.append('lambda_percentile')
 
-        # 移除NaN样本
-        valid_mask = ~(np.isnan(X).any(axis=1) | np.isnan(y))
-        X_clean = X[valid_mask]
-        y_clean = y[valid_mask]
+        # Work on a copy to avoid mutating caller data
+        feat = df[base_feature_cols + [label_col]].copy()
 
-        logger.info(f"   原始样本: {len(X)}")
-        logger.info(f"   有效样本: {len(X_clean)}")
-        logger.info(f"   数据覆盖率: {len(X_clean)/len(X)*100:.1f}%")
+        # Drop NaNs early for stable IC estimation & fit
+        valid_mask = ~feat.isna().any(axis=1)
+        feat = feat.loc[valid_mask].copy()
+        if feat.empty:
+            raise ValueError("No valid rows after dropping NaNs for ridge stacker features/label.")
 
-        return X_clean, y_clean
+        # ---- direction calibration: ensure higher score => higher return ----
+        if self.direction_calibration:
+            # Compute per-date RankIC means for each base column
+            self.direction_sign_map_ = {}
+            self.direction_ic_mean_ = {}
+            for col in base_feature_cols:
+                # per-date Spearman
+                ics = []
+                for _, g in feat[[col, label_col]].groupby(level='date'):
+                    if len(g) < self.direction_calibration_min_n:
+                        continue
+                    ic = spearmanr(g[col].values, g[label_col].values)[0]
+                    if ic is None or np.isnan(ic):
+                        continue
+                    ics.append(float(ic))
+                if len(ics) == 0:
+                    # fallback to global Spearman
+                    ic_global = spearmanr(feat[col].values, feat[label_col].values)[0]
+                    ic_mean = float(ic_global) if ic_global is not None and not np.isnan(ic_global) else 0.0
+                else:
+                    ic_mean = float(np.nanmean(ics))
+                sign = -1.0 if ic_mean < 0 else 1.0
+                self.direction_sign_map_[col] = float(sign)
+                self.direction_ic_mean_[col] = float(ic_mean)
+                if sign < 0:
+                    feat[col] = -feat[col]
+            neg = [k for k, v in self.direction_sign_map_.items() if v < 0]
+            logger.info(f"🧭 方向校正完成: flipped={neg} (n={len(neg)})")
+
+        # ---- feature augmentation: cross-sectional ranks ----
+        feature_cols = list(base_feature_cols)
+        if self.add_rank_features:
+            for col in base_feature_cols:
+                rank_col = f"{col}__rank_pct"
+                feat[rank_col] = feat.groupby(level='date')[col].rank(pct=True)
+                feature_cols.append(rank_col)
+
+        # 🔧 Critical Fix: 保存实际使用的特征列（仅在训练时，即首次调用）
+        if self.actual_feature_cols_ is None:
+            self.actual_feature_cols_ = list(feature_cols)
+            logger.info(f"🔧 保存实际特征列: {self.actual_feature_cols_}")
+
+        X = feat[feature_cols].values
+        y = feat[label_col].values
+
+        logger.info(f"   原始样本: {len(df)}")
+        logger.info(f"   有效样本: {len(feat)}")
+        logger.info(f"   数据覆盖率: {len(feat)/max(len(df),1)*100:.1f}%")
+
+        return X, y
 
     def _winsorize_labels(self, y: np.ndarray, lower_pct: float = 1.0, upper_pct: float = 99.0) -> np.ndarray:
         """Winsorize标签，处理极端值"""
@@ -204,6 +267,88 @@ class RidgeStacker:
             logger.info(f"   Winsorize: {n_clipped}/{len(y)} ({n_clipped/len(y)*100:.1f}%) 样本被裁剪")
 
         return y_winsorized
+
+    def _filter_extreme_targets(
+        self,
+        df: pd.DataFrame,
+        X: np.ndarray,
+        y: np.ndarray,
+        lower_pct: float = 0.5,
+        upper_pct: float = 99.5
+    ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+        """
+        过滤target极端值的样本，完全移除而不是winsorize
+
+        用于移除类似WW这种极端outliers (9900%涨幅或-88%跌幅)，
+        防止模型训练被极端值扭曲。
+
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            原始DataFrame（含MultiIndex）
+        X : np.ndarray
+            特征矩阵
+        y : np.ndarray
+            target数组
+        lower_pct : float
+            下界百分位数（默认0.5%，移除最极端下跌）
+        upper_pct : float
+            上界百分位数（默认99.5%，移除最极端上涨）
+
+        Returns:
+        --------
+        df_filtered : pd.DataFrame
+            过滤后的DataFrame
+        X_filtered : np.ndarray
+            过滤后的特征矩阵
+        y_filtered : np.ndarray
+            过滤后的target数组
+
+        Examples:
+        ---------
+        >>> # 移除WW这种9900%的极端涨幅和-88%的极端跌幅
+        >>> df_filt, X_filt, y_filt = self._filter_extreme_targets(
+        ...     df, X, y, lower_pct=0.5, upper_pct=99.5
+        ... )
+        """
+        # 计算阈值
+        lower_bound = np.percentile(y, lower_pct)
+        upper_bound = np.percentile(y, upper_pct)
+
+        # 创建mask: 保留在阈值范围内的样本
+        mask = (y >= lower_bound) & (y <= upper_bound)
+
+        # 过滤
+        df_filtered = df.iloc[mask].copy()
+        X_filtered = X[mask]
+        y_filtered = y[mask]
+
+        # 统计
+        n_removed = np.sum(~mask)
+        n_total = len(y)
+        pct_removed = n_removed / n_total * 100
+
+        logger.info(f"🔍 过滤极端target:")
+        logger.info(f"   阈值范围: [{lower_bound*100:.2f}%, {upper_bound*100:.2f}%]")
+        logger.info(f"   移除样本: {n_removed}/{n_total} ({pct_removed:.2f}%)")
+
+        if n_removed > 0:
+            # 显示被移除的极端值统计
+            extreme_targets = y[~mask]
+            extreme_min = extreme_targets.min() * 100
+            extreme_max = extreme_targets.max() * 100
+            logger.info(f"   极端值范围: [{extreme_min:.2f}%, {extreme_max:.2f}%]")
+
+            # 显示最极端的几个
+            sorted_extremes = np.sort(extreme_targets)
+            n_show = min(5, len(sorted_extremes))
+            if n_show > 0:
+                bottom_extremes = sorted_extremes[:n_show] * 100
+                top_extremes = sorted_extremes[-n_show:] * 100
+                logger.info(f"   最低{n_show}个: [{', '.join([f'{x:.2f}%' for x in bottom_extremes])}]")
+                logger.info(f"   最高{n_show}个: [{', '.join([f'{x:.2f}%' for x in top_extremes])}]")
+
+        return df_filtered, X_filtered, y_filtered
 
     def _calculate_rank_ic(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
         """计算RankIC"""
@@ -411,20 +556,34 @@ class RidgeStacker:
         df_validated = self._validate_input(df)
         X, y = self._prepare_features(df_validated)
 
-        # 标签Winsorize，增强稳健性
-        y_proc = self._winsorize_labels(y, lower_pct=1.0, upper_pct=99.0)
+        # 🔥 新增: 先过滤极端target样本（如WW的9900%涨幅）
+        if self.filter_extreme_targets:
+            df_filtered, X_filtered, y_filtered = self._filter_extreme_targets(
+                df_validated,
+                X,
+                y,
+                lower_pct=self.extreme_lower_pct,
+                upper_pct=self.extreme_upper_pct
+            )
+        else:
+            df_filtered, X_filtered, y_filtered = df_validated, X, y
+            logger.info("⚠️ 极端target过滤已禁用")
 
-        # 特征标准化
+        # 标签Winsorize，增强稳健性（在过滤后的数据上操作）
+        y_proc = self._winsorize_labels(y_filtered, lower_pct=1.0, upper_pct=99.0)
+
+        # 特征标准化（使用过滤后的数据）
         self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X)
+        X_scaled = self.scaler.fit_transform(X_filtered)
 
-        dates = df_validated.index.get_level_values('date')
+        # 使用过滤后的dates
+        dates = df_filtered.index.get_level_values('date')
 
         if self.use_nested_cv:
             # 嵌套CV：生成OOF并聚合alpha，然后在全量上再训练一次
             logger.info("🚀 使用严谨嵌套CV训练二层 (外层滚动 + 内层PurgedCV调参)")
             # 使用未缩放X进行嵌套CV，内部各fold单独标准化
-            y_oof, alphas, ics = self._nested_cv_oof(X, y_proc, dates)
+            y_oof, alphas, ics = self._nested_cv_oof(X_filtered, y_proc, dates)
             # 选择聚合alpha
             if self.aggregate_alpha == 'ir_weighted' and len(ics) > 1 and np.nanstd(ics) > 0:
                 weights = np.maximum(np.array(ics), 0)
@@ -437,7 +596,7 @@ class RidgeStacker:
             logger.info(f"[NestedCV] 聚合alpha={self.best_alpha_} (strategy={self.aggregate_alpha})")
             # 在全量上拟合最终模型（先全量标准化，再拟合+投影）
             self.scaler = StandardScaler()
-            X_scaled = self.scaler.fit_transform(X)
+            X_scaled = self.scaler.fit_transform(X_filtered)
             w, b = self._fit_ridge_with_constraint(X_scaled, y_proc, self.best_alpha_, fit_intercept=self.fit_intercept)
             # 存入sklearn Ridge对象以保持接口一致
             self.ridge_model = Ridge(alpha=self.best_alpha_, fit_intercept=False)
@@ -479,7 +638,15 @@ class RidgeStacker:
 
         # 训练分数与特征重要性
         y_pred_train = self.ridge_model.predict(X_scaled)
-        self.train_score_ = float(self._calculate_rank_ic(y_proc, y_pred_train))
+        train_ic = float(self._calculate_rank_ic(y_proc, y_pred_train))
+        # Final direction calibration: ensure Ridge score higher => higher return on train window.
+        # This is robust even if base preds look aligned but the learned combination is inverted.
+        self.output_sign_ = -1.0 if (self.direction_calibration and train_ic < 0) else 1.0
+        if self.output_sign_ < 0:
+            y_pred_train = -y_pred_train
+            train_ic = float(self._calculate_rank_ic(y_proc, y_pred_train))
+            logger.info("🧭 Ridge输出方向校正: output_sign=-1 (train RankIC flipped to %.4f)", train_ic)
+        self.train_score_ = train_ic
         self.feature_names_ = list(self.actual_feature_cols_ or self.base_cols)
         # 线性模型的重要性可用系数绝对值
         try:
@@ -503,14 +670,44 @@ class RidgeStacker:
         if not isinstance(df.index, pd.MultiIndex) or df.index.names != ['date', 'ticker']:
             raise ValueError("预测数据必须具有MultiIndex(date, ticker)")
 
-        feature_cols = list(self.actual_feature_cols_ or self.base_cols)
-        missing = [c for c in feature_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"预测缺少必需特征列: {missing}")
+        # Build required features (supports derived cols like "__rank_pct")
+        if not isinstance(df.index, pd.MultiIndex) or df.index.names != ['date', 'ticker']:
+            raise ValueError("预测数据必须具有MultiIndex(date, ticker)")
 
-        X = df[feature_cols].values
+        feature_cols = list(self.actual_feature_cols_ or self.base_cols)
+        base_needed = list(self.base_cols)
+        if self.use_lambda_percentile and 'lambda_percentile' in feature_cols and 'lambda_percentile' not in base_needed:
+            base_needed.append('lambda_percentile')
+
+        missing_base = [c for c in base_needed if c not in df.columns]
+        if missing_base:
+            raise ValueError(f"预测缺少必需基础特征列: {missing_base}")
+
+        feat = df[base_needed].copy()
+
+        # Apply persisted direction sign-map if available
+        if getattr(self, 'direction_sign_map_', None):
+            for col, s in self.direction_sign_map_.items():
+                if col in feat.columns and float(s) < 0:
+                    feat[col] = -feat[col]
+
+        # Generate derived features if required by trained model
+        for col in feature_cols:
+            if col in feat.columns:
+                continue
+            if col.endswith("__rank_pct"):
+                raw = col.replace("__rank_pct", "")
+                if raw not in feat.columns:
+                    raise ValueError(f"无法生成派生特征 {col}: 缺少原始列 {raw}")
+                feat[col] = feat.groupby(level='date')[raw].rank(pct=True)
+                continue
+            raise ValueError(f"预测缺少必需特征列: {col}")
+
+        X = feat[feature_cols].values
         X_scaled = self.scaler.transform(X)
         y_pred = self.ridge_model.predict(X_scaled)
+        if float(getattr(self, "output_sign_", 1.0) or 1.0) < 0:
+            y_pred = -y_pred
         return pd.DataFrame({'score': y_pred}, index=df.index)
 
     def replace_ewa_in_pipeline(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -556,6 +753,11 @@ class RidgeStacker:
         return {
             'alpha': float(self.best_alpha_),
             'use_lambda_percentile': bool(self.use_lambda_percentile),
+            'direction_calibration': bool(self.direction_calibration),
+            'direction_sign_map': dict(getattr(self, 'direction_sign_map_', {}) or {}),
+            'direction_ic_mean': dict(getattr(self, 'direction_ic_mean_', {}) or {}),
+            'output_sign': float(getattr(self, 'output_sign_', 1.0) or 1.0),
+            'add_rank_features': bool(self.add_rank_features),
             'train_rank_ic': float(self.train_score_) if self.train_score_ is not None else None,
             'feature_importance': self.feature_importance_,
             'features': list(self.feature_names_ or []),
