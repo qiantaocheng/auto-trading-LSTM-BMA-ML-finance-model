@@ -44,10 +44,10 @@ class MetaRankerStacker:
     def __init__(self,
                  base_cols: Tuple[str, ...] = ('pred_catboost', 'pred_xgb', 'pred_lambdarank', 'pred_elastic'),
                  n_quantiles: int = 64,
-                 label_gain_power: float = 1.7,  # Updated: 1.7
+                 label_gain_power: float = 2.3,  # 🔧 1.7 -> 2.3（★重点：重赏头部准确度）
                  lgb_params: Optional[Dict[str, Any]] = None,
-                 num_boost_round: int = 140,  # Updated: 140
-                 early_stopping_rounds: int = 40,  # Updated: 40
+                 num_boost_round: int = 2000,  # 🔧 140 -> 2000（配套大幅增加轮数）
+                 early_stopping_rounds: int = 100,  # 🔧 40 -> 100
                  use_purged_cv: bool = True,
                  use_internal_cv: bool = True,
                  cv_n_splits: int = 6,
@@ -105,18 +105,18 @@ class MetaRankerStacker:
         default_lgb_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'ndcg_eval_at': [10, 30],
+            'ndcg_eval_at': [5, 15],  # 🔧 聚焦更核心的头部
             'label_gain': self.label_gain,
-            'num_leaves': 31,
-            'max_depth': 4,
-            'learning_rate': 0.03,
-            'min_data_in_leaf': 200,  # Updated: 200
-            'lambda_l1': 0.0,
-            'lambda_l2': 15.0,  # Updated: 15.0
-            'feature_fraction': 1.0,
-            'bagging_fraction': 0.8,  # Updated: 0.8
+            'num_leaves': 15,  # 🔧 31 -> 15（降低复杂度）
+            'max_depth': 3,  # 🔧 4 -> 3
+            'learning_rate': 0.005,  # 🔧 大幅降低，更精细的梯度下降
+            'min_data_in_leaf': 500,  # 🔧 200 -> 500（提高叶子节点门槛）
+            'lambda_l1': 2.0,  # 🔧 0.0 -> 2.0（新增L1正则化）
+            'lambda_l2': 20.0,  # 🔧 15.0 -> 20.0（增强L2正则化）
+            'feature_fraction': 0.7,  # 🔧 1.0 -> 0.7
+            'bagging_fraction': 0.6,  # 🔧 0.8 -> 0.6
             'bagging_freq': 1,
-            'lambdarank_truncation_level': 1200,  # Updated: 1200
+            'lambdarank_truncation_level': 60,  # 🔧 1200 -> 60（★重点：只优化 Top 60）
             'sigmoid': 1.2,
             'verbose': -1,
             'random_state': random_state,
@@ -268,6 +268,53 @@ class MetaRankerStacker:
             self.actual_feature_cols_ = list(self.base_cols)
             logger.info(f"🔧 Saved actual feature columns: {self.actual_feature_cols_}")
 
+        # 🔧 OOF冷启动修复：检测并过滤掉未覆盖的日期段
+        # 检查第一层预测列，找出最早的有效日期（第一个验证集日期）
+        df_dates = pd.to_datetime(df.index.get_level_values('date')).normalize()
+        first_val_date = None
+        
+        # 从第一层预测列中检测最早的有效日期
+        # 假设OOF预测为0或NaN的样本是未覆盖的
+        for col in self.base_cols:
+            if col in df.columns:
+                col_data = df[col]
+                # 找出第一个非零且非NaN的样本的日期
+                valid_mask = (col_data != 0) & (~pd.isna(col_data))
+                if valid_mask.any():
+                    # 获取第一个有效样本的日期
+                    first_valid_mask_idx = valid_mask.idxmax() if hasattr(valid_mask, 'idxmax') else None
+                    if first_valid_mask_idx is None:
+                        # 使用numpy argmax作为回退
+                        valid_positions = np.where(valid_mask.values if hasattr(valid_mask, 'values') else valid_mask)[0]
+                        if len(valid_positions) > 0:
+                            first_valid_pos = valid_positions[0]
+                            first_valid_date = df_dates.iloc[first_valid_pos] if hasattr(df_dates, 'iloc') else df_dates[first_valid_pos]
+                    else:
+                        # 从MultiIndex中提取日期
+                        if isinstance(df.index, pd.MultiIndex):
+                            first_valid_date = pd.to_datetime(first_valid_mask_idx[0]).normalize()
+                        else:
+                            first_valid_date = pd.to_datetime(df_dates[df.index == first_valid_mask_idx].min()).normalize()
+                    
+                    if first_valid_date is not None:
+                        if first_val_date is None or first_valid_date < first_val_date:
+                            first_val_date = first_valid_date
+        
+        # 如果检测到first_val_date，过滤掉之前的样本
+        if first_val_date is not None:
+            valid_date_mask = df_dates >= first_val_date
+            before_count = (~valid_date_mask).sum()
+            if before_count > 0:
+                logger.warning(
+                    f"   ⚠️  OOF冷启动空洞检测: 过滤掉{before_count}个样本 "
+                    f"(日期 < {first_val_date.date()})"
+                )
+                logger.info(
+                    f"   🔧 这些样本的第一层OOF预测为0/缺失，会导致MetaRankerStacker学到时间伪信号"
+                )
+                df = df[valid_date_mask]
+                logger.info(f"   ✅ 过滤后样本数: {len(df)} (原始: {len(df.index) + before_count})")
+        
         # Convert target to ranks
         df_processed, conversion_report = self._convert_to_rank_labels(df, target_col)
         rank_col = f'{target_col}_rank'
@@ -318,11 +365,39 @@ class MetaRankerStacker:
             dates_series = pd.Series(valid_date_index)
             cv_splits = list(self._create_purged_cv_split(dates_series))
             
+            # 🔧 最小训练窗限制：至少2年交易日（约500天）才能计入best_iteration
+            try:
+                from bma_models.unified_config_loader import get_time_config
+                time_config = get_time_config()
+                min_train_window_days = getattr(time_config, 'min_train_window_days', 252)
+            except:
+                min_train_window_days = 252  # 默认1年交易日
+            
+            logger.info(f"   🔧 最小训练窗限制: {min_train_window_days}天（约{min_train_window_days/252:.1f}年）")
+            
             best_iteration = None
             best_score = -np.inf
             successful_folds = 0
+            valid_fold_start_idx = None  # 记录第一个有效fold的索引
             
             for fold, (train_idx, val_idx) in enumerate(cv_splits):
+                # 计算训练窗天数
+                train_dates_fold = valid_date_index[train_idx]
+                train_unique_dates_fold = pd.Series(train_dates_fold).unique()
+                train_window_days = len(train_unique_dates_fold)
+                
+                # 🔧 检查训练窗是否满足最小要求
+                if train_window_days < min_train_window_days:
+                    logger.warning(
+                        f"   ⚠️  MetaRanker CV Fold {fold + 1} 训练窗({train_window_days}天) < 最小要求({min_train_window_days}天)，跳过"
+                    )
+                    logger.info(f"   🔧 此fold的best_iteration将不计入统计（避免噪声污染）")
+                    continue
+                
+                # 记录第一个有效fold
+                if valid_fold_start_idx is None:
+                    valid_fold_start_idx = fold
+                    logger.info(f"   ✅ 从Fold {fold + 1}开始计入best_iteration统计 (训练窗={train_window_days}天)")
                 X_train_fold = X_scaled[train_idx]
                 y_train_fold = y_valid[train_idx]
                 X_val_fold = X_scaled[val_idx]
@@ -388,6 +463,9 @@ class MetaRankerStacker:
             # Log CV results
             if best_score > -np.inf:
                 logger.info(f"✅ CV training complete. Successful folds: {successful_folds}/{len(cv_splits)}, Best iteration: {best_iteration}, Best NDCG@10: {best_score:.4f}")
+                if valid_fold_start_idx is not None and valid_fold_start_idx > 0:
+                    skipped_folds = valid_fold_start_idx
+                    logger.info(f"   🔧 跳过了前{skipped_folds}个fold（训练窗不足{min_train_window_days}天）")
             else:
                 logger.warning(f"⚠️ CV training complete but no valid scores found. Successful folds: {successful_folds}/{len(cv_splits)}, Best iteration: {best_iteration}")
             

@@ -419,6 +419,11 @@ class AutoTraderGUI(tk.Tk):
         notebook.add(kronos_frame, text="Kronos Backtest")
         self._build_kronos_tab(kronos_frame)
 
+        # Temporal Stacking tab - Advanced meta-learner with signal trajectory
+        temporal_frame = ttk.Frame(notebook)
+        notebook.add(temporal_frame, text="Temporal Stacking")
+        self._build_temporal_stacking_tab(temporal_frame)
+
         # 浜ゆ槗鍙傛暟settings
         params = tk.LabelFrame(frm, text="Trading Parameter Settings")
         params.pack(fill=tk.X, pady=5)
@@ -1521,14 +1526,12 @@ class AutoTraderGUI(tk.Tk):
 
     def _direct_predict_snapshot(self) -> None:
         """
-        Direct predict using latest saved snapshot with EMA smoothing and Excel output.
+        Direct predict using latest saved snapshot with Excel output.
         Features:
         - Auto-fetch data from Polygon API
         - Calculate features automatically
         - Predict with snapshot (no retrain)
-        - Get predictions for multiple days (for EMA smoothing)
-        - Apply EMA smoothing (3-day: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2})
-        - Generate Excel ranking report with raw and smoothed scores
+        - Generate Excel ranking report with raw scores (no EMA smoothing)
         """
         try:
             from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
@@ -1538,19 +1541,52 @@ class AutoTraderGUI(tk.Tk):
             from pathlib import Path
             import sys
 
-            # Determine tickers: prefer pool selection if available, else prompt user input
+            # Load default tickers from data file
+            default_tickers_file = Path(r"D:\trade\data\factor_exports\polygon_factors_all_filtered_clean_final_v2.parquet")
+            default_tickers: list[str] = []
+            
+            try:
+                if default_tickers_file.exists():
+                    self.log(f"[DirectPredict] 📂 从数据文件加载股票列表: {default_tickers_file}")
+                    df_tickers = pd.read_parquet(default_tickers_file)
+                    if isinstance(df_tickers.index, pd.MultiIndex):
+                        default_tickers = sorted(df_tickers.index.get_level_values('ticker').unique().tolist())
+                    elif 'ticker' in df_tickers.columns:
+                        default_tickers = sorted(df_tickers['ticker'].unique().tolist())
+                    self.log(f"[DirectPredict] ✅ 从数据文件加载了 {len(default_tickers)} 只股票")
+                else:
+                    self.log(f"[DirectPredict] ⚠️ 数据文件不存在: {default_tickers_file}")
+            except Exception as e:
+                self.log(f"[DirectPredict] ⚠️ 加载默认股票列表失败: {e}")
+                import traceback
+                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+            # Determine tickers: prefer pool selection, then default from file, else prompt user input
             tickers: list[str] = []
             try:
                 if hasattr(self, 'selected_pool_info') and self.selected_pool_info and 'tickers' in self.selected_pool_info:
                     tickers = list(set([t.strip().upper() for t in self.selected_pool_info['tickers'] if isinstance(t, str) and t.strip()]))
+                    self.log(f"[DirectPredict] 📌 使用股票池中的 {len(tickers)} 只股票")
             except Exception:
                 tickers = []
 
+            # Use default tickers from file if no pool selection
+            if not tickers and default_tickers:
+                tickers = default_tickers.copy()
+                self.log(f"[DirectPredict] 📋 使用数据文件中的默认股票列表: {len(tickers)} 只股票")
+            
+            # If still no tickers, prompt user
             if not tickers:
                 import tkinter as tk
                 from tkinter import simpledialog
                 root = self.winfo_toplevel()
-                sym_str = simpledialog.askstring("Direct Predict", "输入股票代码（逗号分隔）", parent=root)
+                default_str = ','.join(default_tickers[:50]) if default_tickers else ""  # Show first 50 as example
+                sym_str = simpledialog.askstring(
+                    "Direct Predict", 
+                    f"输入股票代码（逗号分隔）\n数据文件包含 {len(default_tickers)} 只股票\n示例: {default_str[:100]}...", 
+                    parent=root,
+                    initialvalue=default_str[:500] if default_tickers else ""  # Pre-fill with first 500 tickers
+                )
                 if not sym_str:
                     self.log("[DirectPredict] 已取消")
                     return
@@ -1559,49 +1595,62 @@ class AutoTraderGUI(tk.Tk):
             self.log(f"[DirectPredict] 预测股票 {len(tickers)} 只")
             self.log(f"[DirectPredict] 股票列表: {', '.join(tickers[:10])}{'...' if len(tickers) > 10 else ''}")
 
-            # Ask for prediction days (for EMA smoothing)
+            # Use default T+10 prediction horizon (no user input needed)
+            # Get horizon from model config (default 10 days)
             try:
-                import tkinter as tk
-                from tkinter import simpledialog
-                root = self.winfo_toplevel()
-                days_str = simpledialog.askstring("Prediction Days", "输入预测天数（用于EMA平滑，默认3天）:", parent=root, initialvalue="3")
-                prediction_days = int(days_str) if days_str and days_str.strip().isdigit() else 3
+                from bma_models.unified_config_loader import get_time_config
+                time_config = get_time_config()
+                prediction_horizon = getattr(time_config, 'prediction_horizon_days', 10)
             except Exception:
-                prediction_days = 3
+                prediction_horizon = 10  # Default T+10
             
-            self.log(f"[DirectPredict] 预测天数: {prediction_days} (用于EMA平滑)")
+            self.log(f"[DirectPredict] 预测horizon: T+{prediction_horizon} 天（使用上一个交易日的数据预测未来{prediction_horizon}天）")
 
-            # Import EMA smoothing and Excel report functions
+            # Import Excel report function
             scripts_path = Path(__file__).parent.parent / "scripts"
             if str(scripts_path) not in sys.path:
                 sys.path.insert(0, str(scripts_path))
             try:
-                from direct_predict_ewma_excel import calculate_ewma_smoothed_scores, generate_excel_ranking_report
+                import sys
+                from pathlib import Path
+                scripts_dir = Path(__file__).parent.parent / "scripts"
+                if str(scripts_dir) not in sys.path:
+                    sys.path.insert(0, str(scripts_dir))
+                from direct_predict_ewma_excel import generate_excel_ranking_report
             except ImportError as e:
-                self.log(f"[DirectPredict] ❌ 无法导入EMA平滑函数: {e}")
-                self.log("[DirectPredict] 请确保 scripts/direct_predict_ewma_excel.py 存在")
-                return
+                self.log(f"[DirectPredict] ⚠️ 无法导入Excel报告函数: {e}")
+                self.log("[DirectPredict] 将跳过Excel报告生成")
 
             # Initialize model
             model = UltraEnhancedQuantitativeModel()
             self.log("[DirectPredict] 📡 自动获取数据并计算特征...")
             
-            # Get predictions for multiple days (for EMA smoothing)
-            # Logic: Get newest date data features up to today, and calculate today-1, today-2 to predict
-            # Need 283 days total: 280 days (for factor calculation) + 3 days (for prediction)
+            # Get predictions for T+10 horizon
+            # Logic: Use previous trading day as base date, predict future T+10 days
+            # Need 280+ days total: 280 days (for factor calculation) + buffer
             MIN_REQUIRED_LOOKBACK_DAYS = 280  # For 252-day rolling window factors
-            total_lookback_days = MIN_REQUIRED_LOOKBACK_DAYS + prediction_days  # 280 + 3 = 283 days
+            total_lookback_days = MIN_REQUIRED_LOOKBACK_DAYS + 30  # Extra buffer for weekends/holidays
             
-            all_predictions = []
-            end_date = pd.Timestamp.today()
-            start_date = end_date - pd.Timedelta(days=total_lookback_days)
+            # 🔥 Use today as initial end_date to fetch latest available data
+            # We'll determine the actual last trading day with complete close data from fetched data
+            today = pd.Timestamp.today()
+            initial_base_date = today - BDay(1)  # Initial estimate (will be updated after fetching data)
+            # Calculate start_date: use calendar days for API call (API handles trading days)
+            start_date = initial_base_date - pd.Timedelta(days=total_lookback_days)
             
-            self.log(f"[DirectPredict] 📊 数据获取范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')} ({total_lookback_days} 天)")
+            self.log(f"[DirectPredict] 📊 数据获取范围: {start_date.strftime('%Y-%m-%d')} 至 {today.strftime('%Y-%m-%d')} (获取最新可用数据)")
             self.log(f"[DirectPredict]   历史数据: {MIN_REQUIRED_LOOKBACK_DAYS} 天 (用于因子计算)")
-            self.log(f"[DirectPredict]   预测天数: {prediction_days} 天 (today, today-1, today-2)")
+            self.log(f"[DirectPredict]   预测horizon: T+{prediction_horizon} 天")
+            self.log(f"[DirectPredict]   基准日期: 将从获取的数据中确定最后有收盘数据的交易日（只要找到一个就足够）")
+            
+            # base_date will be determined after fetching market data (see below)
+            base_date = initial_base_date  # Temporary, will be updated
             
             # Fetch all data once (more efficient than fetching separately for each day)
             self.log(f"[DirectPredict] 📡 一次性获取 {total_lookback_days} 天的数据...")
+            
+            # Initialize predictions list
+            all_predictions = []
             
             try:
                 # Get all feature data for the entire period
@@ -1610,21 +1659,74 @@ class AutoTraderGUI(tk.Tk):
                 engine = Simple17FactorEngine(
                     lookback_days=total_lookback_days,
                     mode='predict',
-                    horizon=getattr(model, 'horizon', 10)
+                    horizon=prediction_horizon  # Use T+10 horizon
                 )
                 
-                # Fetch market data
+                # Fetch market data - use today as end_date to get the latest available data
+                # We'll determine the actual last trading day with complete close data from the fetched data
                 market_data = engine.fetch_market_data(
                     symbols=tickers,
                     use_optimized_downloader=True,
                     start_date=start_date.strftime('%Y-%m-%d'),
-                    end_date=end_date.strftime('%Y-%m-%d')
+                    end_date=today.strftime('%Y-%m-%d')  # Use today to get latest available data
                 )
                 
                 if market_data.empty:
                     raise ValueError(f"Failed to fetch market data for {len(tickers)} tickers")
                 
                 self.log(f"[DirectPredict] ✅ 市场数据获取完成: {market_data.shape}")
+                
+                # 🔥 Determine the last trading day with close data
+                # Find the latest date where we have ANY close data (只要找到一个就足够)
+                if isinstance(market_data.index, pd.MultiIndex):
+                    # MultiIndex (date, ticker) - find latest date with ANY close data
+                    if 'Close' in market_data.columns:
+                        close_col = 'Close'
+                    elif 'close' in market_data.columns:
+                        close_col = 'close'
+                    elif 'adj_close' in market_data.columns:
+                        close_col = 'adj_close'
+                    else:
+                        close_col = None
+                    
+                    if close_col:
+                        # Get all dates from the index
+                        all_dates = market_data.index.get_level_values('date').unique()
+                        all_dates = sorted([pd.Timestamp(d) for d in all_dates if isinstance(d, (pd.Timestamp, str))])
+                        
+                        # Find the latest date where we have ANY close data (只要找到一个就足够)
+                        last_valid_date = None
+                        for date in reversed(all_dates):
+                            date_data = market_data.xs(date, level='date', drop_level=False)
+                            if not date_data.empty and close_col in date_data.columns:
+                                # Check if there's at least ONE ticker with valid close data
+                                valid_close_count = date_data[close_col].notna().sum()
+                                
+                                if valid_close_count > 0:  # 只要找到一个就足够
+                                    last_valid_date = date
+                                    total_tickers = len(date_data)
+                                    coverage_ratio = valid_close_count / total_tickers if total_tickers > 0 else 0
+                                    self.log(f"[DirectPredict] 📊 找到最后有效交易日: {date.strftime('%Y-%m-%d')} ({valid_close_count} 只股票有收盘数据, 覆盖率: {coverage_ratio:.1%})")
+                                    break
+                        
+                        if last_valid_date is None:
+                            # Fallback: use the latest date in the data
+                            last_valid_date = all_dates[-1] if all_dates else base_date
+                            self.log(f"[DirectPredict] ⚠️ 未找到有收盘数据的日期，使用最新日期: {last_valid_date.strftime('%Y-%m-%d')}")
+                        
+                        # Update base_date to the last valid trading day with close data
+                        base_date = pd.Timestamp(last_valid_date).normalize()
+                        self.log(f"[DirectPredict] ✅ 确定基准日期: {base_date.strftime('%Y-%m-%d')} (最后有收盘数据的交易日，只要找到一个就足够)")
+                    else:
+                        self.log(f"[DirectPredict] ⚠️ 未找到收盘价格列，使用原定基准日期: {base_date.strftime('%Y-%m-%d')}")
+                else:
+                    # Single index - try to infer from date column or index
+                    if 'date' in market_data.columns:
+                        last_date = pd.to_datetime(market_data['date']).max()
+                        base_date = pd.Timestamp(last_date).normalize()
+                        self.log(f"[DirectPredict] ✅ 从date列确定基准日期: {base_date.strftime('%Y-%m-%d')}")
+                    else:
+                        self.log(f"[DirectPredict] ⚠️ 无法确定最后交易日，使用原定基准日期: {base_date.strftime('%Y-%m-%d')}")
                 
                 # Calculate all factors for the entire period
                 self.log(f"[DirectPredict] 🔮 计算所有因子特征...")
@@ -1633,85 +1735,383 @@ class AutoTraderGUI(tk.Tk):
                 if all_feature_data.empty:
                     raise ValueError("Failed to compute features from market data")
                 
-                self.log(f"[DirectPredict] ✅ 特征计算完成: {all_feature_data.shape}")
-                
-                # Now predict for each day (from oldest to newest: today-2, today-1, today)
-                for day_offset in range(prediction_days - 1, -1, -1):  # From oldest to newest
-                    pred_date = end_date - pd.Timedelta(days=day_offset)
-                    pred_date_str = pred_date.strftime('%Y-%m-%d')
-                    
-                    self.log(f"[DirectPredict] 🔮 预测 {pred_date_str}...")
-                    
+                # 🔥 Ensure Sato factors are computed (if not already in the data)
+                if 'feat_sato_momentum_10d' not in all_feature_data.columns or 'feat_sato_divergence_10d' not in all_feature_data.columns:
                     try:
-                        # Extract feature data for this specific date
-                        # Need data up to and including pred_date for factor calculation
-                        date_mask = all_feature_data.index.get_level_values('date') <= pred_date
-                        date_feature_data = all_feature_data[date_mask].copy()
+                        self.log(f"[DirectPredict] 🔮 计算Sato平方根因子...")
+                        from scripts.sato_factor_calculation import calculate_sato_factors
                         
-                        if date_feature_data.empty:
-                            self.log(f"[DirectPredict] ⚠️ {pred_date_str}: 无特征数据")
-                            continue
+                        # Prepare data for Sato calculation
+                        sato_data = all_feature_data.copy()
+                        if 'adj_close' not in sato_data.columns and 'Close' in sato_data.columns:
+                            sato_data['adj_close'] = sato_data['Close']
                         
-                        # Get predictions for this date using the pre-computed features
-                        results = model.predict_with_snapshot(
-                            feature_data=date_feature_data,  # Use pre-computed features
-                            snapshot_id=None,  # Use latest snapshot
-                            universe_tickers=tickers,
-                            as_of_date=pred_date,
-                            prediction_days=1
+                        has_vol_ratio = 'vol_ratio_20d' in sato_data.columns
+                        if 'Volume' not in sato_data.columns:
+                            if has_vol_ratio:
+                                base_volume = 1_000_000
+                                sato_data['Volume'] = base_volume * sato_data['vol_ratio_20d'].fillna(1.0).clip(lower=0.1, upper=10.0)
+                                use_vol_ratio = True
+                            else:
+                                use_vol_ratio = False
+                                sato_data['Volume'] = 1_000_000  # Fallback
+                        else:
+                            use_vol_ratio = has_vol_ratio
+                        
+                        # Calculate Sato factors
+                        sato_factors_df = calculate_sato_factors(
+                            df=sato_data,
+                            price_col='adj_close',
+                            volume_col='Volume',
+                            vol_ratio_col='vol_ratio_20d',
+                            lookback_days=10,
+                            vol_window=20,
+                            use_vol_ratio_directly=use_vol_ratio
                         )
                         
-                        if results.get('success', False):
-                            # Get raw predictions (before EMA smoothing in predict_with_snapshot)
-                            predictions_raw = results.get('predictions_raw')
-                            if predictions_raw is None:
-                                # Fallback to smoothed predictions if raw not available
-                                predictions_raw = results.get('predictions')
-                            
-                            if predictions_raw is not None:
-                                # Convert to DataFrame with MultiIndex
-                                if isinstance(predictions_raw, pd.Series):
-                                    pred_df = predictions_raw.to_frame('score')
-                                else:
-                                    pred_df = predictions_raw.copy()
-                                    if 'score' not in pred_df.columns and len(pred_df.columns) > 0:
-                                        pred_df.columns = ['score']
-                                
-                                # Ensure MultiIndex with date and ticker
-                                if not isinstance(pred_df.index, pd.MultiIndex):
-                                    # Create MultiIndex from ticker index
-                                    tickers_from_index = pred_df.index.tolist()
-                                    dates_list = [pred_date] * len(tickers_from_index)
-                                    pred_df.index = pd.MultiIndex.from_arrays(
-                                        [dates_list, tickers_from_index],
-                                        names=['date', 'ticker']
-                                    )
-                                else:
-                                    # Update date level to ensure correct date
-                                    new_index = pd.MultiIndex.from_arrays([
-                                        [pred_date] * len(pred_df),
-                                        pred_df.index.get_level_values('ticker')
-                                    ], names=['date', 'ticker'])
-                                    pred_df.index = new_index
-                                
-                                all_predictions.append(pred_df)
-                                self.log(f"[DirectPredict] ✅ {pred_date_str}: {len(pred_df)} 个预测")
-                            else:
-                                self.log(f"[DirectPredict] ⚠️ {pred_date_str}: 无预测数据")
-                        else:
-                            error_msg = results.get('error', 'Unknown error')
-                            self.log(f"[DirectPredict] ⚠️ {pred_date_str} 预测失败: {error_msg}")
+                        # Add Sato factors to all_feature_data
+                        # 🔧 FIX: Ensure sato_factors_df has MultiIndex format before reindexing
+                        if not isinstance(sato_factors_df.index, pd.MultiIndex):
+                            if 'date' in sato_factors_df.columns and 'ticker' in sato_factors_df.columns:
+                                sato_factors_df = sato_factors_df.set_index(['date', 'ticker'])
+                                self.log(f"[DirectPredict] ✅ Converted sato_factors_df to MultiIndex")
+                        
+                        # Ensure all_feature_data maintains MultiIndex format
+                        if not isinstance(all_feature_data.index, pd.MultiIndex):
+                            raise ValueError("all_feature_data must have MultiIndex format before adding Sato factors")
+                        
+                        all_feature_data['feat_sato_momentum_10d'] = sato_factors_df['feat_sato_momentum_10d'].reindex(all_feature_data.index).fillna(0.0)
+                        all_feature_data['feat_sato_divergence_10d'] = sato_factors_df['feat_sato_divergence_10d'].reindex(all_feature_data.index).fillna(0.0)
+                        
+                        # Verify MultiIndex format is maintained
+                        if not isinstance(all_feature_data.index, pd.MultiIndex):
+                            raise ValueError("all_feature_data lost MultiIndex format after adding Sato factors!")
+                        
+                        self.log(f"[DirectPredict] ✅ Sato因子计算完成，MultiIndex格式保持: {all_feature_data.index.names}")
                     except Exception as e:
-                        self.log(f"[DirectPredict] ⚠️ {pred_date_str} 预测异常: {e}")
-                        import traceback
-                        self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+                        self.log(f"[DirectPredict] ⚠️ Sato因子计算失败: {e}, 继续...")
+                        # Add zero-filled columns if missing
+                        if 'feat_sato_momentum_10d' not in all_feature_data.columns:
+                            all_feature_data['feat_sato_momentum_10d'] = 0.0
+                        if 'feat_sato_divergence_10d' not in all_feature_data.columns:
+                            all_feature_data['feat_sato_divergence_10d'] = 0.0
+                
+                # 🔧 FIX: Final verification and standardization of all_feature_data format
+                # Ensure format matches training parquet file exactly
+                if not isinstance(all_feature_data.index, pd.MultiIndex):
+                    raise ValueError(f"all_feature_data must have MultiIndex format, got: {type(all_feature_data.index)}")
+                
+                index_names = all_feature_data.index.names
+                if 'date' not in index_names or 'ticker' not in index_names:
+                    raise ValueError(f"all_feature_data MultiIndex must have 'date' and 'ticker' levels, got: {index_names}")
+                
+                # 🔧 FIX: Standardize MultiIndex to match training file format exactly
+                # Training file format: MultiIndex(['date', 'ticker'])
+                # - date: datetime64[ns], normalized (no time component)
+                # - ticker: object/string
+                
+                # Normalize date level (remove time component)
+                date_level = all_feature_data.index.get_level_values('date')
+                if not pd.api.types.is_datetime64_any_dtype(date_level):
+                    raise ValueError(f"Date level must be datetime, got: {date_level.dtype}")
+                
+                # 🔧 FIX: Handle DatetimeIndex vs Series - DatetimeIndex doesn't have .dt accessor
+                # get_level_values can return DatetimeIndex directly, so check type first
+                if isinstance(date_level, pd.DatetimeIndex):
+                    # DatetimeIndex has methods directly, not through .dt accessor
+                    if date_level.tz is not None:
+                        date_normalized = date_level.tz_localize(None).normalize()
+                    else:
+                        date_normalized = date_level.normalize()
+                else:
+                    # Convert to datetime if needed, then use .dt accessor for Series
+                    date_converted = pd.to_datetime(date_level)
+                    if isinstance(date_converted, pd.DatetimeIndex):
+                        # If conversion results in DatetimeIndex, use direct methods
+                        if date_converted.tz is not None:
+                            date_normalized = date_converted.tz_localize(None).normalize()
+                        else:
+                            date_normalized = date_converted.normalize()
+                    else:
+                        # Series has .dt accessor
+                        if date_converted.dt.tz is not None:
+                            date_normalized = date_converted.dt.tz_localize(None).dt.normalize()
+                        else:
+                            date_normalized = date_converted.dt.normalize()
+                
+                # 🔧 FIX: Ensure ticker format matches training file exactly
+                # Training file uses uppercase tickers (as seen in 80/20 eval)
+                ticker_level = all_feature_data.index.get_level_values('ticker').astype(str).str.strip().str.upper()
+                
+                # Recreate MultiIndex with standardized format (matching training file)
+                # Training file format: MultiIndex(['date', 'ticker'])
+                # - date: datetime64[ns], normalized (no time component)
+                # - ticker: object/string, UPPERCASE (matching 80/20 eval and training)
+                all_feature_data.index = pd.MultiIndex.from_arrays(
+                    [date_normalized, ticker_level],
+                    names=['date', 'ticker']
+                )
+                
+                # Verify format matches training file
+                self.log(f"[DirectPredict] ✅ 特征计算完成: shape={all_feature_data.shape}")
+                self.log(f"[DirectPredict] ✅ MultiIndex格式验证: levels={all_feature_data.index.names}")
+                self.log(f"[DirectPredict] ✅ 日期类型: {all_feature_data.index.get_level_values('date').dtype} (normalized)")
+                self.log(f"[DirectPredict] ✅ Ticker类型: {all_feature_data.index.get_level_values('ticker').dtype}")
+                self.log(f"[DirectPredict] ✅ Unique dates: {all_feature_data.index.get_level_values('date').nunique()}, unique tickers: {all_feature_data.index.get_level_values('ticker').nunique()}")
+                
+                # Final check: ensure no duplicates
+                duplicates = all_feature_data.index.duplicated()
+                if duplicates.any():
+                    dup_count = duplicates.sum()
+                    self.log(f"[DirectPredict] ⚠️ Removing {dup_count} duplicate indices before prediction")
+                    all_feature_data = all_feature_data[~duplicates]
+                    all_feature_data = all_feature_data.groupby(level=['date', 'ticker']).first()
+                    self.log(f"[DirectPredict] ✅ After deduplication: shape={all_feature_data.shape}")
+                
+                # 🔥 Predict using base_date (last trading day with close data) for T+10 horizon
+                # 只要找到一个有收盘数据的交易日就足够，立即开始预测
+                pred_date = base_date  # Use last trading day with close data as base date
+                pred_date_str = pred_date.strftime('%Y-%m-%d')
+                
+                self.log(f"[DirectPredict] 🔮 基于 {pred_date_str} (最后有收盘数据的交易日，只要找到一个就足够) 预测 T+{prediction_horizon} 天...")
+                
+                try:
+                    # Extract feature data up to and including base_date for factor calculation
+                    # 🔧 FIX: Ensure all_feature_data is MultiIndex format
+                    if not isinstance(all_feature_data.index, pd.MultiIndex):
+                        self.log(f"[DirectPredict] ⚠️ all_feature_data is not MultiIndex, converting...")
+                        # Try to convert to MultiIndex
+                        if 'date' in all_feature_data.columns and 'ticker' in all_feature_data.columns:
+                            all_feature_data = all_feature_data.set_index(['date', 'ticker'])
+                            self.log(f"[DirectPredict] ✅ Converted to MultiIndex using date and ticker columns")
+                        else:
+                            raise ValueError("Cannot convert to MultiIndex: missing 'date' or 'ticker' columns")
+                    
+                    # Verify MultiIndex format
+                    if not isinstance(all_feature_data.index, pd.MultiIndex):
+                        raise ValueError("all_feature_data must have MultiIndex (date, ticker)")
+                    
+                    index_names = all_feature_data.index.names
+                    if 'date' not in index_names or 'ticker' not in index_names:
+                        raise ValueError(f"MultiIndex must have 'date' and 'ticker' levels, got: {index_names}")
+                    
+                    self.log(f"[DirectPredict] ✅ all_feature_data format: MultiIndex with levels {index_names}, shape: {all_feature_data.shape}")
+                    
+                    # Extract feature data up to and including base_date
+                    date_mask = all_feature_data.index.get_level_values('date') <= pred_date
+                    date_feature_data = all_feature_data[date_mask].copy()
+                    
+                    # 🔧 FIX: Ensure date_feature_data maintains MultiIndex format
+                    if not isinstance(date_feature_data.index, pd.MultiIndex):
+                        raise ValueError("date_feature_data lost MultiIndex format after filtering!")
+                    
+                    # Remove duplicate indices (if any)
+                    duplicates = date_feature_data.index.duplicated()
+                    if duplicates.any():
+                        dup_count = duplicates.sum()
+                        self.log(f"[DirectPredict] ⚠️ Removing {dup_count} duplicate indices from date_feature_data")
+                        date_feature_data = date_feature_data[~duplicates]
+                    
+                    # Ensure each (date, ticker) combination appears only once
+                    date_feature_data = date_feature_data.groupby(level=['date', 'ticker']).first()
+                    
+                    if date_feature_data.empty:
+                        self.log(f"[DirectPredict] ⚠️ {pred_date_str}: 无特征数据")
+                        raise ValueError(f"No feature data available for {pred_date_str}")
+                    
+                    self.log(f"[DirectPredict] ✅ date_feature_data format: MultiIndex, shape: {date_feature_data.shape}, unique dates: {date_feature_data.index.get_level_values('date').nunique()}, unique tickers: {date_feature_data.index.get_level_values('ticker').nunique()}")
+                    
+                    # Get predictions using the pre-computed features
+                    # Try to load snapshot ID from latest_snapshot_id.txt, fallback to None (latest from DB)
+                    snapshot_id_to_use = None
+                    try:
+                        latest_snapshot_file = Path(__file__).resolve().parent.parent / "latest_snapshot_id.txt"
+                        if latest_snapshot_file.exists():
+                            snapshot_id_to_use = latest_snapshot_file.read_text(encoding="utf-8").strip()
+                            if not snapshot_id_to_use:
+                                snapshot_id_to_use = None
+                    except Exception:
+                        pass  # Fallback to None (latest from DB)
+                    
+                    # Predict with T+10 horizon
+                    results = model.predict_with_snapshot(
+                        feature_data=date_feature_data,  # Use pre-computed features
+                        snapshot_id=snapshot_id_to_use,  # Use snapshot from latest_snapshot_id.txt or latest from DB
+                        universe_tickers=tickers,
+                        as_of_date=pred_date,
+                        prediction_days=prediction_horizon  # Use T+10 horizon
+                    )
+                        
+                    if results.get('success', False):
+                        # Get raw predictions (no EMA smoothing)
+                        predictions_raw = results.get('predictions_raw')
+                        if predictions_raw is None:
+                            # Fallback to predictions if raw not available
+                            predictions_raw = results.get('predictions')
+                        
+                        # Get base model predictions (LambdaRank, CatBoost, etc.)
+                        base_predictions = results.get('base_predictions')  # DataFrame with pred_lambdarank, pred_catboost, etc.
+                        
+                        # Debug: Log base_predictions status
+                        if base_predictions is not None:
+                            self.log(f"[DirectPredict] 📊 Base predictions available: {type(base_predictions)}, shape: {base_predictions.shape if hasattr(base_predictions, 'shape') else 'N/A'}")
+                            if isinstance(base_predictions, pd.DataFrame):
+                                self.log(f"[DirectPredict] 📊 Base predictions columns: {list(base_predictions.columns)}")
+                        else:
+                            self.log(f"[DirectPredict] ⚠️ Base predictions not available in results")
+                        
+                        if predictions_raw is not None:
+                            # Debug: Log predictions_raw structure
+                            self.log(f"[DirectPredict] 📊 predictions_raw type: {type(predictions_raw)}")
+                            if isinstance(predictions_raw, pd.Series):
+                                self.log(f"[DirectPredict] 📊 predictions_raw shape: {predictions_raw.shape}, unique values: {predictions_raw.nunique()}")
+                                self.log(f"[DirectPredict] 📊 predictions_raw sample (first 5): {predictions_raw.head().to_dict()}")
+                                self.log(f"[DirectPredict] 📊 predictions_raw value range: min={predictions_raw.min():.6f}, max={predictions_raw.max():.6f}, mean={predictions_raw.mean():.6f}")
+                                # 🔍 DIAGNOSTIC: Check for duplicate indices
+                                if isinstance(predictions_raw.index, pd.MultiIndex):
+                                    self.log(f"[DirectPredict] 📊 predictions_raw unique dates: {predictions_raw.index.get_level_values('date').nunique()}")
+                                    self.log(f"[DirectPredict] 📊 predictions_raw unique tickers: {predictions_raw.index.get_level_values('ticker').nunique()}")
+                                    duplicates = predictions_raw.index.duplicated()
+                                    if duplicates.any():
+                                        self.log(f"[DirectPredict] ⚠️ predictions_raw has {duplicates.sum()} duplicate indices!")
+                                        dup_indices = predictions_raw.index[duplicates]
+                                        self.log(f"[DirectPredict] 📊 Sample duplicate indices: {dup_indices[:5].tolist()}")
+                                        # Remove duplicates
+                                        predictions_raw = predictions_raw[~duplicates]
+                                        self.log(f"[DirectPredict] ✅ Removed {duplicates.sum()} duplicate indices from predictions_raw")
+                                pred_df = predictions_raw.to_frame('score')
+                            else:
+                                pred_df = predictions_raw.copy()
+                                if 'score' not in pred_df.columns and len(pred_df.columns) > 0:
+                                    pred_df.columns = ['score']
+                                self.log(f"[DirectPredict] 📊 pred_df shape: {pred_df.shape}, score unique values: {pred_df['score'].nunique()}")
+                                self.log(f"[DirectPredict] 📊 pred_df score range: min={pred_df['score'].min():.6f}, max={pred_df['score'].max():.6f}, mean={pred_df['score'].mean():.6f}")
+                            
+                            # Ensure MultiIndex with date and ticker
+                            if not isinstance(pred_df.index, pd.MultiIndex):
+                                # Create MultiIndex from ticker index
+                                tickers_from_index = pred_df.index.tolist()
+                                dates_list = [pred_date] * len(tickers_from_index)
+                                pred_df.index = pd.MultiIndex.from_arrays(
+                                    [dates_list, tickers_from_index],
+                                    names=['date', 'ticker']
+                                )
+                            else:
+                                # Update date level to ensure correct date
+                                new_index = pd.MultiIndex.from_arrays([
+                                    [pred_date] * len(pred_df),
+                                    pred_df.index.get_level_values('ticker')
+                                ], names=['date', 'ticker'])
+                                pred_df.index = new_index
+                            
+                            # 🔧 FIX: Remove duplicate indices after MultiIndex creation
+                            if pred_df.index.duplicated().any():
+                                self.log(f"[DirectPredict] ⚠️ pred_df has {pred_df.index.duplicated().sum()} duplicate indices after MultiIndex creation, removing duplicates...")
+                                pred_df = pred_df[~pred_df.index.duplicated(keep='first')]
+                                self.log(f"[DirectPredict] ✅ pred_df after deduplication: {len(pred_df)} rows")
+                            
+                            # 🔧 FIX: Ensure each (date, ticker) combination appears only once
+                            if isinstance(pred_df.index, pd.MultiIndex):
+                                ticker_level = pred_df.index.get_level_values('ticker')
+                                if ticker_level.duplicated().any():
+                                    self.log(f"[DirectPredict] ⚠️ pred_df has duplicate tickers in same date, grouping by (date, ticker)...")
+                                    pred_df = pred_df.groupby(level=['date', 'ticker']).first()
+                                    self.log(f"[DirectPredict] ✅ pred_df after grouping: {len(pred_df)} rows, unique tickers: {pred_df.index.get_level_values('ticker').nunique()}")
+                            
+                            # Add base model predictions if available
+                            if base_predictions is not None and isinstance(base_predictions, pd.DataFrame):
+                                self.log(f"[DirectPredict] 🔧 Adding base model predictions to pred_df...")
+                                
+                                # 🔍 DIAGNOSTIC: Check base_predictions structure
+                                self.log(f"[DirectPredict] 📊 base_predictions index type: {type(base_predictions.index)}")
+                                if isinstance(base_predictions.index, pd.MultiIndex):
+                                    self.log(f"[DirectPredict] 📊 base_predictions unique dates: {base_predictions.index.get_level_values('date').nunique()}")
+                                    self.log(f"[DirectPredict] 📊 base_predictions unique tickers: {base_predictions.index.get_level_values('ticker').nunique()}")
+                                    self.log(f"[DirectPredict] 📊 base_predictions total rows: {len(base_predictions)}")
+                                    duplicates = base_predictions.index.duplicated()
+                                    if duplicates.any():
+                                        self.log(f"[DirectPredict] ⚠️ base_predictions has {duplicates.sum()} duplicate indices!")
+                                        # Remove duplicates before alignment
+                                        base_predictions = base_predictions[~duplicates]
+                                        self.log(f"[DirectPredict] ✅ Removed {duplicates.sum()} duplicate indices from base_predictions")
+                                
+                                # Ensure base_predictions has same index structure
+                                if isinstance(base_predictions.index, pd.MultiIndex):
+                                    base_predictions_aligned = base_predictions.reindex(pred_df.index)
+                                else:
+                                    # Try to align by ticker
+                                    base_predictions_aligned = base_predictions.reindex(pred_df.index.get_level_values('ticker'))
+                                    base_predictions_aligned.index = pred_df.index
+                                
+                                # 🔧 FIX: Remove duplicate indices after alignment
+                                if base_predictions_aligned.index.duplicated().any():
+                                    self.log(f"[DirectPredict] ⚠️ base_predictions_aligned has duplicate indices after reindex, removing duplicates...")
+                                    base_predictions_aligned = base_predictions_aligned[~base_predictions_aligned.index.duplicated(keep='first')]
+                                
+                                # Debug: Log alignment result
+                                self.log(f"[DirectPredict] 📊 Base predictions aligned shape: {base_predictions_aligned.shape}")
+                                self.log(f"[DirectPredict] 📊 Base predictions aligned columns: {list(base_predictions_aligned.columns)}")
+                                if isinstance(base_predictions_aligned.index, pd.MultiIndex):
+                                    self.log(f"[DirectPredict] 📊 Base predictions aligned unique tickers: {base_predictions_aligned.index.get_level_values('ticker').nunique()}")
+                                
+                                # Add LambdaRank and CatBoost scores
+                                if 'pred_lambdarank' in base_predictions_aligned.columns:
+                                    pred_df['score_lambdarank'] = base_predictions_aligned['pred_lambdarank']
+                                    self.log(f"[DirectPredict] ✅ Added score_lambdarank: {pred_df['score_lambdarank'].notna().sum()} non-null values")
+                                else:
+                                    self.log(f"[DirectPredict] ⚠️ pred_lambdarank not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+                                
+                                if 'pred_catboost' in base_predictions_aligned.columns:
+                                    pred_df['score_catboost'] = base_predictions_aligned['pred_catboost']
+                                    self.log(f"[DirectPredict] ✅ Added score_catboost: {pred_df['score_catboost'].notna().sum()} non-null values")
+                                else:
+                                    self.log(f"[DirectPredict] ⚠️ pred_catboost not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+                                
+                                if 'pred_elastic' in base_predictions_aligned.columns:
+                                    pred_df['score_elastic'] = base_predictions_aligned['pred_elastic']
+                                    self.log(f"[DirectPredict] ✅ Added score_elastic: {pred_df['score_elastic'].notna().sum()} non-null values")
+                                else:
+                                    self.log(f"[DirectPredict] ⚠️ pred_elastic not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+                                
+                                if 'pred_xgb' in base_predictions_aligned.columns:
+                                    pred_df['score_xgb'] = base_predictions_aligned['pred_xgb']
+                                    self.log(f"[DirectPredict] ✅ Added score_xgb: {pred_df['score_xgb'].notna().sum()} non-null values")
+                                else:
+                                    self.log(f"[DirectPredict] ⚠️ pred_xgb not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+                            else:
+                                self.log(f"[DirectPredict] ⚠️ Base predictions not available or not DataFrame. Type: {type(base_predictions)}")
+                            
+                            all_predictions.append(pred_df)
+                            self.log(f"[DirectPredict] ✅ {pred_date_str}: T+{prediction_horizon} 天预测完成 ({len(pred_df)} 只股票)")
+                        else:
+                            self.log(f"[DirectPredict] ⚠️ {pred_date_str}: 无预测数据")
+                            raise ValueError(f"No predictions returned for {pred_date_str}")
+                    else:
+                        error_msg = results.get('error', 'Unknown error')
+                        self.log(f"[DirectPredict] ⚠️ {pred_date_str} 预测失败: {error_msg}")
+                        raise RuntimeError(f"Prediction failed: {error_msg}")
+                except Exception as e:
+                    self.log(f"[DirectPredict] ❌ {pred_date_str} 预测异常: {e}")
+                    import traceback
+                    self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+                    # Don't raise here - continue to check all_predictions
+                    # If all_predictions is empty, it will be handled below
+                    pass
                         
             except Exception as e:
                 self.log(f"[DirectPredict] ❌ 数据获取或特征计算失败: {e}")
                 import traceback
                 self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
-                return
+                # Ensure all_predictions is initialized even if exception occurs
+                if 'all_predictions' not in locals():
+                    all_predictions = []
+                if not all_predictions:
+                    return
 
+            # Ensure all_predictions is initialized
+            if 'all_predictions' not in locals():
+                all_predictions = []
+            
             if not all_predictions:
                 self.log("[DirectPredict] ❌ 未获取到任何预测数据")
                 return
@@ -1722,40 +2122,97 @@ class AutoTraderGUI(tk.Tk):
             else:
                 combined_predictions = pd.concat(all_predictions, axis=0)
             
+            # 🔧 FIX: Remove duplicate indices after concatenation
+            if combined_predictions.index.duplicated().any():
+                self.log(f"[DirectPredict] ⚠️ combined_predictions has {combined_predictions.index.duplicated().sum()} duplicate indices after concat, removing duplicates...")
+                combined_predictions = combined_predictions[~combined_predictions.index.duplicated(keep='first')]
+                self.log(f"[DirectPredict] ✅ combined_predictions after deduplication: {len(combined_predictions)} rows")
+            
+            # 🔧 FIX: Ensure each (date, ticker) combination appears only once
+            if isinstance(combined_predictions.index, pd.MultiIndex):
+                ticker_level = combined_predictions.index.get_level_values('ticker')
+                date_level = combined_predictions.index.get_level_values('date')
+                # Check for duplicates within same date
+                for date in date_level.unique():
+                    date_mask = date_level == date
+                    date_tickers = ticker_level[date_mask]
+                    if date_tickers.duplicated().any():
+                        self.log(f"[DirectPredict] ⚠️ Date {date} has {date_tickers.duplicated().sum()} duplicate tickers, grouping...")
+                        combined_predictions = combined_predictions.groupby(level=['date', 'ticker']).first()
+                        break  # Only need to group once
+            
             self.log(f"[DirectPredict] ✅ 合并预测数据: {len(combined_predictions)} 行")
             dates_in_pred = sorted(combined_predictions.index.get_level_values('date').unique())
             self.log(f"[DirectPredict] 日期范围: {dates_in_pred[0]} 至 {dates_in_pred[-1]} ({len(dates_in_pred)} 天)")
+            
+            # 🔍 DIAGNOSTIC: Log unique tickers per date
+            if isinstance(combined_predictions.index, pd.MultiIndex):
+                for date in dates_in_pred[-3:]:  # Check last 3 dates
+                    date_mask = combined_predictions.index.get_level_values('date') == date
+                    date_tickers = combined_predictions.index.get_level_values('ticker')[date_mask]
+                    self.log(f"[DirectPredict] 📊 Date {date}: {date_tickers.nunique()} unique tickers, {len(date_tickers)} total rows")
+                    if date_tickers.duplicated().any():
+                        self.log(f"[DirectPredict] ⚠️ Date {date} has {date_tickers.duplicated().sum()} duplicate tickers!")
 
-            # Apply EMA smoothing using the function from direct_predict_ewma_excel.py
-            self.log("[DirectPredict] 📊 应用EMA平滑...")
-            try:
-                smoothed_predictions = calculate_ewma_smoothed_scores(
-                    combined_predictions,
-                    weights=(0.6, 0.3, 0.1),  # 3-day EMA: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2}
-                    use_half_life=False
-                )
-                self.log("[DirectPredict] ✅ EMA平滑完成")
-            except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ EMA平滑失败: {e}")
-                import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
-                # Use original predictions if smoothing fails
-                smoothed_predictions = combined_predictions.copy()
-                if 'score_raw' not in smoothed_predictions.columns:
-                    smoothed_predictions['score_raw'] = smoothed_predictions['score']
+            # Use raw predictions directly (no EMA smoothing)
+            final_predictions = combined_predictions.copy()
+            if 'score_raw' not in final_predictions.columns:
+                final_predictions['score_raw'] = final_predictions['score']
+            self.log("[DirectPredict] ✅ 使用原始预测分数（无EMA平滑）")
 
             # Get latest date predictions for recommendations
             latest_date = dates_in_pred[-1] if dates_in_pred else None
             if latest_date:
                 try:
-                    latest_predictions = smoothed_predictions.xs(latest_date, level='date', drop_level=False)
+                    latest_predictions = final_predictions.xs(latest_date, level='date', drop_level=False)
+                    
+                    # 🔍 DIAGNOSTIC: Log latest_predictions structure
+                    self.log(f"[DirectPredict] 📊 latest_predictions shape after xs: {latest_predictions.shape}")
+                    if isinstance(latest_predictions.index, pd.MultiIndex):
+                        ticker_level = latest_predictions.index.get_level_values('ticker')
+                        self.log(f"[DirectPredict] 📊 latest_predictions unique tickers: {ticker_level.nunique()}")
+                        self.log(f"[DirectPredict] 📊 latest_predictions total rows: {len(latest_predictions)}")
+                        duplicates = ticker_level.duplicated()
+                        if duplicates.any():
+                            self.log(f"[DirectPredict] ⚠️ latest_predictions has {duplicates.sum()} duplicate tickers!")
+                            ticker_counts = ticker_level.value_counts()
+                            dup_tickers = ticker_counts[ticker_counts > 1]
+                            self.log(f"[DirectPredict] 📊 Duplicate tickers: {dup_tickers.head(10).to_dict()}")
+                    
+                    # 🔧 FIX: Remove duplicate tickers (keep first occurrence)
+                    if isinstance(latest_predictions.index, pd.MultiIndex):
+                        ticker_level = latest_predictions.index.get_level_values('ticker')
+                        if ticker_level.duplicated().any():
+                            self.log(f"[DirectPredict] 🔧 Removing {ticker_level.duplicated().sum()} duplicate tickers from latest_predictions...")
+                            latest_predictions = latest_predictions[~ticker_level.duplicated(keep='first')]
+                            self.log(f"[DirectPredict] ✅ latest_predictions after deduplication: {len(latest_predictions)} rows, {latest_predictions.index.get_level_values('ticker').nunique()} unique tickers")
+                    else:
+                        # If not MultiIndex, assume index is ticker
+                        if latest_predictions.index.duplicated().any():
+                            self.log(f"[DirectPredict] 🔧 Removing {latest_predictions.index.duplicated().sum()} duplicate indices from latest_predictions...")
+                            latest_predictions = latest_predictions[~latest_predictions.index.duplicated(keep='first')]
+                    
                     latest_predictions = latest_predictions.sort_values('score', ascending=False)
+                    
+                    # Final diagnostic
+                    unique_tickers = latest_predictions.index.get_level_values('ticker').nunique() if isinstance(latest_predictions.index, pd.MultiIndex) else latest_predictions.index.nunique()
+                    self.log(f"[DirectPredict] 📊 Final latest_predictions: {len(latest_predictions)} rows, {unique_tickers} unique tickers")
+                    
+                    # Debug: Log latest_predictions before creating recommendations
+                    self.log(f"[DirectPredict] 📊 latest_predictions shape: {latest_predictions.shape}")
+                    self.log(f"[DirectPredict] 📊 latest_predictions columns: {list(latest_predictions.columns)}")
+                    self.log(f"[DirectPredict] 📊 latest_predictions score unique values: {latest_predictions['score'].nunique()}")
+                    self.log(f"[DirectPredict] 📊 latest_predictions score range: min={latest_predictions['score'].min():.6f}, max={latest_predictions['score'].max():.6f}")
+                    self.log(f"[DirectPredict] 📊 Top 5 scores: {latest_predictions['score'].head().tolist()}")
                     
                     # Create recommendations list
                     recs = []
                     for idx, row in latest_predictions.iterrows():
                         ticker = idx[1] if isinstance(idx, tuple) else idx
                         score = row.get('score', 0.0)
+                        # Debug: Log if score is same as previous
+                        if len(recs) > 0 and abs(float(score) - recs[-1]['score']) < 1e-6:
+                            self.log(f"[DirectPredict] ⚠️ Duplicate score detected: {ticker}={float(score):.6f}, previous={recs[-1]['ticker']}={recs[-1]['score']:.6f}")
                         recs.append({'ticker': ticker, 'score': float(score)})
                 except Exception as e:
                     self.log(f"[DirectPredict] ⚠️ 生成推荐列表失败: {e}")
@@ -1791,19 +2248,34 @@ class AutoTraderGUI(tk.Tk):
             except Exception as e:
                 self.log(f"[DirectPredict] ⚠️ 写入数据库失败: {e}")
 
-            # Generate Excel report with EMA smoothing details
+            # Generate Excel report
             try:
                 output_dir = Path("results")
                 output_dir.mkdir(parents=True, exist_ok=True)
                 excel_path = output_dir / f"direct_predict_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                 
+                # Debug: Log final_predictions columns before Excel generation
+                self.log(f"[DirectPredict] 📊 Final predictions columns: {list(final_predictions.columns)}")
+                if 'score_lambdarank' in final_predictions.columns:
+                    self.log(f"[DirectPredict] ✅ score_lambdarank available: {final_predictions['score_lambdarank'].notna().sum()} non-null values")
+                else:
+                    self.log(f"[DirectPredict] ⚠️ score_lambdarank NOT in final_predictions")
+                if 'score_catboost' in final_predictions.columns:
+                    self.log(f"[DirectPredict] ✅ score_catboost available: {final_predictions['score_catboost'].notna().sum()} non-null values")
+                else:
+                    self.log(f"[DirectPredict] ⚠️ score_catboost NOT in final_predictions")
+                
                 self.log(f"[DirectPredict] 📊 生成Excel报告: {excel_path}")
                 generate_excel_ranking_report(
-                    smoothed_predictions,
+                    final_predictions,
                     str(excel_path),
-                    model_name="MetaRankerStacker (EMA Smoothed)"
+                    model_name="MetaRankerStacker",
+                    top_n=20  # Only show Top 20
                 )
                 self.log(f"[DirectPredict] ✅ Excel报告已保存: {excel_path}")
+            except NameError:
+                # generate_excel_ranking_report not imported, skip Excel generation
+                self.log("[DirectPredict] ⚠️ Excel报告函数未导入，跳过Excel报告生成")
             except ImportError:
                 self.log("[DirectPredict] ⚠️ openpyxl未安装，跳过Excel报告生成")
             except Exception as e:
@@ -1811,16 +2283,129 @@ class AutoTraderGUI(tk.Tk):
                 import traceback
                 self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
 
-            # Display top recommendations
+            # Display top recommendations (MetaRankerStacker)
             try:
                 top_show = min(20, len(recs))
-                self.log(f"[DirectPredict] 🏆 Top {top_show} 推荐 (EMA平滑后):")
+                self.log(f"[DirectPredict] 🏆 MetaRankerStacker Top {top_show} 推荐:")
                 for i, r in enumerate(recs[:top_show], 1):
                     score = r.get('score', 0.0)
                     ticker = r.get('ticker', 'N/A')
                     self.log(f"  {i:2d}. {ticker:8s}: {score:8.6f}")
             except Exception as e:
                 self.log(f"[DirectPredict] ⚠️ 显示推荐失败: {e}")
+            
+            # Helper function to get top N unique tickers by score
+            def get_top_n_unique_tickers(df, score_col, n=20):
+                """Get top N unique tickers by score, handling MultiIndex"""
+                if score_col not in df.columns:
+                    return pd.DataFrame()
+                
+                try:
+                    # Extract ticker level from index
+                    if isinstance(df.index, pd.MultiIndex):
+                        # If MultiIndex, extract ticker level
+                        ticker_level = df.index.get_level_values('ticker')
+                        # Create a temporary DataFrame with ticker as column for grouping
+                        temp_df = df[[score_col]].copy()
+                        temp_df['ticker'] = ticker_level
+                        # Remove NaN scores
+                        temp_df = temp_df.dropna(subset=[score_col])
+                        # Group by ticker and take the maximum score (in case of duplicates)
+                        grouped = temp_df.groupby('ticker')[score_col].max().reset_index()
+                        # Sort and get top N
+                        top_n = grouped.nlargest(n, score_col).reset_index(drop=True)
+                        return top_n
+                    else:
+                        # If not MultiIndex, assume index is ticker
+                        temp_df = df[[score_col]].copy()
+                        temp_df['ticker'] = df.index.astype(str)
+                        # Remove NaN scores
+                        temp_df = temp_df.dropna(subset=[score_col])
+                        # Remove duplicates by ticker (keep max score)
+                        grouped = temp_df.groupby('ticker')[score_col].max().reset_index()
+                        top_n = grouped.nlargest(n, score_col).reset_index(drop=True)
+                        return top_n
+                except Exception as e:
+                    self.log(f"[DirectPredict] ⚠️ Error in get_top_n_unique_tickers: {e}")
+                    import traceback
+                    self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+                    return pd.DataFrame()
+            
+            # Display CatBoost Top 20
+            try:
+                if latest_date and 'score_catboost' in latest_predictions.columns:
+                    catboost_top20 = get_top_n_unique_tickers(latest_predictions, 'score_catboost', 20)
+                    if len(catboost_top20) > 0:
+                        self.log(f"\n[DirectPredict] 🏆 CatBoost Top {len(catboost_top20)}:")
+                        for idx, row in catboost_top20.iterrows():
+                            ticker = str(row['ticker']).strip()
+                            score = float(row['score_catboost'])
+                            self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+                    else:
+                        self.log(f"[DirectPredict] ⚠️ CatBoost Top20: No valid scores found")
+                else:
+                    self.log(f"[DirectPredict] ⚠️ CatBoost scores not available")
+            except Exception as e:
+                self.log(f"[DirectPredict] ⚠️ 显示CatBoost Top20失败: {e}")
+                import traceback
+                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+            
+            # Display LambdaRanker Top 20
+            try:
+                if latest_date and 'score_lambdarank' in latest_predictions.columns:
+                    lambdarank_top20 = get_top_n_unique_tickers(latest_predictions, 'score_lambdarank', 20)
+                    if len(lambdarank_top20) > 0:
+                        self.log(f"\n[DirectPredict] 🏆 LambdaRanker Top {len(lambdarank_top20)}:")
+                        for idx, row in lambdarank_top20.iterrows():
+                            ticker = str(row['ticker']).strip()
+                            score = float(row['score_lambdarank'])
+                            self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+                    else:
+                        self.log(f"[DirectPredict] ⚠️ LambdaRanker Top20: No valid scores found")
+                else:
+                    self.log(f"[DirectPredict] ⚠️ LambdaRanker scores not available")
+            except Exception as e:
+                self.log(f"[DirectPredict] ⚠️ 显示LambdaRanker Top20失败: {e}")
+                import traceback
+                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+            
+            # Display ElasticNet Top 20
+            try:
+                if latest_date and 'score_elastic' in latest_predictions.columns:
+                    elastic_top20 = get_top_n_unique_tickers(latest_predictions, 'score_elastic', 20)
+                    if len(elastic_top20) > 0:
+                        self.log(f"\n[DirectPredict] 🏆 ElasticNet Top {len(elastic_top20)}:")
+                        for idx, row in elastic_top20.iterrows():
+                            ticker = str(row['ticker']).strip()
+                            score = float(row['score_elastic'])
+                            self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+                    else:
+                        self.log(f"[DirectPredict] ⚠️ ElasticNet Top20: No valid scores found")
+                else:
+                    self.log(f"[DirectPredict] ⚠️ ElasticNet scores not available")
+            except Exception as e:
+                self.log(f"[DirectPredict] ⚠️ 显示ElasticNet Top20失败: {e}")
+                import traceback
+                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+            
+            # Display XGBoost Top 20
+            try:
+                if latest_date and 'score_xgb' in latest_predictions.columns:
+                    xgb_top20 = get_top_n_unique_tickers(latest_predictions, 'score_xgb', 20)
+                    if len(xgb_top20) > 0:
+                        self.log(f"\n[DirectPredict] 🏆 XGBoost Top {len(xgb_top20)}:")
+                        for idx, row in xgb_top20.iterrows():
+                            ticker = str(row['ticker']).strip()
+                            score = float(row['score_xgb'])
+                            self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+                    else:
+                        self.log(f"[DirectPredict] ⚠️ XGBoost Top20: No valid scores found")
+                else:
+                    self.log(f"[DirectPredict] ⚠️ XGBoost scores not available")
+            except Exception as e:
+                self.log(f"[DirectPredict] ⚠️ 显示XGBoost Top20失败: {e}")
+                import traceback
+                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
 
         except Exception as e:
             self.log(f"[DirectPredict] ❌ 错误: {e}")
@@ -4802,9 +5387,367 @@ class AutoTraderGUI(tk.Tk):
 
             ttk.Label(
                 error_frame,
-                text="璇风‘淇濆凡瀹夎鎵闇渚濊禆:\npip install transformers torch accelerate",
+                text="璇风'淇濆凡瀹夎鎵闇渚濊禆:\npip install transformers torch accelerate",
                 font=('Arial', 10)
             ).pack(pady=10)
+
+    def _build_temporal_stacking_tab(self, parent) -> None:
+        """Build Temporal Stacking LambdaRank tab - Advanced meta-learner with signal trajectory"""
+        frame = tk.Frame(parent)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Header with description
+        header_frame = tk.LabelFrame(frame, text="Temporal Stacking LambdaRank")
+        header_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        desc_text = (
+            "Advanced meta-learner that uses T-1, T-2, T-3 prediction lags to capture:\n"
+            "• Signal Momentum: Is conviction increasing?\n"
+            "• Signal Stability: Is the model confused?\n"
+            "• Rank Acceleration: Are top picks rising or falling?"
+        )
+        tk.Label(header_frame, text=desc_text, justify=tk.LEFT, fg="blue").pack(anchor=tk.W, padx=10, pady=5)
+
+        # Data Configuration
+        data_frame = tk.LabelFrame(frame, text="Data Configuration")
+        data_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        row1 = tk.Frame(data_frame)
+        row1.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(row1, text="OOF Data File:").pack(side=tk.LEFT)
+        self.ts_data_path = tk.Entry(row1, width=50)
+        self.ts_data_path.insert(0, "D:/trade/data/factor_exports/polygon_factors_all_filtered_clean.parquet")
+        self.ts_data_path.pack(side=tk.LEFT, padx=5)
+        tk.Button(row1, text="Browse...", command=self._browse_temporal_data).pack(side=tk.LEFT, padx=5)
+
+        row2 = tk.Frame(data_frame)
+        row2.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(row2, text="Target Column:").pack(side=tk.LEFT)
+        self.ts_target_col = tk.Entry(row2, width=15)
+        self.ts_target_col.insert(0, "target")
+        self.ts_target_col.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(row2, text="Lookback Days:").pack(side=tk.LEFT, padx=10)
+        self.ts_lookback = ttk.Spinbox(row2, from_=1, to=5, width=5)
+        self.ts_lookback.set(3)
+        self.ts_lookback.pack(side=tk.LEFT, padx=5)
+
+        # Model Parameters (Anti-Overfitting)
+        params_frame = tk.LabelFrame(frame, text="Model Parameters (Anti-Overfitting Defaults)")
+        params_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        param_row1 = tk.Frame(params_frame)
+        param_row1.pack(fill=tk.X, padx=5, pady=2)
+
+        tk.Label(param_row1, text="Num Leaves:").pack(side=tk.LEFT)
+        self.ts_num_leaves = ttk.Spinbox(param_row1, from_=4, to=31, width=5)
+        self.ts_num_leaves.set(8)
+        self.ts_num_leaves.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_row1, text="Max Depth:").pack(side=tk.LEFT, padx=10)
+        self.ts_max_depth = ttk.Spinbox(param_row1, from_=2, to=6, width=5)
+        self.ts_max_depth.set(3)
+        self.ts_max_depth.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_row1, text="Learning Rate:").pack(side=tk.LEFT, padx=10)
+        self.ts_learning_rate = tk.Entry(param_row1, width=8)
+        self.ts_learning_rate.insert(0, "0.005")
+        self.ts_learning_rate.pack(side=tk.LEFT, padx=5)
+
+        param_row2 = tk.Frame(params_frame)
+        param_row2.pack(fill=tk.X, padx=5, pady=2)
+
+        tk.Label(param_row2, text="Feature Fraction:").pack(side=tk.LEFT)
+        self.ts_feature_fraction = tk.Entry(param_row2, width=8)
+        self.ts_feature_fraction.insert(0, "0.6")
+        self.ts_feature_fraction.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_row2, text="Truncation Level:").pack(side=tk.LEFT, padx=10)
+        self.ts_truncation = ttk.Spinbox(param_row2, from_=20, to=200, width=5)
+        self.ts_truncation.set(60)
+        self.ts_truncation.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_row2, text="Label Gain Power:").pack(side=tk.LEFT, padx=10)
+        self.ts_gain_power = tk.Entry(param_row2, width=8)
+        self.ts_gain_power.insert(0, "2.5")
+        self.ts_gain_power.pack(side=tk.LEFT, padx=5)
+
+        param_row3 = tk.Frame(params_frame)
+        param_row3.pack(fill=tk.X, padx=5, pady=2)
+
+        tk.Label(param_row3, text="Boost Rounds:").pack(side=tk.LEFT)
+        self.ts_boost_rounds = ttk.Spinbox(param_row3, from_=100, to=2000, width=6)
+        self.ts_boost_rounds.set(500)
+        self.ts_boost_rounds.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_row3, text="Early Stopping:").pack(side=tk.LEFT, padx=10)
+        self.ts_early_stopping = ttk.Spinbox(param_row3, from_=20, to=200, width=5)
+        self.ts_early_stopping.set(50)
+        self.ts_early_stopping.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_row3, text="IPO Handling:").pack(side=tk.LEFT, padx=10)
+        self.ts_ipo_handling = ttk.Combobox(param_row3, values=['backfill', 'cross_median', 'zero'], width=12)
+        self.ts_ipo_handling.set('backfill')
+        self.ts_ipo_handling.pack(side=tk.LEFT, padx=5)
+
+        # Action Buttons
+        action_frame = tk.Frame(frame)
+        action_frame.pack(fill=tk.X, padx=5, pady=10)
+
+        tk.Button(
+            action_frame,
+            text="Run Temporal Stacking Training",
+            command=self._run_temporal_stacking_training,
+            bg="#4CAF50",
+            fg="white",
+            font=("Arial", 10, "bold"),
+            width=25
+        ).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
+            action_frame,
+            text="Validate Temporal Integrity",
+            command=self._validate_temporal_integrity,
+            bg="#2196F3",
+            fg="white",
+            font=("Arial", 10),
+            width=20
+        ).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
+            action_frame,
+            text="View Inference State",
+            command=self._view_temporal_state,
+            bg="#FF9800",
+            fg="white",
+            font=("Arial", 10),
+            width=18
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Progress and Status
+        status_frame = tk.LabelFrame(frame, text="Training Status")
+        status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.ts_progress = ttk.Progressbar(status_frame, mode='indeterminate')
+        self.ts_progress.pack(fill=tk.X, padx=5, pady=5)
+
+        self.ts_status_text = tk.Text(status_frame, height=12, wrap=tk.WORD)
+        ts_scroll = tk.Scrollbar(status_frame, orient=tk.VERTICAL, command=self.ts_status_text.yview)
+        self.ts_status_text.configure(yscrollcommand=ts_scroll.set)
+        self.ts_status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        ts_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Initialize model reference
+        self._temporal_stacker = None
+
+    def _browse_temporal_data(self):
+        """Browse for temporal stacking data file"""
+        filepath = filedialog.askopenfilename(
+            title="Select OOF Data File",
+            filetypes=[("Parquet files", "*.parquet"), ("All files", "*.*")]
+        )
+        if filepath:
+            self.ts_data_path.delete(0, tk.END)
+            self.ts_data_path.insert(0, filepath)
+
+    def _update_temporal_status(self, message: str):
+        """Update temporal stacking status text"""
+        try:
+            print(message)
+        except Exception:
+            pass
+        if hasattr(self, 'ts_status_text'):
+            self.ts_status_text.insert(tk.END, message + "\n")
+            self.ts_status_text.see(tk.END)
+
+    def _run_temporal_stacking_training(self):
+        """Run Temporal Stacking LambdaRank training"""
+        def training_thread():
+            try:
+                self.ts_progress.start()
+                self._update_temporal_status("Starting Temporal Stacking training...")
+
+                # Import module
+                try:
+                    from bma_models.temporal_stacking import TemporalStackingLambdaRank, validate_temporal_integrity
+                except ImportError as e:
+                    self._update_temporal_status(f"Failed to import temporal_stacking: {e}")
+                    self.ts_progress.stop()
+                    return
+
+                # Load data
+                data_path = self.ts_data_path.get()
+                self._update_temporal_status(f"Loading data from: {data_path}")
+
+                import pandas as pd
+                df = pd.read_parquet(data_path)
+
+                # Ensure MultiIndex
+                if not isinstance(df.index, pd.MultiIndex):
+                    if 'date' in df.columns and 'ticker' in df.columns:
+                        df = df.set_index(['date', 'ticker'])
+                    else:
+                        self._update_temporal_status("Error: Data must have date and ticker columns")
+                        self.ts_progress.stop()
+                        return
+
+                self._update_temporal_status(f"Data loaded: {len(df)} rows, {len(df.columns)} columns")
+
+                # Get parameters
+                config = {
+                    'lookback_days': int(self.ts_lookback.get()),
+                    'label_gain_power': float(self.ts_gain_power.get()),
+                    'num_boost_round': int(self.ts_boost_rounds.get()),
+                    'early_stopping_rounds': int(self.ts_early_stopping.get()),
+                    'ipo_handling': self.ts_ipo_handling.get(),
+                    'lgb_params': {
+                        'num_leaves': int(self.ts_num_leaves.get()),
+                        'max_depth': int(self.ts_max_depth.get()),
+                        'learning_rate': float(self.ts_learning_rate.get()),
+                        'feature_fraction': float(self.ts_feature_fraction.get()),
+                        'lambdarank_truncation_level': int(self.ts_truncation.get())
+                    }
+                }
+
+                self._update_temporal_status(f"Configuration: {config}")
+
+                # Create and train model
+                self._update_temporal_status("Initializing TemporalStackingLambdaRank...")
+                model = TemporalStackingLambdaRank(**config)
+
+                # Get target column
+                target_col = self.ts_target_col.get()
+                if target_col not in df.columns:
+                    # Try common alternatives
+                    for alt in ['ret_fwd_10d', 'ret_fwd_5d', 'target']:
+                        if alt in df.columns:
+                            target_col = alt
+                            break
+
+                self._update_temporal_status(f"Training with target: {target_col}")
+
+                # Train
+                model.fit(df, target_col=target_col)
+
+                # Save reference
+                self._temporal_stacker = model
+
+                # Report results
+                info = model.get_model_info()
+                self._update_temporal_status("\n" + "="*50)
+                self._update_temporal_status("TRAINING COMPLETE")
+                self._update_temporal_status("="*50)
+                self._update_temporal_status(f"Best iteration: {info.get('best_iteration', 'N/A')}")
+                self._update_temporal_status(f"Number of features: {info.get('n_features', 'N/A')}")
+
+                if 'feature_importance' in info:
+                    self._update_temporal_status("\nTop Features:")
+                    for feat, imp in list(info['feature_importance'].items())[:10]:
+                        self._update_temporal_status(f"  {feat}: {imp}")
+
+                self._update_temporal_status("\nModel ready for prediction!")
+
+            except Exception as e:
+                import traceback
+                self._update_temporal_status(f"Training failed: {e}")
+                self._update_temporal_status(traceback.format_exc())
+            finally:
+                self.ts_progress.stop()
+
+        # Run in thread
+        threading.Thread(target=training_thread, daemon=True).start()
+
+    def _validate_temporal_integrity(self):
+        """Validate temporal integrity of loaded data"""
+        def validation_thread():
+            try:
+                self.ts_progress.start()
+                self._update_temporal_status("Validating temporal integrity...")
+
+                from bma_models.temporal_stacking import validate_temporal_integrity, build_temporal_features
+                import pandas as pd
+
+                # Load data
+                data_path = self.ts_data_path.get()
+                df = pd.read_parquet(data_path)
+
+                if not isinstance(df.index, pd.MultiIndex):
+                    if 'date' in df.columns and 'ticker' in df.columns:
+                        df = df.set_index(['date', 'ticker'])
+
+                # Identify prediction columns
+                pred_cols = [c for c in df.columns if c.startswith('pred_')]
+                if not pred_cols:
+                    pred_cols = ['pred_elastic', 'pred_xgb', 'pred_lambdarank', 'pred_catboost']
+                    pred_cols = [c for c in pred_cols if c in df.columns]
+
+                self._update_temporal_status(f"Found prediction columns: {pred_cols}")
+
+                if not pred_cols:
+                    self._update_temporal_status("No prediction columns found! Need to train first-layer models.")
+                    self.ts_progress.stop()
+                    return
+
+                # Build temporal features first
+                self._update_temporal_status("Building temporal features for validation...")
+                df_temporal = build_temporal_features(df, pred_cols, lookback=3)
+
+                # Validate
+                self._update_temporal_status("Running temporal integrity checks...")
+                result = validate_temporal_integrity(df_temporal, pred_cols)
+
+                self._update_temporal_status("\n" + "="*50)
+                self._update_temporal_status("VALIDATION RESULTS")
+                self._update_temporal_status("="*50)
+                self._update_temporal_status(f"Passed: {result['passed']}")
+
+                if result['checks']:
+                    self._update_temporal_status("\nChecks:")
+                    for check, value in result['checks'].items():
+                        self._update_temporal_status(f"  {check}: {value}")
+
+                if result['warnings']:
+                    self._update_temporal_status("\nWarnings:")
+                    for warn in result['warnings']:
+                        self._update_temporal_status(f"  - {warn}")
+
+                if result['errors']:
+                    self._update_temporal_status("\nErrors:")
+                    for err in result['errors']:
+                        self._update_temporal_status(f"  - {err}")
+
+            except Exception as e:
+                import traceback
+                self._update_temporal_status(f"Validation failed: {e}")
+                self._update_temporal_status(traceback.format_exc())
+            finally:
+                self.ts_progress.stop()
+
+        threading.Thread(target=validation_thread, daemon=True).start()
+
+    def _view_temporal_state(self):
+        """View inference state history"""
+        try:
+            from bma_models.temporal_stacking import TemporalInferenceState
+
+            state_mgr = TemporalInferenceState()
+            history = state_mgr.get_available_history()
+
+            self._update_temporal_status("\n" + "="*50)
+            self._update_temporal_status("INFERENCE STATE HISTORY")
+            self._update_temporal_status("="*50)
+            self._update_temporal_status(f"State directory: {state_mgr.state_dir}")
+            self._update_temporal_status(f"Available dates: {len(history)}")
+
+            if history:
+                self._update_temporal_status("\nRecent states:")
+                for date in history[-10:]:
+                    self._update_temporal_status(f"  - {date}")
+            else:
+                self._update_temporal_status("\nNo state files found. Train and save predictions to create state.")
+
+        except Exception as e:
+            self._update_temporal_status(f"Failed to view state: {e}")
 
     def _run_single_backtest(self):
         """杩愯鍗曚釜鍥炴"""
@@ -4926,7 +5869,7 @@ class AutoTraderGUI(tk.Tk):
     def _run_prediction_only(self):
         """
         快速预测（仅使用已保存的模型，无需训练）
-        统一使用_direct_predict_snapshot，确保功能一致（包含EMA平滑和Excel输出）
+        统一使用_direct_predict_snapshot，确保功能一致（包含Excel输出，无EMA平滑）
         """
         try:
             if getattr(self, '_prediction_thread', None) and self._prediction_thread.is_alive():
@@ -4949,7 +5892,7 @@ class AutoTraderGUI(tk.Tk):
 
             if hasattr(self, 'pred_progress'):
                 self.pred_progress.start()
-            self._update_prediction_status("🚀 开始快速预测（使用快照，包含EMA平滑和Excel输出）...")
+            self._update_prediction_status("🚀 开始快速预测（使用快照，包含Excel输出，无EMA平滑）...")
 
             def _run_prediction_thread():
                 try:

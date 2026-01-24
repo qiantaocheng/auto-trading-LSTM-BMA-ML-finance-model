@@ -527,6 +527,7 @@ class UnifiedTrainingConfig:
         # Cross-validation temporal parameters - 使用统一配置硬编码值避免循环导入
         self._MIN_TRAIN_SIZE = training_config.get('cv_min_train_size', 252)               # 1 year minimum training
         self._TEST_SIZE = training_config.get('test_size', 63)                             # 3 months test size
+        self._MIN_TRAIN_WINDOW_DAYS = temporal_config.get('min_train_window_days', 252)   # 🔧 最小训练窗：1年交易日（252天）
         self._CV_GAP_DAYS = temporal_config.get('cv_gap_days', 6)                          # CV gap = 6 (from unified config)
         self._CV_EMBARGO_DAYS = temporal_config.get('cv_embargo_days', 5)                  # CV embargo = 5 (from unified config)
         self._CV_SPLITS = training_config.get('cv_splits', 5)                              # Number of CV splits
@@ -573,9 +574,11 @@ class UnifiedTrainingConfig:
         
         elastic_config = base_models.get('elastic_net', {})
         self._ELASTIC_NET_CONFIG = {
-            'alpha': elastic_config.get('alpha', 0.0001),  # Updated: 0.0001
-            'l1_ratio': elastic_config.get('l1_ratio', 0.05),  # Updated: 0.05
-            'max_iter': 5000,  # 增加迭代确保收敛
+            'alpha': elastic_config.get('alpha', 0.0012),  # 🔧 0.002 -> 0.0012（别太硬，保持一点灵敏度）
+            'l1_ratio': elastic_config.get('l1_ratio', 0.15),  # 🔧 0.10 -> 0.15（让它更像"稀疏线性组合"，更适合横截面）
+            'max_iter': elastic_config.get('max_iter', 10000),  # 🔧 5000 -> 10000（收敛更稳）
+            'fit_intercept': elastic_config.get('fit_intercept', True),
+            'selection': elastic_config.get('selection', 'random'),  # 更稳（如果你用 sklearn ElasticNet）
             'random_state': elastic_config.get('random_state', self._RANDOM_STATE)
         }
         
@@ -584,19 +587,19 @@ class UnifiedTrainingConfig:
             # FIXED V2: 明确设置回归目标函数
             'objective': 'reg:squarederror',
 
-            # Updated parameters
-            'n_estimators': xgb_config.get('n_estimators', 500),
-            'max_depth': xgb_config.get('max_depth', 4),
-            'learning_rate': xgb_config.get('learning_rate', 0.03),
+            # 🔧 Updated parameters 2025-01-19
+            'n_estimators': xgb_config.get('n_estimators', 800),  # 🔧 500 -> 800
+            'max_depth': xgb_config.get('max_depth', 5),  # 🔧 4 -> 5
+            'learning_rate': xgb_config.get('learning_rate', 0.02),  # 🔧 0.03 -> 0.02
 
             # Updated parameters
             'subsample': xgb_config.get('subsample', 0.7),
             'colsample_bytree': xgb_config.get('colsample_bytree', 0.7),
             'colsample_bylevel': xgb_config.get('colsample_bylevel', 0.9),
             'reg_alpha': xgb_config.get('reg_alpha', 0.0),
-            'reg_lambda': xgb_config.get('reg_lambda', 5.0),
-            'min_child_weight': xgb_config.get('min_child_weight', 100),
-            'gamma': xgb_config.get('gamma', 0),
+            'reg_lambda': xgb_config.get('reg_lambda', 10.0),  # 🔧 5.0 -> 10.0（L2更强）
+            'min_child_weight': xgb_config.get('min_child_weight', 30),  # 🔧 100 -> 30
+            'gamma': xgb_config.get('gamma', 0.0),  # 🔧 明确设置为0.0
 
             # 性能和确定性参数（2600股票优化）
             'tree_method': xgb_config.get('tree_method', 'auto'),
@@ -618,18 +621,18 @@ class UnifiedTrainingConfig:
         
         catboost_config = base_models.get('catboost', {})
         self._CATBOOST_CONFIG = {
-            # Updated parameters
-            'iterations': catboost_config.get('iterations', 1200),
-            'depth': catboost_config.get('depth', 5),
+            # 🔧 Updated parameters 2025-01-19
+            'iterations': catboost_config.get('iterations', 3000),  # 🔧 1200 -> 3000
+            'depth': catboost_config.get('depth', 6),  # 🔧 5 -> 6
             'learning_rate': catboost_config.get('learning_rate', 0.02),
-            'l2_leaf_reg': catboost_config.get('l2_leaf_reg', 10),
+            'l2_leaf_reg': catboost_config.get('l2_leaf_reg', 20),  # 🔧 10 -> 20（更稳）
 
             # Updated parameters
             'random_strength': catboost_config.get('random_strength', 0.2),
             'bootstrap_type': catboost_config.get('bootstrap_type', 'Bernoulli'),
             'subsample': catboost_config.get('subsample', 0.7),
             'rsm': catboost_config.get('rsm', 0.85),
-            'min_data_in_leaf': catboost_config.get('min_data_in_leaf', 200),
+            'min_data_in_leaf': catboost_config.get('min_data_in_leaf', 500),  # 🔧 200 -> 500（更抗噪）
 
             # 时间感知和基础设置
             'has_time': True,
@@ -639,7 +642,7 @@ class UnifiedTrainingConfig:
             'allow_writing_files': False,
             'thread_count': catboost_config.get('thread_count', -1),
             'od_type': catboost_config.get('od_type', 'Iter'),
-            'od_wait': catboost_config.get('od_wait', 80),
+            'od_wait': catboost_config.get('od_wait', 120),  # 🔧 80 -> 120（更保守早停）
             'task_type': catboost_config.get('task_type', 'CPU'),
             'max_bin': catboost_config.get('max_bin', 255),
             'leaf_estimation_iterations': catboost_config.get('leaf_estimation_iterations', 1)
@@ -673,27 +676,28 @@ class UnifiedTrainingConfig:
         }
 
         # LambdaRank config (allow grid overrides)
+        # 🔧 Updated 2025-01-19
         lambda_config = base_models.get('lambdarank', {})
         lambda_fit_params = lambda_config.get('fit_params', {}) if isinstance(lambda_config.get('fit_params'), dict) else {}
         self._LAMBDA_RANK_CONFIG = {
-            'num_boost_round': lambda_config.get('num_boost_round', 260),  # Updated: 260
-            'learning_rate': lambda_config.get('learning_rate', 0.03),
-            'num_leaves': lambda_config.get('num_leaves', 127),
-            'max_depth': lambda_config.get('max_depth', 6),
-            'min_data_in_leaf': lambda_config.get('min_data_in_leaf', 380),  # Updated: 380
+            'num_boost_round': lambda_config.get('num_boost_round', 1200),  # 🔧 700 -> 1200（更多轮次）
+            'learning_rate': lambda_config.get('learning_rate', 0.01),  # 🔧 0.02 -> 0.01（更稳）
+            'num_leaves': lambda_config.get('num_leaves', 31),  # 🔧 63 -> 31（更保守）
+            'max_depth': lambda_config.get('max_depth', 5),  # 🔧 6 -> 5（更浅）
+            'min_data_in_leaf': lambda_config.get('min_data_in_leaf', 800),  # 🔧 650 -> 800（更稳）
             'lambda_l1': lambda_config.get('lambda_l1', 0.0),
-            'lambda_l2': lambda_config.get('lambda_l2', 10.0),  # Updated: 10.0
-            'feature_fraction': lambda_config.get('feature_fraction', 0.85),
-            'bagging_fraction': lambda_config.get('bagging_fraction', 0.8),
-            'bagging_freq': lambda_config.get('bagging_freq', 1),
-            'lambdarank_truncation_level': lambda_config.get('lambdarank_truncation_level', 650),  # Updated: 650
-            'sigmoid': lambda_config.get('sigmoid', 1.2),
-            'n_quantiles': lambda_config.get('n_quantiles', 64),
-            'label_gain_power': lambda_config.get('label_gain_power', 2.0),  # Updated: 2.0
-            'ndcg_eval_at': lambda_config.get('ndcg_eval_at', [10, 30]),  # NDCG evaluation points
+            'lambda_l2': lambda_config.get('lambda_l2', 30.0),  # 🔧 22.0 -> 30.0（更强正则化）
+            'feature_fraction': lambda_config.get('feature_fraction', 0.9),  # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+            'bagging_fraction': lambda_config.get('bagging_fraction', 0.75),  # 🔧 0.8 -> 0.75
+            'bagging_freq': lambda_config.get('bagging_freq', 3),  # 🔧 5 -> 3
+            'lambdarank_truncation_level': lambda_config.get('lambdarank_truncation_level', 80),  # 🔧 100 -> 80
+            'sigmoid': lambda_config.get('sigmoid', 1.1),  # 🔧 1.05 -> 1.1
+            'n_quantiles': lambda_config.get('n_quantiles', 32),  # 🔧 64 -> 32
+            'label_gain_power': lambda_config.get('label_gain_power', 2.1),  # 🔧 2.0 -> 2.1
+            'ndcg_eval_at': lambda_config.get('ndcg_eval_at', [10]),  # 🔧 聚焦Top10
             'objective': lambda_config.get('objective', 'lambdarank'),
             'metric': lambda_config.get('metric', 'ndcg'),
-            'early_stopping_rounds': lambda_fit_params.get('early_stopping_rounds', 60),
+            'early_stopping_rounds': lambda_fit_params.get('early_stopping_rounds', 100),  # 🔧 70 -> 100（更保守早停）
         }
 
         # Meta Ranker Stacker config (replaces RidgeStacker)
@@ -702,23 +706,23 @@ class UnifiedTrainingConfig:
         self._META_RANKER_CONFIG = {
             'base_cols': tuple(meta_ranker_cfg.get('base_cols', ['pred_catboost', 'pred_xgb', 'pred_lambdarank', 'pred_elastic'])),  # Updated order
             'n_quantiles': meta_ranker_cfg.get('n_quantiles', 64),
-            'label_gain_power': meta_ranker_cfg.get('label_gain_power', 1.7),  # Updated: 1.7
-            'num_boost_round': meta_ranker_cfg.get('num_boost_round', 140),  # Updated: 140
-            'early_stopping_rounds': meta_ranker_fit_params.get('early_stopping_rounds', 40),  # Updated: 40
+            'label_gain_power': meta_ranker_cfg.get('label_gain_power', 2.3),  # 🔧 1.7 -> 2.3（★重点：重赏头部准确度）
+            'num_boost_round': meta_ranker_cfg.get('num_boost_round', 2000),  # 🔧 140 -> 2000（配套大幅增加轮数）
+            'early_stopping_rounds': meta_ranker_fit_params.get('early_stopping_rounds', 100),  # 🔧 40 -> 100
             'lgb_params': {
                 'objective': meta_ranker_cfg.get('objective', 'lambdarank'),
                 'metric': meta_ranker_cfg.get('metric', 'ndcg'),
-                'ndcg_eval_at': meta_ranker_cfg.get('ndcg_eval_at', [10, 30]),
-                'num_leaves': meta_ranker_cfg.get('num_leaves', 31),  # Updated: 31
-                'max_depth': meta_ranker_cfg.get('max_depth', 4),
-                'learning_rate': meta_ranker_cfg.get('learning_rate', 0.03),  # Updated: 0.03
-                'min_data_in_leaf': meta_ranker_cfg.get('min_data_in_leaf', 200),  # Updated: 200
-                'lambda_l1': meta_ranker_cfg.get('lambda_l1', 0.0),  # Updated: 0.0
-                'lambda_l2': meta_ranker_cfg.get('lambda_l2', 15.0),  # Updated: 15.0
-                'feature_fraction': meta_ranker_cfg.get('feature_fraction', 1.0),
-                'bagging_fraction': meta_ranker_cfg.get('bagging_fraction', 0.8),
+                'ndcg_eval_at': meta_ranker_cfg.get('ndcg_eval_at', [5, 15]),  # 🔧 聚焦更核心的头部
+                'num_leaves': meta_ranker_cfg.get('num_leaves', 15),  # 🔧 31 -> 15（降低复杂度）
+                'max_depth': meta_ranker_cfg.get('max_depth', 3),  # 🔧 4 -> 3
+                'learning_rate': meta_ranker_cfg.get('learning_rate', 0.005),  # 🔧 0.03 -> 0.005（大幅降低，更精细的梯度下降）
+                'min_data_in_leaf': meta_ranker_cfg.get('min_data_in_leaf', 500),  # 🔧 200 -> 500（提高叶子节点门槛）
+                'lambda_l1': meta_ranker_cfg.get('lambda_l1', 2.0),  # 🔧 0.0 -> 2.0（新增L1正则化）
+                'lambda_l2': meta_ranker_cfg.get('lambda_l2', 20.0),  # 🔧 15.0 -> 20.0（增强L2正则化）
+                'feature_fraction': meta_ranker_cfg.get('feature_fraction', 0.7),  # 🔧 1.0 -> 0.7
+                'bagging_fraction': meta_ranker_cfg.get('bagging_fraction', 0.6),  # 🔧 0.8 -> 0.6
                 'bagging_freq': meta_ranker_cfg.get('bagging_freq', 1),
-                'lambdarank_truncation_level': meta_ranker_cfg.get('lambdarank_truncation_level', 1200),  # Updated: 1200
+                'lambdarank_truncation_level': meta_ranker_cfg.get('lambdarank_truncation_level', 60),  # 🔧 1200 -> 60（★重点：只优化 Top 60）
                 'sigmoid': meta_ranker_cfg.get('sigmoid', 1.2),  # Updated: 1.2
                 'verbose': meta_ranker_cfg.get('verbose', -1),
             }
@@ -3222,103 +3226,79 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
     def _configure_feature_subsets(self):
         """Initialize compulsory feature lists based on the active prediction horizon."""
         try:
-            from bma_models.simple_25_factor_engine import T5_ALPHA_FACTORS, T10_ALPHA_FACTORS
+            from bma_models.simple_25_factor_engine import T10_ALPHA_FACTORS  # T5 removed, always use T10
         except Exception:
-            T5_ALPHA_FACTORS = [
-                'momentum_60d', 'rsi_21', 'bollinger_squeeze', 'obv_momentum_60d',
-                'atr_ratio', 'blowoff_ratio', 'hist_vol_40d', 'vol_ratio_20d',
-                'near_52w_high', 'price_ma60_deviation', 'mom_accel_20_5',
-                'streak_reversal', 'ma30_ma60_cross', 'ret_skew_20d', 'trend_r2_60'
-            ]
+            # Fallback definition if import fails
             T10_ALPHA_FACTORS = [
-                'liquid_momentum', 'obv_divergence', 'ivol_20', 'rsi_21', 'trend_r2_60',
-                'near_52w_high', 'ret_skew_20d', 'blowoff_ratio', 'hist_vol_40d',
-                'atr_ratio', 'bollinger_squeeze', 'vol_ratio_20d', 'price_ma60_deviation'
+                'liquid_momentum', 'momentum_10d', 'momentum_60d', 'obv_divergence', 'obv_momentum_60d',
+                'ivol_20', 'hist_vol_40d', 'atr_ratio', 'rsi_21', 'trend_r2_60',
+                'near_52w_high', 'vol_ratio_20d', 'price_ma60_deviation', '5_days_reversal',
             ]
 
-        horizon = int(getattr(self, 'horizon', getattr(CONFIG, 'PREDICTION_HORIZON_DAYS', 10)))
-        is_t10 = horizon >= 10
-        factor_universe = T10_ALPHA_FACTORS if is_t10 else T5_ALPHA_FACTORS
+        # 🔥 ALWAYS USE T+10 FACTORS (T5 removed)
+        # Always use T10_ALPHA_FACTORS regardless of horizon
+        factor_universe = T10_ALPHA_FACTORS
         self.active_alpha_factors = list(dict.fromkeys(factor_universe))
 
-        if is_t10:
-            self.compulsory_features = [
-                'obv_divergence',
-                'ivol_20',
-                'rsi_21',
-                'near_52w_high',
-                'trend_r2_60',
-            ]
-            # Prefer best-per-model feature sets found by the grid-search runner (train+predict).
-            # This keeps features aligned across the entire pipeline without manual env overrides.
-            best_features_path = Path("results/t10_optimized_all_models/best_features_per_model.json")
+        # 🔥 ALWAYS T+10: Compulsory features match T10_ALPHA_FACTORS
+        # Updated: Matching T10 factor set (2026-01-24)
+        self.compulsory_features = [
+            'liquid_momentum', 'momentum_10d', 'momentum_60d', 'obv_divergence', 'obv_momentum_60d',
+            'ivol_20', 'hist_vol_40d', 'atr_ratio', 'rsi_21', 'trend_r2_60',
+            'near_52w_high', 'vol_ratio_20d', 'price_ma60_deviation', '5_days_reversal',
+            # 'ret_skew_20d',  # REMOVED
+        ]
+        # Prefer best-per-model feature sets found by the grid-search runner (train+predict).
+        # This keeps features aligned across the entire pipeline without manual env overrides.
+        best_features_path = Path("results/t10_optimized_all_models/best_features_per_model.json")
+        best_per_model = None
+        try:
+            if best_features_path.exists():
+                best_per_model = json.loads(best_features_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"[FEATURE] Failed to load best feature file: {best_features_path} ({e})")
             best_per_model = None
-            try:
-                if best_features_path.exists():
-                    best_per_model = json.loads(best_features_path.read_text(encoding="utf-8"))
-            except Exception as e:
-                logger.warning(f"[FEATURE] Failed to load best feature file: {best_features_path} ({e})")
-                best_per_model = None
 
-            def _ensure_compulsory(fs):
-                fs = list(dict.fromkeys([str(x) for x in (fs or [])]))
-                for f in self.compulsory_features:
-                    if f not in fs:
-                        fs.append(f)
-                return fs
+        def _ensure_compulsory(fs):
+            fs = list(dict.fromkeys([str(x) for x in (fs or [])]))
+            for f in self.compulsory_features:
+                if f not in fs:
+                    fs.append(f)
+            return fs
 
-            if isinstance(best_per_model, dict) and best_per_model:
-                base_overrides = {}
-                for mk in ["elastic_net", "xgboost", "catboost", "lambdarank"]:
-                    base_overrides[mk] = _ensure_compulsory(best_per_model.get(mk))
-                model_feature_limits = {k: len(v) for k, v in base_overrides.items()}
-                logger.info(f"[FEATURE] Using best-per-model T+10 features from {best_features_path}")
-            else:
-                # Fallback: previous single-list T+10 optimized feature list
-                t10_selected = [
-                    "ivol_20",
-                    "hist_vol_40d",
-                    "near_52w_high",
-                    "rsi_21",
-                    "vol_ratio_20d",
-                    "trend_r2_60",
-                    "liquid_momentum",
-                    "obv_divergence",
-                    "atr_ratio",
-                    "ret_skew_20d",
-                    "bollinger_squeeze",
-                    "price_ma60_deviation",
-                    "blowoff_ratio",
-                ]
-                t10_selected = _ensure_compulsory(t10_selected)
-                base_overrides = {
-                    'elastic_net': list(t10_selected),
-                    'catboost': list(t10_selected),
-                    'xgboost': list(t10_selected),
-                    'lambdarank': list(t10_selected),
-                }
-                model_feature_limits = {k: len(v) for k, v in base_overrides.items()}
+        if isinstance(best_per_model, dict) and best_per_model:
+            base_overrides = {}
+            for mk in ["elastic_net", "xgboost", "catboost", "lambdarank"]:
+                base_overrides[mk] = _ensure_compulsory(best_per_model.get(mk))
+            model_feature_limits = {k: len(v) for k, v in base_overrides.items()}
+            logger.info(f"[FEATURE] Using best-per-model T+10 features from {best_features_path}")
         else:
-            self.compulsory_features = [
-                'momentum_60d',
-                'rsi_21',
-                'near_52w_high',
-                'mom_accel_20_5',
-                'ma30_ma60_cross',
-                'trend_r2_60',
+            # Fallback: previous single-list T+10 optimized feature list
+            t10_selected = [
+                "momentum_10d",  # NEW: 10-day short-term momentum
+                "ivol_30",  # Updated: 20d → 30d
+                # "hist_vol_40d",  # REMOVED: 40-day historical volatility - removed from all first layer models
+                "near_52w_high",
+                "rsi_21",
+                "vol_ratio_30d",  # Updated: 20d → 30d
+                "trend_r2_60",
+                "liquid_momentum",
+                "obv_momentum_40d",  # Updated: OBV Momentum (40d) replaces OBV Divergence
+                "atr_ratio",
+                "ret_skew_30d",  # Updated: 20d → 30d
+                "price_ma60_deviation",
+                "5_days_reversal",  # 5-day reversal factor
             ]
+            t10_selected = _ensure_compulsory(t10_selected)
             base_overrides = {
-                'elastic_net': ['ret_skew_20d'],
-                'catboost': ['obv_momentum_60d', 'vol_ratio_20d', 'price_ma60_deviation'],
-                'xgboost': None,
-                'lambdarank': [],
+                'elastic_net': list(t10_selected),
+                'catboost': list(t10_selected),
+                'xgboost': list(t10_selected),
+                'lambdarank': list(t10_selected),
             }
-            model_feature_limits = {
-                'elastic_net': 8,
-                'xgboost': 12,
-                'catboost': 12,
-                'lambdarank': 14,
-            }
+            model_feature_limits = {k: len(v) for k, v in base_overrides.items()}
+        
+        # 🔥 ALWAYS T+10: T5 else block removed (always use T+10 factors)
 
         self._base_feature_overrides = base_overrides
         self.first_layer_feature_overrides = dict(base_overrides)
@@ -5298,11 +5278,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
     'mom_accel_5_2': 'liquid_momentum',
     'price_efficiency_10d': 'trend_r2_60',
     'price_efficiency_5d': 'trend_r2_60',
-    'obv_momentum_20d': 'obv_divergence',
-    'obv_momentum': 'obv_divergence',
+    'obv_momentum_20d': 'obv_momentum_40d',  # Updated: OBV Momentum (40d) replaces OBV Divergence
+    'obv_momentum': 'obv_momentum_40d',  # Updated: OBV Momentum (40d) replaces OBV Divergence
+    'obv_divergence': 'obv_momentum_40d',  # Legacy alias: OBV Divergence → OBV Momentum (40d)
     'rsi_14': 'rsi_21',
     'stability_score': 'hist_vol_40d',
-    'liquidity_factor': 'vol_ratio_20d',
+    'liquidity_factor': 'vol_ratio_30d',  # Updated: 20d → 30d
     'reversal_5d': 'price_ma60_deviation',
     'reversal_1d': 'price_ma60_deviation',
     'nr7_breakout_bias': 'atr_ratio',
@@ -5343,14 +5324,15 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             else:
                 logger.warning("未找到训练时特征列信息，使用智能检测方法")
                 # 🔧 FIX: 智能检测实际可用的特征（以当前T+10标准为基准），避免陈旧命名
+                # Use the same feature list as training (t10_selected) for consistency
+                # This ensures prediction uses the same features as training
                 base_features = [
-                    'liquid_momentum', 'obv_divergence', 'ivol_20', 'rsrs_beta_18', 'rsi_21',
-                    'trend_r2_60', 'near_52w_high', 'ret_skew_20d', 'blowoff_ratio',
-                    'hist_vol_40d', 'atr_ratio', 'bollinger_squeeze', 'vol_ratio_20d',
-                    'price_ma60_deviation',
-                    # 额外飞刀/风险因子
-                    'making_new_low_5d'
-                ]
+                    'momentum_10d',  # NEW: 10-day short-term momentum
+                    'ivol_30', 'near_52w_high', 'rsi_21', 'vol_ratio_30d',  # 'hist_vol_40d' REMOVED
+                    'trend_r2_60', 'liquid_momentum', 'obv_momentum_40d', 'atr_ratio',  # Updated: obv_divergence → obv_momentum_40d
+                    'ret_skew_30d', 'price_ma60_deviation',
+                    '5_days_reversal',  # 5-day reversal factor
+            ]
 
                 # 检查训练好的所有模型的特征需求，取并集，确保覆盖（后续按模型再做过滤）
                 union_features = []
@@ -5403,11 +5385,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
     'mom_accel_5_2': 'liquid_momentum',
     'price_efficiency_10d': 'trend_r2_60',
     'price_efficiency_5d': 'trend_r2_60',
-    'obv_momentum_20d': 'obv_divergence',
-    'obv_momentum': 'obv_divergence',
+    'obv_momentum_20d': 'obv_momentum_40d',  # Updated: OBV Momentum (40d) replaces OBV Divergence
+    'obv_momentum': 'obv_momentum_40d',  # Updated: OBV Momentum (40d) replaces OBV Divergence
+    'obv_divergence': 'obv_momentum_40d',  # Legacy alias: OBV Divergence → OBV Momentum (40d)
     'rsi_14': 'rsi_21',
     'stability_score': 'hist_vol_40d',
-    'liquidity_factor': 'vol_ratio_20d',
+    'liquidity_factor': 'vol_ratio_30d',  # Updated: 20d → 30d
     'reversal_5d': 'price_ma60_deviation',
     'reversal_1d': 'price_ma60_deviation',
     'nr7_breakout_bias': 'atr_ratio',
@@ -6484,8 +6467,29 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 f"- 有效率: {valid_ratio:.1%}\n"
             )
 
-        # 验证target列的数值质量
-        valid_targets = target_series.dropna()
+        # 🔧 硬截断target（clip，不是删除）- 防止极端值（如9000%收益）炸穿训练/评估
+        # 训练与评估同时：clip(y, -0.55, +0.55) （10天收益±55%已经很宽了）
+        # 这一步会立刻让"mean vs median 差几百倍"消失，结果可解释
+        extreme_filter_config = CONFIG._load_yaml_config().get('training', {}).get('extreme_target_filter', {})
+        if extreme_filter_config.get('enabled', True):
+            method = extreme_filter_config.get('method', 'hard_clip')
+            if method == 'hard_clip':
+                clip_lower = extreme_filter_config.get('clip_lower', -0.55)
+                clip_upper = extreme_filter_config.get('clip_upper', 0.55)
+                
+                # 记录截断前的统计
+                valid_targets_before = target_series.dropna()
+                if len(valid_targets_before) > 0:
+                    clipped_count = ((valid_targets_before < clip_lower) | (valid_targets_before > clip_upper)).sum()
+                    if clipped_count > 0:
+                        logger.info(f"🔧 硬截断target: {clipped_count}/{len(valid_targets_before)} ({clipped_count/len(valid_targets_before)*100:.2f}%) 超出范围 [{clip_lower}, {clip_upper}]")
+                
+                # 执行硬截断
+                feature_data['target'] = target_series.clip(lower=clip_lower, upper=clip_upper)
+                logger.info(f"✅ Target硬截断完成: clip({clip_lower}, {clip_upper})")
+        
+        # 验证target列的数值质量（截断后）
+        valid_targets = feature_data['target'].dropna()
         if len(valid_targets) > 0:
             target_std = valid_targets.std()
             target_mean = valid_targets.mean()
@@ -6497,15 +6501,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     "建议检查target生成逻辑和数据质量"
                 )
 
-            # 检查极端值
-            extreme_ratio = (np.abs(valid_targets) > 0.5).sum() / len(valid_targets)
-            if extreme_ratio > 0.1:
-                logger.warning(
-                    f"⚠️ target列包含{extreme_ratio:.1%}的极端值（绝对值>0.5），建议进行winsorization处理"
-                )
-
         logger.info(f"✅ target列验证通过 (有效率: {valid_ratio:.1%})")
-        logger.info(f"   目标变量统计: mean={valid_targets.mean():.4f}, std={valid_targets.std():.4f}")
+        logger.info(f"   目标变量统计（截断后）: mean={valid_targets.mean():.4f}, std={valid_targets.std():.4f}, min={valid_targets.min():.4f}, max={valid_targets.max():.4f}")
 
         # 移除Close列避免数据泄露（如果存在）
         if 'Close' in feature_data.columns:
@@ -6531,6 +6528,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # 🔥 CASE 1: 数据已经是MultiIndex格式 (feature_pipeline输出)
         if isinstance(feature_data.index, pd.MultiIndex):
             logger.info("✅ 检测到MultiIndex格式数据 (feature_pipeline输出)")
+            
+            # 🔧 FIX: Verify MultiIndex structure
+            index_names = feature_data.index.names
+            if 'date' not in index_names or 'ticker' not in index_names:
+                logger.warning(f"⚠️ MultiIndex missing required levels. Names: {index_names}, Expected: ['date', 'ticker']")
+                # Try to fix if possible
+                if len(index_names) >= 2:
+                    # Rename levels if they exist but have wrong names
+                    feature_data.index.names = ['date', 'ticker'] + list(index_names[2:]) if len(index_names) > 2 else ['date', 'ticker']
+                    logger.info("✅ Fixed MultiIndex level names")
+                else:
+                    raise ValueError(f"MultiIndex must have at least 'date' and 'ticker' levels, got: {index_names}")
 
             # 🎯 PRE-PROCESSING: 检查并生成target列（如果需要）
             if 'target' not in feature_data.columns:
@@ -6586,13 +6595,59 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             if len(feature_data.index.names) < 2 or 'date' not in feature_data.index.names or 'ticker' not in feature_data.index.names:
                 raise ValueError(f"Invalid MultiIndex format: {feature_data.index.names}")
             # 统一并严格化索引：去重、排序、类型标准化
+            # 🔧 FIX: Ensure format matches training parquet file exactly
             try:
                 feature_data = feature_data.copy()
-                dates = pd.to_datetime(feature_data.index.get_level_values('date')).tz_localize(None).normalize()
-                tickers = feature_data.index.get_level_values('ticker').astype(str).str.strip()
+                # 🔧 FIX: Handle DatetimeIndex vs Series - DatetimeIndex doesn't have .dt accessor
+                # get_level_values can return DatetimeIndex directly, so check type first
+                date_level = feature_data.index.get_level_values('date')
+                if isinstance(date_level, pd.DatetimeIndex):
+                    # DatetimeIndex has methods directly, not through .dt accessor
+                    if date_level.tz is not None:
+                        dates = date_level.tz_localize(None).normalize()
+                    else:
+                        dates = date_level.normalize()
+                else:
+                    # Convert to datetime if needed, then use .dt accessor for Series
+                    dates_converted = pd.to_datetime(date_level)
+                    if isinstance(dates_converted, pd.DatetimeIndex):
+                        # If conversion results in DatetimeIndex, use direct methods
+                        if dates_converted.tz is not None:
+                            dates = dates_converted.tz_localize(None).normalize()
+                        else:
+                            dates = dates_converted.normalize()
+                    else:
+                        # Series has .dt accessor
+                        if dates_converted.dt.tz is not None:
+                            dates = dates_converted.dt.tz_localize(None).dt.normalize()
+                        else:
+                            dates = dates_converted.dt.normalize()
+                
+                # 🔧 FIX: Ensure ticker format matches training file exactly
+                # Training file uses uppercase tickers (as seen in 80/20 eval)
+                tickers = feature_data.index.get_level_values('ticker').astype(str).str.strip().str.upper()
+                
+                # Recreate MultiIndex with standardized format (matching training file)
+                # Training file format: MultiIndex(['date', 'ticker'])
+                # - date: datetime64[ns], normalized (no time component)
+                # - ticker: object/string, UPPERCASE (matching 80/20 eval and training)
                 feature_data.index = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
+                
+                # Verify format
+                if not isinstance(feature_data.index, pd.MultiIndex):
+                    raise ValueError(f"Failed to create MultiIndex, got: {type(feature_data.index)}")
+                
+                index_names = feature_data.index.names
+                if index_names != ['date', 'ticker']:
+                    logger.warning(f"⚠️ MultiIndex names mismatch: {index_names}, fixing to ['date', 'ticker']")
+                    feature_data.index.names = ['date', 'ticker']
+                
+                # Remove duplicates and sort (matching training file processing)
                 feature_data = feature_data[~feature_data.index.duplicated(keep='last')]
                 feature_data = feature_data.sort_index(level=['date','ticker'])
+                
+                # Final format verification
+                logger.info(f"✅ Standardized MultiIndex format: levels={feature_data.index.names}, date_dtype={feature_data.index.get_level_values('date').dtype}, ticker_dtype={feature_data.index.get_level_values('ticker').dtype}")
             except Exception as e:
                 raise ValueError(f"MultiIndex标准化失败: {e}")
             
@@ -6739,7 +6794,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # 🔥 通用验证
         logger.info(f"✅ 标准格式准备完成: {n_tickers}个股票, {n_dates}个日期, {X.shape[1]}个特征")
         try:
-            from bma_models.simple_25_factor_engine import T5_ALPHA_FACTORS as _STD_FACTORS
+            from bma_models.simple_25_factor_engine import T10_ALPHA_FACTORS as _STD_FACTORS  # T5 removed, always T10
             # Align to canonical factor ordering when present
             X_cols = [c for c in _STD_FACTORS if c in X.columns] + [c for c in X.columns if c not in _STD_FACTORS]
             if list(X.columns) != X_cols:
@@ -7989,7 +8044,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             if path.is_dir():
                 # 目录模式：加载所有parquet分片并合并
                 # Prefer modern factor shards (factors_batch_*.parquet). This avoids mixing legacy
-                # polygon_factors_batch_*.parquet that may miss compulsory T+10 columns (e.g., ivol_20).
+                # polygon_factors_batch_*.parquet that may miss compulsory T+10 columns (e.g., ivol_30).
                 parquet_files = sorted(path.glob("factors_batch_*.parquet"))
                 if not parquet_files:
                     parquet_files = sorted(path.glob("*.parquet"))
@@ -8090,6 +8145,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     # 去重并排序
                     data = data[~data.index.duplicated(keep='last')].sort_index()
                     
+                    # 🔥 Add Volume-Price Divergence factor if missing (for loaded MultiIndex data)
+                    # Note: This factor is now computed by Simple17FactorEngine, but we ensure it exists here
+                    if 'feat_vol_price_div_30d' not in data.columns:
+                        logger.info("   ⚠️ feat_vol_price_div_30d not found in data, will be computed by factor engine")
+                        # Factor will be computed during feature computation phase
+                    
                     logger.info(f"   ✅ MultiIndex格式已标准化: {data.index.names}")
                     return data
             
@@ -8178,6 +8239,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 feature_data.index = pd.MultiIndex.from_arrays([dates_idx, tickers_idx], names=['date', 'ticker'])
 
         feature_data = feature_data[~feature_data.index.duplicated(keep='last')].sort_index()
+        
+        # 🔥 Add Volume-Price Divergence factor if missing (for feature data)
+        # Note: This factor is now computed by Simple17FactorEngine, but we ensure it exists here
+        if 'feat_vol_price_div_30d' not in feature_data.columns:
+            logger.debug("   ⚠️ feat_vol_price_div_30d not found in feature data, will be computed by factor engine")
+            # Factor will be computed during feature computation phase
+        
         return feature_data
 
     def _persist_training_state(self, training_results: Dict[str, Any],
@@ -9349,7 +9417,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             
             snapshot_id = save_model_snapshot(
                 training_results=snapshot_payload,
-                ridge_stacker=stacker_to_save,
+                meta_ranker_stacker=stacker_to_save,  # 🔧 FIX: 使用meta_ranker_stacker参数，完全移除ridge_stacker
                 lambda_rank_stacker=self.lambda_rank_stacker if hasattr(self, 'lambda_rank_stacker') else None,
                 rank_aware_blender=None,
                 lambda_percentile_transformer=getattr(self, 'lambda_percentile_transformer', None),
@@ -9689,6 +9757,59 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             except Exception:
                 pass
 
+            # 🔧 辅助函数：使用横截面中位数填充缺失特征（而不是0.0）
+            def fill_missing_features_with_median(X_input, missing_cols, model_name):
+                """使用横截面中位数填充缺失特征，确保不同股票有不同的填充值"""
+                if not missing_cols:
+                    return X_input
+                
+                X_filled = X_input.copy()
+                for col in missing_cols:
+                    if isinstance(X_filled.index, pd.MultiIndex) and 'date' in X_filled.index.names:
+                        # 按日期分组，使用同日其他股票的可用特征中位数
+                        try:
+                            daily_medians_dict = {}
+                            for date in X_filled.index.get_level_values('date').unique():
+                                day_mask = X_filled.index.get_level_values('date') == date
+                                day_data = X_filled.loc[day_mask]
+                                numeric_cols = day_data.select_dtypes(include=[np.number]).columns
+                                if len(numeric_cols) > 0:
+                                    ref_median = day_data[numeric_cols].median().median()
+                                    daily_medians_dict[date] = ref_median if not pd.isna(ref_median) else 0.0
+                                else:
+                                    daily_medians_dict[date] = 0.0
+                            
+                            # 创建Series并reindex到X_filled的索引
+                            date_level = X_filled.index.get_level_values('date')
+                            X_filled[col] = pd.Series(
+                                [daily_medians_dict.get(date, 0.0) for date in date_level],
+                                index=X_filled.index
+                            )
+                            logger.warning(f"[SNAPSHOT] [{model_name}] Missing column '{col}' filled with daily medians (not 0.0)")
+                        except Exception as e:
+                            # 回退：使用所有数值列的中位数
+                            numeric_cols = X_filled.select_dtypes(include=[np.number]).columns
+                            if len(numeric_cols) > 0:
+                                ref_median = X_filled[numeric_cols].median().median()
+                                fill_val = ref_median if not pd.isna(ref_median) else 0.0
+                                X_filled[col] = fill_val
+                                logger.warning(f"[SNAPSHOT] [{model_name}] Missing column '{col}' filled with median {fill_val:.6f} (fallback, error: {e})")
+                            else:
+                                X_filled[col] = 0.0
+                                logger.warning(f"[SNAPSHOT] [{model_name}] Missing column '{col}' filled with 0.0 (no reference available)")
+                    else:
+                        # 非MultiIndex情况：使用所有数值列的中位数
+                        numeric_cols = X_filled.select_dtypes(include=[np.number]).columns
+                        if len(numeric_cols) > 0:
+                            ref_median = X_filled[numeric_cols].median().median()
+                            fill_val = ref_median if not pd.isna(ref_median) else 0.0
+                            X_filled[col] = fill_val
+                            logger.warning(f"[SNAPSHOT] [{model_name}] Missing column '{col}' filled with median {fill_val:.6f} (not 0.0)")
+                        else:
+                            X_filled[col] = 0.0
+                            logger.warning(f"[SNAPSHOT] [{model_name}] Missing column '{col}' filled with 0.0 (no reference available)")
+                return X_filled
+
             # 第一层预测
             first_layer_preds = pd.DataFrame(index=X_df.index)
 
@@ -9699,11 +9820,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     cols = feature_names_by_model.get('elastic_net') or feature_names or list(X_df.columns)
                     X_m = X_df.copy()
                     missing = [c for c in cols if c not in X_m.columns]
-                    for c in missing:
-                        X_m[c] = 0.0
+                    # 🔧 FIX: 使用横截面中位数填充缺失特征，而不是0.0
+                    if missing:
+                        X_m = fill_missing_features_with_median(X_m, missing, 'ElasticNet')
                     X_m = X_m[cols].copy()
                     pred = enet.predict(X_m.values)
                     first_layer_preds['pred_elastic'] = pred
+                    # 🔍 诊断：检查预测的唯一值
+                    unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
+                    if unique_preds == 1:
+                        logger.warning(f"[SNAPSHOT] [ElasticNet] ⚠️ All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
+                    else:
+                        logger.info(f"[SNAPSHOT] [ElasticNet] ✅ Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
             except Exception as e:
                 logger.warning(f"[SNAPSHOT] ElasticNet预测失败: {e}")
 
@@ -9715,11 +9843,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     cols = feature_names_by_model.get('xgboost') or feature_names or list(X_df.columns)
                     X_m = X_df.copy()
                     missing = [c for c in cols if c not in X_m.columns]
-                    for c in missing:
-                        X_m[c] = 0.0
+                    # 🔧 FIX: 使用横截面中位数填充缺失特征，而不是0.0
+                    if missing:
+                        X_m = fill_missing_features_with_median(X_m, missing, 'XGBoost')
                     X_m = X_m[cols].copy()
                     pred = xgb_model.predict(X_m.values)
                     first_layer_preds['pred_xgb'] = pred
+                    # 🔍 诊断：检查预测的唯一值
+                    unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
+                    if unique_preds == 1:
+                        logger.warning(f"[SNAPSHOT] [XGBoost] ⚠️ All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
+                    else:
+                        logger.info(f"[SNAPSHOT] [XGBoost] ✅ Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
             except Exception as e:
                 logger.warning(f"[SNAPSHOT] XGBoost预测失败: {e}")
 
@@ -9731,11 +9866,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     cols = feature_names_by_model.get('catboost') or feature_names or list(X_df.columns)
                     X_m = X_df.copy()
                     missing = [c for c in cols if c not in X_m.columns]
-                    for c in missing:
-                        X_m[c] = 0.0
+                    # 🔧 FIX: 使用横截面中位数填充缺失特征，而不是0.0
+                    if missing:
+                        X_m = fill_missing_features_with_median(X_m, missing, 'CatBoost')
                     X_m = X_m[cols].copy()
                     pred = cat_model.predict(X_m.values)
                     first_layer_preds['pred_catboost'] = pred
+                    # 🔍 诊断：检查预测的唯一值
+                    unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
+                    if unique_preds == 1:
+                        logger.warning(f"[SNAPSHOT] [CatBoost] ⚠️ All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
+                    else:
+                        logger.info(f"[SNAPSHOT] [CatBoost] ✅ Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
             except Exception as e:
                 logger.warning(f"[SNAPSHOT] CatBoost预测失败: {e}")
 
@@ -9822,22 +9964,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.error(f"[SNAPSHOT] Full traceback:\n{traceback.format_exc()}")
                 raise RuntimeError(f"Cannot load MetaRankerStacker from snapshot. This snapshot may be corrupted or incomplete. Error: {e}")
 
-            ridge_input = first_layer_preds.copy()
-            # Filter out 'pred_lightgbm_ranker' if present (backward compatibility with old snapshots)
-            if 'pred_lightgbm_ranker' in ridge_input.columns:
-                ridge_input = ridge_input.drop(columns=['pred_lightgbm_ranker'])
-                logger.info("[SNAPSHOT] Removed 'pred_lightgbm_ranker' from first_layer_preds (LightGBM Ranker disabled)")
-            for col in ridge_base_cols:
-                if col not in ridge_input.columns:
-                    ridge_input[col] = 0.0
-            # 预先按base_cols排序
-            ridge_input = ridge_input[list(ridge_base_cols)].copy()
-
-            # 将索引设为MultiIndex以匹配stacker接口
-            if not isinstance(ridge_input.index, pd.MultiIndex) and isinstance(dates, pd.Series) and isinstance(tickers, pd.Series):
-                ridge_input.index = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
-
-            # 还原LambdaRank（可选）
+            # 🔧 OPTIMIZATION: Compute LambdaRank prediction BEFORE creating ridge_input
+            # This ensures pred_lambdarank is available when creating ridge_input, avoiding redundant reordering
             lambda_predictions = None
             lambda_percentile_series = None
             try:
@@ -9849,8 +9977,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     ltr_cols = ltr_meta.get('base_cols') or feature_names or list(X_df.columns)
                     X_ltr = X.copy()
                     missing_ltr = [c for c in ltr_cols if c not in X_ltr.columns]
-                    for c in missing_ltr:
-                        X_ltr[c] = 0.0
+                    # 🔧 FIX: 使用横截面中位数填充缺失特征，而不是0.0
+                    if missing_ltr:
+                        X_ltr = fill_missing_features_with_median(X_ltr, missing_ltr, 'LambdaRank')
                     X_ltr = X_ltr[ltr_cols].copy()
 
                     # 对LambdaRank输入也应用极值守卫，抑制异常高值
@@ -9897,26 +10026,85 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     else:
                         lambda_df['lambda_pct'] = lambda_df.groupby(level='date')['lambda_score'].rank(pct=True)
                     lambda_predictions = lambda_df
+                    
+                    # 🔥 Add LambdaRank prediction to first_layer_preds BEFORE creating ridge_input
+                    if lambda_predictions is not None and 'lambda_score' in lambda_predictions.columns:
+                        first_layer_preds['pred_lambdarank'] = lambda_predictions['lambda_score'].reindex(first_layer_preds.index)
+                        logger.info("[SNAPSHOT] Added pred_lambdarank to first_layer_preds")
             except Exception as e:
                 logger.error(f"[SNAPSHOT] LambdaRank预测失败: {e}")
                 raise
 
-            # 若训练时Ridge包含lambda_percentile，则在预测前补齐该列
-            try:
-                if hasattr(ridge_stacker, 'actual_feature_cols_') and 'lambda_percentile' in ridge_stacker.actual_feature_cols_:
-                    if lambda_percentile_series is None and lambda_predictions is not None and 'lambda_pct' in lambda_predictions.columns:
-                        # 使用lambda_df中的百分位
-                        lambda_percentile_series = lambda_predictions['lambda_pct'] * 1.0
+            # 🔧 OPTIMIZED: Create ridge_input AFTER all first-layer predictions are complete
+            # This ensures all required columns (including pred_lambdarank) are already in first_layer_preds
+            ridge_input = first_layer_preds.copy()
+            
+            # Filter out 'pred_lightgbm_ranker' if present (backward compatibility with old snapshots)
+            if 'pred_lightgbm_ranker' in ridge_input.columns:
+                ridge_input = ridge_input.drop(columns=['pred_lightgbm_ranker'])
+                logger.info("[SNAPSHOT] Removed 'pred_lightgbm_ranker' from first_layer_preds (LightGBM Ranker disabled)")
+            
+            # 🔧 OPTIMIZED: Use unified fill_missing_features_with_median function instead of inline logic
+            missing_cols = [col for col in ridge_base_cols if col not in ridge_input.columns]
+            if missing_cols:
+                ridge_input = fill_missing_features_with_median(ridge_input, missing_cols, 'MetaStacker')
+            
+            # 🔧 OPTIMIZED: Single reordering - all required columns should already be present
+            available_base_cols = [col for col in ridge_base_cols if col in ridge_input.columns]
+            ridge_input = ridge_input[available_base_cols].copy()
+            logger.info(f"[SNAPSHOT] Re-ordered ridge_input columns to match base_cols: {list(ridge_input.columns)}")
+
+            # 🔧 OPTIMIZED: MultiIndex check - first_layer_preds should already have MultiIndex from X_df.index
+            # Only set MultiIndex if it's missing (shouldn't happen, but keep for safety)
+            if not isinstance(ridge_input.index, pd.MultiIndex) and isinstance(dates, pd.Series) and isinstance(tickers, pd.Series):
+                ridge_input.index = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
+                logger.warning("[SNAPSHOT] ⚠️ Had to set MultiIndex - first_layer_preds should already have MultiIndex")
+            
+            # 🔧 OPTIMIZED: Unified lambda_percentile handling - only add once, after ridge_input is finalized
+            # Check if Meta Stacker needs lambda_percentile (use meta_ranker_stacker if available, else ridge_stacker)
+            stacker_to_check = meta_ranker_stacker if meta_ranker_stacker is not None else ridge_stacker
+            if stacker_to_check is not None and hasattr(stacker_to_check, 'actual_feature_cols_'):
+                if 'lambda_percentile' in stacker_to_check.actual_feature_cols_:
                     if lambda_percentile_series is None:
-                        raise RuntimeError("lambda_percentile missing; abort prediction")
-                    ridge_input['lambda_percentile'] = lambda_percentile_series.reindex(ridge_input.index)
-            except Exception:
-                pass
+                        if lambda_predictions is not None and 'lambda_pct' in lambda_predictions.columns:
+                            lambda_percentile_series = lambda_predictions['lambda_pct'] * 1.0
+                        else:
+                            # Fallback: use constant 50.0
+                            lambda_percentile_series = pd.Series(50.0, index=ridge_input.index, name='lambda_percentile')
+                            logger.warning("[SNAPSHOT] ⚠️ lambda_percentile not available, using constant 50.0")
+                    
+                    if lambda_percentile_series is not None:
+                        ridge_input['lambda_percentile'] = lambda_percentile_series.reindex(ridge_input.index)
+                        logger.info("[SNAPSHOT] Added lambda_percentile to ridge_input")
+
+            # Debug: Log ridge_input statistics before prediction
+            logger.info(f"[SNAPSHOT] 🔍 ridge_input shape: {ridge_input.shape}, columns: {list(ridge_input.columns)}")
+            for col in ridge_input.columns:
+                if ridge_input[col].dtype in [np.float64, np.float32, np.int64, np.int32]:
+                    unique_vals = ridge_input[col].nunique()
+                    logger.info(f"[SNAPSHOT] 🔍 ridge_input['{col}']: unique={unique_vals}, min={ridge_input[col].min():.6f}, max={ridge_input[col].max():.6f}, mean={ridge_input[col].mean():.6f}")
+                    if unique_vals == 1:
+                        logger.warning(f"[SNAPSHOT] ⚠️ Column '{col}' has only one unique value: {ridge_input[col].iloc[0]}")
 
             # 现在进行Meta Ranker预测
             if meta_ranker_stacker is None:
                 raise RuntimeError("MetaRankerStacker is not available for prediction. Please ensure the model is loaded from snapshot.")
             ridge_predictions_df = meta_ranker_stacker.predict(ridge_input)
+            
+            # Debug: Log ridge_predictions_df statistics
+            logger.info(f"[SNAPSHOT] 🔍 ridge_predictions_df shape: {ridge_predictions_df.shape}, columns: {list(ridge_predictions_df.columns)}")
+            if 'score' in ridge_predictions_df.columns:
+                score_col = ridge_predictions_df['score']
+            elif len(ridge_predictions_df.columns) > 0:
+                score_col = ridge_predictions_df.iloc[:, 0]
+            else:
+                score_col = None
+            if score_col is not None:
+                logger.info(f"[SNAPSHOT] 🔍 ridge_predictions_df score unique values: {score_col.nunique()}")
+                logger.info(f"[SNAPSHOT] 🔍 ridge_predictions_df score range: min={score_col.min():.6f}, max={score_col.max():.6f}, mean={score_col.mean():.6f}, std={score_col.std():.6f}")
+                if score_col.nunique() == 1:
+                    logger.error(f"[SNAPSHOT] ❌ CRITICAL: All ridge predictions have the same value: {score_col.iloc[0]}")
+                    logger.error(f"[SNAPSHOT] ❌ This indicates a problem with MetaRankerStacker predictions!")
 
             # 快照推理：若可用LambdaRank预测，则执行Rank-aware门控融合；否则退回Ridge
             final_df = None
@@ -9963,24 +10151,51 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # 兜底：仍使用Ridge（已包含lambda_percentile列时）
             if final_df is None:
                 final_df = ridge_predictions_df.rename(columns={'score': 'blended_score'})
+            
+            # Debug: Log final_df statistics
+            logger.info(f"[SNAPSHOT] 🔍 final_df shape: {final_df.shape}, columns: {list(final_df.columns)}")
+            if 'blended_score' in final_df.columns:
+                blended_col = final_df['blended_score']
+            elif len(final_df.columns) > 0:
+                blended_col = final_df.iloc[:, 0]
+            else:
+                blended_col = None
+            if blended_col is not None:
+                logger.info(f"[SNAPSHOT] 🔍 final_df blended_score unique values: {blended_col.nunique()}")
+                logger.info(f"[SNAPSHOT] 🔍 final_df blended_score range: min={blended_col.min():.6f}, max={blended_col.max():.6f}, mean={blended_col.mean():.6f}, std={blended_col.std():.6f}")
+                if blended_col.nunique() == 1:
+                    logger.error(f"[SNAPSHOT] ❌ CRITICAL: All final predictions have the same value: {blended_col.iloc[0]}")
+                    logger.error(f"[SNAPSHOT] ❌ This will cause all Direct Predict scores to be identical!")
 
-            # 若训练时Ridge包含lambda_percentile，则在预测时补齐该列
-            try:
-                if hasattr(ridge_stacker, 'actual_feature_cols_') and 'lambda_percentile' in ridge_stacker.actual_feature_cols_:
-                    if lambda_percentile_series is None and lambda_predictions is not None and 'lambda_pct' in lambda_predictions.columns:
-                        # 使用lambda_df中的百分位
-                        lambda_percentile_series = lambda_predictions['lambda_pct'] * 1.0
-                    if lambda_percentile_series is None:
-                        # 最后兜底：用50常数保证列存在
-                        lambda_percentile_series = pd.Series(50.0, index=ridge_input.index, name='lambda_percentile')
-                    # 写入Ridge输入用于一致性（便于调试导出）
-                    ridge_input['lambda_percentile'] = lambda_percentile_series.reindex(ridge_input.index)
-            except Exception:
-                pass
+            # 🔧 REMOVED: Redundant lambda_percentile handling - now handled above in unified block
 
             # 生成推荐列表
             pred_series = final_df['blended_score'] if 'blended_score' in final_df.columns else final_df.iloc[:, 0]
+            
+            # Debug: Log pred_series statistics
+            logger.info(f"[SNAPSHOT] 🔍 pred_series type: {type(pred_series)}, shape: {pred_series.shape if hasattr(pred_series, 'shape') else 'N/A'}")
+            if isinstance(pred_series, pd.Series):
+                logger.info(f"[SNAPSHOT] 🔍 pred_series unique values: {pred_series.nunique()}")
+                logger.info(f"[SNAPSHOT] 🔍 pred_series value range: min={pred_series.min():.6f}, max={pred_series.max():.6f}, mean={pred_series.mean():.6f}, std={pred_series.std():.6f}")
+                logger.info(f"[SNAPSHOT] 🔍 pred_series sample (first 10): {pred_series.head(10).to_dict()}")
+                if pred_series.nunique() == 1:
+                    logger.error(f"[SNAPSHOT] ❌ CRITICAL: All predictions have the same value: {pred_series.iloc[0]}")
+                    logger.error(f"[SNAPSHOT] ❌ This indicates a problem with the model predictions!")
+            
             pred_df = pd.DataFrame({'ticker': pred_series.index.get_level_values('ticker'), 'score': pred_series.values})
+            
+            # Debug: Log pred_df statistics
+            logger.info(f"[SNAPSHOT] 🔍 pred_df shape: {pred_df.shape}, score unique values: {pred_df['score'].nunique()}")
+            logger.info(f"[SNAPSHOT] 🔍 pred_df score range: min={pred_df['score'].min():.6f}, max={pred_df['score'].max():.6f}, mean={pred_df['score'].mean():.6f}")
+            
+            # 🔥 Ensure first_layer_preds index matches pred_series index BEFORE adding to analysis_results
+            # This is critical for Excel report to have correct LambdaRank and CatBoost scores
+            if 'first_layer_preds' in locals() and isinstance(first_layer_preds, pd.DataFrame):
+                # Reindex first_layer_preds to match pred_series index (after all filtering)
+                first_layer_preds = first_layer_preds.reindex(pred_series.index)
+                logger.info(f"[SNAPSHOT] 🔧 Reindexed first_layer_preds to match pred_series: {first_layer_preds.shape}")
+                logger.info(f"[SNAPSHOT] 📊 first_layer_preds columns after reindex: {list(first_layer_preds.columns)}")
+                logger.info(f"[SNAPSHOT] 📊 LambdaRank available: {'pred_lambdarank' in first_layer_preds.columns}, CatBoost available: {'pred_catboost' in first_layer_preds.columns}")
 
             # 对缺失特征比例较高的样本加惩罚或过滤
             try:
@@ -10006,80 +10221,81 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             except Exception:
                 pass
 
-            # 🔧 Apply EMA smoothing to predictions (3-day EMA: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2})
-            logger.info("📊 Applying EMA smoothing to live predictions...")
+            # 🔥 DISABLED: EMA smoothing for live prediction (Direct Predict)
+            # Use raw scores directly, NO EMA smoothing
+            logger.info("[LIVE_PREDICT] 🔥 EMA smoothing DISABLED for live prediction - using raw scores")
             
-            # Create a DataFrame with ticker and score for smoothing
-            pred_df_smooth = pred_df.copy()
-            pred_df_smooth['score_smooth'] = np.nan
+            # Sort by raw score (descending)
+            pred_df = pred_df.sort_values('score', ascending=False)
             
-            # Get prediction date from pred_series index
-            pred_date = pred_series.index.get_level_values('date')[0] if isinstance(pred_series.index, pd.MultiIndex) else pd.Timestamp.today()
+            # Use raw predictions directly (no smoothing)
+            pred_series_raw = pred_series.copy()
             
-            for idx, row in pred_df_smooth.iterrows():
-                ticker = str(row['ticker'])
-                score_today = row['score']
-                
-                # Initialize history if needed
-                if ticker not in self._ema_prediction_history:
-                    self._ema_prediction_history[ticker] = []
-                
-                history = self._ema_prediction_history[ticker]
-                
-                # Calculate smoothed score
-                if pd.isna(score_today):
-                    smooth_score = np.nan
-                elif len(history) == 0:
-                    # First day: use raw score
-                    smooth_score = score_today
-                elif len(history) == 1:
-                    # Second day: 0.6*S_t + 0.3*S_{t-1}
-                    if pd.isna(history[0]):
-                        smooth_score = score_today
-                    else:
-                        smooth_score = 0.6 * score_today + 0.3 * history[0]
-                else:
-                    # Third day and beyond: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2}
-                    hist_0 = history[0] if not pd.isna(history[0]) else 0.0
-                    hist_1 = history[1] if not pd.isna(history[1]) else 0.0
-                    smooth_score = 0.6 * score_today + 0.3 * hist_0 + 0.1 * hist_1
-                
-                pred_df_smooth.loc[idx, 'score_smooth'] = smooth_score
-                
-                # Update history (keep last 3 days)
-                history.insert(0, score_today)
-                if len(history) > 2:
-                    history.pop()
+            # 🔧 FIX: Remove duplicate indices from pred_series_raw
+            if isinstance(pred_series_raw.index, pd.MultiIndex):
+                duplicates = pred_series_raw.index.duplicated()
+                if duplicates.any():
+                    logger.warning(f"[SNAPSHOT] ⚠️ pred_series_raw has {duplicates.sum()} duplicate indices, removing duplicates...")
+                    pred_series_raw = pred_series_raw[~duplicates]
+                    logger.info(f"[SNAPSHOT] ✅ pred_series_raw after deduplication: {len(pred_series_raw)} predictions")
+                    # Ensure each (date, ticker) combination appears only once
+                    pred_series_raw = pred_series_raw.groupby(level=['date', 'ticker']).first()
+                    logger.info(f"[SNAPSHOT] ✅ pred_series_raw after grouping: {len(pred_series_raw)} predictions")
             
-            # Use smoothed scores for final predictions
-            pred_df_smooth = pred_df_smooth.sort_values('score_smooth', ascending=False)
-            
-            # Reconstruct pred_series with smoothed scores, preserving original index structure
-            tickers_smooth = pred_df_smooth['ticker'].values
-            scores_smooth = pred_df_smooth['score_smooth'].values
-            
-            # Create MultiIndex matching original structure
-            if isinstance(pred_series.index, pd.MultiIndex):
-                dates_smooth = [pred_date] * len(tickers_smooth)
-                smooth_index = pd.MultiIndex.from_arrays([dates_smooth, tickers_smooth], names=['date', 'ticker'])
-            else:
-                smooth_index = pd.Index(tickers_smooth)
-            
-            pred_series_smooth = pd.Series(scores_smooth, index=smooth_index, name='score')
-            
-            logger.info(f"✅ EMA smoothing applied: {len(pred_df_smooth)} predictions smoothed (raw scores preserved in predictions_raw)")
+            logger.info(f"[LIVE_PREDICT] ✅ Using raw predictions (no EMA smoothing): {len(pred_df)} predictions")
 
             analysis_results: Dict[str, Any] = {'start_time': pd.Timestamp.now()}
-            analysis_results['predictions'] = pred_series_smooth  # Use smoothed predictions
-            analysis_results['predictions_raw'] = pred_series  # Keep raw predictions for reference
+            analysis_results['predictions'] = pred_series_raw  # Use raw predictions (no EMA)
+            analysis_results['predictions_raw'] = pred_series_raw  # Keep raw predictions for reference (use deduplicated version)
             analysis_results['feature_data'] = feature_data
+            # 🔥 Add base model predictions for Excel report
+            # Note: first_layer_preds was already reindexed to match pred_series above
+            if 'first_layer_preds' in locals() and isinstance(first_layer_preds, pd.DataFrame):
+                # Ensure first_layer_preds has the correct index (matching final predictions)
+                if isinstance(pred_series_raw.index, pd.MultiIndex):
+                    # Reindex first_layer_preds to match pred_series_raw index (final predictions after all filtering)
+                    first_layer_preds_aligned = first_layer_preds.reindex(pred_series_raw.index)
+                    
+                    # 🔧 FIX: Remove duplicate indices from first_layer_preds_aligned
+                    if isinstance(first_layer_preds_aligned.index, pd.MultiIndex):
+                        duplicates = first_layer_preds_aligned.index.duplicated()
+                        if duplicates.any():
+                            logger.warning(f"[SNAPSHOT] ⚠️ first_layer_preds_aligned has {duplicates.sum()} duplicate indices, removing duplicates...")
+                            first_layer_preds_aligned = first_layer_preds_aligned[~duplicates]
+                            logger.info(f"[SNAPSHOT] ✅ first_layer_preds_aligned after deduplication: {first_layer_preds_aligned.shape}")
+                        # Ensure each (date, ticker) combination appears only once
+                        first_layer_preds_aligned = first_layer_preds_aligned.groupby(level=['date', 'ticker']).first()
+                        logger.info(f"[SNAPSHOT] ✅ first_layer_preds_aligned after grouping: {first_layer_preds_aligned.shape}")
+                    
+                    logger.info(f"[SNAPSHOT] ✅ Base predictions aligned to pred_series_raw: {first_layer_preds_aligned.shape}")
+                    logger.info(f"[SNAPSHOT] 📊 Base predictions columns: {list(first_layer_preds_aligned.columns)}")
+                    logger.info(f"[SNAPSHOT] 📊 LambdaRank available: {'pred_lambdarank' in first_layer_preds_aligned.columns}")
+                    logger.info(f"[SNAPSHOT] 📊 CatBoost available: {'pred_catboost' in first_layer_preds_aligned.columns}")
+                    if 'pred_lambdarank' in first_layer_preds_aligned.columns:
+                        non_null_lambda = first_layer_preds_aligned['pred_lambdarank'].notna().sum()
+                        logger.info(f"[SNAPSHOT] 📊 LambdaRank non-null values: {non_null_lambda} / {len(first_layer_preds_aligned)}")
+                    if 'pred_catboost' in first_layer_preds_aligned.columns:
+                        non_null_catboost = first_layer_preds_aligned['pred_catboost'].notna().sum()
+                        logger.info(f"[SNAPSHOT] 📊 CatBoost non-null values: {non_null_catboost} / {len(first_layer_preds_aligned)}")
+                    analysis_results['base_predictions'] = first_layer_preds_aligned  # Contains pred_lambdarank, pred_catboost, etc.
+                else:
+                    analysis_results['base_predictions'] = first_layer_preds  # Contains pred_lambdarank, pred_catboost, etc.
+                    logger.info(f"[SNAPSHOT] ⚠️ pred_series_raw doesn't have MultiIndex, using first_layer_preds as-is")
+            else:
+                logger.warning(f"[SNAPSHOT] ⚠️ first_layer_preds not available for base_predictions. Type: {type(first_layer_preds) if 'first_layer_preds' in locals() else 'not defined'}")
 
             # Kronos T+5过滤（仅对 Top 20 生效：用于交易过滤，不影响模型分数）
+            # 🔥 DISABLED for live prediction (Direct Predict) - Kronos validation disabled
             kronos_filter_df = None
             kronos_pass_over10_df = None
             try:
+                # 🔥 Force disable Kronos for live prediction (predict_with_snapshot)
+                # Kronos is only used during training, not for live prediction
+                self.use_kronos_validation = False
+                logger.info("[LIVE_PREDICT] 🔥 Kronos validation DISABLED for live prediction (Direct Predict)")
+                
                 if not hasattr(self, 'use_kronos_validation'):
-                    self.use_kronos_validation = True
+                    self.use_kronos_validation = False  # Default to False for live prediction
                 if self.use_kronos_validation:
                     if self.kronos_model is None:
                         try:
@@ -10154,10 +10370,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                             kronos_pass_over10_df = pd.DataFrame(columns=kronos_filter_df.columns)
 
                 # Backward compatible keys + new explicit key
-                analysis_results['kronos_top20'] = kronos_filter_df
-                analysis_results['kronos_top60'] = kronos_filter_df
-                analysis_results['kronos_top35'] = kronos_filter_df
-                analysis_results['kronos_pass_over10'] = kronos_pass_over10_df if (kronos_pass_over10_df is not None and not kronos_pass_over10_df.empty) else None
+                # 🔥 Kronos disabled for live prediction - set to None
+                analysis_results['kronos_top20'] = None
+                analysis_results['kronos_top60'] = None
+                analysis_results['kronos_top35'] = None
+                analysis_results['kronos_pass_over10'] = None
+                logger.info("[LIVE_PREDICT] ✅ Kronos validation skipped (disabled for live prediction)")
             except Exception as e:
                 logger.warning(f"[SNAPSHOT] Kronos过滤失败: {e}")
                 analysis_results['kronos_top20'] = None
@@ -10165,22 +10383,21 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 analysis_results['kronos_top35'] = None
                 analysis_results['kronos_pass_over10'] = None
 
-            # 汇总 (use smoothed scores for recommendations)
-            recommendations = pred_df_smooth.head(min(20, len(pred_df_smooth))).to_dict('records')
-            # Replace score with smoothed score in recommendations
+            # 汇总 (use raw scores for recommendations - NO EMA smoothing for live prediction)
+            # 🔥 Use raw scores, NOT smoothed scores for live prediction
+            recommendations = pred_df.head(min(20, len(pred_df))).to_dict('records')
+            # Use raw score (not smoothed) for recommendations
             for rec in recommendations:
-                rec['score'] = rec.get('score_smooth', rec.get('score', 0.0))
-                if 'score_smooth' in rec:
-                    del rec['score_smooth']
+                rec['score'] = rec.get('score', 0.0)  # Use raw score
             analysis_results['recommendations'] = recommendations
+            logger.info(f"[LIVE_PREDICT] ✅ Recommendations: {len(recommendations)} stocks (using raw scores, no EMA, no Kronos)")
 
-            # Trade list: Kronos pass within Top 20 only (no backfill beyond Top 20)
+            # Trade list: Use all recommendations (Kronos disabled for live prediction)
+            # 🔥 Kronos validation disabled for live prediction - use all Top 20 recommendations
             try:
-                if kronos_pass_over10_df is not None and not kronos_pass_over10_df.empty:
-                    pass_set = set(kronos_pass_over10_df['ticker'].astype(str).tolist())
-                    analysis_results['trade_recommendations'] = [r for r in recommendations if str(r.get('ticker')) in pass_set]
-                else:
-                    analysis_results['trade_recommendations'] = []
+                # For live prediction, use all recommendations without Kronos filtering
+                analysis_results['trade_recommendations'] = recommendations.copy()
+                logger.info(f"[LIVE_PREDICT] ✅ Trade recommendations: {len(recommendations)} stocks (Kronos disabled)")
             except Exception:
                 analysis_results['trade_recommendations'] = []
             analysis_results['end_time'] = pd.Timestamp.now()
@@ -10287,6 +10504,58 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             # optionally included via ridge_stacker.base_cols experiments (even though default excludes it).
             oof_for_ridge = dict(oof_predictions)
 
+            # 🔧 OOF冷启动修复：检测并过滤掉未覆盖的日期段
+            # 找出所有OOF预测中最早的有效日期（第一个验证集日期）
+            first_val_date = None
+            if oof_for_ridge:
+                # 从第一个OOF预测的索引中提取日期
+                first_pred = next(iter(oof_for_ridge.values()))
+                if isinstance(first_pred.index, pd.MultiIndex) and 'date' in first_pred.index.names:
+                    pred_dates = pd.to_datetime(first_pred.index.get_level_values('date')).normalize()
+                    # 找出第一个非零且非NaN的样本的日期
+                    valid_mask = (first_pred != 0) & (~pd.isna(first_pred))
+                    if valid_mask.any():
+                        first_valid_idx = first_pred[valid_mask].index[0]
+                        first_valid_date = pd.to_datetime(pred_dates[pred_dates.index == first_valid_idx].min()).normalize() if hasattr(pred_dates, 'index') else pd.to_datetime(pred_dates[first_pred.index.get_loc(first_valid_idx)]).normalize()
+                        first_val_date = first_valid_date
+                elif dates is not None:
+                    # 如果没有MultiIndex，使用dates参数
+                    pred_dates = pd.to_datetime(dates).normalize()
+                    valid_mask = (first_pred != 0) & (~pd.isna(first_pred))
+                    if valid_mask.any():
+                        first_valid_idx = valid_mask.idxmax() if hasattr(valid_mask, 'idxmax') else None
+                        if first_valid_idx is not None:
+                            first_val_date = pd.to_datetime(pred_dates[first_valid_idx]).normalize() if hasattr(pred_dates, '__getitem__') else pd.to_datetime(pred_dates).normalize()
+                
+                # 如果检测到first_val_date，过滤所有OOF预测
+                if first_val_date is not None:
+                    logger.info(f"[二层] 🔧 OOF冷启动修复: 检测到第一个验证集日期 = {first_val_date.date()}")
+                    filtered_oof = {}
+                    for model_name, pred_series in oof_for_ridge.items():
+                        if isinstance(pred_series.index, pd.MultiIndex) and 'date' in pred_series.index.names:
+                            pred_dates_model = pd.to_datetime(pred_series.index.get_level_values('date')).normalize()
+                            valid_mask_model = pred_dates_model >= first_val_date
+                            before_count = (~valid_mask_model).sum()
+                            if before_count > 0:
+                                logger.info(
+                                    f"   🔧 [{model_name}] 过滤掉{before_count}个样本 "
+                                    f"(日期 < {first_val_date.date()})"
+                                )
+                            filtered_oof[model_name] = pred_series[valid_mask_model]
+                        else:
+                            # 如果没有MultiIndex，保留原样（可能已经被过滤）
+                            filtered_oof[model_name] = pred_series
+                    oof_for_ridge = filtered_oof
+                    logger.info(f"[二层] ✅ OOF冷启动修复完成: 过滤后共{len(next(iter(oof_for_ridge.values())))}个样本")
+                    
+                    # 同时过滤y和dates
+                    if isinstance(y.index, pd.MultiIndex) and 'date' in y.index.names:
+                        y_dates = pd.to_datetime(y.index.get_level_values('date')).normalize()
+                        y_valid_mask = y_dates >= first_val_date
+                        y = y[y_valid_mask]
+                        if dates is not None and len(dates) == len(y_valid_mask):
+                            dates = dates[y_valid_mask]
+
             # 应用时间对齐工具验证（内置实现）
             TIME_ALIGNMENT_AVAILABLE = True
             logger.info("✅ [二层] 使用内置时间对齐工具")
@@ -10295,13 +10564,23 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             if not oof_for_ridge:
                 raise ValueError("OOF预测为空，无法训练二层模型")
 
-            expected_models = {'elastic_net', 'xgboost', 'catboost', 'lightgbm_ranker'}
+            expected_models = {'elastic_net', 'xgboost', 'catboost'}  # Removed 'lightgbm_ranker' (disabled)
             available_models = set(oof_for_ridge.keys())
             logger.info(f"[二层] 可用模型: {available_models}")
+            logger.info(f"[二层] 预期模型: {expected_models}")
 
             if not expected_models.issubset(available_models):
                 missing = expected_models - available_models
-                logger.warning(f"[二层] 缺少预期模型: {missing}")
+                logger.error(f"[二层] ❌ 缺少预期模型: {missing}")
+                logger.error(f"[二层] 这可能导致Ridge Stacker缺少必要的输入特征！")
+                # Continue anyway but warn that stacking may be incomplete
+            else:
+                logger.info(f"[二层] ✅ 所有预期模型都可用")
+            
+            # Ensure CatBoost is present - critical for meta stacker
+            if 'catboost' not in available_models:
+                logger.error(f"[二层] ❌ CRITICAL: CatBoost缺失！Meta Stacker需要pred_catboost输入！")
+                logger.error(f"[二层] 请检查CatBoost训练是否成功完成")
 
             # 如果提供了预构建的ridge_data（包含lambda_percentile），直接使用
             if ridge_data is not None:
@@ -10756,8 +11035,20 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
             enforce_full_cv = getattr(self, 'enforce_full_cv', False)
 
-            # 2600股票数据集优化（如未强制全量CV）
-            if sample_size > 1000000 and not enforce_full_cv:  # 超过100万样本
+            # 🔧 FIX: 子集数据优化 - 减少CV折数确保有足够的训练数据
+            # 估算唯一日期数
+            if groups_norm is not None:
+                unique_dates_count = len(pd.Series(groups_norm).unique())
+            elif isinstance(X.index, pd.MultiIndex) and 'date' in X.index.names:
+                unique_dates_count = len(X.index.get_level_values('date').unique())
+            else:
+                unique_dates_count = sample_size // 500  # 估算
+            
+            if unique_dates_count < 1500 and not enforce_full_cv:  # 子集数据（约3年）
+                adapted_splits = min(3, self._CV_SPLITS)  # 减少到3折
+                adapted_test_size = min(42, self._TEST_SIZE)
+                logger.info(f"🔧 子集数据优化: 唯一日期={unique_dates_count}，调整CV参数 splits={adapted_splits}, test_size={adapted_test_size}")
+            elif sample_size > 1000000 and not enforce_full_cv:  # 超过100万样本
                 adapted_splits = min(3, self._CV_SPLITS)  # 减少CV折数节省时间
                 adapted_test_size = min(42, self._TEST_SIZE)  # 减少测试集大小
                 logger.info(f"Ultra-large dataset: 调整CV参数 splits={adapted_splits}, test_size={adapted_test_size}")
@@ -10800,6 +11091,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             alpha=elastic_alpha,
             l1_ratio=CONFIG.ELASTIC_NET_CONFIG['l1_ratio'],
             max_iter=CONFIG.ELASTIC_NET_CONFIG['max_iter'],
+            fit_intercept=CONFIG.ELASTIC_NET_CONFIG.get('fit_intercept', True),
+            selection=CONFIG.ELASTIC_NET_CONFIG.get('selection', 'random'),
             random_state=CONFIG._RANDOM_STATE
         )
         
@@ -10841,8 +11134,11 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.info(f"[FIRST_LAYER] CatBoost小样本适应: iterations={catboost_config['iterations']}, depth={catboost_config['depth']}, l2_leaf_reg={catboost_config['l2_leaf_reg']}")
 
             models['catboost'] = cb.CatBoostRegressor(**catboost_config)
+            logger.info("[FIRST_LAYER] ✅ CatBoost模型已初始化")
         except ImportError:
-            logger.warning("CatBoost not available")
+            logger.error("❌ CatBoost not available - install with: pip install catboost")
+            logger.error("❌ Meta Stacker requires CatBoost - training will fail without it!")
+            raise ImportError("CatBoost is required but not installed. Install with: pip install catboost")
 
         # 4. LightGBM ranker (DISABLED - removed from first layer)
         # REMOVED: LightGBM Ranker has been completely disabled from first layer
@@ -10879,11 +11175,11 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             lambda_fit_params = lc.get('fit_params', {}) if isinstance(lc.get('fit_params'), dict) else {}
             lambda_config_global = {
                 'base_cols': tuple(lambda_base_cols),
-                'n_quantiles': lc.get('n_quantiles', 64),
+                'n_quantiles': lc.get('n_quantiles', 32),  # 🔧 64 -> 32
                 'winsorize_quantiles': lc.get('winsorize_quantiles', (0.01, 0.99)),
-                'label_gain_power': lc.get('label_gain_power', 2),  # Updated default: 2
-                'num_boost_round': lc.get('num_boost_round', 260),  # Updated: 260
-                'early_stopping_rounds': lambda_fit_params.get('early_stopping_rounds', 60),  # Updated default: 60
+                'label_gain_power': lc.get('label_gain_power', 2.1),  # 🔧 2.0 -> 2.1
+                'num_boost_round': lc.get('num_boost_round', 1200),  # 🔧 700 -> 1200（更多轮次）
+                'early_stopping_rounds': lambda_fit_params.get('early_stopping_rounds', 100),  # 🔧 70 -> 100（更保守早停）
                 # 关键：在统一CV循环内训练LambdaRank，禁用其内部CV以避免二次CV要求
                 'use_internal_cv': lc.get('use_internal_cv', False),
                 'use_purged_cv': lc.get('use_purged_cv', False),
@@ -10892,18 +11188,18 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 'lgb_params': {
                     'objective': lc.get('objective', 'lambdarank'),
                     'metric': lc.get('metric', 'ndcg'),
-                    'ndcg_eval_at': lc.get('ndcg_eval_at', [10, 30]),  # NDCG evaluation points
-                    'learning_rate': lc.get('learning_rate', 0.03),
-                    'num_leaves': lc.get('num_leaves', 127),  # Updated default: 127
-                    'max_depth': lc.get('max_depth', 6),
-                    'min_data_in_leaf': lc.get('min_data_in_leaf', 380),  # Updated: 380
+                    'ndcg_eval_at': lc.get('ndcg_eval_at', [10]),  # 🔧 聚焦Top10
+                    'learning_rate': lc.get('learning_rate', 0.01),  # 🔧 0.02 -> 0.01（更稳）
+                    'num_leaves': lc.get('num_leaves', 31),  # 🔧 63 -> 31（更保守）
+                    'max_depth': lc.get('max_depth', 5),  # 🔧 6 -> 5（更浅）
+                    'min_data_in_leaf': lc.get('min_data_in_leaf', 800),  # 🔧 650 -> 800（更稳）
                     'lambda_l1': lc.get('lambda_l1', 0.0),
-                    'lambda_l2': lc.get('lambda_l2', 10.0),  # Updated: 10.0
-                    'feature_fraction': lc.get('feature_fraction', 0.85),  # Updated default: 0.85
-                    'bagging_fraction': lc.get('bagging_fraction', 0.8),  # Updated default: 0.8
-                    'bagging_freq': lc.get('bagging_freq', 1),
-                    'lambdarank_truncation_level': lc.get('lambdarank_truncation_level', 650),  # Updated: 650
-                    'sigmoid': lc.get('sigmoid', 1.2),
+                    'lambda_l2': lc.get('lambda_l2', 30.0),  # 🔧 22.0 -> 30.0（更强正则化）
+                    'feature_fraction': lc.get('feature_fraction', 0.9),  # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+                    'bagging_fraction': lc.get('bagging_fraction', 0.75),  # 🔧 0.8 -> 0.75
+                    'bagging_freq': lc.get('bagging_freq', 3),  # 🔧 5 -> 3
+                    'lambdarank_truncation_level': lc.get('lambdarank_truncation_level', 80),  # 🔧 100 -> 80
+                    'sigmoid': lc.get('sigmoid', 1.1),  # 🔧 1.05 -> 1.1
                 },
             }
 
@@ -10954,26 +11250,26 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     lambda_fit_params = cfg.get('fit_params', {}) if isinstance(cfg.get('fit_params'), dict) else {}
                     trained = LambdaRankStacker(
                         base_cols=tuple(use_cols_full),
-                        n_quantiles=int(cfg.get('n_quantiles', 64)),
-                        label_gain_power=float(cfg.get('label_gain_power', 2.0)),  # Updated: 2.0
+                        n_quantiles=int(cfg.get('n_quantiles', 32)),  # 🔧 64 -> 32
+                        label_gain_power=float(cfg.get('label_gain_power', 2.1)),  # 🔧 2.0 -> 2.1
                         lgb_params=dict(lgb_params) if lgb_params else {
                             'objective': 'lambdarank',
                             'metric': 'ndcg',
-                            'ndcg_eval_at': [10, 30],
-                            'learning_rate': 0.03,
-                            'num_leaves': 127,
-                            'max_depth': 6,
-                            'min_data_in_leaf': 380,  # Updated: 380
+                            'ndcg_eval_at': [10],  # 🔧 聚焦Top10
+                            'learning_rate': 0.01,  # 🔧 0.02 -> 0.01（更稳）
+                            'num_leaves': 31,  # 🔧 63 -> 31（更保守）
+                            'max_depth': 5,  # 🔧 6 -> 5（更浅）
+                            'min_data_in_leaf': 800,  # 🔧 650 -> 800（更稳）
                             'lambda_l1': 0.0,
-                            'lambda_l2': 10.0,  # Updated: 10.0
-                            'feature_fraction': 0.85,
-                            'bagging_fraction': 0.8,
-                            'bagging_freq': 1,
-                            'lambdarank_truncation_level': 650,  # Updated: 650
-                            'sigmoid': 1.2,
+                            'lambda_l2': 30.0,  # 🔧 22.0 -> 30.0（更强正则化）
+                            'feature_fraction': 0.9,  # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+                            'bagging_fraction': 0.75,  # 🔧 0.8 -> 0.75
+                            'bagging_freq': 3,  # 🔧 5 -> 3
+                            'lambdarank_truncation_level': 80,  # 🔧 100 -> 80
+                            'sigmoid': 1.1,  # 🔧 1.05 -> 1.1
                         },
-                        num_boost_round=int(cfg.get('num_boost_round', 260)),  # Updated: 260
-                        early_stopping_rounds=int(lambda_fit_params.get('early_stopping_rounds', cfg.get('early_stopping_rounds', 60))),
+                        num_boost_round=int(cfg.get('num_boost_round', 1200)),  # 🔧 700 -> 1200（更多轮次）
+                        early_stopping_rounds=int(lambda_fit_params.get('early_stopping_rounds', cfg.get('early_stopping_rounds', 100))),  # 🔧 70 -> 100（更保守早停）
                         use_purged_cv=False,
                         use_internal_cv=False,
                     )
@@ -11015,41 +11311,147 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             }
 
         # Train each model and collect OOF predictions (CV循环训练 ElasticNet/XGBoost/CatBoost)
+        # 🔧 OOF冷启动修复：记录第一个验证集的日期（所有模型共享）
+        first_val_date_global = None
+        
+        # 🔧 FIX: 在循环外定义groups和cv_splits_list，所有模型共享相同的CV分割
+        # Improved groups extraction with better error handling
+        if groups is None:
+            # Try to extract dates from the data structure
+            if isinstance(X, pd.DataFrame) and isinstance(X.index, pd.MultiIndex) and 'date' in X.index.names:
+                groups = X.index.get_level_values('date').values
+                logger.info(f"Extracted groups from MultiIndex dates: {len(np.unique(groups))} unique dates")
+            elif hasattr(dates, 'values'):
+                groups = dates.values
+                logger.info(f"Using provided dates as groups: {len(np.unique(groups))} unique dates")
+            else:
+                logger.error("No valid groups found for temporal CV splitting")
+                raise ValueError("Groups parameter is required for temporal CV. Provide dates or ensure MultiIndex with 'date' level.")
+        
+        # 简单直接：统一日期格式，确保一二层一致
+        groups_norm = pd.to_datetime(groups).values.astype('datetime64[D]') if groups is not None else groups
+
+        # Validate groups length matches data
+        if groups_norm is not None and len(groups_norm) != len(y):
+            logger.error(f"Groups length {len(groups_norm)} != data length {len(y)}")
+            # Try to fix by using the index
+            if len(groups) > len(y):
+                groups_norm = groups_norm[:len(y)]
+            else:
+                raise ValueError(f"Groups length mismatch: {len(groups_norm)} != {len(y)}")
+
+        # 🔧 FIX: 在循环外创建CV分割，所有模型共享
+        cv_splits_list = list(cv.split(X, y, groups=groups_norm))
+        logger.info(f"[FIRST_LAYER] CV分割完成: {len(cv_splits_list)}折")
+        
+        # Log which models will be trained
+        logger.info(f"[FIRST_LAYER] 📋 将训练的模型列表: {list(models.keys())}")
+        if 'catboost' not in models:
+            logger.error("❌ [FIRST_LAYER] CRITICAL: CatBoost不在模型列表中！")
+            logger.error("❌ Meta Stacker需要CatBoost输入 - 训练将失败！")
+            raise ValueError("CatBoost must be in models dict for Meta Stacker to work properly")
+        else:
+            logger.info("✅ [FIRST_LAYER] CatBoost在模型列表中，将被训练")
+        
         for name, model in models.items():
-            logger.info(f"[FIRST_LAYER] Training {name}")
+            logger.info(f"[FIRST_LAYER] 🔍 开始训练模型: {name}")
+            logger.info(f"[FIRST_LAYER] 🔍  总CV折数: {len(cv_splits_list)}")
+            logger.info(f"[FIRST_LAYER] 🔍  训练数据: {X.shape[0]}样本 × {X.shape[1]}特征")
 
             # OOF predictions (second layer removed)
             oof_pred = np.zeros(len(y))
             scores = []
             r2_fold_scores = []
-
-            # Improved groups extraction with better error handling
-            if groups is None:
-                # Try to extract dates from the data structure
-                if isinstance(X, pd.DataFrame) and isinstance(X.index, pd.MultiIndex) and 'date' in X.index.names:
-                    groups = X.index.get_level_values('date').values
-                    logger.info(f"Extracted groups from MultiIndex dates: {len(np.unique(groups))} unique dates")
-                elif hasattr(dates, 'values'):
-                    groups = dates.values
-                    logger.info(f"Using provided dates as groups: {len(np.unique(groups))} unique dates")
+            first_val_date_model = None  # 当前模型的第一个验证集日期
+            topk_metrics_list = []  # 🔧 收集所有fold的Top-K收益proxy指标
+            
+            # 🔧 OOF冷启动修复：记录第一个验证集的日期
+            if cv_splits_list and groups_norm is not None:
+                first_train_idx, first_val_idx = cv_splits_list[0]
+                if len(first_val_idx) > 0:
+                    first_val_dates = groups_norm[first_val_idx]
+                    first_val_date_model = pd.to_datetime(first_val_dates.min()).normalize()
+                    if first_val_date_global is None:
+                        first_val_date_global = first_val_date_model
+                        logger.info(f"[FIRST_LAYER] 🔧 OOF冷启动修复: 第一个验证集日期 = {first_val_date_global.date()}")
+                        logger.info(f"[FIRST_LAYER] ⚠️  将过滤掉此日期之前的所有样本（避免分布断层）")
+            
+            # 🔧 最小训练窗限制：根据数据规模动态调整
+            try:
+                from bma_models.unified_config_loader import get_time_config
+                time_config = get_time_config()
+                base_min_train_window = getattr(time_config, 'min_train_window_days', 252)
+                
+                # 🔧 FIX: 动态调整最小训练窗 - 子集数据降低要求
+                if groups_norm is not None:
+                    unique_dates_count = len(pd.Series(groups_norm).unique())
+                elif isinstance(X.index, pd.MultiIndex) and 'date' in X.index.names:
+                    unique_dates_count = len(X.index.get_level_values('date').unique())
                 else:
-                    logger.error("No valid groups found for temporal CV splitting")
-                    raise ValueError("Groups parameter is required for temporal CV. Provide dates or ensure MultiIndex with 'date' level.")
-            # 简单直接：统一日期格式，确保一二层一致
-            groups_norm = pd.to_datetime(groups).values.astype('datetime64[D]') if groups is not None else groups
-
-            # Validate groups length matches data
-            if groups_norm is not None and len(groups_norm) != len(y):
-                logger.error(f"Groups length {len(groups_norm)} != data length {len(y)}")
-                # Try to fix by using the index
-                if len(groups) > len(y):
-                    groups_norm = groups_norm[:len(y)]
+                    unique_dates_count = sample_size // 500  # 估算
+                
+                if unique_dates_count < 1500:  # 子集数据（约3年）
+                    min_train_window_days = max(126, base_min_train_window // 2)  # 降低到半年
+                    logger.info(f"[FIRST_LAYER] 🔧 子集数据检测：唯一日期={unique_dates_count}，降低最小训练窗到{min_train_window_days}天（原{base_min_train_window}天）")
+                else:  # 全量数据
+                    min_train_window_days = base_min_train_window
+                    logger.info(f"[FIRST_LAYER] 全量数据：唯一日期={unique_dates_count}，使用标准最小训练窗{min_train_window_days}天")
+            except Exception as e:
+                logger.warning(f"[FIRST_LAYER] 无法动态调整最小训练窗: {e}，使用默认值252天")
+                min_train_window_days = 252  # 默认1年交易日
+            
+            valid_fold_start_idx = None  # 记录第一个有效fold的索引
+            
+            # 🔧 FIX: 动态计算平均每天样本数（仅用于fallback估算，确保向后兼容）
+            # 注意：如果能够从groups_norm或MultiIndex获取日期，会使用实际日期计算，不会使用此估算值
+            # 此值仅作为fallback，用于无法获取日期时的估算
+            if groups_norm is not None:
+                avg_samples_per_date = len(X) / unique_dates_count if unique_dates_count > 0 else 3270
+            elif isinstance(X.index, pd.MultiIndex) and 'date' in X.index.names:
+                avg_samples_per_date = len(X) / len(X.index.get_level_values('date').unique())
+            else:
+                # Fallback: 使用样本数估算（保持向后兼容，默认使用3270）
+                avg_samples_per_date = sample_size / unique_dates_count if unique_dates_count > 0 else 3270
+            
+            for fold_idx, (train_idx, val_idx) in enumerate(cv_splits_list):
+                # 🔍 TRACKING: 记录fold开始
+                logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}/{len(cv_splits_list)} 开始处理")
+                logger.info(f"[FIRST_LAYER][{name}] 🔍  训练样本数: {len(train_idx)}, 验证样本数: {len(val_idx)}")
+                
+                # 计算训练窗天数
+                if groups_norm is not None:
+                    # ✅ 优先使用实际日期计算（全量数据和子集数据都走这里，结果和之前完全一致）
+                    train_dates_fold = groups_norm[train_idx]
+                    train_unique_dates_fold = pd.Series(train_dates_fold).unique()
+                    train_window_days = len(train_unique_dates_fold)
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍  从groups_norm计算训练窗: {train_window_days}天 (唯一日期数)")
+                elif isinstance(X.index, pd.MultiIndex) and 'date' in X.index.names:
+                    # ✅ 备选方案：从MultiIndex获取日期（结果和之前完全一致）
+                    train_dates_fold = X.iloc[train_idx].index.get_level_values('date').unique()
+                    train_window_days = len(train_dates_fold)
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍  从MultiIndex计算训练窗: {train_window_days}天 (唯一日期数)")
                 else:
-                    raise ValueError(f"Groups length mismatch: {len(groups_norm)} != {len(y)}")
-
-            # CV-BAGGING FIX: 为每个模型准备fold存储
-            fold_idx = 0
-            for train_idx, val_idx in cv.split(X, y, groups=groups_norm):
+                    # ⚠️ Fallback: 仅在无法获取日期时使用估算（很少发生）
+                    # 🔧 FIX: 使用动态计算的每天样本数估算（而不是固定3270）
+                    # 对于全量数据，如果走到这里，avg_samples_per_date ≈ 3270，结果和之前一致
+                    # 对于子集数据，avg_samples_per_date ≈ 665，修复了低估问题
+                    train_window_days = int(len(train_idx) / avg_samples_per_date) if avg_samples_per_date > 0 else len(train_idx) // 3270
+                    logger.info(f"[FIRST_LAYER] 🔍 使用估算训练窗: {train_window_days}天 (样本数={len(train_idx)}, 平均每天样本数={avg_samples_per_date:.1f})")
+                
+                # 🔧 检查训练窗是否满足最小要求
+                logger.info(f"[FIRST_LAYER][{name}] 🔍  训练窗天数: {train_window_days}, 最小要求: {min_train_window_days}")
+                if train_window_days < min_train_window_days:
+                    logger.warning(
+                        f"[FIRST_LAYER][{name}] CV Fold {fold_idx + 1} 训练窗({train_window_days}天) < 最小要求({min_train_window_days}天)，跳过"
+                    )
+                    logger.info(f"[FIRST_LAYER][{name}] 🔧 此fold的OOF和best_iteration将不计入统计（避免噪声污染）")
+                    continue
+                
+                # 记录第一个有效fold
+                if valid_fold_start_idx is None:
+                    valid_fold_start_idx = fold_idx
+                    logger.info(f"[FIRST_LAYER][{name}] ✅ 从Fold {fold_idx + 1}开始计入OOF和best_iteration统计 (训练窗={train_window_days}天)")
+                
                 # Validate indices are within bounds
                 if np.max(train_idx) >= len(X) or np.max(val_idx) >= len(X):
                     logger.error(f"Invalid CV indices: max train={np.max(train_idx)}, max val={np.max(val_idx)}, data size={len(X)}")
@@ -11083,11 +11485,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         logger.debug(f"✓ CV fold gap verified: {actual_gap_days} >= {required_gap} days")
 
                 # Safe indexing with validation
+                logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: 开始创建训练/验证数据分割")
                 try:
                     X_train = X.iloc[train_idx].copy()
                     X_val = X.iloc[val_idx].copy()
                     y_train = y.iloc[train_idx].copy()
                     y_val = y.iloc[val_idx].copy()
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: 数据分割完成 - X_train: {X_train.shape}, X_val: {X_val.shape}")
                 except Exception as e:
                     logger.error(f"Failed to create train/val splits: {e}")
                     logger.error(f"Train indices shape: {len(train_idx)}, Val indices shape: {len(val_idx)}")
@@ -11162,29 +11566,29 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         base_cols_tuple = tuple(X_train_use.columns)
                         fallback_cfg = {
                             'base_cols': base_cols_tuple,
-                            'n_quantiles': 64,
+                            'n_quantiles': 32,  # 🔧 64 -> 32
                             'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 2.0,  # Updated: 2.0
-                            'num_boost_round': 260,  # Updated: 260
-                            'early_stopping_rounds': 60,
+                            'label_gain_power': 2.1,  # 🔧 2.0 -> 2.1
+                            'num_boost_round': 1200,  # 🔧 700 -> 1200（更多轮次）
+                            'early_stopping_rounds': 100,  # 🔧 70 -> 100（更保守早停）
                             'use_purged_cv': False,
                             'use_internal_cv': False,
                             'random_state': CONFIG._RANDOM_STATE,
                             'lgb_params': {
                                 'objective': 'lambdarank',
                                 'metric': 'ndcg',
-                                'ndcg_eval_at': [10, 30],
-                                'learning_rate': 0.03,
-                                'num_leaves': 127,  # Updated default: 127
-                                'max_depth': 6,
-                                'min_data_in_leaf': 380,  # Updated: 380
+                                'ndcg_eval_at': [10],  # 🔧 聚焦Top10
+                                'learning_rate': 0.01,  # 🔧 0.02 -> 0.01（更稳）
+                                'num_leaves': 31,  # 🔧 63 -> 31（更保守）
+                                'max_depth': 5,  # 🔧 6 -> 5（更浅）
+                                'min_data_in_leaf': 800,  # 🔧 650 -> 800（更稳）
                                 'lambda_l1': 0.0,
-                                'lambda_l2': 10.0,  # Updated: 10.0
-                                'feature_fraction': 0.85,
-                                'bagging_fraction': 0.8,
-                                'bagging_freq': 1,
-                                'lambdarank_truncation_level': 650,  # Updated: 650
-                                'sigmoid': 1.2,
+                                'lambda_l2': 30.0,  # 🔧 22.0 -> 30.0（更强正则化）
+                                'feature_fraction': 0.9,  # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+                                'bagging_fraction': 0.75,  # 🔧 0.8 -> 0.75
+                                'bagging_freq': 3,  # 🔧 5 -> 3
+                                'lambdarank_truncation_level': 80,  # 🔧 100 -> 80
+                                'sigmoid': 1.1,  # 🔧 1.05 -> 1.1
                             }
                         }
                         lambda_cfg_from_models = models.get('lambdarank') if isinstance(models, dict) else None
@@ -11195,33 +11599,35 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         logger.warning("[FIRST_LAYER][Lambda] 配置对象不是dict，重建配置映射以避免实例被**解包")
                         lambda_config = {
                             'base_cols': tuple(X_train_use.columns),
-                            'n_quantiles': 64,
+                            'n_quantiles': 32,  # 🔧 64 -> 32
                             'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 2.0,  # Updated: 2.0
-                            'num_boost_round': 260,  # Updated: 260
-                            'early_stopping_rounds': 60,
+                            'label_gain_power': 2.1,  # 🔧 2.0 -> 2.1
+                            'num_boost_round': 1200,  # 🔧 700 -> 1200（更多轮次）
+                            'early_stopping_rounds': 100,  # 🔧 70 -> 100（更保守早停）
                             'use_purged_cv': False,
                             'use_internal_cv': False,
                             'random_state': CONFIG._RANDOM_STATE,
                             'lgb_params': {
                                 'objective': 'lambdarank',
                                 'metric': 'ndcg',
-                                'ndcg_eval_at': [10, 30],
-                                'learning_rate': 0.03,
-                                'num_leaves': 127,  # Updated default: 127
-                                'max_depth': 6,
-                                'min_data_in_leaf': 380,  # Updated: 380
+                                'ndcg_eval_at': [10],  # 🔧 聚焦Top10
+                                'learning_rate': 0.01,  # 🔧 0.02 -> 0.01（更稳）
+                                'num_leaves': 31,  # 🔧 63 -> 31（更保守）
+                                'max_depth': 5,  # 🔧 6 -> 5（更浅）
+                                'min_data_in_leaf': 800,  # 🔧 650 -> 800（更稳）
                                 'lambda_l1': 0.0,
-                                'lambda_l2': 10.0,  # Updated: 10.0
-                                'feature_fraction': 0.85,
-                                'bagging_fraction': 0.8,
-                                'bagging_freq': 1,
-                                'lambdarank_truncation_level': 650,  # Updated: 650
-                                'sigmoid': 1.2,
+                                'lambda_l2': 30.0,  # 🔧 22.0 -> 30.0（更强正则化）
+                                'feature_fraction': 0.9,  # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+                                'bagging_fraction': 0.75,  # 🔧 0.8 -> 0.75
+                                'bagging_freq': 3,  # 🔧 5 -> 3
+                                'lambdarank_truncation_level': 80,  # 🔧 100 -> 80
+                                'sigmoid': 1.1,  # 🔧 1.05 -> 1.1
                             }
                         }
                     fold_lambda_model = LambdaRankStacker(**lambda_config)
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: 开始LambdaRank训练 (样本数: {len(X_train_lambda)})")
                     fold_lambda_model.fit(X_train_lambda, target_col=target_col)
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: LambdaRank训练完成")
 
                     # 预测验证集
                     lambda_pred_result = fold_lambda_model.predict(X_val_lambda)
@@ -11240,8 +11646,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                 elif is_xgb:
                     # 完全禁用早停：直接普通fit，避免任何不兼容与冗余日志
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: 开始XGBoost训练 (样本数: {len(X_train_use)})")
                     try:
                         model.fit(X_train_use, y_train)
+                        logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: XGBoost训练完成")
                         # Generate predictions for XGBoost
                         val_pred = model.predict(X_val_use)
                     except Exception as e1:
@@ -11255,6 +11663,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     except Exception:
                         pass
                 elif is_catboost:
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: 开始CatBoost训练 (样本数: {len(X_train_use)})")
                     try:
                         # 识别分类特征（行业、交易所等）
                         categorical_features = []
@@ -11266,6 +11675,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                                 categorical_features.append(i)
 
                         # CatBoost训练，支持分类特征和early stopping
+                        logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: CatBoost分类特征数: {len(categorical_features)}")
                         model.fit(
                             X_train_use, y_train,
                             eval_set=[(X_val_use, y_val)],
@@ -11275,6 +11685,7 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         )
                         # Generate predictions for CatBoost
                         val_pred = model.predict(X_val_use)
+                        logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: CatBoost训练完成")
                     except Exception as e:
                         logger.warning(f"CatBoost early stopping failed, fallback to normal fit: {e}")
                         try:
@@ -11293,7 +11704,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     except Exception:
                         pass
                 else:
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: 开始{name}训练 (样本数: {len(X_train_use)})")
                     model.fit(X_train_use, y_train)
+                    logger.info(f"[FIRST_LAYER][{name}] 🔍 Fold {fold_idx + 1}: {name}训练完成")
                     # 普通模型预测
                     val_pred = model.predict(X_val_use)
 
@@ -11320,10 +11733,40 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         val_pred = val_pred.flatten()
 
                 val_pred = np.where(np.isnan(val_pred), 0, val_pred)
+                
+                # 🔧 OOF标准化：对同一天的预测做横截面rank（解决折间模型成熟度不同导致的尺度漂移）
+                # 关键：必须是"按天"做，对每一天内的预测值进行rank，不能跨天rank
+                # 这样meta ranker吃的是"稳定的排序尺度"
+                # 获取验证集的日期
+                if isinstance(X_val.index, pd.MultiIndex) and 'date' in X_val.index.names:
+                    val_dates_for_rank_raw = X_val.index.get_level_values('date')
+                elif groups_norm is not None:
+                    val_dates_for_rank_raw = groups_norm[val_idx]
+                else:
+                    val_dates_for_rank_raw = dates.iloc[val_idx] if hasattr(dates, 'iloc') else dates[val_idx]
+                
+                # 确保val_dates_for_rank是pd.Series格式（per_day_rank_normalize需要）
+                if isinstance(val_dates_for_rank_raw, pd.Index):
+                    val_dates_for_rank = pd.Series(val_dates_for_rank_raw)
+                elif isinstance(val_dates_for_rank_raw, np.ndarray):
+                    val_dates_for_rank = pd.Series(val_dates_for_rank_raw)
+                else:
+                    val_dates_for_rank = pd.Series(val_dates_for_rank_raw) if not isinstance(val_dates_for_rank_raw, pd.Series) else val_dates_for_rank_raw
+                
+                # 导入per-day rank函数
+                from bma_models.lambda_rank_stacker import per_day_rank_normalize, calculate_topk_return_proxy
+                
+                # 应用per-day rank标准化
+                val_pred_normalized = per_day_rank_normalize(val_pred, val_dates_for_rank, use_gauss_rank=True)
+                
+                # 🔧 Top-K收益proxy指标（最终策略的最直接proxy）
+                # 注意：Top-K收益proxy使用原始预测（未标准化），因为我们要看真实的收益排序
+                topk_metrics = calculate_topk_return_proxy(val_pred, y_val.values if hasattr(y_val, 'values') else y_val, val_dates_for_rank, k=10)
+                topk_metrics_list.append(topk_metrics)  # 收集所有fold的指标
 
                 # Safe OOF assignment with validation
                 try:
-                    oof_pred[val_idx] = val_pred
+                    oof_pred[val_idx] = val_pred_normalized
                 except Exception as e:
                     logger.error(f"Failed to assign OOF predictions for {name}")
                     logger.error(f"oof_pred shape: {oof_pred.shape}, val_idx shape: {len(val_idx)}, val_pred shape: {val_pred.shape}")
@@ -11444,26 +11887,26 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         # 降级配置（如果global config不可用）
                         final_lambda_model = LambdaRankStacker(**{
                             'base_cols': tuple(use_cols_full),  # 使用与其他模型相同的特征列
-                            'n_quantiles': 64,
+                            'n_quantiles': 32,  # 🔧 64 -> 32
                             'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 2.0,  # Updated: 2.0
-                            'num_boost_round': 260,  # Updated: 260
-                            'early_stopping_rounds': 60,
+                            'label_gain_power': 2.1,  # 🔧 2.0 -> 2.1
+                            'num_boost_round': 1200,  # 🔧 700 -> 1200（更多轮次）
+                            'early_stopping_rounds': 100,  # 🔧 70 -> 100（更保守早停）
                             'lgb_params': {
                                 'objective': 'lambdarank',
                                 'metric': 'ndcg',
-                                'ndcg_eval_at': [10, 30],
-                                'learning_rate': 0.03,
-                                'num_leaves': 127,  # Updated default: 127
-                                'max_depth': 6,
-                                'min_data_in_leaf': 380,  # Updated: 380
+                                'ndcg_eval_at': [10],  # 🔧 聚焦Top10
+                                'learning_rate': 0.01,  # 🔧 0.02 -> 0.01（更稳）
+                                'num_leaves': 31,  # 🔧 63 -> 31（更保守）
+                                'max_depth': 5,  # 🔧 6 -> 5（更浅）
+                                'min_data_in_leaf': 800,  # 🔧 650 -> 800（更稳）
                                 'lambda_l1': 0.0,
-                                'lambda_l2': 10.0,  # Updated: 10.0
-                                'feature_fraction': 0.85,
-                                'bagging_fraction': 0.8,
-                                'bagging_freq': 1,
-                                'lambdarank_truncation_level': 650,  # Updated: 650
-                                'sigmoid': 1.2,
+                                'lambda_l2': 30.0,  # 🔧 22.0 -> 30.0（更强正则化）
+                                'feature_fraction': 0.9,  # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+                                'bagging_fraction': 0.75,  # 🔧 0.8 -> 0.75
+                                'bagging_freq': 3,  # 🔧 5 -> 3
+                                'lambdarank_truncation_level': 80,  # 🔧 100 -> 80
+                                'sigmoid': 1.1,  # 🔧 1.05 -> 1.1
                             },
                             'use_purged_cv': False,
                             'use_internal_cv': False,
@@ -11548,11 +11991,38 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 trained_models[name] = model
                 # Safe CV score calculation with NaN handling
                 scores_clean = [s for s in scores if not np.isnan(s) and np.isfinite(s)]
+                
+                # 🔧 FIX: 检查是否所有fold都被跳过
+                if len(scores_clean) == 0:
+                    unique_dates_info = f"唯一日期数: {len(pd.Series(groups_norm).unique()) if groups_norm is not None else 'unknown'}"
+                    error_msg = (
+                        f"[FIRST_LAYER][{name}] ❌ 所有CV fold都被跳过！"
+                        f"训练窗不足{min_train_window_days}天。"
+                        f"{unique_dates_info}。"
+                        f"请降低min_train_window_days或增加数据量。"
+                    )
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                
                 cv_scores[name] = np.mean(scores_clean) if scores_clean else 0.0
                 r2_scores_clean = [s for s in r2_fold_scores if not np.isnan(s) and np.isfinite(s)]
                 cv_r2_scores[name] = float(np.mean(r2_scores_clean)) if r2_scores_clean else float('-inf')
-                # Preserve MultiIndex when creating OOF predictions
-                oof_predictions[name] = pd.Series(oof_pred, index=y.index, name=name)
+                
+                # 🔧 OOF冷启动修复：过滤掉第一个验证集日期之前的样本
+                oof_series_full = pd.Series(oof_pred, index=y.index, name=name)
+                if first_val_date_model is not None:
+                    df_dates = pd.to_datetime(y.index.get_level_values('date') if isinstance(y.index, pd.MultiIndex) else dates).normalize()
+                    valid_mask = df_dates >= first_val_date_model
+                    before_count = (~valid_mask).sum()
+                    if before_count > 0:
+                        logger.info(
+                            f"   🔧 [{name}] OOF冷启动修复: 过滤掉{before_count}个样本 "
+                            f"(日期 < {first_val_date_model.date()})"
+                        )
+                    oof_predictions[name] = oof_series_full[valid_mask]
+                else:
+                    # Preserve MultiIndex when creating OOF predictions
+                    oof_predictions[name] = oof_series_full
 
                 # Debug: Check prediction quality
                 pred_clean = np.nan_to_num(oof_pred, nan=0.0)
@@ -11578,6 +12048,29 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.info(f"   📋 各fold CV分数: {[f'{s:.4f}' for s in scores_clean[:5]]}")
                 if len(scores_clean) > 5:
                     logger.info(f"      (显示前5个fold,共{len(scores_clean)}个有效fold)")
+                
+                # 🔧 报告跳过的fold（如果适用）
+                if 'valid_fold_start_idx' in locals() and valid_fold_start_idx is not None and valid_fold_start_idx > 0:
+                    skipped_folds = valid_fold_start_idx
+                    logger.info(f"   🔧 [{name}] 跳过了前{skipped_folds}个fold（训练窗不足{min_train_window_days}天）")
+                
+                # 🔧 Top-K收益proxy指标汇总（汇总所有fold）
+                if topk_metrics_list:
+                    # 汇总所有fold的Top-K收益proxy
+                    mean_returns = [m['mean_return'] for m in topk_metrics_list if m['n_days'] > 0]
+                    irs = [m['ir'] for m in topk_metrics_list if m['n_days'] > 0]
+                    t_stats = [m['t_stat'] for m in topk_metrics_list if m['n_days'] > 0]
+                    total_days = sum(m['n_days'] for m in topk_metrics_list)
+                    
+                    if mean_returns:
+                        avg_mean_return = np.mean(mean_returns)
+                        avg_ir = np.mean(irs)
+                        avg_t_stat = np.mean(t_stats)
+                        logger.info(
+                            f"   📊 [{name}] Top10收益proxy (汇总{len(mean_returns)}个fold): "
+                            f"mean={avg_mean_return:.4f}, IR={avg_ir:.2f}, "
+                            f"t-stat={avg_t_stat:.2f}, total_days={total_days}"
+                        )
 
                 # Warning if predictions have no variance
                 if pred_std < 1e-10:
@@ -11635,10 +12128,26 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             logger.error("cv_r2_scores not defined - initializing empty dict")
             cv_r2_scores = {}
 
+        # Verify CatBoost was successfully trained
+        if 'catboost' not in trained_models or trained_models['catboost'] is None:
+            logger.error("❌ [FIRST_LAYER] CRITICAL: CatBoost训练失败或未训练！")
+            logger.error("❌ Meta Stacker需要CatBoost - 无法继续！")
+            raise RuntimeError("CatBoost training failed - required for Meta Stacker")
+        
+        if 'catboost' not in oof_predictions:
+            logger.error("❌ [FIRST_LAYER] CRITICAL: CatBoost OOF预测缺失！")
+            logger.error("❌ Meta Stacker需要pred_catboost - 无法继续！")
+            raise RuntimeError("CatBoost OOF predictions missing - required for Meta Stacker")
+        
+        logger.info("✅ [FIRST_LAYER] CatBoost训练成功，OOF预测可用")
+        
         for name in trained_models:
             try:
                 # 跳过失败的模型（model为None）
                 if trained_models[name] is None:
+                    if name == 'catboost':
+                        logger.error(f"❌ CRITICAL: CatBoost训练失败！")
+                        raise RuntimeError("CatBoost training failed - required for Meta Stacker")
                     logger.warning(f"Skipping failed model {name}")
                     continue
 
@@ -11649,6 +12158,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     'cv_r2': cv_r2_scores.get(name, float('nan'))
                 }
             except Exception as e:
+                if name == 'catboost':
+                    logger.error(f"❌ CRITICAL: CatBoost格式化失败: {e}")
+                    raise RuntimeError(f"CatBoost formatting failed: {e}")
                 logger.error(f"Error formatting model {name}: {e}")
                 continue
         
@@ -13445,10 +13957,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 if not feature_cols:
                     # 使用当前T+10默认因子列表作为贡献度回退
                     feature_cols = [
-                        'liquid_momentum', 'obv_divergence', 'ivol_20', 'rsrs_beta_18', 'rsi_21',
-                        'trend_r2_60', 'near_52w_high', 'ret_skew_20d', 'blowoff_ratio',
-                        'hist_vol_40d', 'atr_ratio', 'bollinger_squeeze', 'vol_ratio_20d',
-                        'price_ma60_deviation'
+                        'momentum_10d', 'liquid_momentum', 'obv_momentum_40d', 'ivol_30', 'rsrs_beta_18', 'rsi_21',  # Updated: obv_divergence → obv_momentum_40d
+                        'trend_r2_60', 'near_52w_high', 'ret_skew_30d',
+                        # 'hist_vol_40d',  # REMOVED: 40-day historical volatility - removed from all first layer models
+                        'atr_ratio', 'vol_ratio_30d',
+                        'price_ma60_deviation',
+                        'feat_vol_price_div_30d'  # Updated: Volume-Price Divergence Factor (replaces Sato factors)
                     ]
 
                 # 从不同模型中提取重要性

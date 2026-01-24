@@ -1,0 +1,82 @@
+{
+  "oof_metrics": {
+    "elastic_net": {
+      "ic": 0.012651699410026097,
+      "rank_ic": -0.03502059816220526,
+      "n_samples": 600714
+    },
+    "xgboost": {
+      "ic": 0.09383199034916997,
+      "rank_ic": 0.003970207961912536,
+      "n_samples": 600714
+    },
+    "catboost": {
+      "ic": 0.09388436791754369,
+      "rank_ic": 0.003974023050388703,
+      "n_samples": 600714
+    },
+    "lambdarank": {
+      "ic": 0.0837004502246776,
+      "rank_ic": 0.006695686155720976,
+      "n_samples": 600714
+    }
+  },
+  "test_metrics": {
+    "elastic_net": {
+      "ic": 0.0227507043711191,
+      "rank_ic": 0.0342476095019152,
+      "n_predictions": 183424
+    },
+    "xgboost": {
+      "ic": 0.9386885741976853,
+      "rank_ic": 0.9613410828367778,
+      "n_predictions": 183424
+    },
+    "lambdarank": {
+      "ic": 0.8272417261742376,
+      "rank_ic": 0.885535936727693,
+      "n_predictions": 183424
+    },
+    "ridge_stacking": {
+      "ic": 0.6086922058254474,
+      "rank_ic": 0.8066009063342092,
+      "n_predictions": 183424
+    }
+  },
+  "comparison_results": {
+    "lambdarank": {
+      "leakage_detected": true,
+      "oof_ic": 0.0837004502246776,
+      "oof_rank_ic": 0.006695686155720976,
+      "test_ic": 0.8272417261742376,
+      "test_rank_ic": 0.885535936727693,
+      "ic_diff": -0.74354127594956,
+      "rank_ic_diff": -0.878840250571972,
+      "leakage_signals": [
+        "Large IC difference (-0.7435)"
+      ]
+    },
+    "xgboost": {
+      "leakage_detected": true,
+      "oof_ic": 0.09383199034916997,
+      "oof_rank_ic": 0.003970207961912536,
+      "test_ic": 0.9386885741976853,
+      "test_rank_ic": 0.9613410828367778,
+      "ic_diff": -0.8448565838485153,
+      "rank_ic_diff": -0.9573708748748653,
+      "leakage_signals": [
+        "Large IC difference (-0.8449)"
+      ]
+    },
+    "elastic_net": {
+      "leakage_detected": false,
+      "oof_ic": 0.012651699410026097,
+      "oof_rank_ic": -0.03502059816220526,
+      "test_ic": 0.0227507043711191,
+      "test_rank_ic": 0.0342476095019152,
+      "ic_diff": -0.010099004961093004,
+      "rank_ic_diff": -0.06926820766412047,
+      "leakage_signals": []
+    }
+  }
+}

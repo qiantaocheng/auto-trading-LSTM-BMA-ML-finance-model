@@ -3008,12 +3008,15 @@ class AlphaStrategiesEngine:
             return pd.Series(0, index=df.index)
     
     def _compute_bollinger_squeeze(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Bollinger Band volatility squeeze"""
+        """Bollinger Band volatility squeeze
+        🔥 FIX: Shift for pre-market prediction (use previous day's volatility ratio)
+        """
         if 'Close' not in df.columns or len(df) < 20:
             return pd.Series(0, index=df.index)
         try:
-            std_20 = df['Close'].rolling(20).std()
-            std_5 = df['Close'].rolling(5).std()
+            # 🔥 FIX: Shift for pre-market prediction
+            std_20 = df['Close'].rolling(20).std().shift(1)
+            std_5 = df['Close'].rolling(5).std().shift(1)
             squeeze = std_5 / (std_20 + 1e-8)
             return self.safe_fillna(squeeze, df)
         except:

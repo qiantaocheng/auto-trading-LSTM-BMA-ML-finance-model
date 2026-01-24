@@ -6,7 +6,7 @@ Model Registry - Save/Load trained models and parameters for inference without r
 Artifacts stored:
 - First layer models: ElasticNet (joblib .pkl), XGBoost (.json), CatBoost (.cbm)
 - LambdaRankStacker: LightGBM booster (.txt) + StandardScaler (.pkl) + feature columns (.json)
-- RidgeStacker: Ridge model (.pkl) + StandardScaler (.pkl) + base_cols (.json)
+- MetaRankerStacker: LightGBM model (.txt) + StandardScaler (.pkl) + metadata (.json)
 - Blender/gate metadata (.json)
 - Snapshot manifest (.json)
 
@@ -122,7 +122,7 @@ def _default_snapshot_dir() -> str:
 
 def save_model_snapshot(
     training_results: Dict[str, Any],
-    ridge_stacker: Any = None,
+    meta_ranker_stacker: Any = None,  # 🔧 完全移除ridge_stacker，只使用meta_ranker_stacker
     lambda_rank_stacker: Any = None,
     rank_aware_blender: Any = None,
     dual_head_fusion_manager: Any = None,  # 新增：双头融合管理器
@@ -146,7 +146,7 @@ def save_model_snapshot(
               },
               'feature_names': [...]
             }
-        ridge_stacker: trained RidgeStacker instance (optional)
+        meta_ranker_stacker: trained MetaRankerStacker instance (optional, replaces old RidgeStacker)
         lambda_rank_stacker: trained LambdaRankStacker instance (optional, if not in training_results)
         rank_aware_blender: RankAwareBlender instance for gate metadata (optional)
         tag: friendly tag for snapshot
@@ -165,7 +165,16 @@ def save_model_snapshot(
     )
 
     if not models:
-        raise ValueError("training_results缺少'models'，无法导出快照")
+        # 🔧 FIX: 提供更详细的错误信息，帮助调试
+        available_keys = list(training_results.keys())
+        traditional_keys = list(training_results.get('traditional_models', {}).keys()) if isinstance(training_results.get('traditional_models'), dict) else []
+        error_msg = (
+            f"training_results缺少'models'，无法导出快照。\n"
+            f"training_results顶层键: {available_keys}\n"
+            f"traditional_models键: {traditional_keys}\n"
+            f"请确保training_results包含'traditional_models'['models']或'models'"
+        )
+        raise ValueError(error_msg)
 
     snapshot_id = str(uuid.uuid4())
     root_dir = snapshot_dir or _default_snapshot_dir()
@@ -278,99 +287,58 @@ def save_model_snapshot(
         import traceback
         logger.debug(traceback.format_exc())
 
-    # MetaRankerStacker only (RidgeStacker has been completely replaced)
+    # 🔧 FIX: 完全移除RidgeStacker，只支持MetaRankerStacker
     try:
-        if ridge_stacker is not None:
-            # Check if it's MetaRankerStacker (has lightgbm_model)
-            is_meta_ranker = hasattr(ridge_stacker, 'lightgbm_model') and getattr(ridge_stacker, 'lightgbm_model', None) is not None
-            is_ridge = hasattr(ridge_stacker, 'ridge_model') and getattr(ridge_stacker, 'ridge_model', None) is not None
+        if meta_ranker_stacker is not None:
+            # 🔧 Save MetaRankerStacker
+            import lightgbm as lgb
+            logger.info(f"[SNAPSHOT] 🔧 开始保存MetaRankerStacker...")
             
-            if is_ridge:
-                logger.error("❌ RidgeStacker is no longer supported. Please use MetaRankerStacker instead.")
-                raise ValueError("RidgeStacker has been completely replaced by MetaRankerStacker. Please retrain your model.")
+            # 验证是MetaRankerStacker
+            if not (hasattr(meta_ranker_stacker, 'lightgbm_model') and getattr(meta_ranker_stacker, 'lightgbm_model', None) is not None):
+                logger.error("❌ meta_ranker_stacker必须是MetaRankerStacker实例（包含lightgbm_model）")
+                raise ValueError("meta_ranker_stacker必须是MetaRankerStacker实例")
             
-            if is_meta_ranker:
-                # 🔧 Save MetaRankerStacker
-                import lightgbm as lgb
-                logger.info(f"[SNAPSHOT] 🔧 开始保存MetaRankerStacker...")
-                
-                # 保存LightGBM模型
-                paths.meta_ranker_txt = os.path.join(root_dir, 'meta_ranker.txt')
+            # 保存LightGBM模型
+            paths.meta_ranker_txt = os.path.join(root_dir, 'meta_ranker.txt')
+            try:
+                meta_ranker_stacker.lightgbm_model.save_model(str(paths.meta_ranker_txt))
+                logger.info(f"✅ [SNAPSHOT] LightGBM模型已保存: {paths.meta_ranker_txt}")
+            except Exception as e:
+                logger.error(f"❌ [SNAPSHOT] 保存LightGBM模型失败: {e}")
+                raise
+            
+            # 保存scaler
+            if getattr(meta_ranker_stacker, 'scaler', None) is not None:
+                paths.meta_ranker_scaler_pkl = os.path.join(root_dir, 'meta_ranker_scaler.pkl')
                 try:
-                    ridge_stacker.lightgbm_model.save_model(str(paths.meta_ranker_txt))
-                    logger.info(f"✅ [SNAPSHOT] LightGBM模型已保存: {paths.meta_ranker_txt}")
+                    joblib.dump(meta_ranker_stacker.scaler, paths.meta_ranker_scaler_pkl)
+                    logger.info(f"✅ [SNAPSHOT] Scaler已保存: {paths.meta_ranker_scaler_pkl}")
                 except Exception as e:
-                    logger.error(f"❌ [SNAPSHOT] 保存LightGBM模型失败: {e}")
-                    raise
-                
-                # 保存scaler
-                if getattr(ridge_stacker, 'scaler', None) is not None:
-                    paths.meta_ranker_scaler_pkl = os.path.join(root_dir, 'meta_ranker_scaler.pkl')
-                    try:
-                        joblib.dump(ridge_stacker.scaler, paths.meta_ranker_scaler_pkl)
-                        logger.info(f"✅ [SNAPSHOT] Scaler已保存: {paths.meta_ranker_scaler_pkl}")
-                    except Exception as e:
-                        logger.warning(f"⚠️  [SNAPSHOT] 保存Scaler失败: {e}")
-                else:
-                    logger.warning("[SNAPSHOT] ⚠️  MetaRankerStacker没有scaler，跳过保存")
-                
-                # 🔧 保存完整的元数据（包含所有必要参数）
-                meta_ranker_meta = {
-                    'base_cols': list(getattr(ridge_stacker, 'base_cols', []) or []),
-                    'n_quantiles': getattr(ridge_stacker, 'n_quantiles', 64),
-                    'label_gain_power': getattr(ridge_stacker, 'label_gain_power', 2.2),
-                    'num_boost_round': getattr(ridge_stacker, 'num_boost_round', 180),
-                    'early_stopping_rounds': getattr(ridge_stacker, 'early_stopping_rounds', 60),
-                    'lgb_params': getattr(ridge_stacker, 'lgb_params', {}),
-                    'actual_feature_cols': list(getattr(ridge_stacker, 'actual_feature_cols_', []) or []),
-                    'model_type': 'MetaRankerStacker',
-                    'fitted': getattr(ridge_stacker, 'fitted_', False),
-                }
-                paths.meta_ranker_meta_json = os.path.join(root_dir, 'meta_ranker_meta.json')
-                try:
-                    with open(paths.meta_ranker_meta_json, 'w', encoding='utf-8') as f:
-                        json.dump(meta_ranker_meta, f, ensure_ascii=False, indent=2)
-                    logger.info(f"✅ [SNAPSHOT] MetaRankerStacker元数据已保存: {paths.meta_ranker_meta_json}")
-                except Exception as e:
-                    logger.error(f"❌ [SNAPSHOT] 保存MetaRankerStacker元数据失败: {e}")
-                    raise
-                
-                # Also save as ridge_meta.json for backward compatibility
-                ridge_meta = {
-                    'base_cols': list(getattr(ridge_stacker, 'base_cols', []) or []),
-                    'actual_feature_cols': list(getattr(ridge_stacker, 'actual_feature_cols_', []) or []),
-                    'model_type': 'MetaRankerStacker',
-                }
-                paths.ridge_meta_json = os.path.join(root_dir, 'ridge_meta.json')
-                with open(paths.ridge_meta_json, 'w', encoding='utf-8') as f:
-                    json.dump(ridge_meta, f, ensure_ascii=False, indent=2)
-            elif is_ridge:
-                # Save RidgeStacker (backward compatibility)
-                paths.ridge_model_pkl = os.path.join(root_dir, 'ridge_model.pkl')
-                joblib.dump(ridge_stacker.ridge_model, paths.ridge_model_pkl)
-                if getattr(ridge_stacker, 'scaler', None) is not None:
-                    paths.ridge_scaler_pkl = os.path.join(root_dir, 'ridge_scaler.pkl')
-                    joblib.dump(ridge_stacker.scaler, paths.ridge_scaler_pkl)
-                ridge_meta = {
-                    'base_cols': list(getattr(ridge_stacker, 'base_cols', []) or []),
-                    'alpha': getattr(ridge_stacker, 'best_alpha_', getattr(ridge_stacker, 'alpha', None)),
-                    'fit_intercept': getattr(ridge_stacker, 'fit_intercept', False),
-                    'solver': getattr(ridge_stacker, 'solver', 'auto'),
-                    'tol': getattr(ridge_stacker, 'tol', 1e-6),
-                    'feature_names': list(getattr(ridge_stacker, 'feature_names_', []) or []),
-                    'actual_feature_cols': list(getattr(ridge_stacker, 'actual_feature_cols_', []) or []),
-                    'direction_calibration': bool(getattr(ridge_stacker, 'direction_calibration', False)),
-                    'direction_calibration_min_n': int(getattr(ridge_stacker, 'direction_calibration_min_n', 0) or 0),
-                    'direction_sign_map': dict(getattr(ridge_stacker, 'direction_sign_map_', {}) or {}),
-                    'direction_ic_mean': dict(getattr(ridge_stacker, 'direction_ic_mean_', {}) or {}),
-                    'output_sign': float(getattr(ridge_stacker, 'output_sign_', 1.0) or 1.0),
-                    'add_rank_features': bool(getattr(ridge_stacker, 'add_rank_features', False)),
-                    'model_type': 'RidgeStacker',
-                }
-                paths.ridge_meta_json = os.path.join(root_dir, 'ridge_meta.json')
-                with open(paths.ridge_meta_json, 'w', encoding='utf-8') as f:
-                    json.dump(ridge_meta, f, ensure_ascii=False, indent=2)
-                logger.info(f"✅ RidgeStacker已保存: {paths.ridge_model_pkl}")
+                    logger.warning(f"⚠️  [SNAPSHOT] 保存Scaler失败: {e}")
+            else:
+                logger.warning("[SNAPSHOT] ⚠️  MetaRankerStacker没有scaler，跳过保存")
+            
+            # 🔧 保存完整的元数据（包含所有必要参数）
+            meta_ranker_meta = {
+                'base_cols': list(getattr(meta_ranker_stacker, 'base_cols', []) or []),
+                'n_quantiles': getattr(meta_ranker_stacker, 'n_quantiles', 64),
+                'label_gain_power': getattr(meta_ranker_stacker, 'label_gain_power', 2.2),
+                'num_boost_round': getattr(meta_ranker_stacker, 'num_boost_round', 180),
+                'early_stopping_rounds': getattr(meta_ranker_stacker, 'early_stopping_rounds', 60),
+                'lgb_params': getattr(meta_ranker_stacker, 'lgb_params', {}),
+                'actual_feature_cols': list(getattr(meta_ranker_stacker, 'actual_feature_cols_', []) or []),
+                'model_type': 'MetaRankerStacker',
+                'fitted': getattr(meta_ranker_stacker, 'fitted_', False),
+            }
+            paths.meta_ranker_meta_json = os.path.join(root_dir, 'meta_ranker_meta.json')
+            try:
+                with open(paths.meta_ranker_meta_json, 'w', encoding='utf-8') as f:
+                    json.dump(meta_ranker_meta, f, ensure_ascii=False, indent=2)
+                logger.info(f"✅ [SNAPSHOT] MetaRankerStacker元数据已保存: {paths.meta_ranker_meta_json}")
+            except Exception as e:
+                logger.error(f"❌ [SNAPSHOT] 保存MetaRankerStacker元数据失败: {e}")
+                raise
     except Exception as e:
         logger.warning(f"导出Stacker失败: {e}")
         import traceback
@@ -545,42 +513,28 @@ def save_model_snapshot(
         logger.warning(f"导出LambdaRank权重失败: {e}")
 
     try:
-        # Ridge stacking coefficients or MetaRankerStacker feature importance
-        if ridge_stacker is not None:
-            # Check if it's MetaRankerStacker or RidgeStacker
-            is_meta_ranker = hasattr(ridge_stacker, 'lightgbm_model') and getattr(ridge_stacker, 'lightgbm_model', None) is not None
-            is_ridge = hasattr(ridge_stacker, 'ridge_model') and getattr(ridge_stacker, 'ridge_model', None) is not None
-            
-            if is_meta_ranker:
-                # MetaRankerStacker: Use feature importance from LightGBM
+        # MetaRankerStacker feature importance
+        if meta_ranker_stacker is not None:
+            # MetaRankerStacker: Use feature importance from LightGBM
+            try:
+                booster = meta_ranker_stacker.lightgbm_model
+                feat_cols = list(getattr(meta_ranker_stacker, 'actual_feature_cols_', []) or getattr(meta_ranker_stacker, 'base_cols', []) or [])
                 try:
-                    booster = ridge_stacker.lightgbm_model
-                    feat_cols = list(getattr(ridge_stacker, 'actual_feature_cols_', []) or getattr(ridge_stacker, 'base_cols', []) or [])
-                    try:
-                        fn = booster.feature_name() or []
-                        gain = list(map(float, booster.feature_importance(importance_type='gain')))
-                        if fn and len(fn) == len(gain):
-                            weights = dict(zip(fn, gain))
-                        elif feat_cols and len(feat_cols) == len(gain):
-                            weights = dict(zip(feat_cols, gain))
-                        else:
-                            weights = {f'f{i}': gain[i] for i in range(len(gain))}
-                    except Exception:
-                        weights = {col: 1.0 for col in feat_cols} if feat_cols else {}
-                    weights_paths['ridge_stacking'] = _safe_write_json(weights, 'weights_ridge_stacking.json')
-                except Exception as e:
-                    logger.warning(f"导出MetaRankerStacker权重失败: {e}")
-            elif is_ridge:
-                # RidgeStacker: Use coefficients
-                coefs = list(map(float, getattr(ridge_stacker.ridge_model, 'coef_', [])))
-                feat_cols = list(getattr(ridge_stacker, 'actual_feature_cols_', []) or getattr(ridge_stacker, 'feature_names_', []) or [])
-                if feat_cols and len(feat_cols) == len(coefs):
-                    weights = dict(zip(feat_cols, coefs))
-                else:
-                    weights = {f'x{i}': coefs[i] for i in range(len(coefs))}
-                weights_paths['ridge_stacking'] = _safe_write_json(weights, 'weights_ridge_stacking.json')
+                    fn = booster.feature_name() or []
+                    gain = list(map(float, booster.feature_importance(importance_type='gain')))
+                    if fn and len(fn) == len(gain):
+                        weights = dict(zip(fn, gain))
+                    elif feat_cols and len(feat_cols) == len(gain):
+                        weights = dict(zip(feat_cols, gain))
+                    else:
+                        weights = {f'f{i}': gain[i] for i in range(len(gain))}
+                except Exception:
+                    weights = {col: 1.0 for col in feat_cols} if feat_cols else {}
+                weights_paths['meta_ranker_stacking'] = _safe_write_json(weights, 'weights_meta_ranker_stacking.json')
+            except Exception as e:
+                logger.warning(f"导出MetaRankerStacker权重失败: {e}")
     except Exception as e:
-        logger.warning(f"导出Stacker权重失败: {e}")
+        logger.warning(f"导出MetaRankerStacker权重失败: {e}")
 
     # Manifest
     manifest_metadata: Dict[str, Any] = {}
@@ -643,7 +597,7 @@ def save_model_snapshot(
                     'catboost_cbm': paths.catboost_cbm,
                     'lightgbm_ranker_pkl': paths.lightgbm_ranker_pkl,
                     'lambdarank_txt': paths.lambdarank_txt,
-                    'ridge_model_pkl': paths.ridge_model_pkl,
+                    'meta_ranker_txt': paths.meta_ranker_txt,
                     'meta_ranker_txt': paths.meta_ranker_txt,
                     'meta_ranker_scaler_pkl': paths.meta_ranker_scaler_pkl,
                     'meta_ranker_meta_json': paths.meta_ranker_meta_json,
@@ -665,7 +619,7 @@ def save_model_snapshot(
             except Exception as e:
                 logger.warning(f"写入参数失败[{component}]: {e}")
 
-        _insert_params('ridge', paths.ridge_meta_json)
+        _insert_params('meta_ranker', paths.meta_ranker_meta_json)
         _insert_params('lambdarank', paths.lambdarank_meta_json)
         _insert_params('blender', paths.blender_meta_json)
         conn.commit()
@@ -684,8 +638,8 @@ def save_model_snapshot(
         saved_models.append("LightGBM Ranker")
     if paths.lambdarank_txt and os.path.exists(paths.lambdarank_txt):
         saved_models.append("LambdaRank")
-    if paths.ridge_model_pkl and os.path.exists(paths.ridge_model_pkl):
-        saved_models.append("Ridge")
+    if paths.meta_ranker_txt and os.path.exists(paths.meta_ranker_txt):
+        saved_models.append("MetaRankerStacker")
 
     logger.info("=" * 80)
     logger.info(f"✅ [SNAPSHOT] 模型快照已保存")
@@ -694,7 +648,7 @@ def save_model_snapshot(
     logger.info(f"保存路径: {root_dir}")
     logger.info(f"成功保存 {len(saved_models)}/6 个模型: {', '.join(saved_models)}")
     if len(saved_models) < 6:
-        missing = set(['ElasticNet', 'XGBoost', 'CatBoost', 'LightGBM Ranker', 'LambdaRank', 'Ridge']) - set(saved_models)
+        missing = set(['ElasticNet', 'XGBoost', 'CatBoost', 'LightGBM Ranker', 'LambdaRank', 'MetaRankerStacker']) - set(saved_models)
         logger.warning(f"⚠️  未保存的模型: {', '.join(missing)}")
     logger.info(f"清单文件: {paths.manifest_json}")
     logger.info("=" * 80)
@@ -804,7 +758,8 @@ def load_models_from_snapshot(
             'catboost': CatBoost model,
             'lightgbm_ranker': LightGBM ranker
         },
-        'ridge_stacker': RidgeStacker instance,
+        'meta_ranker_stacker': MetaRankerStacker instance,
+        'ridge_stacker': MetaRankerStacker instance (deprecated, for backward compatibility),
         'lambda_rank_stacker': LambdaRankStacker instance,
         'lambda_percentile_transformer': LambdaPercentileTransformer instance
     }
@@ -814,7 +769,8 @@ def load_models_from_snapshot(
 
     result = {
         'models': {},
-        'ridge_stacker': None,
+        'meta_ranker_stacker': None,  # 🔧 FIX: 使用meta_ranker_stacker
+        'ridge_stacker': None,  # deprecated, for backward compatibility
         'lambda_rank_stacker': None,
         'lambda_percentile_transformer': None
     }
@@ -901,7 +857,7 @@ def load_models_from_snapshot(
             import traceback
             logger.debug(traceback.format_exc())
 
-    # Load MetaRankerStacker (priority) or RidgeStacker (fallback)
+    # Load MetaRankerStacker (RidgeStacker has been completely removed)
     # Try MetaRankerStacker first
     if paths_dict.get('meta_ranker_txt') and os.path.exists(paths_dict['meta_ranker_txt']):
         try:
@@ -914,7 +870,8 @@ def load_models_from_snapshot(
                 with open(paths_dict['meta_ranker_meta_json'], 'r') as f:
                     meta = json.load(f)
             elif paths_dict.get('ridge_meta_json') and os.path.exists(paths_dict['ridge_meta_json']):
-                # Fallback to ridge_meta.json for backward compatibility
+                # Fallback to ridge_meta.json for backward compatibility (deprecated, will be removed)
+                logger.warning("⚠️ Loading from deprecated ridge_meta.json. Please regenerate snapshot with meta_ranker_meta.json")
                 with open(paths_dict['ridge_meta_json'], 'r') as f:
                     meta = json.load(f)
 
@@ -942,7 +899,8 @@ def load_models_from_snapshot(
             # Set fitted flag
             meta_ranker.fitted_ = True
 
-            result['ridge_stacker'] = meta_ranker  # Use same key for compatibility (backward compatibility)
+            result['meta_ranker_stacker'] = meta_ranker  # 🔧 FIX: 使用meta_ranker_stacker键
+            result['ridge_stacker'] = meta_ranker  # 保留向后兼容键（deprecated，将在未来版本移除）
             logger.info(f"✅ MetaRankerStacker loaded from {paths_dict['meta_ranker_txt']}")
         except Exception as e:
             logger.error(f"❌ MetaRankerStacker加载失败: {e}")
@@ -950,12 +908,11 @@ def load_models_from_snapshot(
             logger.error(traceback.format_exc())
             raise RuntimeError(f"Cannot load MetaRankerStacker from snapshot. This snapshot may be corrupted or incomplete. Error: {e}")
     
-    # RidgeStacker has been completely replaced by MetaRankerStacker
-    # No fallback to RidgeStacker - if MetaRankerStacker is not found, raise an error
+    # 🔧 FIX: RidgeStacker已完全移除，不再支持加载
     elif paths_dict.get('ridge_model_pkl') and os.path.exists(paths_dict['ridge_model_pkl']):
-        logger.error("❌ Found old RidgeStacker snapshot but RidgeStacker has been replaced by MetaRankerStacker.")
+        logger.error("❌ Found old RidgeStacker snapshot but RidgeStacker has been completely removed.")
         logger.error("   Please retrain the model to generate a new snapshot with MetaRankerStacker.")
-        raise RuntimeError("RidgeStacker is no longer supported. Please retrain the model to use MetaRankerStacker.")
+        raise ValueError("RidgeStacker has been completely removed. Please retrain your model with MetaRankerStacker.")
 
     # Skip loading Lambda Percentile Transformer (no longer used)
 
@@ -986,7 +943,7 @@ def summarize_weights(snapshot_id: Optional[str] = None,
         'catboost_top': _topn(weights.get('catboost'), top_n),
         'lightgbm_ranker_top': _topn(weights.get('lightgbm_ranker'), top_n),
         'lambdarank_gain_top': _topn(weights.get('lambdarank_gain'), top_n),
-        'ridge_stacking': weights.get('ridge_stacking') or {},
+        'meta_ranker_stacking': weights.get('meta_ranker_stacking') or {},
         'lambda_percentile_meta': weights.get('lambda_percentile_meta') or {}
     }
 

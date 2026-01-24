@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-80/20 time-split train/test on MultiIndex(date,ticker) factors.
+90/10 time-split train/test on MultiIndex(date,ticker) factors.
 
 Design:
   - Split by unique dates (sorted)
-  - Train on first 80% dates, BUT purge a gap = horizon_days to avoid label leakage
+  - Train on first 90% dates, BUT purge a gap = horizon_days to avoid label leakage
     (because target at date t uses forward returns through t+horizon_days)
-  - Evaluate on last 20% dates with STANDALONE prediction loop (NO ComprehensiveModelBacktest dependency)
+  - Evaluate on last 10% dates with STANDALONE prediction loop (NO ComprehensiveModelBacktest dependency)
   - Daily rebalancing: one prediction per trading day (overlapping observations)
   - HAC corrections: Newey-West (lag≥10) or Hansen-Hodrick standard errors
   - Explicit disclosure: "基于重叠观测 (overlapping observations)"
@@ -103,12 +103,20 @@ def align_test_features_with_model(X_test: pd.DataFrame, model, model_name: str,
 # ==================== END FEATURE ALIGNMENT FIX ====================
 
 def calculate_newey_west_hac_ic(
-    y_pred: np.ndarray,
-    y_actual: np.ndarray,
-    lag: int
+    predictions_df: pd.DataFrame,
+    lag: int,
+    use_rank: bool = False
 ) -> Dict[str, float]:
     """
     Calculate IC with Newey-West HAC standard errors.
+    
+    🔥 关键修复：先按日聚合IC，再对日度IC序列做HAC
+    
+    正确流程：
+    1. 按日期分组
+    2. 对每一天计算IC（横截面correlation）
+    3. 得到日度IC序列（长度≈259天）
+    4. 对日度IC序列做Newey-West HAC
     
     References:
     - Newey, W. K., & West, K. D. (1987). A simple, positive semi-definite,
@@ -116,9 +124,9 @@ def calculate_newey_west_hac_ic(
       Econometrica, 55(3), 703-708.
     
     Args:
-        y_pred: Predictions
-        y_actual: Actual values
-        lag: Lag order (must be ≥ 10 for 10-day horizon)
+        predictions_df: DataFrame with columns [date, ticker, prediction, actual]
+        lag: Lag order (should be ≈horizon or 2*horizon for overlapping returns)
+        use_rank: If True, use rank correlation (Rank IC), else use Pearson correlation (IC)
     
     Returns:
         Dict with IC, t-stat, SE, p-value, note
@@ -128,35 +136,102 @@ def calculate_newey_west_hac_ic(
     except ImportError:
         raise ImportError("statsmodels required for HAC corrections. Install: pip install statsmodels")
     
-    valid_mask = ~(np.isnan(y_pred) | np.isnan(y_actual))
-    y_pred_clean = y_pred[valid_mask]
-    y_actual_clean = y_actual[valid_mask]
+    # 🔥 步骤1: 按日期分组，计算每天的IC（横截面correlation）
+    # 确保日期已排序（HAC需要时间序列顺序）
+    predictions_df_sorted = predictions_df.sort_values('date').copy()
     
-    if len(y_pred_clean) < 10:
-        return {'IC': np.nan, 'IC_pvalue': np.nan, 'IC_tstat': np.nan, 'IC_se_hac': np.nan, 'note': 'Insufficient data'}
+    daily_ics = []
+    daily_dates = []
     
-    ic = float(np.corrcoef(y_pred_clean, y_actual_clean)[0, 1])
+    for date, date_group in predictions_df_sorted.groupby('date'):
+        # 提取当天的预测和实际值
+        date_pred = date_group['prediction'].values
+        date_actual = date_group['actual'].values
+        
+        # 移除NaN
+        valid_mask = ~(np.isnan(date_pred) | np.isnan(date_actual))
+        date_pred_clean = date_pred[valid_mask]
+        date_actual_clean = date_actual[valid_mask]
+        
+        # 需要至少2个样本才能计算correlation
+        if len(date_pred_clean) < 2:
+            continue
+        
+        # 计算当天的IC（横截面correlation）
+        if use_rank:
+            # Rank IC: 使用rank correlation
+            from scipy.stats import spearmanr
+            ic_day, _ = spearmanr(date_pred_clean, date_actual_clean)
+        else:
+            # IC: 使用Pearson correlation
+            ic_day = float(np.corrcoef(date_pred_clean, date_actual_clean)[0, 1])
+        
+        if not (np.isnan(ic_day) or np.isinf(ic_day)):
+            daily_ics.append(ic_day)
+            daily_dates.append(date)
     
-    X = sm.add_constant(y_pred_clean)
-    model = sm.OLS(y_actual_clean, X)
+    # 🔥 步骤2: 检查是否有足够的日度IC
+    if len(daily_ics) < 10:
+        return {
+            'IC': np.nan,
+            'IC_pvalue': np.nan,
+            'IC_tstat': np.nan,
+            'IC_se_hac': np.nan,
+            'note': f'Insufficient daily ICs ({len(daily_ics)} < 10)'
+        }
+    
+    # 🔥 步骤3: 计算平均IC
+    daily_ics_array = np.array(daily_ics)
+    mean_ic = float(np.mean(daily_ics_array))
+    
+    # 🔥 步骤4: 对日度IC序列做Newey-West HAC
+    # IC序列的均值是我们要估计的参数
+    # HAC标准误用于IC均值的统计推断
+    # 使用常数项回归估计IC均值（OLS估计均值）
+    X = np.ones((len(daily_ics_array), 1))
+    y = daily_ics_array
+    
+    model = sm.OLS(y, X)
     results = model.fit(cov_type='HAC', cov_kwds={'maxlags': lag})
     
+    # 标准误是IC均值的标准误
+    ic_se = float(np.sqrt(results.cov_params()[0, 0]))
+    
+    # t-stat = mean_ic / se
+    ic_tstat = mean_ic / ic_se if ic_se > 0 else np.nan
+    
+    # p-value (two-tailed)
+    from scipy.stats import t
+    if not np.isnan(ic_tstat):
+        df = len(daily_ics_array) - 1  # degrees of freedom
+        ic_pvalue = 2 * (1 - t.cdf(abs(ic_tstat), df))
+    else:
+        ic_pvalue = np.nan
+    
     return {
-        'IC': ic,
-        'IC_pvalue': float(results.pvalues[1]),
-        'IC_tstat': float(results.tvalues[1]),
-        'IC_se_hac': float(results.bse[1]),
-        'note': f'Newey-West HAC (lag={lag})'
+        'IC': mean_ic,
+        'IC_pvalue': ic_pvalue,
+        'IC_tstat': ic_tstat,
+        'IC_se_hac': ic_se,
+        'note': f'Newey-West HAC on daily ICs (n_days={len(daily_ics)}, lag={lag})'
     }
 
 
 def calculate_hansen_hodrick_se_ic(
-    y_pred: np.ndarray,
-    y_actual: np.ndarray,
-    horizon: int
+    predictions_df: pd.DataFrame,
+    horizon: int,
+    use_rank: bool = False
 ) -> Dict[str, float]:
     """
     Calculate IC with Hansen-Hodrick standard errors.
+    
+    🔥 关键修复：先按日聚合IC，再对日度IC序列做HAC
+    
+    正确流程：
+    1. 按日期分组
+    2. 对每一天计算IC（横截面correlation）
+    3. 得到日度IC序列（长度≈259天）
+    4. 对日度IC序列做Hansen-Hodrick HAC (lag = horizon - 1)
     
     References:
     - Hansen, L. P., & Hodrick, R. J. (1980). Forward exchange rates as optimal
@@ -164,46 +239,116 @@ def calculate_hansen_hodrick_se_ic(
       Journal of Political Economy, 88(5), 829-853.
     
     For h-period overlapping returns, use lag = h-1.
+    
+    Args:
+        predictions_df: DataFrame with columns [date, ticker, prediction, actual]
+        horizon: Prediction horizon (days)
+        use_rank: If True, use rank correlation (Rank IC), else use Pearson correlation (IC)
+    
+    Returns:
+        Dict with IC, t-stat, SE, p-value, note
     """
     try:
         import statsmodels.api as sm
     except ImportError:
         raise ImportError("statsmodels required for HAC corrections. Install: pip install statsmodels")
     
-    valid_mask = ~(np.isnan(y_pred) | np.isnan(y_actual))
-    y_pred_clean = y_pred[valid_mask]
-    y_actual_clean = y_actual[valid_mask]
+    # 🔥 步骤1: 按日期分组，计算每天的IC（横截面correlation）
+    # 确保日期已排序（HAC需要时间序列顺序）
+    predictions_df_sorted = predictions_df.sort_values('date').copy()
     
-    if len(y_pred_clean) < 10:
-        return {'IC': np.nan, 'IC_pvalue': np.nan, 'IC_tstat': np.nan, 'IC_se_hac': np.nan, 'note': 'Insufficient data'}
+    daily_ics = []
+    daily_dates = []
     
-    ic = float(np.corrcoef(y_pred_clean, y_actual_clean)[0, 1])
+    for date, date_group in predictions_df_sorted.groupby('date'):
+        # 提取当天的预测和实际值
+        date_pred = date_group['prediction'].values
+        date_actual = date_group['actual'].values
+        
+        # 移除NaN
+        valid_mask = ~(np.isnan(date_pred) | np.isnan(date_actual))
+        date_pred_clean = date_pred[valid_mask]
+        date_actual_clean = date_actual[valid_mask]
+        
+        # 需要至少2个样本才能计算correlation
+        if len(date_pred_clean) < 2:
+            continue
+        
+        # 计算当天的IC（横截面correlation）
+        if use_rank:
+            # Rank IC: 使用rank correlation
+            from scipy.stats import spearmanr
+            ic_day, _ = spearmanr(date_pred_clean, date_actual_clean)
+        else:
+            # IC: 使用Pearson correlation
+            ic_day = float(np.corrcoef(date_pred_clean, date_actual_clean)[0, 1])
+        
+        if not (np.isnan(ic_day) or np.isinf(ic_day)):
+            daily_ics.append(ic_day)
+            daily_dates.append(date)
+    
+    # 🔥 步骤2: 检查是否有足够的日度IC
+    if len(daily_ics) < 10:
+        return {
+            'IC': np.nan,
+            'IC_pvalue': np.nan,
+            'IC_tstat': np.nan,
+            'IC_se_hac': np.nan,
+            'note': f'Insufficient daily ICs ({len(daily_ics)} < 10)'
+        }
+    
+    # 🔥 步骤3: 计算平均IC
+    daily_ics_array = np.array(daily_ics)
+    mean_ic = float(np.mean(daily_ics_array))
+    
+    # 🔥 步骤4: 对日度IC序列做Hansen-Hodrick HAC
+    # For h-period overlapping returns, use lag = h-1
     lag = max(horizon - 1, 1)
     
-    X = sm.add_constant(y_pred_clean)
-    model = sm.OLS(y_actual_clean, X)
+    # IC序列的均值是我们要估计的参数
+    # HAC标准误用于IC均值的统计推断
+    # 使用常数项回归估计IC均值（OLS估计均值）
+    X = np.ones((len(daily_ics_array), 1))
+    y = daily_ics_array
+    
+    model = sm.OLS(y, X)
     results = model.fit(cov_type='HAC', cov_kwds={'maxlags': lag})
     
+    # 标准误是IC均值的标准误
+    ic_se = float(np.sqrt(results.cov_params()[0, 0]))
+    
+    # t-stat = mean_ic / se
+    ic_tstat = mean_ic / ic_se if ic_se > 0 else np.nan
+    
+    # p-value (two-tailed)
+    from scipy.stats import t
+    if not np.isnan(ic_tstat):
+        df = len(daily_ics_array) - 1  # degrees of freedom
+        ic_pvalue = 2 * (1 - t.cdf(abs(ic_tstat), df))
+    else:
+        ic_pvalue = np.nan
+    
     return {
-        'IC': ic,
-        'IC_pvalue': float(results.pvalues[1]),
-        'IC_tstat': float(results.tvalues[1]),
-        'IC_se_hac': float(results.bse[1]),
-        'note': f'Hansen-Hodrick SE (lag={lag} for {horizon}-day horizon)'
+        'IC': mean_ic,
+        'IC_pvalue': ic_pvalue,
+        'IC_tstat': ic_tstat,
+        'IC_se_hac': ic_se,
+        'note': f'Hansen-Hodrick SE on daily ICs (n_days={len(daily_ics)}, lag={lag} for {horizon}-day horizon)'
     }
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--train-data", type=str, default="data/factor_exports/polygon_factors_all_filtered.parquet", help="Parquet shards dir or a single parquet file.")
+    p.add_argument("--train-data", type=str, default=r"D:\trade\data\factor_exports\polygon_factors_all_filtered.parquet", help="Parquet shards dir or a single parquet file.")
     p.add_argument("--data-dir", type=str, default="data/factor_exports")
-    p.add_argument("--data-file", type=str, default="data/factor_exports/polygon_factors_all_filtered.parquet")
+    p.add_argument("--data-file", type=str, default=r"D:\trade\data\factor_exports\polygon_factors_all_filtered_clean_final_v2.parquet")
     p.add_argument("--horizon-days", type=int, default=10)
-    p.add_argument("--split", type=float, default=0.8, help="Train split fraction by time (default 0.8).")
-    p.add_argument("--model", type=str, default="ridge_stacking", help="Primary model for legacy single-model TopN plot exports.")
-    p.add_argument("--models", nargs="+", default=None, help="If provided, export TopN OOS plots/metrics for these models (e.g. elastic_net xgboost catboost lightgbm_ranker lambdarank ridge_stacking). If omitted, uses --model only.")
+    p.add_argument("--split", type=float, default=0.8, help="Train split fraction by time (default 0.8 for 80/20).")
+    p.add_argument("--model", type=str, default="catboost", help="Primary model for legacy single-model TopN plot exports.")
+    p.add_argument("--models", nargs="+", default=["catboost", "lambdarank", "ridge_stacking"], help="If provided, export TopN OOS plots/metrics for these models (e.g. elastic_net xgboost catboost lightgbm_ranker lambdarank ridge_stacking). Default: catboost lambdarank ridge_stacking.")
     p.add_argument("--top-n", type=int, default=20)
-    p.add_argument("--rebalance-mode", type=str, default="daily", choices=["daily"], help="Rebalancing frequency: daily (overlapping observations, requires HAC corrections)")
+    # Removed --rebalance-mode: Now always uses non-overlapping for backtest metrics (accumulated return, max drawdown, Sharpe, graphs)
+    # Average/median returns are calculated daily for prediction quality assessment
     p.add_argument("--hac-method", type=str, default="newey-west", choices=["newey-west", "hansen-hodrick"], help="HAC method: newey-west (default) or hansen-hodrick")
     p.add_argument("--hac-lag", type=int, default=None, help="HAC lag order (default: max(10, 2*horizon_days) for Newey-West)")
     p.add_argument("--max-weeks", type=int, default=260)
@@ -211,8 +356,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--benchmark", type=str, default="QQQ")
     p.add_argument("--ridge-base-cols", nargs="+", default=None, help="Override RidgeStacker base_cols for this run (e.g. pred_catboost pred_elastic pred_xgb pred_lightgbm_ranker pred_lambdarank).")
     p.add_argument("--snapshot-id", type=str, default=None, help="Use existing snapshot ID instead of training (skip training phase)")
-    p.add_argument("--output-dir", type=str, default="results/t10_time_split_80_20")
+    p.add_argument("--output-dir", type=str, default="results/t10_time_split_80_20_final")
     p.add_argument("--log-level", type=str, default="INFO")
+    p.add_argument("--ema-top-n", type=int, default=-1, 
+                   help="Only apply EMA to stocks in top N (default: -1 to disable EMA, set to 0 to apply to all, set to >0 for top N filter)")
+    p.add_argument("--ema-min-days", type=int, default=3,
+                   help="Minimum consecutive days in top N to apply EMA (default: 3, only used when --ema-top-n > 0)")
+    p.add_argument("--exclude-tickers", nargs="+", default=None,
+                   help="List of tickers to exclude from training and testing (e.g. --exclude-tickers SBET TICKER2)")
     return p.parse_args()
 
 
@@ -293,10 +444,11 @@ def calc_top10_accumulated_10d_rebalance(
     step: int = 10,
     out_dir: Optional[Path] = None,
     model_name: Optional[str] = None,
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    bucket_range: Optional[Tuple[int, int]] = None
 ) -> pd.DataFrame:
     """
-    计算Top10 bucket的10天rebalance累计收益曲线
+    计算Top bucket的10天rebalance累计收益曲线
     
     Args:
         predictions_df: DataFrame with columns [date, ticker, prediction, actual]
@@ -304,13 +456,15 @@ def calc_top10_accumulated_10d_rebalance(
             - ticker: 股票代码
             - prediction: 预测分数，越大越好
             - actual: T+10 forward return (小数，0.018=1.8%)
-        top_n: Top N股票数量，默认10
+        top_n: Top N股票数量，默认10（如果指定bucket_range则忽略）
         step: Rebalance间隔天数，默认10
         out_dir: 输出目录，如果提供则保存CSV和PNG
+        model_name: 模型名称
         logger: 日志记录器
+        bucket_range: 可选，指定bucket范围 (start, end)，如 (5, 15) 表示 Top 5-15
     
     Returns:
-        DataFrame with columns [date, top10_gross_return, acc_value, acc_return]
+        DataFrame with columns [date, top_gross_return, acc_value, acc_return]
     """
     if logger is None:
         logger = logging.getLogger(__name__)
@@ -323,19 +477,29 @@ def calc_top10_accumulated_10d_rebalance(
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
+    # 确定使用的bucket范围
+    if bucket_range is not None:
+        bucket_start, bucket_end = bucket_range
+        bucket_label = f"Top{bucket_start}-{bucket_end}"
+        use_bucket = True
+    else:
+        bucket_start, bucket_end = 1, top_n
+        bucket_label = f"Top{top_n}"
+        use_bucket = False
+    
     # 获取所有唯一交易日（去重、升序）
     all_dates = sorted(df['date'].unique())
     
     if len(all_dates) == 0:
         logger.warning("No valid dates found in predictions_df")
-        return pd.DataFrame(columns=['date', 'top10_gross_return', 'acc_value', 'acc_return'])
+        return pd.DataFrame(columns=['date', 'top_gross_return', 'acc_value', 'acc_return'])
     
     # 生成rebalance_dates：每step天取一次
     rebalance_dates = all_dates[::step]
     
     if len(rebalance_dates) == 0:
         logger.warning("No rebalance dates found")
-        return pd.DataFrame(columns=['date', 'top10_gross_return', 'acc_value', 'acc_return'])
+        return pd.DataFrame(columns=['date', 'top_gross_return', 'acc_value', 'acc_return'])
     
     logger.info(f"Total trading days: {len(all_dates)}, Rebalance dates: {len(rebalance_dates)} (step={step})")
     
@@ -346,64 +510,81 @@ def calc_top10_accumulated_10d_rebalance(
         # 取当天数据
         g = df[df['date'] == t].copy()
         
-        if len(g) < top_n:
-            logger.debug(f"Skipping date {t}: only {len(g)} stocks available (need {top_n})")
+        if len(g) < bucket_end:
+            logger.debug(f"Skipping date {t}: only {len(g)} stocks available (need {bucket_end})")
             continue
         
         # 按prediction降序排序
         g = g.sort_values('prediction', ascending=False)
         
-        # 取Top10
-        top10 = g.head(top_n)
+        # 取bucket范围
+        if use_bucket:
+            # Top 5-15: 取第5到第15名（索引4到14）
+            bucket_stocks = g.iloc[bucket_start-1:bucket_end]
+        else:
+            # Top N: 取前N名
+            bucket_stocks = g.head(top_n)
         
         # 计算该次持有期收益（mean of actual）
-        r_t = float(top10['actual'].mean())
+        r_t = float(bucket_stocks['actual'].mean())
         
         rows.append({
             'date': t,
-            'top10_gross_return': r_t,
+            'top_gross_return': r_t,
         })
     
     if len(rows) == 0:
         logger.warning("No valid rebalance periods found")
-        return pd.DataFrame(columns=['date', 'top10_gross_return', 'acc_value', 'acc_return'])
+        return pd.DataFrame(columns=['date', 'top_gross_return', 'acc_value', 'acc_return'])
     
     # 构建DataFrame
     ts = pd.DataFrame(rows).sort_values('date')
     
     # 计算累计复利收益
     # acc_value = cumprod(1 + r_t)
-    ts['acc_value'] = (1.0 + ts['top10_gross_return']).cumprod()
+    ts['acc_value'] = (1.0 + ts['top_gross_return']).cumprod()
     
     # acc_return = acc_value - 1
     ts['acc_return'] = ts['acc_value'] - 1.0
     
+    # 🔧 Calculate max drawdown (non-overlap)
+    running_max = ts['acc_value'].expanding().max()
+    drawdown = (ts['acc_value'] / running_max - 1.0) * 100.0
+    max_drawdown = float(drawdown.min())
+    ts['drawdown'] = drawdown
+    
     # 打印日志
-    avg_return = float(ts['top10_gross_return'].mean())
+    avg_return = float(ts['top_gross_return'].mean())
     final_acc_return = float(ts['acc_return'].iloc[-1])
-    logger.info(f"Top{top_n} 10-day rebalance accumulated return:")
+    logger.info(f"{bucket_label} 10-day rebalance accumulated return:")
     logger.info(f"  Rebalance次数: {len(ts)}")
-    logger.info(f"  平均top10_gross_return: {avg_return:.6f} ({avg_return*100:.4f}%)")
+    logger.info(f"  平均{bucket_label.lower()}_gross_return: {avg_return:.6f} ({avg_return*100:.4f}%)")
     logger.info(f"  最终acc_return: {final_acc_return:.6f} ({final_acc_return*100:.4f}%)")
+    logger.info(f"  最大回撤: {max_drawdown:.4f}%")
     
     # 保存文件
     if out_dir is not None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
-        # 根据model_name生成文件名
-        if model_name:
-            csv_filename = f"{model_name}_top10_rebalance10d_accumulated.csv"
-            png_filename = f"{model_name}_top10_rebalance10d_accumulated.png"
-            plot_title = f"{model_name} - Top{top_n} 10-Day Rebalance Accumulated Return Curve"
-            plot_label = f'{model_name} Top{top_n} Accumulated Return'
+        # 根据model_name和bucket_range生成文件名
+        if use_bucket:
+            file_suffix = f"top{bucket_start}_{bucket_end}"
         else:
-            csv_filename = "top10_rebalance10d_accumulated.csv"
-            png_filename = "top10_rebalance10d_accumulated.png"
-            plot_title = f"Top{top_n} 10-Day Rebalance Accumulated Return Curve"
-            plot_label = f'Top{top_n} Accumulated Return'
+            file_suffix = f"top{top_n}"
         
-        # 保存CSV
+        if model_name:
+            csv_filename = f"{model_name}_{file_suffix}_rebalance10d_accumulated.csv"
+            png_filename = f"{model_name}_{file_suffix}_rebalance10d_accumulated.png"
+            plot_title = f"{model_name} - {bucket_label} 10-Day Rebalance Accumulated Return Curve"
+            plot_label = f'{model_name} {bucket_label} Accumulated Return'
+        else:
+            csv_filename = f"{file_suffix}_rebalance10d_accumulated.csv"
+            png_filename = f"{file_suffix}_rebalance10d_accumulated.png"
+            plot_title = f"{bucket_label} 10-Day Rebalance Accumulated Return Curve"
+            plot_label = f'{bucket_label} Accumulated Return'
+        
+        # 保存CSV（包含drawdown列）
         csv_path = out_dir / csv_filename
         ts.to_csv(csv_path, index=False, encoding="utf-8")
         logger.info(f"Saved CSV: {csv_path}")
@@ -509,6 +690,84 @@ def calculate_group_returns_standalone(
     ts_df['bottom_return'] = ts_df['bottom_return_mean']
     
     return summary, ts_df
+
+
+def calculate_group_returns_hold10d_nonoverlap(
+    predictions: pd.DataFrame,
+    top_n: int = 10,
+    horizon_days: int = 10,
+    cost_bps: float = 0.0,
+    start_offset: int = 0,
+) -> pd.DataFrame:
+    """
+    非重叠持有回测（符合：买TopN等权->持有horizon_days->到期全卖->买下一期）
+    输入 predictions 必须包含列：['date','ticker','prediction','actual']
+    其中 actual = t -> t+horizon_days 的实际收益（小数，例如0.02=2%）
+    输出 out 的 top_return/top_return_net 以"小数"表示（后面脚本会 *100 再 _cum_pct）
+    
+    这个版本返回的格式直接匹配现有的 _cum_pct() 处理逻辑，确保累计收益计算正确。
+    """
+    req = {"date", "ticker", "prediction", "actual"}
+    miss = req - set(predictions.columns)
+    if miss:
+        raise ValueError(f"predictions missing columns: {miss}")
+
+    df = predictions.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["date", "prediction"], ascending=[True, False])
+
+    unique_dates = df["date"].drop_duplicates().sort_values().to_list()
+    if not unique_dates:
+        return pd.DataFrame()
+
+    # ✅ 只在每 horizon_days 个交易日 rebalance 一次（非重叠）
+    rebalance_dates = unique_dates[start_offset::horizon_days]
+
+    cost_rate = cost_bps / 10000.0  # 10bps -> 0.001
+    prev_holdings = set()
+    rows = []
+
+    for d in rebalance_dates:
+        g = df[df["date"] == d].dropna(subset=['prediction', 'actual'])
+        if g.empty:
+            continue
+
+        top = g.head(top_n)
+        cur_holdings = set(top["ticker"].astype(str).str.upper().str.strip().tolist())
+
+        # 本期收益：等权持有 horizon_days（由 actual 提供）
+        gross_mean = float(pd.to_numeric(top["actual"], errors="coerce").mean())
+        gross_median = float(pd.to_numeric(top["actual"], errors="coerce").median())
+
+        # turnover：只在换仓日计算
+        if prev_holdings:
+            sym_diff = cur_holdings.symmetric_difference(prev_holdings)
+            turnover = len(sym_diff) / top_n if top_n > 0 else 0.0
+        else:
+            # 第一期：空仓->满仓，只买入
+            turnover = 1.0
+
+        # 成本口径与旧版一致：cost = turnover * 单边cost_rate
+        # 若完全换仓：sym_diff=2N => turnover=2 => cost=2*cost_rate（买+卖）
+        cost = turnover * cost_rate
+
+        net_mean = gross_mean - cost
+        net_median = gross_median - cost
+
+        rows.append({
+            "date": d,
+            "top_return": gross_mean,            # 小数
+            "top_return_net": net_mean,          # 小数
+            "top_return_median": gross_median,   # 小数
+            "top_return_net_median": net_median, # 小数
+            "top_turnover": turnover,
+            "top_cost": cost,
+        })
+
+        prev_holdings = cur_holdings
+
+    out = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+    return out
 
 
 def apply_ema_smoothing(predictions_df: pd.DataFrame, model_name: str, ema_history: dict, 
@@ -709,8 +968,15 @@ def calculate_bucket_returns_standalone(
         
         # Top buckets
         for a, b in top_buckets:
-            if a <= n:
+            if a <= n and b <= n:
                 s = sorted_group.iloc[a-1:b]['actual']
+                row[f'top_{a}_{b}_return_mean'] = float(s.mean()) if len(s) else np.nan
+                row[f'top_{a}_{b}_return_median'] = float(s.median()) if len(s) else np.nan
+                row[f'top_{a}_{b}_return_net_mean'] = row[f'top_{a}_{b}_return_mean']  # Simplified
+                row[f'top_{a}_{b}_return_net_median'] = row[f'top_{a}_{b}_return_median']  # Simplified
+            elif a <= n and b > n:
+                # If b > n, use all available stocks from a to n
+                s = sorted_group.iloc[a-1:n]['actual']
                 row[f'top_{a}_{b}_return_mean'] = float(s.mean()) if len(s) else np.nan
                 row[f'top_{a}_{b}_return_median'] = float(s.median()) if len(s) else np.nan
                 row[f'top_{a}_{b}_return_net_mean'] = row[f'top_{a}_{b}_return_mean']  # Simplified
@@ -757,6 +1023,107 @@ def calculate_bucket_returns_standalone(
     return summary, df
 
 
+def calculate_bucket_returns_hold_horizon_nonoverlap(
+    predictions: pd.DataFrame,
+    top_buckets: List[Tuple[int, int]],
+    bottom_buckets: List[Tuple[int, int]],
+    horizon_days: int = 10,
+    cost_bps: float = 0.0,
+    start_offset: int = 0
+) -> Tuple[Dict[str, float], pd.DataFrame]:
+    """
+    非重叠持有回测的bucket returns版本
+    
+    参数说明：
+    - predictions: 必须含 ['date','ticker','prediction','actual']
+    - top_buckets, bottom_buckets: 排名区间列表，如[(1,10), (5,15)]
+    - horizon_days: 持有期天数（默认10天）
+    - cost_bps: 交易成本（bps）
+    - start_offset: 错位起点
+    
+    Returns:
+        (summary_dict, timeseries_df)
+    """
+    req_cols = {"date", "ticker", "prediction", "actual"}
+    missing = req_cols - set(predictions.columns)
+    if missing:
+        raise ValueError(f"predictions missing columns: {missing}")
+
+    df = predictions.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["date", "prediction"], ascending=[True, False])
+
+    unique_dates = df["date"].drop_duplicates().sort_values().to_list()
+    if len(unique_dates) == 0:
+        return {}, pd.DataFrame()
+
+    rebalance_dates = unique_dates[start_offset::horizon_days]
+    if len(rebalance_dates) == 0:
+        return {}, pd.DataFrame()
+
+    cost_rate = cost_bps / 10000.0
+    rows = []
+
+    for d in rebalance_dates:
+        g = df[df["date"] == d].dropna(subset=['prediction', 'actual'])
+        if g.empty:
+            continue
+
+        sorted_group = g.sort_values('prediction', ascending=False).reset_index(drop=True)
+        n = len(sorted_group)
+        
+        if n < 30:  # 至少需要30只股票
+            continue
+
+        row = {'date': pd.to_datetime(d), 'n_stocks': n}
+
+        # Top buckets
+        for a, b in top_buckets:
+            if a <= n:
+                s = sorted_group.iloc[a-1:b]['actual']
+                row[f'top_{a}_{b}_return_mean'] = float(s.mean()) if len(s) else np.nan
+                row[f'top_{a}_{b}_return_median'] = float(s.median()) if len(s) else np.nan
+                # 简化：bucket returns不单独计算cost（已在group returns中计算）
+                row[f'top_{a}_{b}_return_net_mean'] = row[f'top_{a}_{b}_return_mean']
+                row[f'top_{a}_{b}_return_net_median'] = row[f'top_{a}_{b}_return_median']
+
+        # Bottom buckets
+        for a, b in bottom_buckets:
+            if a <= n:
+                start = max(0, n - b)
+                end = n - (a - 1)
+                s = sorted_group.iloc[start:end]['actual']
+                row[f'bottom_{a}_{b}_return_mean'] = float(s.mean()) if len(s) else np.nan
+                row[f'bottom_{a}_{b}_return_median'] = float(s.median()) if len(s) else np.nan
+
+        rows.append(row)
+
+    if not rows:
+        return {}, pd.DataFrame()
+
+    out_df = pd.DataFrame(rows).sort_values('date')
+
+    summary = {}
+    for col in out_df.columns:
+        if col.endswith('_return_mean') and out_df[col].notna().any():
+            summary[f'avg_{col.replace("_mean", "")}'] = float(out_df[col].mean())
+            summary[f'median_{col.replace("_mean", "")}'] = float(out_df[col].median())
+        elif col.endswith('_return_median') and out_df[col].notna().any():
+            summary[f'avg_{col.replace("_median", "")}_from_median'] = float(out_df[col].mean())
+            summary[f'median_{col.replace("_median", "")}_from_median'] = float(out_df[col].median())
+
+    # For backward compatibility
+    for col in out_df.columns:
+        if col.endswith('_return_mean'):
+            base_col = col.replace('_mean', '')
+            out_df[base_col] = out_df[col]
+        elif col.endswith('_return_net_mean'):
+            base_col = col.replace('_mean', '')
+            out_df[base_col] = out_df[col]
+
+    return summary, out_df
+
+
 def _write_model_topn_vs_benchmark(
     *,
     run_dir: Path,
@@ -768,11 +1135,45 @@ def _write_model_topn_vs_benchmark(
     bench_ret: pd.Series,
     cost_bps: float,
     logger: logging.Logger,
+    rebalance_mode: str = "nonoverlap",  # Always use non-overlapping for backtest metrics
 ) -> dict:
-    """Write per-model TopN time series + plots and return a small summary dict (percent units)."""
-    group_summary, group_ts = calculate_group_returns_standalone(preds, top_n=top_n, bottom_n=top_n, cost_bps=cost_bps)
+    """Write per-model TopN time series + plots and return a small summary dict (percent units).
+    Always uses non-overlapping for backtest metrics (accumulated return, max drawdown, Sharpe, graphs).
+    """
+    # Always use non-overlapping for backtest metrics
+    group_ts = calculate_group_returns_hold10d_nonoverlap(
+        preds, top_n=top_n, horizon_days=horizon, cost_bps=cost_bps, start_offset=0
+    )
     if group_ts.empty:
         raise RuntimeError(f"Group return time series is empty on test window for model={model_name}")
+    
+    # Calculate summary for logging (daily calculation for avg/median returns)
+    from scripts.time_split_80_20_oos_eval import calculate_group_returns_standalone
+    group_summary_daily, _ = calculate_group_returns_standalone(preds, top_n=top_n, bottom_n=top_n, cost_bps=cost_bps)
+    
+    # Calculate backtest metrics from non-overlapping
+    periods_per_year = 252.0 / horizon
+    if len(group_ts) > 1:
+        net_mean_series = group_ts['top_return_net'].dropna()
+        net_median_series = group_ts['top_return_net_median'].dropna()
+        if len(net_mean_series) > 1 and net_mean_series.std() > 0:
+            backtest_summary = {
+                'top_sharpe_net': float((net_mean_series.mean() / net_mean_series.std()) * np.sqrt(periods_per_year)),
+                'win_rate': float((net_mean_series > 0).mean()),
+            }
+        else:
+            backtest_summary = {'top_sharpe_net': np.nan, 'win_rate': np.nan}
+        if len(net_median_series) > 1 and net_median_series.std() > 0:
+            backtest_summary['top_sharpe_net_median'] = float((net_median_series.mean() / net_median_series.std()) * np.sqrt(periods_per_year))
+            backtest_summary['win_rate_median'] = float((net_median_series > 0).mean())
+        else:
+            backtest_summary['top_sharpe_net_median'] = np.nan
+            backtest_summary['win_rate_median'] = np.nan
+    else:
+        backtest_summary = {'top_sharpe_net': np.nan, 'top_sharpe_net_median': np.nan, 'win_rate': np.nan, 'win_rate_median': np.nan}
+    
+    # Combine summaries
+    group_summary = {**group_summary_daily, **backtest_summary}
 
     cols = ["date", "top_return"]
     if "top_return_net" in group_ts.columns:
@@ -781,6 +1182,7 @@ def _write_model_topn_vs_benchmark(
         cols.append("top_turnover")
     if "top_cost" in group_ts.columns:
         cols.append("top_cost")
+    # Non-overlapping mode: no cumulative columns needed (will be calculated by _cum_pct)
 
     out = group_ts[cols].copy()
     out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
@@ -793,7 +1195,7 @@ def _write_model_topn_vs_benchmark(
         out["top_return_net"] = pd.to_numeric(out["top_return_net"], errors="coerce") * 100.0
     out["benchmark_return"] = pd.to_numeric(out["benchmark_return"], errors="coerce") * 100.0
 
-    # Cumulative (compounded)
+    # Cumulative (compounded) - non-overlapping mode: out["top_return"] is 10-day period returns (小数), *100后按期复利
     def _cum_pct(s_pct: pd.Series) -> pd.Series:
         r = pd.to_numeric(s_pct, errors="coerce").fillna(0.0) / 100.0
         return (1.0 + r).cumprod() - 1.0
@@ -843,8 +1245,20 @@ def _write_model_topn_vs_benchmark(
         logger.info("[%s] OOS Top%d avg return net (mean, %%): %.6f", model_name, top_n, float(group_summary.get("avg_top_return_net", float("nan"))) * 100.0)
         logger.info("[%s] OOS Top%d median return net (median, %%): %.6f", model_name, top_n, float(group_summary.get("median_top_return_net", float("nan"))) * 100.0)
 
-    top_max_dd = _max_drawdown_non_overlap(out["top_return"], horizon)
-    bench_max_dd = _max_drawdown_non_overlap(out["benchmark_return"], horizon)
+    # Calculate max drawdown from equity curve (non-overlapping mode)
+    def max_drawdown_from_equity(equity_pct: pd.Series) -> float:
+        """Calculate max drawdown from cumulative return series (in percent)"""
+        equity_decimal = pd.to_numeric(equity_pct, errors="coerce").fillna(0.0) / 100.0 + 1.0  # Convert to equity curve
+        running_max = equity_decimal.cummax()
+        dd = (equity_decimal - running_max) / running_max
+        return float(dd.min() * 100.0)  # Convert back to percent
+    
+    # Use net cumulative return for drawdown
+    if "cum_top_return_net" in out.columns:
+        top_max_dd = max_drawdown_from_equity(out["cum_top_return_net"])
+    else:
+        top_max_dd = max_drawdown_from_equity(out["cum_top_return"])
+    bench_max_dd = max_drawdown_from_equity(out["cum_benchmark_return"])
 
     return {
         "model": model_name,
@@ -874,7 +1288,7 @@ def main() -> int:
         level=getattr(logging, str(args.log_level).upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    logger = logging.getLogger("time_split_80_20")
+    logger = logging.getLogger("time_split_90_10")
 
     # Make imports work on Windows
     project_root = Path(__file__).resolve().parent.parent
@@ -896,7 +1310,7 @@ def main() -> int:
     from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
     
     # Load data directly (NO ComprehensiveModelBacktest dependency)
-    logger.info("Loading data to compute 80/20 time split...")
+    logger.info("Loading data to compute 90/10 time split...")
     data_path = Path(args.data_file)
     train_data_path = Path(args.train_data)
     
@@ -1014,13 +1428,81 @@ def main() -> int:
     # Sort by index for efficient lookups
     df = df.sort_index()
     
+    # Exclude specific tickers if provided
+    if args.exclude_tickers:
+        exclude_set = {str(t).upper().strip() for t in args.exclude_tickers}
+        before_exclude = df.index.get_level_values('ticker').nunique()
+        ticker_level = df.index.get_level_values('ticker').astype(str).str.upper().str.strip()
+        mask = ~ticker_level.isin(exclude_set)
+        df = df.loc[mask].copy()
+        after_exclude = df.index.get_level_values('ticker').nunique() if len(df) > 0 else 0
+        logger.info(f"🚫 [EXCLUDE] 排除股票: {sorted(exclude_set)}")
+        logger.info(f"🚫 [EXCLUDE] 股票数量: {before_exclude} → {after_exclude} (排除 {before_exclude - after_exclude} 个股票)")
+    
+    # 🔥 Add Sato factors if missing (for MultiIndex data)
+    if 'feat_sato_momentum_10d' not in df.columns or 'feat_sato_divergence_10d' not in df.columns:
+        try:
+            logger.info("🔥 Computing Sato Square Root Factors (momentum + divergence)...")
+            from scripts.sato_factor_calculation import calculate_sato_factors
+            
+            # Prepare data for Sato calculation
+            sato_data = df.copy()
+            
+            # Ensure we have adj_close (use Close if not available)
+            if 'adj_close' not in sato_data.columns:
+                if 'Close' in sato_data.columns:
+                    sato_data['adj_close'] = sato_data['Close']
+                else:
+                    logger.warning("⚠️ No Close or adj_close found, skipping Sato factors")
+                    sato_data = None
+            
+            if sato_data is not None:
+                # Check if vol_ratio_20d exists
+                has_vol_ratio = 'vol_ratio_20d' in sato_data.columns
+                
+                # If Volume doesn't exist, estimate from vol_ratio_20d
+                if 'Volume' not in sato_data.columns:
+                    if has_vol_ratio:
+                        base_volume = 1_000_000
+                        sato_data['Volume'] = base_volume * sato_data['vol_ratio_20d'].fillna(1.0).clip(lower=0.1, upper=10.0)
+                        use_vol_ratio = True
+                    else:
+                        logger.warning("⚠️ No Volume or vol_ratio_20d found, skipping Sato factors")
+                        sato_data = None
+                else:
+                    use_vol_ratio = has_vol_ratio
+                
+                if sato_data is not None:
+                    # Calculate Sato factors
+                    sato_factors_df = calculate_sato_factors(
+                        df=sato_data,
+                        price_col='adj_close',
+                        volume_col='Volume',
+                        vol_ratio_col='vol_ratio_20d',
+                        lookback_days=10,
+                        vol_window=20,
+                        use_vol_ratio_directly=use_vol_ratio
+                    )
+                    
+                    # Add Sato factors to df
+                    df['feat_sato_momentum_10d'] = sato_factors_df['feat_sato_momentum_10d'].reindex(df.index).fillna(0.0)
+                    df['feat_sato_divergence_10d'] = sato_factors_df['feat_sato_divergence_10d'].reindex(df.index).fillna(0.0)
+                    logger.info("✅ Sato factors added to dataset")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to compute Sato factors: {e}, continuing without them...")
+            # Add zero-filled columns if missing
+            if 'feat_sato_momentum_10d' not in df.columns:
+                df['feat_sato_momentum_10d'] = 0.0
+            if 'feat_sato_divergence_10d' not in df.columns:
+                df['feat_sato_divergence_10d'] = 0.0
+    
     if not isinstance(df.index, pd.MultiIndex) or "date" not in df.index.names:
         raise RuntimeError("Expected MultiIndex with 'date' level in factors dataset.")
 
     dates = pd.Index(pd.to_datetime(df.index.get_level_values("date")).tz_localize(None).unique()).sort_values()
     n_dates = len(dates)
     if n_dates < 200:
-        logger.warning("Only %d unique dates detected; 80/20 split may be noisy.", n_dates)
+        logger.warning("Only %d unique dates detected; 90/10 split may be noisy.", n_dates)
 
     split_idx = int(n_dates * split)
     # Purge leakage gap = horizon days (labels use forward returns)
@@ -1158,7 +1640,7 @@ def main() -> int:
                 tag = f"time_split_meta_ranker_basecols_{'-'.join(want_cols)}"
                 snapshot_id = save_model_snapshot(
                     training_results={"models": formatted_models},
-                    ridge_stacker=meta_ranker,  # model_registry expects 'ridge_stacker' parameter name
+                    meta_ranker_stacker=meta_ranker,  # 🔧 FIX: 使用meta_ranker_stacker参数
                     lambda_rank_stacker=lambda_model,
                     rank_aware_blender=None,
                     lambda_percentile_transformer=lambda_pct,
@@ -1247,19 +1729,39 @@ def main() -> int:
         'ridge_stacking': []
     }
     
-    # REMOVED: EMA smoothing - no longer used in 80/20 split test
-    # EMA smoothing has been moved to live prediction (predict_with_snapshot)
+    # EMA smoothing is applied in the prediction loop (see apply_ema_smoothing call below)
+    # EMA smoothing uses 3-day history with weights (0.6, 0.3, 0.1) for 90/10 split test
     
     # 🔧 Top10持有10天回测：存储持仓信息
     # 格式: {buy_date: {ticker: {'buy_score': score, 'sell_date': sell_date}}}
     holdings = {}  # 当前持仓
     holding_period_days = horizon  # 持有10天
 
-    # Get feature columns (exclude target/labels and non-features)
-    # Keep all features - alignment will be done per-model in align_test_features_with_model
-    exclude_cols = {'target', 'Close', 'ret_fwd_5d', 'sector'}
-    all_feature_cols = [col for col in test_data.columns if col not in exclude_cols]
-    logger.info(f"Test data has {len(all_feature_cols)} features available")
+    # Get feature columns - ONLY use specified factors as input
+    # 🔥 UPDATED: Matching backup file features (2026-01-23)
+    # 🔥 CRITICAL FIX: Exclude target_new and Close_new to prevent data leakage!
+    allowed_feature_cols = [
+        'liquid_momentum',
+        'momentum_10d',  # NEEDED: Keep momentum_10d
+        'momentum_60d',
+        'obv_divergence',
+        'obv_momentum_60d',
+        'ivol_20',
+        'hist_vol_40d',
+        'atr_ratio',
+        'rsi_21',
+        'trend_r2_60',
+        'near_52w_high',
+        'vol_ratio_20d',
+        'price_ma60_deviation',
+        '5_days_reversal',
+        # 'ret_skew_20d',  # REMOVED
+    ]
+    exclude_cols = {'target', 'Close', 'ret_fwd_5d', 'sector', 'target_new', 'Close_new'}
+    # Only use allowed features that exist in test_data
+    all_feature_cols = [col for col in allowed_feature_cols if col in test_data.columns and col not in exclude_cols]
+    logger.info(f"Using {len(all_feature_cols)} specified features: {all_feature_cols}")
+    logger.info(f"Test data has {len(test_data.columns)} total columns, using only {len(all_feature_cols)} features")
 
     # Rolling prediction loop (ONE PREDICTION PER DAY)
     seen_dates = set()
@@ -1282,8 +1784,23 @@ def main() -> int:
         if X.empty:
             continue
         
-        # Get actual target
+        # Get actual target and apply hard clipping (same as training)
+        # 🔧 硬截断target（clip，不是删除）- 防止极端值（如9000%收益）炸穿评估
+        # 训练与评估同时：clip(y, -0.55, +0.55) （10天收益±55%已经很宽了）
         actual_target = date_data['target'] if 'target' in date_data.columns else pd.Series(np.nan, index=X.index)
+        if actual_target.notna().any():
+            # Load clip bounds from config (same as training)
+            try:
+                from bma_models.unified_config_loader import CONFIG
+                yaml_config = CONFIG._load_yaml_config()
+                extreme_filter_config = yaml_config.get('training', {}).get('extreme_target_filter', {})
+                if extreme_filter_config.get('enabled', True) and extreme_filter_config.get('method') == 'hard_clip':
+                    clip_lower = extreme_filter_config.get('clip_lower', -0.55)
+                    clip_upper = extreme_filter_config.get('clip_upper', 0.55)
+                    actual_target = actual_target.clip(lower=clip_lower, upper=clip_upper)
+            except Exception as e:
+                # Fallback to default clip if config loading fails
+                actual_target = actual_target.clip(lower=-0.55, upper=0.55)
         tickers = X.index.tolist()
         
         # Predict with each model
@@ -1455,9 +1972,10 @@ def main() -> int:
                 })
                 all_results[model_name].append(pred_df)
                 
-                # REMOVED: EMA history tracking - no longer used in 80/20 split test
+                # EMA history tracking is done in apply_ema_smoothing function (see below)
 
     # Concatenate all predictions and apply EMA smoothing
+    ema_history = {}  # Initialize EMA history dictionary
     for model_name, pred_list in all_results.items():
         if len(pred_list) > 0:
             all_results[model_name] = pd.concat(pred_list, axis=0, ignore_index=True)
@@ -1465,8 +1983,43 @@ def main() -> int:
             total_rows = len(all_results[model_name])
             logger.info(f"✅ {model_name}: {total_rows} 条预测, {unique_dates} 个唯一日期 (one prediction per day ✓)")
             
-            # REMOVED: EMA smoothing - no longer used in 80/20 split test
-            # EMA smoothing has been moved to live prediction (predict_with_snapshot)
+            # 🔧 Apply EMA smoothing (3-day EMA: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2})
+            # Check if EMA is disabled (--ema-top-n -1 means disable EMA completely)
+            if hasattr(args, 'ema_top_n') and args.ema_top_n == -1:
+                # EMA完全禁用：使用原始分数
+                logger.info(f"📊 EMA smoothing DISABLED for {model_name} (using raw predictions)...")
+                all_results[model_name]['prediction_smooth'] = all_results[model_name]['prediction']
+            elif args.ema_top_n is not None and args.ema_top_n > 0:
+                # Use Top300 filter version: only apply EMA to stocks in top N for consecutive days
+                logger.info(f"📊 Applying EMA smoothing to {model_name} predictions (Top{args.ema_top_n} filter, min {args.ema_min_days} days)...")
+                from scripts.apply_ema_smoothing_top300 import apply_ema_smoothing_top300_filter
+                all_results[model_name] = apply_ema_smoothing_top300_filter(
+                    all_results[model_name], 
+                    model_name=model_name,
+                    ema_history=ema_history,
+                    weights=(0.6, 0.3, 0.1),
+                    top_n=args.ema_top_n,
+                    min_days_in_top=args.ema_min_days
+                )
+                # Log EMA coverage statistics
+                if 'in_top300_3days' in all_results[model_name].columns:
+                    ema_coverage = all_results[model_name]['in_top300_3days'].mean() * 100
+                    logger.info(f"   EMA coverage: {ema_coverage:.2f}% of predictions applied EMA")
+            else:
+                # Use original version: apply EMA to all stocks
+                logger.info(f"📊 Applying EMA smoothing to {model_name} predictions (all stocks)...")
+                all_results[model_name] = apply_ema_smoothing(
+                    all_results[model_name], 
+                    model_name=model_name,
+                    ema_history=ema_history,
+                    weights=(0.6, 0.3, 0.1)
+                )
+            # Use smoothed predictions for ranking (or raw if EMA disabled)
+            all_results[model_name]['prediction'] = all_results[model_name]['prediction_smooth'].fillna(all_results[model_name]['prediction'])
+            if hasattr(args, 'ema_top_n') and args.ema_top_n == -1:
+                logger.info(f"✅ Using raw predictions for {model_name} (EMA disabled)")
+            else:
+                logger.info(f"✅ EMA smoothing applied to {model_name}")
         else:
             all_results[model_name] = pd.DataFrame()
             logger.warning(f"⚠️  {model_name}: No predictions collected")
@@ -1498,52 +2051,115 @@ def main() -> int:
             logger.warning(f"Skipping {model_name}: predictions not available or empty")
             continue
         
+        # Save predictions DataFrame for diagnosis
+        predictions_file = run_dir / f"{model_name}_predictions_diagnosis.csv"
+        predictions.to_csv(predictions_file, index=False)
+        logger.info(f"Saved predictions for diagnosis: {predictions_file}")
+        
         logger.info(f"\nAnalyzing {model_name}...")
         # DEBUG: Check prediction value ranges to ensure they're different
         pred_stats = predictions['prediction'].describe()
         logger.info(f"  Prediction stats: min={pred_stats['min']:.6f}, max={pred_stats['max']:.6f}, mean={pred_stats['mean']:.6f}, std={pred_stats['std']:.6f}")
         
-        # Calculate metrics with HAC
-        if hac_method == "newey-west":
-            ic_result = calculate_newey_west_hac_ic(
-                predictions['prediction'].values,
-                predictions['actual'].values,
-                lag=hac_lag
-            )
-            rank_ic_result = calculate_newey_west_hac_ic(
-                pd.Series(predictions['prediction']).rank().values,
-                pd.Series(predictions['actual']).rank().values,
-                lag=hac_lag
-            )
-        else:  # hansen-hodrick
-            ic_result = calculate_hansen_hodrick_se_ic(
-                predictions['prediction'].values,
-                predictions['actual'].values,
-                horizon=horizon
-            )
-            rank_ic_result = calculate_hansen_hodrick_se_ic(
-                pd.Series(predictions['prediction']).rank().values,
-                pd.Series(predictions['actual']).rank().values,
-                horizon=horizon
-            )
+        # 🔥 Calculate metrics with HAC (FIXED: 先按日聚合IC，再对日度IC序列做HAC)
+        # 确保predictions DataFrame有date列
+        if 'date' not in predictions.columns:
+            logger.error(f"❌ {model_name}: predictions DataFrame缺少'date'列，无法计算HAC")
+            ic_result = {'IC': np.nan, 'IC_pvalue': np.nan, 'IC_tstat': np.nan, 'IC_se_hac': np.nan, 'note': 'Missing date column'}
+            rank_ic_result = {'IC': np.nan, 'IC_pvalue': np.nan, 'IC_tstat': np.nan, 'IC_se_hac': np.nan, 'note': 'Missing date column'}
+        else:
+            if hac_method == "newey-west":
+                # IC: 使用Pearson correlation
+                ic_result = calculate_newey_west_hac_ic(
+                    predictions,
+                    lag=hac_lag,
+                    use_rank=False
+                )
+                # Rank IC: 使用rank correlation
+                rank_ic_result = calculate_newey_west_hac_ic(
+                    predictions,
+                    lag=hac_lag,
+                    use_rank=True
+                )
+            else:  # hansen-hodrick
+                # IC: 使用Pearson correlation
+                ic_result = calculate_hansen_hodrick_se_ic(
+                    predictions,
+                    horizon=horizon,
+                    use_rank=False
+                )
+                # Rank IC: 使用rank correlation
+                rank_ic_result = calculate_hansen_hodrick_se_ic(
+                    predictions,
+                    horizon=horizon,
+                    use_rank=True
+                )
         
-        # Calculate group returns
-        group_summary, group_ts = calculate_group_returns_standalone(
+        # Calculate metrics: 
+        # - Average/Median returns: daily calculation (for prediction quality assessment)
+        # - Accumulated return, max drawdown, Sharpe, graphs: non-overlapping (for backtest)
+        horizon = int(args.horizon_days)
+        
+        logger.info(f"  Calculating daily average/median returns (for prediction quality)")
+        # Daily calculation for average/median returns (prediction quality metrics)
+        group_summary_daily, _ = calculate_group_returns_standalone(
             predictions, top_n=30, bottom_n=30, cost_bps=float(args.cost_bps or 0.0)
         )
         
-        # Calculate bucket returns
-        top_buckets = [(1, 10), (11, 20), (21, 30)]
+        # Daily bucket returns for average/median (prediction quality metrics)
+        top_buckets = [(1, 10), (5, 15), (11, 20), (21, 30)]  # 🔧 Added Top5-Top15 bucket
         bottom_buckets = [(1, 10), (11, 20), (21, 30)]
-        bucket_summary, bucket_ts = calculate_bucket_returns_standalone(
+        bucket_summary_daily, _ = calculate_bucket_returns_standalone(
             predictions, top_buckets=top_buckets, bottom_buckets=bottom_buckets, cost_bps=float(args.cost_bps or 0.0)
         )
         
-        # Build report row with HAC disclosure
+        logger.info(f"  Calculating non-overlapping backtest metrics (hold {horizon} days)")
+        # Non-overlapping calculation for backtest metrics (accumulated return, max drawdown, Sharpe, graphs)
+        group_ts = calculate_group_returns_hold10d_nonoverlap(
+            predictions, top_n=30, horizon_days=horizon, cost_bps=float(args.cost_bps or 0.0), start_offset=0
+        )
+        
+        # Save non-overlapping timeseries for this model (for accumulated return calculation)
+        if not group_ts.empty:
+            ts_file = run_dir / f"{model_name}_top30_nonoverlap_timeseries.csv"
+            group_ts.to_csv(ts_file, index=False)
+            logger.info(f"  Saved non-overlapping timeseries: {ts_file.name} ({len(group_ts)} periods)")
+        
+        # Calculate Sharpe and win_rate from non-overlapping backtest
+        if group_ts.empty:
+            backtest_summary = {}
+        else:
+            periods_per_year = 252.0 / horizon
+            net_mean_series = group_ts['top_return_net'].dropna()
+            net_median_series = group_ts['top_return_net_median'].dropna()
+            if len(net_mean_series) > 1 and net_mean_series.std() > 0:
+                backtest_summary = {
+                    'top_sharpe_net': float((net_mean_series.mean() / net_mean_series.std()) * np.sqrt(periods_per_year)),
+                    'win_rate': float((net_mean_series > 0).mean()),
+                }
+            else:
+                backtest_summary = {'top_sharpe_net': np.nan, 'win_rate': np.nan}
+            if len(net_median_series) > 1 and net_median_series.std() > 0:
+                backtest_summary['top_sharpe_net_median'] = float((net_median_series.mean() / net_median_series.std()) * np.sqrt(periods_per_year))
+                backtest_summary['win_rate_median'] = float((net_median_series > 0).mean())
+            else:
+                backtest_summary['top_sharpe_net_median'] = np.nan
+                backtest_summary['win_rate_median'] = np.nan
+        
+        # Combine: daily averages/medians + non-overlapping backtest metrics
+        group_summary = {
+            **group_summary_daily,  # avg_top_return, avg_top_return_net, median_top_return, median_top_return_net, avg_top_turnover, avg_top_cost
+            **backtest_summary,  # top_sharpe_net, top_sharpe_net_median, win_rate, win_rate_median
+        }
+        bucket_summary = bucket_summary_daily  # Use daily bucket returns for averages/medians
+        
+        # Build report row
         hac_disclosure_note = (
-            f"基于重叠观测 (overlapping observations), "
-            f"{'Newey-West HAC' if hac_method == 'newey-west' else 'Hansen-Hodrick'}标准误 (lag={hac_lag}). "
-            f"Statistical inference uses HAC corrections for overlapping observations."
+            f"非重叠持有期回测 (non-overlapping hold periods): "
+            f"每{horizon}个交易日再平衡一次，持有期收益按期复利。"
+            f"累计收益、回撤、Sharpe和图表基于非重叠回测。"
+            f"平均收益和中位数收益基于每日预测质量评估。"
+            f"Statistical inference uses HAC corrections for IC/Rank IC (overlapping observations)."
         )
         
         row = {
@@ -1560,7 +2176,7 @@ def main() -> int:
             'MSE': mean_squared_error(predictions['actual'], predictions['prediction']),
             'MAE': mean_absolute_error(predictions['actual'], predictions['prediction']),
             'R2': r2_score(predictions['actual'], predictions['prediction']),
-            **group_summary,
+            **group_summary,  # 包含 top_sharpe_net, top_sharpe_net_median, win_rate, win_rate_median
             **bucket_summary,
             'hac_method': hac_method,
             'hac_lag': hac_lag,
@@ -1568,8 +2184,23 @@ def main() -> int:
         }
         
         report_rows.append(row)
-        logger.info(f"  IC: {ic_result['IC']:.4f} (t-stat={ic_result['IC_tstat']:.2f}, SE={ic_result['IC_se_hac']:.4f})")
-        logger.info(f"  Rank IC: {rank_ic_result['IC']:.4f} (t-stat={rank_ic_result['IC_tstat']:.2f})")
+        logger.info(f"  IC: {ic_result['IC']:.4f} (t-stat={ic_result['IC_tstat']:.2f}, SE={ic_result['IC_se_hac']:.6f})")
+        logger.info(f"  Rank IC: {rank_ic_result['IC']:.4f} (t-stat={rank_ic_result['IC_tstat']:.2f}, SE={rank_ic_result['IC_se_hac']:.6f})")
+        
+        # 🔥 验证修复效果：检查SE是否合理
+        if ic_result['IC_se_hac'] > 100 or rank_ic_result['IC_se_hac'] > 100:
+            logger.warning(f"  ⚠️  HAC SE异常大 (IC SE={ic_result['IC_se_hac']:.2f}, Rank IC SE={rank_ic_result['IC_se_hac']:.2f})")
+            logger.warning(f"  ⚠️  如果SE>100，说明HAC计算可能还有问题")
+        else:
+            logger.info(f"  ✅ HAC SE合理 (IC SE={ic_result['IC_se_hac']:.6f}, Rank IC SE={rank_ic_result['IC_se_hac']:.6f})")
+        
+        # 🔥 验证统计口径一致性：IC和Rank IC的t-stat应该接近
+        ic_tstat_diff = abs(ic_result['IC_tstat'] - rank_ic_result['IC_tstat'])
+        if ic_tstat_diff > 5:
+            logger.warning(f"  ⚠️  IC和Rank IC的t-stat差异较大 ({ic_tstat_diff:.2f})，可能统计口径不一致")
+        else:
+            logger.debug(f"  ✅ IC和Rank IC的t-stat接近 (差异={ic_tstat_diff:.2f})")
+        
         logger.info(f"  Note: {hac_disclosure_note}")
 
     report_df = pd.DataFrame(report_rows)
@@ -1606,11 +2237,16 @@ def main() -> int:
 
     top_n = int(args.top_n)
     bench = str(args.benchmark).upper().strip()
-    # Use primary model's dates to fetch benchmark
+    # Use primary model's dates to fetch benchmark (non-overlapping mode)
     _preds_for_bench = all_results[primary_model]
-    _tmp_summary, _tmp_ts = calculate_group_returns_standalone(_preds_for_bench, top_n=top_n, bottom_n=top_n, cost_bps=float(args.cost_bps or 0.0))
+    
+    # Get rebalance dates from non-overlapping function
+    _tmp_ts = calculate_group_returns_hold10d_nonoverlap(
+        _preds_for_bench, top_n=top_n, horizon_days=horizon, cost_bps=float(args.cost_bps or 0.0), start_offset=0
+    )
     if _tmp_ts.empty:
         raise RuntimeError("Group return time series is empty on test window for benchmark date extraction.")
+    # Benchmark should also be 10-day returns (non-overlapping)
     bench_ret = _compute_benchmark_tplus_from_yfinance(bench, _tmp_ts["date"], horizon, logger)
 
     # Export TopN vs benchmark for multiple models (if provided), else only for --model
@@ -1631,6 +2267,7 @@ def main() -> int:
                 bench_ret=bench_ret,
                 cost_bps=float(args.cost_bps or 0.0),
                 logger=logger,
+                rebalance_mode="nonoverlap",  # Always use non-overlapping for backtest metrics
             )
         )
 
@@ -1656,7 +2293,7 @@ def main() -> int:
         "train_end": str(train_end.date()),
         "test_start": str(test_start.date()),
         "test_end": str(test_end.date()),
-        "rebalance_mode": str(args.rebalance_mode),
+        "rebalance_mode": "nonoverlap",  # Always use non-overlapping for backtest metrics
         "max_weeks": int(args.max_weeks),
         "benchmark": bench,
         "cost_bps": _safe_float(args.cost_bps or 0.0),
@@ -1726,8 +2363,8 @@ def main() -> int:
     logger.info("Calculating bucket returns for all models...")
     logger.info("=" * 80)
     
-    # Define buckets: top 1-10, 11-20, 21-30; bottom 1-10, 11-20, 21-30
-    top_buckets = [(1, 10), (11, 20), (21, 30)]
+    # Define buckets: top 1-10, 5-15, 11-20, 21-30; bottom 1-10, 11-20, 21-30
+    top_buckets = [(1, 10), (5, 15), (11, 20), (21, 30)]  # 🔧 Added Top5-Top15 bucket
     bottom_buckets = [(1, 10), (11, 20), (21, 30)]  # Bottom buckets are counted from the end
     
     # Calculate bucket returns and generate plots for each model
@@ -1744,7 +2381,7 @@ def main() -> int:
             predictions=preds,
             top_buckets=top_buckets,
             bottom_buckets=bottom_buckets,
-            cost_bps=float(args.cost_bps or 0.0),
+            cost_bps=float(args.cost_bps or 0.0)
         )
         
         if bucket_ts.empty:
@@ -1759,10 +2396,23 @@ def main() -> int:
         )
         
         # Convert to percentage
+        # Ensure all bucket columns exist (including top_5_15_return)
         bucket_cols = [f"top_{a}_{b}_return" for (a, b) in top_buckets]
         bucket_cols += [f"top_{a}_{b}_return_net" for (a, b) in top_buckets]
         bucket_cols += [f"bottom_{a}_{b}_return" for (a, b) in bottom_buckets]
         bucket_cols += ["benchmark_return"]
+        
+        # Also add simplified columns (without _mean suffix) for backward compatibility
+        # This ensures top_5_15_return is available even if only top_5_15_return_mean exists
+        for (a, b) in top_buckets:
+            mean_col = f"top_{a}_{b}_return_mean"
+            if mean_col in bucket_ts.columns:
+                if f"top_{a}_{b}_return" not in bucket_ts.columns:
+                    bucket_ts[f"top_{a}_{b}_return"] = bucket_ts[mean_col]
+            net_mean_col = f"top_{a}_{b}_return_net_mean"
+            if net_mean_col in bucket_ts.columns:
+                if f"top_{a}_{b}_return_net" not in bucket_ts.columns:
+                    bucket_ts[f"top_{a}_{b}_return_net"] = bucket_ts[net_mean_col]
         
         for col in bucket_cols:
             if col in bucket_ts.columns:
@@ -1848,32 +2498,58 @@ def main() -> int:
 
     # NOTE: per-model OOS return logging is handled in _write_model_topn_vs_benchmark().
     
-    # Calculate Top10 10-day rebalance accumulated return curve for all models
+    # Calculate Top 5-15 10-day rebalance accumulated return curve for all models
     logger.info("=" * 80)
-    logger.info("Calculating Top10 10-day rebalance accumulated return curve for all models...")
+    logger.info("Calculating Top 5-15 10-day rebalance accumulated return curve for all models...")
     logger.info("=" * 80)
     
     # Use models_to_export to calculate for all models
     for model_name in models_to_export:
         if model_name not in all_results or not isinstance(all_results[model_name], pd.DataFrame) or all_results[model_name].empty:
-            logger.warning(f"⚠️  Skipping Top10 accumulated return calculation for '{model_name}' (missing/empty)")
+            logger.warning(f"⚠️  Skipping Top 5-15 accumulated return calculation for '{model_name}' (missing/empty)")
             continue
         
         try:
-            top10_accumulated_ts = calc_top10_accumulated_10d_rebalance(
+            # Calculate Top 5-15 accumulated return (using bucket 5-15)
+            top5_15_accumulated_ts = calc_top10_accumulated_10d_rebalance(
                 predictions_df=all_results[model_name],
-                top_n=10,
+                top_n=15,  # Use 15 to get top 15, then filter to 5-15
                 step=10,
                 out_dir=run_dir,
                 model_name=model_name,
-                logger=logger
+                logger=logger,
+                bucket_range=(5, 15)  # Specify bucket range 5-15
             )
-            if not top10_accumulated_ts.empty:
-                logger.info(f"✅ Successfully calculated Top10 10-day rebalance accumulated return for {model_name}")
+            if not top5_15_accumulated_ts.empty:
+                logger.info(f"✅ Successfully calculated Top 5-15 10-day rebalance accumulated return for {model_name}")
             else:
-                logger.warning(f"⚠️  Top10 accumulated return calculation returned empty DataFrame for {model_name}")
+                logger.warning(f"⚠️  Top 5-15 accumulated return calculation returned empty DataFrame for {model_name}")
+                # Fallback: try to use bucket returns if available
+                bucket_file = run_dir / f"{model_name}_bucket_returns.csv"
+                if bucket_file.exists():
+                    bucket_df = pd.read_csv(bucket_file)
+                    # Check for top_5_15_return or top_5_15_return_mean
+                    col_name = None
+                    for col in ['top_5_15_return', 'top_5_15_return_mean']:
+                        if col in bucket_df.columns:
+                            col_name = col
+                            break
+                    if col_name:
+                        logger.info(f"Using bucket returns for Top 5-15 accumulated return for {model_name}")
+                        # Calculate cumulative from bucket returns
+                        data = bucket_df[col_name].dropna() / 100.0
+                        if len(data) > 0:
+                            cum_data = (1 + data).cumprod() - 1
+                            result_df = pd.DataFrame({
+                                'date': bucket_df['date'],
+                                'top_gross_return': data.values,
+                                'acc_value': (1 + data).cumprod().values,
+                                'acc_return': cum_data.values
+                            })
+                            result_df.to_csv(run_dir / f"{model_name}_top5_15_rebalance10d_accumulated.csv", index=False)
+                            logger.info(f"✅ Saved Top 5-15 accumulated return from bucket data for {model_name}")
         except Exception as e:
-            logger.warning(f"⚠️  Failed to calculate Top10 accumulated return for {model_name}: {e}", exc_info=True)
+            logger.warning(f"⚠️  Failed to calculate Top 5-15 accumulated return for {model_name}: {e}", exc_info=True)
     
     # Generate results_summary_for_word_doc.json with HAC-corrected statistics for all models
     logger.info("=" * 80)
@@ -1881,32 +2557,31 @@ def main() -> int:
     logger.info("=" * 80)
     
     results_summary = {}
-    rebalance_mode = str(args.rebalance_mode)
-    use_hac = (rebalance_mode == "daily")
+    # Always use HAC for IC/Rank IC (overlapping observations for prediction quality)
+    # But backtest metrics (accumulated return, max drawdown, Sharpe, graphs) use non-overlapping
+    use_hac = True  # IC/Rank IC always need HAC corrections (overlapping observations)
     
     # Determine HAC method and lag (must be defined before use)
     hac_method = getattr(args, 'hac_method', 'newey-west')
-    if use_hac:
-        if hac_method == "newey-west":
-            hac_lag = getattr(args, 'hac_lag', None) or max(10, 2 * horizon)
-            hac_disclosure = (
-                f"基于重叠观测 (overlapping observations), "
-                f"使用Newey-West HAC校正 (lag={hac_lag}, lag≥10). "
-                f"Statistical inference uses Newey-West (1987) heteroskedasticity and "
-                f"autocorrelation consistent standard errors with {hac_lag} lags."
-            )
-        else:  # hansen-hodrick
-            hac_lag = getattr(args, 'hac_lag', None) or max(horizon - 1, 1)
-            hac_disclosure = (
-                f"基于重叠观测 (overlapping observations), "
-                f"使用Hansen-Hodrick标准误 (lag={hac_lag} for {horizon}-day horizon). "
-                f"Statistical inference uses Hansen-Hodrick (1980) standard errors "
-                f"for {horizon}-period overlapping returns."
-            )
-        logger.info(f"HAC Correction: {hac_disclosure}")
-    else:
-        hac_lag = None
-        hac_disclosure = ""
+    if hac_method == "newey-west":
+        hac_lag = getattr(args, 'hac_lag', None) or max(10, 2 * horizon)
+        hac_disclosure = (
+            f"IC/Rank IC基于重叠观测 (overlapping observations), "
+            f"使用Newey-West HAC校正 (lag={hac_lag}, lag≥10). "
+            f"回测指标（累计收益、回撤、Sharpe、图表）基于非重叠持有期回测。"
+            f"Statistical inference uses Newey-West (1987) heteroskedasticity and "
+            f"autocorrelation consistent standard errors with {hac_lag} lags for IC/Rank IC."
+        )
+    else:  # hansen-hodrick
+        hac_lag = getattr(args, 'hac_lag', None) or max(horizon - 1, 1)
+        hac_disclosure = (
+            f"IC/Rank IC基于重叠观测 (overlapping observations), "
+            f"使用Hansen-Hodrick标准误 (lag={hac_lag} for {horizon}-day horizon). "
+            f"回测指标（累计收益、回撤、Sharpe、图表）基于非重叠持有期回测。"
+            f"Statistical inference uses Hansen-Hodrick (1980) standard errors "
+            f"for {horizon}-period overlapping returns for IC/Rank IC."
+        )
+    logger.info(f"HAC Correction: {hac_disclosure}")
     
     # Extract metrics for all models from report_df
     if isinstance(report_df, pd.DataFrame) and "Model" in report_df.columns:
@@ -1995,18 +2670,20 @@ def main() -> int:
         "test_start": str(test_start.date()),
         "test_end": str(test_end.date()),
         "horizon_days": horizon,
-        "rebalance_mode": rebalance_mode,
+        "rebalance_mode": "nonoverlap",  # Backtest metrics use non-overlapping
         "n_test_rebalances": int(_tmp_ts.shape[0]) if not _tmp_ts.empty else 0,
         "hac_correction_applied": use_hac,
         "hac_method": hac_method if use_hac else None,
         "hac_lag": hac_lag if use_hac else None,
         "overlapping_observations": use_hac,
         "disclosure_note": (
-            f"基于重叠观测 (overlapping observations), "
+            f"IC/Rank IC基于重叠观测 (overlapping observations), "
             f"使用{'Newey-West HAC' if hac_method == 'newey-west' else 'Hansen-Hodrick'}标准误 (lag={hac_lag}). "
-            f"Statistical inference uses HAC corrections for overlapping observations. "
-            f"Using 1-day rolling (而非10天非重叠), resulting in approximately {int(_tmp_ts.shape[0]) if not _tmp_ts.empty else 0} observations."
-        ) if use_hac else None,
+            f"回测指标（累计收益、回撤、Sharpe、图表）基于非重叠持有期回测（每{horizon}个交易日再平衡一次）。"
+            f"平均收益和中位数收益基于每日预测质量评估。"
+            f"Statistical inference uses HAC corrections for IC/Rank IC (overlapping observations). "
+            f"Backtest metrics use non-overlapping hold periods ({horizon} days)."
+        ),
     }
     
     # Save results summary
@@ -2014,8 +2691,177 @@ def main() -> int:
     summary_file.write_text(json.dumps(results_summary, indent=2, default=str), encoding="utf-8")
     logger.info(f"✅ Saved results summary: {summary_file}")
     
+    # Generate complete metrics report
+    logger.info("=" * 80)
+    logger.info("Generating complete metrics report...")
+    logger.info("=" * 80)
+    _generate_complete_metrics_report(
+        run_dir, 
+        models_to_export, 
+        logger,
+        ema_top_n=getattr(args, 'ema_top_n', None),
+        ema_min_days=getattr(args, 'ema_min_days', 3)
+    )
+    
     logger.info("Saved outputs: %s", run_dir)
     return 0
+
+
+def _generate_complete_metrics_report(
+    run_dir: Path,
+    models: List[str],
+    logger: logging.Logger,
+    ema_top_n: Optional[int] = None,
+    ema_min_days: int = 3,
+) -> None:
+    """
+    Generate complete metrics report for all models (Overlap and Non-Overlap metrics).
+    
+    This function reads the generated CSV files and calculates all metrics as specified
+    in EWMA_IMPLEMENTATION_SUMMARY.md:
+    - Overlap metrics (daily observations): avg, median, std, win rate, Sharpe
+    - Non-Overlap metrics (10-day periods): avg, median, std, win rate, cumulative return,
+      max drawdown, annualized return, Sharpe
+    """
+    logger.info("=" * 80)
+    logger.info("完整指标报告（EWMA平滑后）")
+    logger.info("=" * 80)
+    
+    report_lines = []
+    report_lines.append("=" * 80)
+    report_lines.append("完整指标报告（EWMA平滑后）")
+    report_lines.append("=" * 80)
+    
+    for model_name in models:
+        logger.info(f"\n【{model_name.upper()}】")
+        logger.info("=" * 80)
+        report_lines.append(f"\n【{model_name.upper()}】")
+        report_lines.append("=" * 80)
+        
+        # Overlap metrics (daily)
+        try:
+            bucket_df = pd.read_csv(run_dir / f"{model_name}_bucket_returns.csv")
+            
+            # Top 5-15
+            if 'top_5_15_return' in bucket_df.columns:
+                top5_15 = bucket_df['top_5_15_return'].dropna() / 100.0
+                
+                logger.info(f"\n【Overlap 指标 - Top 5-15（{len(top5_15)}个交易日）】")
+                logger.info("-" * 80)
+                report_lines.append(f"\n【Overlap 指标 - Top 5-15（{len(top5_15)}个交易日）】")
+                report_lines.append("-" * 80)
+                
+                avg_return = top5_15.mean() * 100
+                median_return = top5_15.median() * 100
+                std_return = top5_15.std() * 100
+                win_rate = (top5_15 > 0).mean() * 100
+                sharpe = (top5_15.mean() / top5_15.std()) * np.sqrt(252) if top5_15.std() > 0 else 0
+                
+                logger.info(f"平均收益: {avg_return:.4f}%")
+                logger.info(f"中位数收益: {median_return:.4f}%")
+                logger.info(f"标准差: {std_return:.4f}%")
+                logger.info(f"Overlap 胜率: {win_rate:.2f}%")
+                logger.info(f"Sharpe Ratio (年化): {sharpe:.4f}")
+                
+                report_lines.append(f"平均收益: {avg_return:.4f}%")
+                report_lines.append(f"中位数收益: {median_return:.4f}%")
+                report_lines.append(f"标准差: {std_return:.4f}%")
+                report_lines.append(f"Overlap 胜率: {win_rate:.2f}%")
+                report_lines.append(f"Sharpe Ratio (年化): {sharpe:.4f}")
+        except FileNotFoundError:
+            logger.warning(f"Bucket returns文件未找到: {model_name}_bucket_returns.csv")
+            report_lines.append(f"⚠️ Bucket returns文件未找到: {model_name}_bucket_returns.csv")
+        except Exception as e:
+            logger.warning(f"处理Overlap指标时出错: {e}")
+            report_lines.append(f"⚠️ 处理Overlap指标时出错: {e}")
+        
+        # Non-Overlap metrics
+        try:
+            nonoverlap_df = pd.read_csv(run_dir / f"{model_name}_top5_15_rebalance10d_accumulated.csv")
+            
+            logger.info(f"\n【Non-Overlap 指标 - Top 5-15（{len(nonoverlap_df)}期，每10天）】")
+            logger.info("-" * 80)
+            report_lines.append(f"\n【Non-Overlap 指标 - Top 5-15（{len(nonoverlap_df)}期，每10天）】")
+            report_lines.append("-" * 80)
+            
+            if 'top_gross_return' in nonoverlap_df.columns:
+                period_returns = nonoverlap_df['top_gross_return']
+                
+                avg_period_return = period_returns.mean() * 100
+                median_period_return = period_returns.median() * 100
+                std_period_return = period_returns.std() * 100
+                win_rate_nonoverlap = (period_returns > 0).mean() * 100
+                
+                logger.info(f"平均期间收益: {avg_period_return:.4f}%")
+                logger.info(f"中位数期间收益: {median_period_return:.4f}%")
+                logger.info(f"标准差: {std_period_return:.4f}%")
+                logger.info(f"Non-Overlap 胜率: {win_rate_nonoverlap:.2f}%")
+                
+                report_lines.append(f"平均期间收益: {avg_period_return:.4f}%")
+                report_lines.append(f"中位数期间收益: {median_period_return:.4f}%")
+                report_lines.append(f"标准差: {std_period_return:.4f}%")
+                report_lines.append(f"Non-Overlap 胜率: {win_rate_nonoverlap:.2f}%")
+                
+                # Sharpe (based on periods)
+                if period_returns.std() > 0:
+                    period_sharpe = (period_returns.mean() / period_returns.std()) * np.sqrt(25)
+                    logger.info(f"Sharpe Ratio (基于期间): {period_sharpe:.4f}")
+                    report_lines.append(f"Sharpe Ratio (基于期间): {period_sharpe:.4f}")
+            
+            if 'acc_return' in nonoverlap_df.columns:
+                final_acc = nonoverlap_df['acc_return'].iloc[-1] * 100
+                logger.info(f"\n累积收益: {final_acc:.4f}%")
+                report_lines.append(f"\n累积收益: {final_acc:.4f}%")
+                
+                # Max drawdown
+                if 'drawdown' in nonoverlap_df.columns:
+                    max_dd = nonoverlap_df['drawdown'].min()
+                    logger.info(f"最大回撤: {max_dd:.4f}%")
+                    report_lines.append(f"最大回撤: {max_dd:.4f}%")
+                else:
+                    # Calculate if not present
+                    cum_returns = (1 + period_returns).cumprod()
+                    running_max = cum_returns.expanding().max()
+                    drawdown = (cum_returns / running_max - 1) * 100
+                    max_dd = drawdown.min()
+                    logger.info(f"最大回撤: {max_dd:.4f}%")
+                    report_lines.append(f"最大回撤: {max_dd:.4f}%")
+                
+                # Annualized return
+                total_days = len(nonoverlap_df) * 10
+                annualized_return = ((1 + final_acc/100) ** (252 / total_days) - 1) * 100
+                logger.info(f"年化收益: {annualized_return:.4f}%")
+                report_lines.append(f"年化收益: {annualized_return:.4f}%")
+                
+        except FileNotFoundError:
+            logger.warning(f"Non-Overlap文件未找到: {model_name}_top5_15_rebalance10d_accumulated.csv")
+            report_lines.append(f"⚠️ Non-Overlap文件未找到: {model_name}_top5_15_rebalance10d_accumulated.csv")
+        except Exception as e:
+            logger.warning(f"处理Non-Overlap指标时出错: {e}")
+            report_lines.append(f"⚠️ 处理Non-Overlap指标时出错: {e}")
+    
+    logger.info("\n" + "=" * 80)
+    logger.info("【说明】")
+    logger.info("-" * 80)
+    if ema_top_n is not None and ema_top_n == -1:
+        ema_note = "所有预测使用原始分数（EMA已禁用）"
+    else:
+        ema_note = "所有预测已应用EWMA平滑（3天EMA: 0.6*S_t + 0.3*S_{t-1} + 0.1*S_{t-2}）"
+        if ema_top_n is not None and ema_top_n > 0:
+            ema_note += f"，仅对连续{ema_min_days}天都在Top{ema_top_n}的股票应用EMA"
+    logger.info(ema_note)
+    logger.info("=" * 80)
+    
+    report_lines.append("\n" + "=" * 80)
+    report_lines.append("【说明】")
+    report_lines.append("-" * 80)
+    report_lines.append(ema_note)
+    report_lines.append("=" * 80)
+    
+    # Save report to file
+    report_file = run_dir / "complete_metrics_report.txt"
+    report_file.write_text("\n".join(report_lines), encoding="utf-8")
+    logger.info(f"✅ Saved complete metrics report: {report_file}")
 
 
 def _plot_bucket_returns(

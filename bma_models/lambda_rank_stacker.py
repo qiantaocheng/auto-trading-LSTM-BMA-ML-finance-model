@@ -19,6 +19,7 @@ import numpy as np
 import logging
 from typing import Dict, Any, Tuple, Optional
 from sklearn.preprocessing import StandardScaler
+from scipy.stats import norm
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -37,6 +38,141 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def per_day_rank_normalize(predictions: np.ndarray, dates: pd.Series, use_gauss_rank: bool = True) -> np.ndarray:
+    """
+    对预测值按天做横截面rank标准化（0~1）或Gauss-rank
+    
+    🔥 关键：rank必须是同一天内，不能跨天rank
+    
+    实现逻辑：
+    1. 遍历每一天（unique_dates）
+    2. 对每一天的预测值，在同一天内进行rank（横截面rank）
+    3. 将rank转换为[0,1]或Gauss-rank
+    4. 这样meta ranker吃的是"稳定的排序尺度"，不受折间模型成熟度影响
+    
+    Args:
+        predictions: 预测值数组
+        dates: 对应的日期Series（必须与predictions长度一致）
+        use_gauss_rank: 是否使用Gauss-rank（推荐），否则使用普通rank (0~1)
+    
+    Returns:
+        标准化后的预测值数组（按天rank后的结果）
+    """
+    if len(predictions) != len(dates):
+        raise ValueError(f"predictions长度({len(predictions)})与dates长度({len(dates)})不匹配")
+    
+    normalized = np.zeros_like(predictions)
+    # 确保dates是pd.Series（如果已经是Series，unique()会保持顺序）
+    if not isinstance(dates, pd.Series):
+        dates = pd.Series(dates)
+    unique_dates = dates.unique()
+    
+    # 🔥 按天遍历：对每一天的预测值进行横截面rank
+    for date in unique_dates:
+        # 提取当天的所有预测值（横截面）
+        date_mask = (dates == date).values if hasattr(dates, 'values') else (dates == date)
+        date_preds = predictions[date_mask]
+        
+        if len(date_preds) == 0:
+            continue
+        
+        # 🔥 关键：在同一天内进行rank（横截面rank），不跨天
+        if len(date_preds) == 1:
+            # 单个样本时，rank设为0.5
+            normalized[date_mask] = 0.5
+        else:
+            # 使用pandas的rank方法，pct=True得到0~1的rank
+            # 这是同一天内的横截面rank，确保meta ranker吃的是稳定的排序尺度
+            rank_series = pd.Series(date_preds).rank(method='average', pct=True)
+            ranks = rank_series.values
+            
+            if use_gauss_rank:
+                # Gauss-rank: rank -> 逆正态CDF -> 标准化
+                # 将0~1的rank映射到标准正态分布的逆CDF
+                # 避免边界效应（0和1映射到-inf和inf）
+                eps = 1e-6
+                ranks_clipped = np.clip(ranks, eps, 1 - eps)
+                gauss_ranks = norm.ppf(ranks_clipped)
+                # 标准化到0~1范围（可选，也可以保持gauss分布）
+                gauss_ranks_normalized = (gauss_ranks - gauss_ranks.min()) / (gauss_ranks.max() - gauss_ranks.min() + 1e-10)
+                normalized[date_mask] = gauss_ranks_normalized
+            else:
+                # 普通rank (0~1)
+                normalized[date_mask] = ranks
+    
+    return normalized
+
+
+def calculate_topk_return_proxy(predictions: np.ndarray, y_true: np.ndarray, dates: pd.Series, k: int = 10) -> Dict[str, float]:
+    """
+    计算Top-K收益proxy指标
+    
+    对每个验证日取预测TopK，用真实T+10 return计算平均收益；汇总成均值/IR/t-stat。
+    这是最终策略的最直接proxy，能抓住"排序指标提升但收益不动"的问题。
+    
+    Args:
+        predictions: 预测值数组
+        y_true: 真实收益数组（T+10 return）
+        dates: 对应的日期Series
+        k: Top-K数量（默认10）
+    
+    Returns:
+        包含均值、IR、t-stat的字典
+    """
+    if len(predictions) != len(y_true) or len(predictions) != len(dates):
+        raise ValueError("predictions, y_true, dates长度必须一致")
+    
+    daily_returns = []
+    # 确保dates是pd.Series
+    if not isinstance(dates, pd.Series):
+        dates = pd.Series(dates)
+    unique_dates = dates.unique()
+    
+    for date in unique_dates:
+        date_mask = (dates == date).values if hasattr(dates, 'values') else (dates == date)
+        date_preds = predictions[date_mask]
+        date_returns = y_true[date_mask]
+        
+        if len(date_preds) < k:
+            # 如果当天样本数少于K，使用全部样本
+            topk_mask = np.ones(len(date_preds), dtype=bool)
+        else:
+            # 取Top-K
+            topk_indices = np.argsort(date_preds)[-k:]
+            topk_mask = np.zeros(len(date_preds), dtype=bool)
+            topk_mask[topk_indices] = True
+        
+        # 计算Top-K的平均收益
+        topk_returns = date_returns[topk_mask]
+        if len(topk_returns) > 0:
+            daily_returns.append(np.mean(topk_returns))
+    
+    if len(daily_returns) == 0:
+        return {
+            'mean_return': 0.0,
+            'ir': 0.0,
+            't_stat': 0.0,
+            'n_days': 0
+        }
+    
+    daily_returns = np.array(daily_returns)
+    
+    # 计算均值、IR、t-stat
+    mean_return = np.mean(daily_returns)
+    std_return = np.std(daily_returns)
+    ir = mean_return / (std_return + 1e-10)  # Information Ratio
+    t_stat = mean_return / (std_return / np.sqrt(len(daily_returns)) + 1e-10)  # t-statistic
+    
+    return {
+        'mean_return': float(mean_return),
+        'ir': float(ir),
+        't_stat': float(t_stat),
+        'n_days': len(daily_returns),
+        'std_return': float(std_return)
+    }
+
+
 class LambdaRankStacker:
     """
     LambdaRank排序模型 - 直接使用Alpha Factors优化排序
@@ -50,12 +186,12 @@ class LambdaRankStacker:
 
     def __init__(self,
                  base_cols: Tuple[str, ...] = None,  # 将自动使用alpha factor columns
-                 n_quantiles: int = 128,  # 固定档位数量（64或128）
+                 n_quantiles: int = 32,  # 🔧 128 -> 32（固定档位数量）
                  winsorize_quantiles: Tuple[float, float] = (0.01, 0.99),  # 异常值截断
-                 label_gain_power: float = 1.0,  # 标签增益幂次（1.0=线性，1.5=强化前排）
+                 label_gain_power: float = 2.1,  # 🔧 1.0 -> 2.1（标签增益幂次）
                  lgb_params: Optional[Dict[str, Any]] = None,
-                 num_boost_round: int = 260,  # Updated: 260
-                 early_stopping_rounds: int = 60,  # Updated: 60
+                 num_boost_round: int = 1200,  # 🔧 700 -> 1200（更多轮次）
+                 early_stopping_rounds: int = 100,  # 🔧 70 -> 100（更保守早停）
                  use_purged_cv: bool = True,  # 强制使用PurgedCV防止数据泄露（当internal CV启用时）
                  use_internal_cv: bool = True,  # 是否在fit内部执行PurgedCV（外层已有CV时可禁用以避免fold-in-fold）
                  cv_n_splits: int = 6,        # 🔥 CV折数（T+5: 6折，提高数据利用率）
@@ -114,22 +250,23 @@ class LambdaRankStacker:
 
         # 专业级LambdaRank参数（使用传入的lgb_params覆盖默认值，确保YAML配置生效）
         # 默认值仅作为fallback，实际值应从YAML配置传入
+        # 🔧 Updated 2025-01-19: 更稳的参数配置
         default_lgb_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'ndcg_eval_at': [10, 30],  # Default: Top-10/30 (can be overridden by lgb_params)
+            'ndcg_eval_at': [10],  # 🔧 聚焦Top10
             'label_gain': self.label_gain,  # 关键：固定档位增益
-            'num_leaves': 127,  # Default (can be overridden by lgb_params from YAML)
-            'max_depth': 6,   # Default (can be overridden by lgb_params from YAML)
-            'learning_rate': 0.03,  # Default (can be overridden by lgb_params from YAML)
-            'feature_fraction': 0.85,  # Default (can be overridden by lgb_params from YAML)
-            'bagging_fraction': 0.8,  # Default
-            'bagging_freq': 1,  # 每轮都bagging
-            'min_data_in_leaf': 380,  # Updated: 380
+            'num_leaves': 31,  # 🔧 63 -> 31（更保守）
+            'max_depth': 5,   # 🔧 6 -> 5（更浅）
+            'learning_rate': 0.01,  # 🔧 0.02 -> 0.01（更稳）
+            'feature_fraction': 0.9,  # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+            'bagging_fraction': 0.75,  # 🔧 0.8 -> 0.75
+            'bagging_freq': 3,  # 🔧 5 -> 3
+            'min_data_in_leaf': 800,  # 🔧 650 -> 800（更稳）
             'lambda_l1': 0.0,  # Disabled L1 regularization
-            'lambda_l2': 10.0,  # Updated: 10.0
-            'lambdarank_truncation_level': 650,  # Updated: 650
-            'sigmoid': 1.2,  # Sigmoid参数
+            'lambda_l2': 30.0,  # 🔧 22.0 -> 30.0（更强正则化）
+            'lambdarank_truncation_level': 80,  # 🔧 100 -> 80
+            'sigmoid': 1.1,  # 🔧 1.05 -> 1.1
             'verbose': -1,
             'random_state': random_state,
             'force_col_wise': True
@@ -148,6 +285,7 @@ class LambdaRankStacker:
         self.fitted_ = False
         self._oof_predictions = None  # OOF预测（防数据泄漏）
         self._oof_index = None  # OOF索引（用于对齐）
+        self._first_val_date = None  # 第一个验证集的日期（用于OOF冷启动过滤）
 
         logger.info("🏆 LambdaRank 排序模型初始化完成")
         logger.info(f"   特征模式: {'Alpha Factors' if self.base_cols is None else 'Custom'}")
@@ -476,17 +614,57 @@ class LambdaRankStacker:
             raise RuntimeError('PurgedCV did not yield any splits for LambdaRankStacker.')
         logger.info(f"   成功生成{len(cv_splits)}个CV分割")
 
+        # 🔧 OOF冷启动修复：记录第一个验证集的日期
+        first_val_date = None
+        if cv_splits:
+            first_train_idx, first_val_idx = cv_splits[0]
+            first_val_dates = dates[first_val_idx]
+            if len(first_val_dates) > 0:
+                first_val_date = pd.to_datetime(first_val_dates.min()).normalize()
+                self._first_val_date = first_val_date
+                logger.info(f"   🔧 OOF冷启动修复: 第一个验证集日期 = {first_val_date.date()}")
+                logger.info(f"   ⚠️  将过滤掉此日期之前的所有样本（避免分布断层）")
+
+        # 🔧 最小训练窗限制：至少2年交易日（约500天）才能计入OOF和best_iteration
+        # 获取最小训练窗配置（默认500天 = 2年交易日）
+        try:
+            from bma_models.unified_config_loader import get_time_config
+            time_config = get_time_config()
+            min_train_window_days = getattr(time_config, 'min_train_window_days', 252)
+        except:
+            min_train_window_days = 252  # 默认1年交易日
+        
+        logger.info(f"   🔧 最小训练窗限制: {min_train_window_days}天（约{min_train_window_days/252:.1f}年）")
+        logger.info(f"   ⚠️  训练窗小于{min_train_window_days}天的fold将被跳过（避免噪声爆炸）")
+        
         # 遍历CV分割进行训练
+        valid_fold_start_idx = None  # 记录第一个有效fold的索引
         for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
-            logger.info(f"   CV Fold {fold_idx + 1}/{len(cv_splits)}: 训练={len(train_idx)}, 验证={len(val_idx)}")
+            # 计算训练窗天数
+            train_dates = dates[train_idx]
+            train_unique_dates = train_dates.unique()
+            train_window_days = len(train_unique_dates)
+            
+            logger.info(f"   CV Fold {fold_idx + 1}/{len(cv_splits)}: 训练={len(train_idx)}, 验证={len(val_idx)}, 训练窗={train_window_days}天")
+            
+            # 🔧 检查训练窗是否满足最小要求
+            if train_window_days < min_train_window_days:
+                logger.warning(
+                    f"   ⚠️  CV Fold {fold_idx + 1} 训练窗({train_window_days}天) < 最小要求({min_train_window_days}天)，跳过"
+                )
+                logger.info(f"   🔧 此fold的OOF和best_iteration将不计入统计（避免噪声污染）")
+                continue
+            
+            # 记录第一个有效fold
+            if valid_fold_start_idx is None:
+                valid_fold_start_idx = fold_idx
+                logger.info(f"   ✅ 从Fold {fold_idx + 1}开始计入OOF和best_iteration统计")
 
             # 分割训练和验证数据
             X_train_fold, X_val_fold = X_scaled[train_idx], X_scaled[val_idx]
             y_train_fold, y_val_fold = y_valid[train_idx], y_valid[val_idx]
 
             # 重新计算训练集的组大小
-            train_dates = dates[train_idx]
-            train_unique_dates = train_dates.unique()
             train_group_sizes = [len(train_dates[train_dates == date]) for date in train_unique_dates]
 
             # 重新计算验证集的组大小
@@ -528,8 +706,21 @@ class LambdaRankStacker:
             # 计算验证集NDCG - 使用NDCG@50作为主要CV指标
             val_pred = model.predict(X_val_fold)
 
-            # 保存OOF预测（关键：防止数据泄漏）
-            oof_predictions[val_idx] = val_pred
+            # 🔧 OOF标准化：对同一天的预测做横截面rank（解决折间模型成熟度不同导致的尺度漂移）
+            # 关键：必须是"按天"做，对每一天内的预测值进行rank，不能跨天rank
+            # 这样meta ranker吃的是"稳定的排序尺度"
+            # 确保val_dates是pd.Series格式（per_day_rank_normalize需要）
+            if isinstance(val_dates, pd.Index):
+                val_dates_series = pd.Series(val_dates)
+            elif isinstance(val_dates, np.ndarray):
+                val_dates_series = pd.Series(val_dates)
+            else:
+                val_dates_series = pd.Series(val_dates) if not isinstance(val_dates, pd.Series) else val_dates
+            
+            val_pred_normalized = per_day_rank_normalize(val_pred, val_dates_series, use_gauss_rank=True)
+
+            # 保存OOF预测（关键：防止数据泄漏，使用标准化后的预测）
+            oof_predictions[val_idx] = val_pred_normalized
             if len(val_group_sizes) > 0:
                 # 根据数据量选择合适的主要评估指标
                 max_group_size = max(val_group_sizes)
@@ -537,19 +728,35 @@ class LambdaRankStacker:
 
                 ndcg_score = self._calculate_ndcg(y_val_fold, val_pred, val_group_sizes, primary_k)
                 cv_scores.append(ndcg_score)
-
+                
+                # 🔧 Top-K收益proxy指标（最终策略的最直接proxy）
+                # 注意：Top-K收益proxy使用原始预测（未标准化），因为我们要看真实的收益排序
+                topk_metrics = calculate_topk_return_proxy(val_pred, y_val_fold, val_dates_series, k=10)
+                
                 # 多层次评估报告
                 if max_group_size >= 50:
                     ndcg5 = self._calculate_ndcg(y_val_fold, val_pred, val_group_sizes, 5)
                     ndcg20 = self._calculate_ndcg(y_val_fold, val_pred, val_group_sizes, 20)
-                    logger.info(f"   CV Fold {fold_idx + 1}: NDCG@5={ndcg5:.4f}, @20={ndcg20:.4f}, @50={ndcg_score:.4f}")
+                    logger.info(
+                        f"   CV Fold {fold_idx + 1}: NDCG@5={ndcg5:.4f}, @20={ndcg20:.4f}, @50={ndcg_score:.4f} | "
+                        f"Top10收益proxy: mean={topk_metrics['mean_return']:.4f}, IR={topk_metrics['ir']:.2f}, t-stat={topk_metrics['t_stat']:.2f}"
+                    )
                 else:
                     ndcg5 = self._calculate_ndcg(y_val_fold, val_pred, val_group_sizes, 5)
-                    logger.info(f"   CV Fold {fold_idx + 1}: NDCG@5={ndcg5:.4f}, @{primary_k}={ndcg_score:.4f}")
+                    logger.info(
+                        f"   CV Fold {fold_idx + 1}: NDCG@5={ndcg5:.4f}, @{primary_k}={ndcg_score:.4f} | "
+                        f"Top10收益proxy: mean={topk_metrics['mean_return']:.4f}, IR={topk_metrics['ir']:.2f}, t-stat={topk_metrics['t_stat']:.2f}"
+                    )
 
         if cv_models:
-            primary_k_desc = "50" if max([max(fold_sizes) for fold_sizes in [val_group_sizes] if fold_sizes]) >= 50 else "20"
-            logger.info(f"   CV平均NDCG@{primary_k_desc}: {np.mean(cv_scores):.4f} ± {np.std(cv_scores):.4f}")
+            # 🔧 只使用满足最小训练窗要求的fold的分数
+            if len(cv_scores) > 0:
+                primary_k_desc = "50" if max([max(fold_sizes) for fold_sizes in [val_group_sizes] if fold_sizes]) >= 50 else "20"
+                logger.info(f"   CV平均NDCG@{primary_k_desc}: {np.mean(cv_scores):.4f} ± {np.std(cv_scores):.4f} (基于{len(cv_scores)}个有效fold)")
+                
+                if valid_fold_start_idx is not None and valid_fold_start_idx > 0:
+                    skipped_folds = valid_fold_start_idx
+                    logger.info(f"   🔧 跳过了前{skipped_folds}个fold（训练窗不足{min_train_window_days}天）")
 
             # 保存OOF预测和索引（用于后续融合）
             self._oof_predictions = oof_predictions
@@ -566,12 +773,14 @@ class LambdaRankStacker:
         获取OOF预测（Out-of-Fold predictions）
 
         重要：这是真正的OOF预测，每个样本只被未见过它的模型预测，防止数据泄漏。
+        
+        🔧 OOF冷启动修复：自动过滤掉第一个验证集日期之前的样本（这些样本的OOF预测为0或缺失）
 
         Args:
             df: 原始训练数据（用于提取MultiIndex）
 
         Returns:
-            OOF预测Series（带MultiIndex: date, ticker）
+            OOF预测Series（带MultiIndex: date, ticker），只包含有有效OOF预测的样本
 
         Raises:
             RuntimeError: 如果OOF预测未生成（模型未使用CV训练）
@@ -595,7 +804,29 @@ class LambdaRankStacker:
             name='lambda_oof'
         )
 
-        logger.info(f"✓ 返回Lambda OOF预测: {len(oof_series)} 个样本")
+        # 🔧 OOF冷启动修复：过滤掉第一个验证集日期之前的样本
+        if self._first_val_date is not None:
+            df_dates = pd.to_datetime(df.index.get_level_values('date')).normalize()
+            valid_mask = df_dates >= self._first_val_date
+            
+            before_count = (~valid_mask).sum()
+            if before_count > 0:
+                logger.warning(
+                    f"   ⚠️  OOF冷启动空洞检测: 过滤掉{before_count}个样本 "
+                    f"(日期 < {self._first_val_date.date()})"
+                )
+                logger.info(
+                    f"   🔧 这些样本的OOF预测为0/缺失，会导致Stacker学到时间伪信号"
+                )
+            
+            oof_series = oof_series[valid_mask]
+            logger.info(
+                f"✓ 返回Lambda OOF预测: {len(oof_series)} 个有效样本 "
+                f"(已过滤{before_count}个冷启动样本)"
+            )
+        else:
+            logger.info(f"✓ 返回Lambda OOF预测: {len(oof_series)} 个样本 (未记录first_val_date)")
+
         return oof_series
 
     def predict(self, df: pd.DataFrame, alpha_factors: pd.DataFrame = None) -> pd.DataFrame:

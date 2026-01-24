@@ -28,6 +28,7 @@ temporal:
   cv_n_splits: 6                       # 仍用6折（如需更稳可降为5）
   cv_test_ratio: 0.12                  # 测试集比例 12%
   min_train_test_gap_days: 10          # 训练测试最小间隔 10天
+  min_train_window_days: 252           # 🔧 最小训练窗：1年交易日（252天），用于CV purged split
   
   # === 样本权重参数 ===
   sample_weight_half_life_days: 75     # 样本权重半衰期（天）
@@ -193,40 +194,46 @@ training:
   # 极端target过滤 (防止WW等9900%涨幅或-88%跌幅扭曲模型训练)
   extreme_target_filter:
     enabled: true                        # 启用极端值过滤
-    lower_pct: 0.5                       # 移除最低0.5%的极端下跌
-    upper_pct: 99.5                      # 移除最高0.5%的极端上涨
-    # 说明: 这会在所有第一层模型(ElasticNet/XGBoost/CatBoost/LambdaRank)
-    #       和Ridge Stacking训练前移除极端outliers
-    #       示例: WW在2025-05-09的9900%涨幅, -88%跌幅等
+    method: "hard_clip"                  # 🔧 硬截断方法（不是删除）
+    clip_lower: -0.55                    # 🔧 硬截断下界（10天收益-55%，已经很宽）
+    clip_upper: 0.55                     # 🔧 硬截断上界（10天收益+55%，已经很宽）
+    # 说明: 对target做硬截断（winsorize/clip），不是删除
+    #       训练与评估同时：clip(y, -0.55, +0.55)
+    #       这一步会立刻让"mean vs median 差几百倍"消失，结果可解释
+    #       遇到9000%这种，说明单位或对齐错误，但在定位bug前，至少要让训练/评估不被炸穿
 
-  # 基础ML模型 - SIMPLIFIED
+  # 基础ML模型 - UPDATED 2025-01-19
   base_models:
     elastic_net:
       enable: true
-      alpha: 0.0001
-      l1_ratio: 0.05
+      alpha: 0.0012         # 🔧 0.002 -> 0.0012（别太硬，保持一点灵敏度）
+      l1_ratio: 0.15         # 🔧 0.10 -> 0.15（让它更像"稀疏线性组合"，更适合横截面）
+      max_iter: 10000        # 🔧 5000 -> 10000（收敛更稳）
+      fit_intercept: true
+      selection: "random"    # 更稳（如果你用 sklearn ElasticNet）
       random_state: 42
     
     xgboost:
       enable: true
-      n_estimators: 500
-      max_depth: 4
-      learning_rate: 0.03
-      min_child_weight: 100     # ✅ 150 -> 100（更能学到弱信号）
-      reg_lambda: 5.0          # ✅ 10 -> 5（不至于太扁平）
-      reg_alpha: 0.0
+      n_estimators: 800      # 🔧 500 -> 800（更多树，配合小学习率）
+      max_depth: 5           # 🔧 4 -> 5（稍微更深）
+      learning_rate: 0.02     # 🔧 0.03 -> 0.02（更稳）
+      min_child_weight: 30   # 🔧 100 -> 30（不再极端保守）
       subsample: 0.7
       colsample_bytree: 0.7
+      reg_lambda: 10.0       # 🔧 5.0 -> 10.0（L2更强，换取更稳）
+      reg_alpha: 0.0
+      gamma: 0.0             # 🔧 新增：最小损失减少阈值
       random_state: 42
       verbosity: 0
     
     catboost:
       enable: true
-      iterations: 1200
-      depth: 5
+      iterations: 3000       # 🔧 1200 -> 3000（更多迭代，配合小学习率）
+      depth: 6              # 🔧 5 -> 6（稍微更深）
       learning_rate: 0.02
-      l2_leaf_reg: 10
-      min_data_in_leaf: 200     # ✅ 500 -> 200（关键：更可学习）
+      l2_leaf_reg: 20       # 🔧 10 -> 20（更稳）
+      min_data_in_leaf: 500 # 🔧 200 -> 500（更抗噪）
       subsample: 0.7
       loss_function: "RMSE"
       random_state: 42
@@ -234,7 +241,7 @@ training:
       allow_writing_files: false
       thread_count: -1
       od_type: "Iter"
-      od_wait: 80
+      od_wait: 120          # 🔧 80 -> 120（更保守早停）
     
     lightgbm_ranker:
       enable: true
@@ -264,23 +271,23 @@ training:
       enable: true
       objective: "lambdarank"
       metric: "ndcg"
-      ndcg_eval_at: [10, 30]  # NDCG evaluation at Top-10 and Top-30
-      num_boost_round: 260          # 220 -> 260（多给一点学习机会）
-      learning_rate: 0.03
-      num_leaves: 127
-      max_depth: 6
-      min_data_in_leaf: 380         # 500 -> 380（稍微更敢学）
+      ndcg_eval_at: [10]              # 🔧 聚焦Top10
+      num_boost_round: 1200           # 🔧 700 -> 1200（更多轮次）
+      learning_rate: 0.01              # 🔧 0.02 -> 0.01（更稳）
+      num_leaves: 31                   # 🔧 63 -> 31（更保守）
+      max_depth: 5                     # 🔧 6 -> 5（更浅）
+      min_data_in_leaf: 800            # 🔧 650 -> 800（更稳）
       lambda_l1: 0.0
-      lambda_l2: 10.0               # 12 -> 10（稍微松一点）
-      feature_fraction: 0.85
-      bagging_fraction: 0.8
-      bagging_freq: 1
-      lambdarank_truncation_level: 650   # 500 -> 650（更关注前段但不极端）
-      sigmoid: 1.2
-      n_quantiles: 64
-      label_gain_power: 2.0
+      lambda_l2: 30.0                  # 🔧 22.0 -> 30.0（更强正则化）
+      feature_fraction: 0.9            # 🔧 0.85 -> 0.9（特征少就别drop太狠）
+      bagging_fraction: 0.75           # 🔧 0.8 -> 0.75
+      bagging_freq: 3                  # 🔧 5 -> 3
+      lambdarank_truncation_level: 80  # 🔧 100 -> 80
+      sigmoid: 1.1                     # 🔧 1.05 -> 1.1
+      n_quantiles: 32                  # 🔧 64 -> 32
+      label_gain_power: 2.1            # 🔧 2.0 -> 2.1
       fit_params:
-        early_stopping_rounds: 60
+        early_stopping_rounds: 100     # 🔧 70 -> 100（更保守早停）
 
   # 二层 Meta Ranker Stacker (LightGBM Ranker for meta-learning)
   # Replaces RidgeStacker with ranking-focused optimization
@@ -288,35 +295,38 @@ training:
     enable: true
     objective: "lambdarank"
     metric: "ndcg"
-    ndcg_eval_at: [10, 30]
+    ndcg_eval_at: [5, 15]         # 🔧 聚焦更核心的头部
 
-    num_boost_round: 140
-    learning_rate: 0.03
+    # === 学习率策略：慢跑多跑 ===
+    learning_rate: 0.005          # 🔧 大幅降低，更精细的梯度下降
+    num_boost_round: 2000         # 🔧 配套大幅增加轮数
+    fit_params:
+      early_stopping_rounds: 100  # 🔧 40 -> 100
 
-    num_leaves: 31
-    max_depth: 4
-    min_data_in_leaf: 200      # 1000 -> 200（关键）
+    # === 树结构：极简主义防止过拟合 ===
+    num_leaves: 15                # 🔧 31 -> 15（降低复杂度）
+    max_depth: 3                  # 🔧 4 -> 3
+    min_data_in_leaf: 500         # 🔧 200 -> 500（提高叶子节点门槛）
 
-    lambda_l1: 0.0             # 去掉l1，避免权重怪异
-    lambda_l2: 15.0            # 20 -> 15（稳但不锁死）
-
-    feature_fraction: 1.0
-    bagging_fraction: 0.8
-    bagging_freq: 1
-
-    lambdarank_truncation_level: 1200   # 300 -> 1200（关键：别极端）
-    label_gain_power: 1.7               # 2.5 -> 1.7（稳健Top10）
+    # === 关键 LambdaRank 参数 ===
+    lambdarank_truncation_level: 60  # 🔧 1200 -> 60（★重点：只优化 Top 60）
+    label_gain_power: 2.3            # 🔧 1.7 -> 2.3（★重点：重赏头部准确度）
     sigmoid: 1.2
+
+    # === 正则化与随机性 ===
+    lambda_l1: 2.0                # 🔧 0.0 -> 2.0（新增L1正则化）
+    lambda_l2: 20.0               # 🔧 15.0 -> 20.0（增强L2正则化）
+    feature_fraction: 0.7         # 🔧 1.0 -> 0.7
+    bagging_fraction: 0.6         # 🔧 0.8 -> 0.6
+    bagging_freq: 1
 
     n_quantiles: 64
     verbose: -1
     random_state: 42
 
-    # Base prediction columns (LightGBM Ranker removed from first layer)
+    # === 特征 ===
+    # 建议扩充 base_cols，至少加入 'pred_std' (模型间分歧)
     base_cols: ["pred_catboost", "pred_xgb", "pred_lambdarank", "pred_elastic"]
-
-    fit_params:
-      early_stopping_rounds: 40
   
   # BMA权重方法
   bma_weighting:

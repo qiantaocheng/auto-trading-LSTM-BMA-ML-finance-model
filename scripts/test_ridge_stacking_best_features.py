@@ -83,7 +83,7 @@ def main() -> int:
 
             snapshot_id = save_model_snapshot(
                 training_results=snapshot_payload,
-                ridge_stacker=getattr(model, "ridge_stacker", None),
+                meta_ranker_stacker=getattr(model, "meta_ranker_stacker", None),  # 🔧 FIX: 使用meta_ranker_stacker
                 lambda_rank_stacker=getattr(model, "lambda_rank_stacker", None),
                 rank_aware_blender=None,
                 lambda_percentile_transformer=getattr(model, "lambda_percentile_transformer", None),

@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Direct Prediction with EWMA Smoothing and Excel Ranking Report
-==============================================================
-Uses exponential weighted average (recent days more important) to smooth predictions:
-Score*(t) = 0.5*Score(t) + 0.3*Score(t-1) + 0.2*Score(t-2)
-
-Or uses half-life = 3 days for EWMA.
+Direct Prediction Excel Ranking Report (NO EMA Smoothing)
+==========================================================
+Generates Excel ranking report with raw prediction scores only.
+NO EMA smoothing is applied - uses raw scores directly from the model.
 
 Generates Excel ranking report with:
-- Raw predictions for last 3 days
-- EWMA smoothed predictions
-- Rankings
+- Raw predictions for last 3 days (for comparison)
+- Rankings based on raw scores
+- Score changes between days
 - Model breakdowns
 """
 
@@ -138,14 +136,16 @@ def calculate_ewma_smoothed_scores(predictions_df: pd.DataFrame,
 
 def generate_excel_ranking_report(predictions_df: pd.DataFrame,
                                  output_path: str,
-                                 model_name: str = "MetaRankerStacker") -> None:
+                                 model_name: str = "MetaRankerStacker",
+                                 top_n: int = 20) -> None:
     """
-    Generate Excel ranking report with predictions and rankings
+    Generate Excel ranking report with Top N predictions (LambdaRank, CatBoost, MetaRankerStacker)
     
     Args:
         predictions_df: DataFrame with MultiIndex (date, ticker) and score columns
         output_path: Path to output Excel file
         model_name: Name of the model for report title
+        top_n: Number of top predictions to show (default: 20)
     """
     try:
         from openpyxl import Workbook
@@ -167,24 +167,24 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
     
     # Title
     title_cell = ws['A1']
-    title_cell.value = f"{model_name} - EWMA Smoothed Predictions Ranking Report"
+    title_cell.value = f"Top {top_n} Predictions: All Models (Raw Scores, No EMA)"
     title_cell.font = Font(size=16, bold=True)
-    ws.merge_cells('A1:F1')
-    
+    ws.merge_cells('A1:J1')
+
     # Date info
     date_cell = ws['A2']
     date_cell.value = f"Report Date: {latest_date.strftime('%Y-%m-%d') if latest_date else 'N/A'}"
     date_cell.font = Font(size=12)
-    ws.merge_cells('A2:F2')
-    
-    # EWMA info
-    ewma_cell = ws['A3']
-    ewma_cell.value = "EWMA Weights: Today=0.5, Yesterday=0.3, Day Before=0.2 (or half-life=3 days)"
-    ewma_cell.font = Font(size=10, italic=True)
-    ws.merge_cells('A3:F3')
-    
+    ws.merge_cells('A2:J2')
+
+    # Note: No EMA smoothing
+    note_cell = ws['A3']
+    note_cell.value = f"Note: Top {top_n} only. Using raw prediction scores (no EMA smoothing applied)"
+    note_cell.font = Font(size=10, italic=True)
+    ws.merge_cells('A3:J3')
+
     # Headers
-    headers = ['Rank', 'Ticker', 'Smoothed Score', 'Raw Score (Today)', 'Raw Score (Yesterday)', 'Raw Score (Day Before)', 'Score Change']
+    headers = ['Rank', 'Ticker', f'{model_name} Score', 'LambdaRank Score', 'CatBoost Score', 'ElasticNet Score', 'XGBoost Score', 'Score (Yesterday)', 'Score Change']
     for col_idx, header in enumerate(headers, start=1):
         cell = ws.cell(row=4, column=col_idx)
         cell.value = header
@@ -201,12 +201,14 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
             logger.warning(f"Date {latest_date} not found in predictions, using all available data")
             latest_predictions = predictions_df.groupby(level='ticker').last()
         
-        # Ensure we have a 'score' column
+        # Ensure we have a 'score' column (use raw score, NOT smoothed)
         if 'score' not in latest_predictions.columns:
-            if 'score_smoothed' in latest_predictions.columns:
-                latest_predictions['score'] = latest_predictions['score_smoothed']
-            elif 'score_raw' in latest_predictions.columns:
+            if 'score_raw' in latest_predictions.columns:
                 latest_predictions['score'] = latest_predictions['score_raw']
+            elif 'score_smoothed' in latest_predictions.columns:
+                # Fallback to smoothed if raw not available, but log warning
+                logger.warning("score_raw not found, using score_smoothed as fallback (should not happen in Direct Predict)")
+                latest_predictions['score'] = latest_predictions['score_smoothed']
             else:
                 logger.warning("No score column found, using first numeric column")
                 numeric_cols = latest_predictions.select_dtypes(include=[np.number]).columns
@@ -215,70 +217,66 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
                 else:
                     raise ValueError("No score column found in predictions")
         
-        # Sort by smoothed score (descending)
+        # Sort by raw score (descending) - NO EMA smoothing
         latest_predictions = latest_predictions.sort_values('score', ascending=False)
         
+        # 🔥 Limit to Top N only
+        latest_predictions = latest_predictions.head(top_n)
+        logger.info(f"📊 Showing Top {top_n} predictions only (out of {len(latest_predictions)} total)")
+        
         # Get previous days for comparison
-        prev_dates = dates[-3:] if len(dates) >= 3 else dates
+        prev_dates = dates[-2:] if len(dates) >= 2 else dates  # Only need yesterday for comparison
         
         row = 5
         for rank, (idx, row_data) in enumerate(latest_predictions.iterrows(), start=1):
             ticker = idx[1] if isinstance(idx, tuple) else idx
             
-            # Get scores for last 3 days
-            scores_today = row_data.get('score_raw', np.nan)
-            if np.isnan(scores_today):
-                scores_today = row_data.get('score', np.nan)
+            # Get raw scores (NO EMA smoothing)
+            score_meta_stacker = row_data.get('score_raw', np.nan)
+            if np.isnan(score_meta_stacker):
+                score_meta_stacker = row_data.get('score', np.nan)  # Fallback to 'score' if 'score_raw' not available
+            
+            # Get base model scores
+            score_lambdarank = row_data.get('score_lambdarank', np.nan)
+            score_catboost = row_data.get('score_catboost', np.nan)
+            score_elastic = row_data.get('score_elastic', np.nan)
+            score_xgb = row_data.get('score_xgb', np.nan)
             
             scores_yesterday = np.nan
-            scores_day_before = np.nan
-            
             if len(prev_dates) >= 2:
                 yesterday_date = prev_dates[-2]
                 try:
                     if (yesterday_date, ticker) in predictions_df.index:
+                        # Use raw score, NOT smoothed
                         scores_yesterday = predictions_df.loc[(yesterday_date, ticker), 'score_raw']
                         if np.isnan(scores_yesterday):
                             scores_yesterday = predictions_df.loc[(yesterday_date, ticker), 'score']
                 except (KeyError, IndexError):
                     pass
             
-            if len(prev_dates) >= 3:
-                day_before_date = prev_dates[-3]
-                try:
-                    if (day_before_date, ticker) in predictions_df.index:
-                        scores_day_before = predictions_df.loc[(day_before_date, ticker), 'score_raw']
-                        if np.isnan(scores_day_before):
-                            scores_day_before = predictions_df.loc[(day_before_date, ticker), 'score']
-                except (KeyError, IndexError):
-                    pass
-            
             # Calculate score change
             score_change = np.nan
-            if not np.isnan(scores_today) and not np.isnan(scores_yesterday):
-                score_change = scores_today - scores_yesterday
-            
-            # Get smoothed score
-            smoothed_score = row_data.get('score', np.nan)
-            if np.isnan(smoothed_score):
-                smoothed_score = row_data.get('score_smoothed', scores_today)
+            if not np.isnan(score_meta_stacker) and not np.isnan(scores_yesterday):
+                score_change = score_meta_stacker - scores_yesterday
             
             # Write row
             ws.cell(row=row, column=1).value = rank
             ws.cell(row=row, column=2).value = ticker
-            ws.cell(row=row, column=3).value = smoothed_score if not np.isnan(smoothed_score) else None
-            ws.cell(row=row, column=4).value = scores_today if not np.isnan(scores_today) else None
-            ws.cell(row=row, column=5).value = scores_yesterday if not np.isnan(scores_yesterday) else None
-            ws.cell(row=row, column=6).value = scores_day_before if not np.isnan(scores_day_before) else None
-            ws.cell(row=row, column=7).value = score_change if not np.isnan(score_change) else None
+            ws.cell(row=row, column=3).value = score_meta_stacker if not np.isnan(score_meta_stacker) else None
+            ws.cell(row=row, column=4).value = score_lambdarank if not np.isnan(score_lambdarank) else None
+            ws.cell(row=row, column=5).value = score_catboost if not np.isnan(score_catboost) else None
+            ws.cell(row=row, column=6).value = score_elastic if not np.isnan(score_elastic) else None
+            ws.cell(row=row, column=7).value = score_xgb if not np.isnan(score_xgb) else None
+            ws.cell(row=row, column=8).value = scores_yesterday if not np.isnan(scores_yesterday) else None
+            ws.cell(row=row, column=9).value = score_change if not np.isnan(score_change) else None
             
             # Format cells
-            for col in range(1, 8):
+            for col in range(1, 10):  # 9 columns: Rank, Ticker, MetaStacker, LambdaRank, CatBoost, ElasticNet, XGBoost, Yesterday, Change
                 cell = ws.cell(row=row, column=col)
                 cell.alignment = Alignment(horizontal="center" if col == 1 else "left" if col == 2 else "right", vertical="center")
                 if col == 1:  # Rank
                     cell.font = Font(bold=True)
-                if col == 7 and not np.isnan(score_change):  # Score change
+                if col == 9 and not np.isnan(score_change):  # Score change (column 9)
                     if score_change > 0:
                         cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
                     elif score_change < 0:
@@ -289,7 +287,7 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
         logger.warning("No dates found in predictions")
     
     # Auto-adjust column widths
-    for col in range(1, 8):
+    for col in range(1, 10):  # 9 columns
         max_length = 0
         column = get_column_letter(col)
         for cell in ws[column]:
@@ -301,20 +299,272 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
         adjusted_width = min(max_length + 2, 50)
         ws.column_dimensions[column].width = adjusted_width
     
+    # Add CatBoost Top 20 sheet
+    if latest_date and 'score_catboost' in latest_predictions.columns:
+        ws_catboost = wb.create_sheet("CatBoost Top20")
+        
+        # Title
+        title_cell = ws_catboost['A1']
+        title_cell.value = f"CatBoost Top {top_n} Predictions"
+        title_cell.font = Font(size=16, bold=True)
+        ws_catboost.merge_cells('A1:C1')
+        
+        # Date info
+        date_cell = ws_catboost['A2']
+        date_cell.value = f"Report Date: {latest_date.strftime('%Y-%m-%d') if latest_date else 'N/A'}"
+        date_cell.font = Font(size=12)
+        ws_catboost.merge_cells('A2:C2')
+        
+        # Headers
+        headers = ['Rank', 'Ticker', 'CatBoost Score']
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws_catboost.cell(row=3, column=col_idx)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Get CatBoost top 20
+        catboost_top20 = latest_predictions.nlargest(top_n, 'score_catboost')[['score_catboost']].copy()
+        catboost_top20 = catboost_top20.sort_values('score_catboost', ascending=False)
+        
+        row = 4
+        for rank, (idx, row_data) in enumerate(catboost_top20.iterrows(), start=1):
+            ticker = idx[1] if isinstance(idx, tuple) else idx
+            score = row_data['score_catboost']
+            
+            ws_catboost.cell(row=row, column=1).value = rank
+            ws_catboost.cell(row=row, column=2).value = ticker
+            ws_catboost.cell(row=row, column=3).value = score if not np.isnan(score) else None
+            
+            # Format cells
+            for col in range(1, 4):
+                cell = ws_catboost.cell(row=row, column=col)
+                cell.alignment = Alignment(horizontal="center" if col == 1 else "left" if col == 2 else "right", vertical="center")
+                if col == 1:  # Rank
+                    cell.font = Font(bold=True)
+            
+            row += 1
+        
+        # Auto-adjust column widths
+        for col in range(1, 4):
+            max_length = 0
+            column = get_column_letter(col)
+            for cell in ws_catboost[column]:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws_catboost.column_dimensions[column].width = adjusted_width
+    
+    # Add LambdaRanker Top 20 sheet
+    if latest_date and 'score_lambdarank' in latest_predictions.columns:
+        ws_lambdarank = wb.create_sheet("LambdaRanker Top20")
+        
+        # Title
+        title_cell = ws_lambdarank['A1']
+        title_cell.value = f"LambdaRanker Top {top_n} Predictions"
+        title_cell.font = Font(size=16, bold=True)
+        ws_lambdarank.merge_cells('A1:C1')
+        
+        # Date info
+        date_cell = ws_lambdarank['A2']
+        date_cell.value = f"Report Date: {latest_date.strftime('%Y-%m-%d') if latest_date else 'N/A'}"
+        date_cell.font = Font(size=12)
+        ws_lambdarank.merge_cells('A2:C2')
+        
+        # Headers
+        headers = ['Rank', 'Ticker', 'LambdaRanker Score']
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws_lambdarank.cell(row=3, column=col_idx)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Get LambdaRanker top 20
+        lambdarank_top20 = latest_predictions.nlargest(top_n, 'score_lambdarank')[['score_lambdarank']].copy()
+        lambdarank_top20 = lambdarank_top20.sort_values('score_lambdarank', ascending=False)
+        
+        row = 4
+        for rank, (idx, row_data) in enumerate(lambdarank_top20.iterrows(), start=1):
+            ticker = idx[1] if isinstance(idx, tuple) else idx
+            score = row_data['score_lambdarank']
+            
+            ws_lambdarank.cell(row=row, column=1).value = rank
+            ws_lambdarank.cell(row=row, column=2).value = ticker
+            ws_lambdarank.cell(row=row, column=3).value = score if not np.isnan(score) else None
+            
+            # Format cells
+            for col in range(1, 4):
+                cell = ws_lambdarank.cell(row=row, column=col)
+                cell.alignment = Alignment(horizontal="center" if col == 1 else "left" if col == 2 else "right", vertical="center")
+                if col == 1:  # Rank
+                    cell.font = Font(bold=True)
+            
+            row += 1
+        
+        # Auto-adjust column widths
+        for col in range(1, 4):
+            max_length = 0
+            column = get_column_letter(col)
+            for cell in ws_lambdarank[column]:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws_lambdarank.column_dimensions[column].width = adjusted_width
+    
+    # Add ElasticNet Top 20 sheet
+    if latest_date and 'score_elastic' in latest_predictions.columns:
+        ws_elastic = wb.create_sheet("ElasticNet Top20")
+        
+        # Title
+        title_cell = ws_elastic['A1']
+        title_cell.value = f"ElasticNet Top {top_n} Predictions"
+        title_cell.font = Font(size=16, bold=True)
+        ws_elastic.merge_cells('A1:C1')
+        
+        # Date info
+        date_cell = ws_elastic['A2']
+        date_cell.value = f"Report Date: {latest_date.strftime('%Y-%m-%d') if latest_date else 'N/A'}"
+        date_cell.font = Font(size=12)
+        ws_elastic.merge_cells('A2:C2')
+        
+        # Headers
+        headers = ['Rank', 'Ticker', 'ElasticNet Score']
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws_elastic.cell(row=3, column=col_idx)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Get ElasticNet top 20
+        elastic_top20 = latest_predictions.nlargest(top_n, 'score_elastic')[['score_elastic']].copy()
+        elastic_top20 = elastic_top20.sort_values('score_elastic', ascending=False)
+        
+        row = 4
+        for rank, (idx, row_data) in enumerate(elastic_top20.iterrows(), start=1):
+            ticker = idx[1] if isinstance(idx, tuple) else idx
+            score = row_data['score_elastic']
+            
+            ws_elastic.cell(row=row, column=1).value = rank
+            ws_elastic.cell(row=row, column=2).value = ticker
+            ws_elastic.cell(row=row, column=3).value = score if not np.isnan(score) else None
+            
+            # Format cells
+            for col in range(1, 4):
+                cell = ws_elastic.cell(row=row, column=col)
+                cell.alignment = Alignment(horizontal="center" if col == 1 else "left" if col == 2 else "right", vertical="center")
+                if col == 1:  # Rank
+                    cell.font = Font(bold=True)
+            
+            row += 1
+        
+        # Auto-adjust column widths
+        for col in range(1, 4):
+            max_length = 0
+            column = get_column_letter(col)
+            for cell in ws_elastic[column]:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws_elastic.column_dimensions[column].width = adjusted_width
+    
+    # Add XGBoost Top 20 sheet
+    if latest_date and 'score_xgb' in latest_predictions.columns:
+        ws_xgb = wb.create_sheet("XGBoost Top20")
+        
+        # Title
+        title_cell = ws_xgb['A1']
+        title_cell.value = f"XGBoost Top {top_n} Predictions"
+        title_cell.font = Font(size=16, bold=True)
+        ws_xgb.merge_cells('A1:C1')
+        
+        # Date info
+        date_cell = ws_xgb['A2']
+        date_cell.value = f"Report Date: {latest_date.strftime('%Y-%m-%d') if latest_date else 'N/A'}"
+        date_cell.font = Font(size=12)
+        ws_xgb.merge_cells('A2:C2')
+        
+        # Headers
+        headers = ['Rank', 'Ticker', 'XGBoost Score']
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws_xgb.cell(row=3, column=col_idx)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Get XGBoost top 20
+        xgb_top20 = latest_predictions.nlargest(top_n, 'score_xgb')[['score_xgb']].copy()
+        xgb_top20 = xgb_top20.sort_values('score_xgb', ascending=False)
+        
+        row = 4
+        for rank, (idx, row_data) in enumerate(xgb_top20.iterrows(), start=1):
+            ticker = idx[1] if isinstance(idx, tuple) else idx
+            score = row_data['score_xgb']
+            
+            ws_xgb.cell(row=row, column=1).value = rank
+            ws_xgb.cell(row=row, column=2).value = ticker
+            ws_xgb.cell(row=row, column=3).value = score if not np.isnan(score) else None
+            
+            # Format cells
+            for col in range(1, 4):
+                cell = ws_xgb.cell(row=row, column=col)
+                cell.alignment = Alignment(horizontal="center" if col == 1 else "left" if col == 2 else "right", vertical="center")
+                if col == 1:  # Rank
+                    cell.font = Font(bold=True)
+            
+            row += 1
+        
+        # Auto-adjust column widths
+        for col in range(1, 4):
+            max_length = 0
+            column = get_column_letter(col)
+            for cell in ws_xgb[column]:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws_xgb.column_dimensions[column].width = adjusted_width
+    
     # Add summary sheet
     ws_summary = wb.create_sheet("Summary")
     ws_summary['A1'] = "Summary Statistics"
     ws_summary['A1'].font = Font(size=14, bold=True)
     
     if latest_date and len(latest_predictions) > 0:
-        ws_summary['A3'] = "Total Tickers"
-        ws_summary['B3'] = len(latest_predictions)
-        ws_summary['A4'] = "Top 10 Avg Score"
-        ws_summary['B4'] = latest_predictions.head(10)['score'].mean()
-        ws_summary['A5'] = "Top 20 Avg Score"
-        ws_summary['B5'] = latest_predictions.head(20)['score'].mean()
-        ws_summary['A6'] = "Bottom 10 Avg Score"
-        ws_summary['B6'] = latest_predictions.tail(10)['score'].mean()
+        ws_summary['A3'] = f"Total Tickers (Top {top_n} shown)"
+        ws_summary['B3'] = top_n
+        ws_summary['A4'] = f"Top {top_n} Avg Score ({model_name})"
+        ws_summary['B4'] = latest_predictions.head(top_n)['score'].mean() if len(latest_predictions) >= top_n else latest_predictions['score'].mean()
+        if 'score_lambdarank' in latest_predictions.columns:
+            ws_summary['A5'] = f"Top {top_n} Avg Score (LambdaRank)"
+            ws_summary['B5'] = latest_predictions.head(top_n)['score_lambdarank'].mean() if len(latest_predictions) >= top_n else latest_predictions['score_lambdarank'].mean()
+        if 'score_catboost' in latest_predictions.columns:
+            ws_summary['A6'] = f"Top {top_n} Avg Score (CatBoost)"
+            ws_summary['B6'] = latest_predictions.head(top_n)['score_catboost'].mean() if len(latest_predictions) >= top_n else latest_predictions['score_catboost'].mean()
+        if 'score_elastic' in latest_predictions.columns:
+            ws_summary['A7'] = f"Top {top_n} Avg Score (ElasticNet)"
+            ws_summary['B7'] = latest_predictions.head(top_n)['score_elastic'].mean() if len(latest_predictions) >= top_n else latest_predictions['score_elastic'].mean()
+        if 'score_xgb' in latest_predictions.columns:
+            ws_summary['A8'] = f"Top {top_n} Avg Score (XGBoost)"
+            ws_summary['B8'] = latest_predictions.head(top_n)['score_xgb'].mean() if len(latest_predictions) >= top_n else latest_predictions['score_xgb'].mean()
     
     # Save workbook
     output_path = Path(output_path)

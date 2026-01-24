@@ -1,0 +1,14 @@
+{
+  "exp1_leakage_detected": false,
+  "exp1_corr_true": -0.006211739527881665,
+  "exp1_corr_shuffled": 9.191309204808332e-05,
+  "exp2_leakage_detected": true,
+  "exp2_mean_diff": 0.0066841310128665015,
+  "exp2_std_diff": 0.03770052709333726,
+  "exp3_leakage_detected": false,
+  "exp3_fold_violations": [],
+  "exp4_leakage_detected": false,
+  "exp4_violations": 0,
+  "exp4_total_checked": 100,
+  "exp5_note": "\u9700\u8981\u5b9e\u9645OOF\u9884\u6d4b\u6570\u636e\u624d\u80fd\u8fd0\u884c"
+}

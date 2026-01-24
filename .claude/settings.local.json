@@ -63,7 +63,8 @@
       "Bash(taskkill:*)",
       "Bash(ls:*)",
       "Bash(powershell:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(tasklist:*)"
     ],
     "deny": [],
     "ask": [],

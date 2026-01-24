@@ -11,7 +11,7 @@ from datetime import datetime
 import os
 from typing import Dict, Any, Optional, List, Union, Tuple
 import logging
-from bma_models.simple_25_factor_engine import T5_ALPHA_FACTORS
+from bma_models.simple_25_factor_engine import T10_ALPHA_FACTORS  # T5 removed, always T10
 
 logger = logging.getLogger(__name__)
 
@@ -558,7 +558,7 @@ class CorrectedPredictionExporter:
         lambda_contributions = model_info.get('lambda_contributions', {})
 
         if not factor_contributions and not stacking_contributions and not lambda_contributions:
-            factor_contributions = {factor: 0.0 for factor in T5_ALPHA_FACTORS}
+            factor_contributions = {factor: 0.0 for factor in T10_ALPHA_FACTORS}  # T5 removed, always T10
 
         # Determine if we have dual-model contributions
         has_dual_models = bool(stacking_contributions and lambda_contributions)

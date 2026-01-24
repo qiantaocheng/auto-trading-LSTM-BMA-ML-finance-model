@@ -50,6 +50,7 @@ def get_time_config():
         max_lookback_days: int = 252
         min_train_days: int = 126
         validation_window_days: int = 63
+        min_train_window_days: int = getattr(config, '_MIN_TRAIN_WINDOW_DAYS', 252)  # 🔧 最小训练窗：1年交易日（252天）
         
         def get_cv_params(self) -> Dict[str, int]:
             return {

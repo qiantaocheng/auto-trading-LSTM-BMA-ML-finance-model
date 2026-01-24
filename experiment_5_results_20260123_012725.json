@@ -1,0 +1,67 @@
+{
+  "oof_metrics": {
+    "elastic_net": {
+      "ic": 0.9766136470630773,
+      "rank_ic": 0.9998655667661924
+    },
+    "xgboost": {
+      "ic": 0.9651860474046533,
+      "rank_ic": 0.9994958084089224
+    },
+    "catboost": {
+      "ic": 0.9684125017256195,
+      "rank_ic": 0.998310432027875
+    }
+  },
+  "test_metrics": {
+    "elastic_net": {
+      "ic": 0.0227507043711191,
+      "rank_ic": 0.0342476095019152,
+      "n_predictions": 183424
+    },
+    "xgboost": {
+      "ic": 0.9386885741976853,
+      "rank_ic": 0.9613410828367778,
+      "n_predictions": 183424
+    },
+    "lambdarank": {
+      "ic": 0.8272417261742376,
+      "rank_ic": 0.885535936727693,
+      "n_predictions": 183424
+    },
+    "ridge_stacking": {
+      "ic": 0.6086922058254474,
+      "rank_ic": 0.8066009063342092,
+      "n_predictions": 183424
+    }
+  },
+  "comparison_results": {
+    "elastic_net": {
+      "leakage_detected": true,
+      "oof_ic": 0.9766136470630773,
+      "oof_rank_ic": 0.9998655667661924,
+      "test_ic": 0.0227507043711191,
+      "test_rank_ic": 0.0342476095019152,
+      "ic_diff": 0.9538629426919581,
+      "rank_ic_diff": 0.9656179572642772,
+      "leakage_signals": [
+        "OOF IC (0.9766) >> Test IC (0.0228)",
+        "OOF Rank IC (0.9999) >> Test Rank IC (0.0342)",
+        "OOF IC is extremely high (0.9766)",
+        "Large IC difference (0.9539)"
+      ]
+    },
+    "xgboost": {
+      "leakage_detected": true,
+      "oof_ic": 0.9651860474046533,
+      "oof_rank_ic": 0.9994958084089224,
+      "test_ic": 0.9386885741976853,
+      "test_rank_ic": 0.9613410828367778,
+      "ic_diff": 0.026497473206968047,
+      "rank_ic_diff": 0.03815472557214461,
+      "leakage_signals": [
+        "OOF IC is extremely high (0.9652)"
+      ]
+    }
+  }
+}
