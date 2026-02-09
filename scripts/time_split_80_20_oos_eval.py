@@ -100,6 +100,19 @@ def align_test_features_with_model(X_test: pd.DataFrame, model, model_name: str,
     except KeyError as e:
         logger.error(f"[{model_name}] 特征对齐失败: {e}")
         return X_test
+def _limit_predictions_to_top_k_per_date(predictions_df: pd.DataFrame, top_k: int = 40, score_col: str = 'prediction', date_col: str = 'date') -> pd.DataFrame:
+    """Return dataframe restricted to top_k rows per date based on score_col."""
+    if not isinstance(predictions_df, pd.DataFrame) or predictions_df.empty:
+        return predictions_df
+    if score_col not in predictions_df.columns or date_col not in predictions_df.columns:
+        return predictions_df
+    # Sort by date ascending then score descending
+    df_sorted = predictions_df.sort_values([date_col, score_col], ascending=[True, False]).copy()
+    limited = df_sorted.groupby(date_col, group_keys=False).head(top_k)
+    if limited.empty:
+        return predictions_df
+    return limited
+
 # ==================== END FEATURE ALIGNMENT FIX ====================
 
 def calculate_newey_west_hac_ic(
@@ -342,7 +355,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--train-data", type=str, default=r"D:\trade\data\factor_exports\polygon_factors_all_filtered.parquet", help="Parquet shards dir or a single parquet file.")
     p.add_argument("--data-dir", type=str, default="data/factor_exports")
     p.add_argument("--data-file", type=str, default=r"D:\trade\data\factor_exports\polygon_factors_all_filtered_clean_final_v2.parquet")
-    p.add_argument("--horizon-days", type=int, default=10)
+    p.add_argument("--horizon-days", type=int, default=5)
     p.add_argument("--split", type=float, default=0.8, help="Train split fraction by time (default 0.8 for 80/20).")
     p.add_argument("--model", type=str, default="catboost", help="Primary model for legacy single-model TopN plot exports.")
     p.add_argument("--models", nargs="+", default=["catboost", "lambdarank", "ridge_stacking"], help="If provided, export TopN OOS plots/metrics for these models (e.g. elastic_net xgboost catboost lightgbm_ranker lambdarank ridge_stacking). Default: catboost lambdarank ridge_stacking.")
@@ -350,7 +363,7 @@ def _parse_args() -> argparse.Namespace:
     # Removed --rebalance-mode: Now always uses non-overlapping for backtest metrics (accumulated return, max drawdown, Sharpe, graphs)
     # Average/median returns are calculated daily for prediction quality assessment
     p.add_argument("--hac-method", type=str, default="newey-west", choices=["newey-west", "hansen-hodrick"], help="HAC method: newey-west (default) or hansen-hodrick")
-    p.add_argument("--hac-lag", type=int, default=None, help="HAC lag order (default: max(10, 2*horizon_days) for Newey-West)")
+    p.add_argument("--hac-lag", type=int, default=None, help="HAC lag order (default: max(5, 2*horizon_days) for Newey-West)")
     p.add_argument("--max-weeks", type=int, default=260)
     p.add_argument("--cost-bps", type=float, default=0.0, help="Transaction cost (bps) applied each rebalance as: turnover * cost_bps/1e4.")
     p.add_argument("--benchmark", type=str, default="QQQ")
@@ -1383,6 +1396,15 @@ def main() -> int:
     else:
         raise FileNotFoundError(f"Path exists but is neither file nor directory: {use_path}")
     
+    target_col = f'ret_fwd_{horizon}d'
+    if target_col in df.columns:
+        df['target'] = df[target_col].copy()
+        logger.info(f"Aligned 'target' column to {target_col}.")
+    elif 'target' in df.columns:
+        logger.warning(f"Existing 'target' column found but {target_col} missing; keeping original target.")
+    else:
+        logger.warning(f"Target column {target_col} missing; future metrics may lack actual returns.")
+
     # Ensure MultiIndex format - handle both MultiIndex and column-based formats
     if isinstance(df.index, pd.MultiIndex):
         # Already MultiIndex - check and standardize names
@@ -1741,23 +1763,23 @@ def main() -> int:
     # 🔥 UPDATED: Matching backup file features (2026-01-23)
     # 🔥 CRITICAL FIX: Exclude target_new and Close_new to prevent data leakage!
     allowed_feature_cols = [
-        'liquid_momentum',
-        'momentum_10d',  # NEEDED: Keep momentum_10d
-        'momentum_60d',
-        'obv_divergence',
-        'obv_momentum_60d',
-        'ivol_20',
-        'hist_vol_40d',
-        'atr_ratio',
-        'rsi_21',
-        'trend_r2_60',
+        'volume_price_corr_3d',
+        'rsi_14',
+        'reversal_3d',
+        'momentum_10d',
+        'liquid_momentum_10d',
+        'sharpe_momentum_5d',
+        'price_ma20_deviation',
+        'avg_trade_size',
+        'trend_r2_20',
+        'dollar_vol_20',
+        'ret_skew_20d',
+        'reversal_5d',
         'near_52w_high',
-        'vol_ratio_20d',
-        'price_ma60_deviation',
-        '5_days_reversal',
-        # 'ret_skew_20d',  # REMOVED
+        'atr_pct_14',
+        'amihud_20',
     ]
-    exclude_cols = {'target', 'Close', 'ret_fwd_5d', 'sector', 'target_new', 'Close_new'}
+    exclude_cols = {'target', 'Close', 'sector', 'target_new', 'Close_new', f'ret_fwd_{horizon}d', 'ret_fwd_5d', 'ret_fwd_10d'}
     # Only use allowed features that exist in test_data
     all_feature_cols = [col for col in allowed_feature_cols if col in test_data.columns and col not in exclude_cols]
     logger.info(f"Using {len(all_feature_cols)} specified features: {all_feature_cols}")
@@ -2060,10 +2082,18 @@ def main() -> int:
         # DEBUG: Check prediction value ranges to ensure they're different
         pred_stats = predictions['prediction'].describe()
         logger.info(f"  Prediction stats: min={pred_stats['min']:.6f}, max={pred_stats['max']:.6f}, mean={pred_stats['mean']:.6f}, std={pred_stats['std']:.6f}")
+
+        # Limit IC computation to Top-40 rows per date
+        filtered_for_ic = _limit_predictions_to_top_k_per_date(predictions, top_k=40)
+        if filtered_for_ic is predictions:
+            logger.info('  Top-40 filter left dataset unchanged for IC calculation')
+        else:
+            logger.info('  Top-40 filter applied for IC calculation: %d -> %d rows', len(predictions), len(filtered_for_ic))
+
         
         # 🔥 Calculate metrics with HAC (FIXED: 先按日聚合IC，再对日度IC序列做HAC)
         # 确保predictions DataFrame有date列
-        if 'date' not in predictions.columns:
+        if 'date' not in filtered_for_ic.columns:
             logger.error(f"❌ {model_name}: predictions DataFrame缺少'date'列，无法计算HAC")
             ic_result = {'IC': np.nan, 'IC_pvalue': np.nan, 'IC_tstat': np.nan, 'IC_se_hac': np.nan, 'note': 'Missing date column'}
             rank_ic_result = {'IC': np.nan, 'IC_pvalue': np.nan, 'IC_tstat': np.nan, 'IC_se_hac': np.nan, 'note': 'Missing date column'}
@@ -2071,26 +2101,26 @@ def main() -> int:
             if hac_method == "newey-west":
                 # IC: 使用Pearson correlation
                 ic_result = calculate_newey_west_hac_ic(
-                    predictions,
+                    filtered_for_ic,
                     lag=hac_lag,
                     use_rank=False
                 )
                 # Rank IC: 使用rank correlation
                 rank_ic_result = calculate_newey_west_hac_ic(
-                    predictions,
+                    filtered_for_ic,
                     lag=hac_lag,
                     use_rank=True
                 )
             else:  # hansen-hodrick
                 # IC: 使用Pearson correlation
                 ic_result = calculate_hansen_hodrick_se_ic(
-                    predictions,
+                    filtered_for_ic,
                     horizon=horizon,
                     use_rank=False
                 )
                 # Rank IC: 使用rank correlation
                 rank_ic_result = calculate_hansen_hodrick_se_ic(
-                    predictions,
+                    filtered_for_ic,
                     horizon=horizon,
                     use_rank=True
                 )
@@ -2341,10 +2371,10 @@ def main() -> int:
                         "top_sharpe_net": _safe_float(row.get("top_sharpe_net", float("nan"))),
                         "top_sharpe_net_median": _safe_float(row.get("top_sharpe_net_median", float("nan"))),
                         # Mean and median of top bucket (Top 1-10) T+10 return
-                        "avg_top_bucket_t10_return": _safe_float(row.get("avg_top_1_10_return", float("nan"))),
-                        "avg_top_bucket_t10_return_net": _safe_float(row.get("avg_top_1_10_return_net", float("nan"))),
-                        "median_top_bucket_t10_return": _safe_float(row.get("median_top_1_10_return_from_median", float("nan"))),
-                        "median_top_bucket_t10_return_net": _safe_float(row.get("median_top_1_10_return_net_from_median", float("nan"))),
+                        "avg_top_bucket_t5_return": _safe_float(row.get("avg_top_1_10_return", float("nan"))),
+                        "avg_top_bucket_t5_return_net": _safe_float(row.get("avg_top_1_10_return_net", float("nan"))),
+                        "median_top_bucket_t5_return": _safe_float(row.get("median_top_1_10_return_from_median", float("nan"))),
+                        "median_top_bucket_t5_return_net": _safe_float(row.get("median_top_1_10_return_net_from_median", float("nan"))),
                         "long_short_sharpe": _safe_float(row.get("long_short_sharpe")),
                     }
                 )
@@ -2638,10 +2668,10 @@ def main() -> int:
                     "top_sharpe_net": _safe_float(row_dict.get("top_sharpe_net", float("nan"))),
                     "top_sharpe_net_median": _safe_float(row_dict.get("top_sharpe_net_median", float("nan"))),
                     # Mean and median of top bucket (Top 1-10) T+10 return
-                    "avg_top_bucket_t10_return": _safe_float(model_bucket_summary.get("avg_top_1_10_return", float("nan"))),
-                    "avg_top_bucket_t10_return_net": _safe_float(model_bucket_summary.get("avg_top_1_10_return_net", float("nan"))),
-                    "median_top_bucket_t10_return": _safe_float(model_bucket_summary.get("median_top_1_10_return_from_median", float("nan"))),
-                    "median_top_bucket_t10_return_net": _safe_float(model_bucket_summary.get("median_top_1_10_return_net_from_median", float("nan"))),
+                    "avg_top_bucket_t5_return": _safe_float(model_bucket_summary.get("avg_top_1_10_return", float("nan"))),
+                    "avg_top_bucket_t5_return_net": _safe_float(model_bucket_summary.get("avg_top_1_10_return_net", float("nan"))),
+                    "median_top_bucket_t5_return": _safe_float(model_bucket_summary.get("median_top_1_10_return_from_median", float("nan"))),
+                    "median_top_bucket_t5_return_net": _safe_float(model_bucket_summary.get("median_top_1_10_return_net_from_median", float("nan"))),
                 },
                 "bucket_summary": model_bucket_summary,
             }

@@ -1,0 +1,288 @@
+<UserControl x:Class="Trader.App.Views.MonitorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:converters="clr-namespace:Trader.App.Converters"
+             mc:Ignorable="d"
+             d:DesignHeight="600" d:DesignWidth="1000">
+    <UserControl.Resources>
+        <converters:CapitalHistoryGeometryConverter x:Key="CapitalLineGeometryConverter" IncludeBaseline="False" />
+        <converters:CapitalHistoryGeometryConverter x:Key="CapitalAreaGeometryConverter" IncludeBaseline="True" />
+    </UserControl.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <Grid Margin="20" Background="{StaticResource BackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Row 0: Direct Prediction Progress -->
+        <Border Grid.Row="0" Style="{StaticResource CardBorderStyle}" Margin="0,0,0,0">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <TextBlock Text="Direct Prediction Progress"
+                               FontWeight="SemiBold" FontSize="16" />
+                    <Border CornerRadius="8" Padding="8,2" Margin="12,0,0,0"
+                            Background="{StaticResource AccentBrush}"
+                            Visibility="{Binding IsPredictionRunning, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Text="Running" FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}" />
+                    </Border>
+                </StackPanel>
+
+                <!-- Current step + progress bar -->
+                <DockPanel Margin="0,0,0,8">
+                    <TextBlock DockPanel.Dock="Left"
+                               Text="{Binding PredictionCurrentStep}"
+                               FontWeight="Bold" Width="200" />
+                    <ProgressBar Height="18"
+                                 Minimum="0" Maximum="100"
+                                 Value="{Binding PredictionProgress, Mode=OneWay}" />
+                </DockPanel>
+
+                <!-- Scrollable log list -->
+                <ListBox ItemsSource="{Binding PredictionLog}"
+                         MaxHeight="140"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         BorderThickness="0"
+                         Background="Transparent">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding Timestamp, StringFormat=HH:mm:ss}"
+                                           Width="70"
+                                           Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Text="{Binding Step}"
+                                           Width="180" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding Detail}"
+                                           Foreground="{StaticResource MutedBrush}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </StackPanel>
+        </Border>
+
+        <!-- Row 1: Trading Status -->
+        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Margin="0,0,0,0">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <TextBlock Text="Auto Trading"
+                               FontWeight="SemiBold" FontSize="16" />
+                    <CheckBox Content="Enabled"
+                              IsChecked="{Binding IsAutoTradingEnabled}"
+                              Margin="16,0,0,0"
+                              VerticalAlignment="Center" />
+
+                    <!-- Trading Mode Selector -->
+                    <TextBlock Text="Mode:" Margin="16,0,8,0" VerticalAlignment="Center"
+                               Foreground="{StaticResource MutedBrush}" />
+                    <ComboBox Width="80" SelectedItem="{Binding TradingMode, Mode=TwoWay}"
+                              SelectionChanged="TradingModeComboBox_SelectionChanged"
+                              IsEnabled="{Binding IsConnected, Converter={StaticResource InverseBooleanConverter}}"
+                              VerticalAlignment="Center">
+                        <ComboBoxItem Content="Paper" />
+                        <ComboBoxItem Content="Live" />
+                    </ComboBox>
+
+                    <!-- Client ID Input -->
+                    <TextBlock Text="Client ID:" Margin="16,0,8,0" VerticalAlignment="Center"
+                               Foreground="{StaticResource MutedBrush}" />
+                    <TextBox Width="60" Text="{Binding ClientId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             TextChanged="ClientIdTextBox_TextChanged"
+                             IsEnabled="{Binding IsConnected, Converter={StaticResource InverseBooleanConverter}}"
+                             VerticalAlignment="Center"
+                             Padding="4,2" />
+
+                    <!-- Connection Controls -->
+                    <Button Content="Connect"
+                            Margin="16,0,8,0" Padding="12,4"
+                            Click="ConnectButton_Click"
+                            IsEnabled="{Binding IsConnected, Converter={StaticResource InverseBooleanConverter}}"
+                            VerticalAlignment="Center" />
+                    <Button Content="Disconnect"
+                            Margin="0,0,8,0" Padding="12,4"
+                            Click="DisconnectButton_Click"
+                            IsEnabled="{Binding IsConnected}"
+                            VerticalAlignment="Center" />
+
+                    <!-- Status Badges -->
+                    <Border CornerRadius="4" Padding="6,2" Margin="8,0,0,0"
+                            VerticalAlignment="Center">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="#FF6B35"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding TradingMode}" Value="Live">
+                                        <Setter Property="Background" Value="#CC0000"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock FontWeight="Bold" FontSize="11" Foreground="White">
+                            <Run Text="{Binding TradingMode, Mode=OneWay}"/>
+                            <Run Text=" MODE"/>
+                        </TextBlock>
+                    </Border>
+                    <Border CornerRadius="4" Padding="6,2" Margin="8,0,0,0"
+                            Background="#2ECC71"
+                            Visibility="{Binding IsConnected, Converter={StaticResource BooleanToVisibilityConverter}}"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="CONNECTED" FontWeight="Bold" FontSize="11" Foreground="White" />
+                    </Border>
+                    <TextBlock Text="{Binding AutoPositionCount, StringFormat='Positions: {0}'}"
+                               Margin="16,0,0,0"
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource MutedBrush}" />
+                </StackPanel>
+
+                <!-- HMM Risk Status -->
+                <Border CornerRadius="6" Padding="10,6" Margin="0,0,0,8"
+                        Background="{StaticResource AccentBrush}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="HMM:" FontWeight="SemiBold" Width="40"
+                                   VerticalAlignment="Center" />
+                        <Border CornerRadius="4" Padding="8,2" Margin="0,0,12,0"
+                                Background="{StaticResource CardBackgroundBrush}">
+                            <TextBlock Text="{Binding HmmState}" FontWeight="Bold"
+                                       VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="Risk Gate:" Margin="0,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding RiskGate, StringFormat=F4}" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Width="50" />
+                        <TextBlock Text="P(Crisis):" Margin="8,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding PCrisisSmooth, StringFormat=F4}" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Width="50" />
+                        <TextBlock Text="Rebalance in:" Margin="8,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding RebalanceDaysRemaining, StringFormat='{}{0}d'}"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Width="30" />
+                        <Border CornerRadius="4" Padding="6,2" Margin="8,0,0,0"
+                                Background="#CC0000"
+                                Visibility="{Binding IsCrisisMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="CRISIS" FontWeight="Bold" FontSize="11"
+                                       Foreground="White" />
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <!-- Current trading status -->
+                <TextBlock Text="{Binding TradingStatus}"
+                           FontWeight="Bold" Margin="0,0,0,8" />
+
+                <!-- Scrollable trading log -->
+                <ListBox ItemsSource="{Binding TradingLog}"
+                         MaxHeight="120"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         BorderThickness="0"
+                         Background="Transparent">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding Timestamp, StringFormat=HH:mm:ss}"
+                                           Width="70"
+                                           Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Text="{Binding Action}"
+                                           Width="120" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding Detail}"
+                                           Foreground="{StaticResource MutedBrush}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </StackPanel>
+        </Border>
+
+        <!-- Row 2: Summary cards -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal">
+            <Border Style="{StaticResource CardBorderStyle}" Width="220" Margin="0,0,20,0">
+                <StackPanel>
+                    <TextBlock Text="Net Liquidation" FontWeight="Bold" />
+                    <TextBlock Text="{Binding NetLiquidation, StringFormat=C}" FontSize="26" />
+                    <TextBlock Text="Last update:"
+                               Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding LastUpdate, StringFormat=G}" Foreground="{StaticResource MutedBrush}" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorderStyle}" Width="220">
+                <StackPanel>
+                    <TextBlock Text="Cash" FontWeight="Bold" />
+                    <TextBlock Text="{Binding CashBalance, StringFormat=C}" FontSize="26" />
+                    <TextBlock Text="Capital points"
+                               Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding CapitalHistory.Count}" Foreground="{StaticResource MutedBrush}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <!-- Row 3: Capital Growth chart -->
+        <Border Grid.Row="3" Style="{StaticResource CardBorderStyle}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <StackPanel Orientation="Horizontal" Grid.Row="0" VerticalAlignment="Center">
+                    <TextBlock Text="Capital Growth" FontWeight="SemiBold" FontSize="16" />
+                    <TextBlock Text="(5-minute samples)"
+                               Margin="12,0,0,0"
+                               Foreground="{StaticResource MutedBrush}" />
+                </StackPanel>
+                <Grid Grid.Row="1" Margin="0,12,0,0">
+                    <Border Background="{StaticResource AccentBrush}" CornerRadius="10" />
+                    <Grid ClipToBounds="True" Margin="12">
+                        <Path StrokeThickness="3"
+                              Stroke="{StaticResource PrimaryBrush}">
+                            <Path.Data>
+                                <MultiBinding Converter="{StaticResource CapitalLineGeometryConverter}">
+                                    <Binding Path="CapitalHistory" />
+                                    <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualWidth" />
+                                    <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualHeight" />
+                                </MultiBinding>
+                            </Path.Data>
+                        </Path>
+                        <Path Fill="{StaticResource ChartFillBrush}">
+                            <Path.Data>
+                                <MultiBinding Converter="{StaticResource CapitalAreaGeometryConverter}">
+                                    <Binding Path="CapitalHistory" />
+                                    <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualWidth" />
+                                    <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualHeight" />
+                                </MultiBinding>
+                            </Path.Data>
+                        </Path>
+                    </Grid>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- Row 4: Holdings -->
+        <Border Grid.Row="4" Style="{StaticResource CardBorderStyle}">
+            <StackPanel>
+                <TextBlock Text="Holdings" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,12" />
+                <DataGrid ItemsSource="{Binding Holdings}"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Ticker" Binding="{Binding Symbol}" Width="150" />
+                        <DataGridTextColumn Header="Quantity" Binding="{Binding Quantity}" Width="100" />
+                        <DataGridTextColumn Header="Last Price" Binding="{Binding MarketPrice, StringFormat=C}" Width="120" />
+                        <DataGridTextColumn Header="Market Value" Binding="{Binding MarketValue, StringFormat=C}" Width="150" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </StackPanel>
+        </Border>
+    </Grid>
+    </ScrollViewer>
+</UserControl>

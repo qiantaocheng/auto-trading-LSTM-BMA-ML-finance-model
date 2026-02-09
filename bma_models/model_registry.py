@@ -833,7 +833,7 @@ def load_models_from_snapshot(
             ltr = LambdaRankStacker(
                 n_quantiles=meta.get('n_quantiles', 10),
                 winsorize_quantiles=meta.get('winsorize_quantiles', (0.01, 0.99)),
-                label_gain_power=meta.get('label_gain_power', 2.0)
+                label_gain_power=meta.get('label_gain_power', 2.6)
             )
 
             # Load booster

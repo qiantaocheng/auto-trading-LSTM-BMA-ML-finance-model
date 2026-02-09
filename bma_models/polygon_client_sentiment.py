@@ -446,7 +446,13 @@ class PolygonClientSentimentAnalyzer:
             combined_df = self._calculate_technical_indicators(combined_df)
 
             # Calculate target (10-day forward returns)
-            combined_df['target'] = combined_df.groupby(level='ticker')['close'].pct_change(10).shift(-10)
+            # FIX: shift must be per-ticker, not on entire MultiIndex
+            combined_df['target'] = (
+                combined_df.groupby(level='ticker')['close']
+                .pct_change(10)
+                .groupby(level='ticker')
+                .shift(-10)
+            )
 
             # Apply cross-sectional standardization
             combined_df = self._cross_sectional_standardize(combined_df)

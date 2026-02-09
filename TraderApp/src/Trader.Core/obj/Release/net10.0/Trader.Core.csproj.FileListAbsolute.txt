@@ -1,0 +1,13 @@
+D:\trade\TraderApp\src\Trader.Core\bin\Release\net10.0\Trader.Core.deps.json
+D:\trade\TraderApp\src\Trader.Core\bin\Release\net10.0\Trader.Core.dll
+D:\trade\TraderApp\src\Trader.Core\bin\Release\net10.0\Trader.Core.pdb
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.csproj.AssemblyReference.cache
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.GeneratedMSBuildEditorConfig.editorconfig
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.AssemblyInfoInputs.cache
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.AssemblyInfo.cs
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.csproj.CoreCompileInputs.cache
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.sourcelink.json
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.dll
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\refint\Trader.Core.dll
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.pdb
+D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\ref\Trader.Core.dll

@@ -832,7 +832,7 @@ class TemporalStackingLambdaRank:
 
     def fit(self,
             oof_df: pd.DataFrame,
-            target_col: str = 'ret_fwd_10d') -> 'TemporalStackingLambdaRank':
+            target_col: str = 'ret_fwd_5d') -> 'TemporalStackingLambdaRank':
         """
         Train the Temporal Stacking LambdaRank model.
 
@@ -1150,7 +1150,7 @@ def create_temporal_stacker(config: Optional[Dict[str, Any]] = None) -> Temporal
 
 
 def run_temporal_stacking_training(data_path: str,
-                                    target_col: str = 'ret_fwd_10d',
+                                    target_col: str = 'ret_fwd_5d',
                                     output_dir: Optional[str] = None,
                                     config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """

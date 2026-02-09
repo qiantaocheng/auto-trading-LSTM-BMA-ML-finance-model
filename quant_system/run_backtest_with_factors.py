@@ -303,7 +303,7 @@ def main():
     parser.add_argument(
         '--factor-file',
         type=str,
-        default=r'D:\trade\quant_system\data\polygon_factors_all_filtered_clean_final_v2_recalculated.parquet',
+        default=r'D:\trade\quant_system\data\polygon_factors_all_2021_2026_T5_final.parquet',
         help='Path to factor parquet file'
     )
     parser.add_argument(

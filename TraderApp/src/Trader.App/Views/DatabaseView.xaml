@@ -1,0 +1,45 @@
+﻿<UserControl x:Class="Trader.App.Views.DatabaseView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="600" d:DesignWidth="1000">
+    <Grid Margin="20" Background="{StaticResource BackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Border Style="{StaticResource CardBorderStyle}">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Ticker:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <TextBox Width="120" Text="{Binding NewTickerSymbol, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0" />
+                    <TextBlock Text="$:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <TextBox Width="100" Text="{Binding InvestAmount, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0" />
+                    <Button Content="Buy" Command="{Binding BuyCommand}" Margin="0,0,8,0" />
+                    <Button Content="Sell &amp; Delete" Command="{Binding DeleteSelectedCommand}" Margin="0,0,8,0" />
+                    <Button Content="Refresh" Command="{Binding RefreshCommand}" />
+                </StackPanel>
+                <TextBlock Text="{Binding BuyStatus}" Margin="0,8,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" />
+            </StackPanel>
+        </Border>
+        <Border Grid.Row="2" Style="{StaticResource CardBorderStyle}">
+            <StackPanel>
+                <TextBlock Text="Tracked Tickers" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,12" />
+                <DataGrid ItemsSource="{Binding Tickers}"
+                          SelectedItem="{Binding SelectedTicker}"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Ticker" Binding="{Binding Symbol}" Width="120" />
+                        <DataGridTextColumn Header="Tag" Binding="{Binding TagLabel}" Width="100" />
+                        <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="150" />
+                        <DataGridTextColumn Header="Added" Binding="{Binding AddedAt, StringFormat=G}" Width="200" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

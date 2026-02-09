@@ -172,7 +172,7 @@ except ImportError as e:
     
     ac_optimizer = DummyACOptimizerInstance()
 
-from ib_insync import (
+from ib_async import (
     IB,
     Stock,
     Contract,
@@ -317,12 +317,14 @@ class IbkrAutoTrader:
         config_manager=None,
         ib_client: Optional[IB] = None,
     ) -> None:
-       
+        # Initialize logger first (before any logging calls)
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         # 使用统一配置系统
         from bma_models.unified_config_loader import get_unified_config, get_time_config
         self.centralized_config = get_unified_config()
         self.time_config = get_time_config()
-        
+
         # 配置验证（简化版）
         try:
             if self.centralized_config is None:
@@ -346,8 +348,12 @@ class IbkrAutoTrader:
         self._order_lock = threading.Lock()
         self._position_update_semaphore = None  # 将在异步上下文中初始化
         
-      
-        connection_config = self.centralized_config.get_section('connection')
+
+        # Get connection config with fallback for UnifiedTrainingConfig
+        if hasattr(self.centralized_config, 'get_section'):
+            connection_config = self.centralized_config.get_section('connection')
+        else:
+            connection_config = {}
         self.host = connection_config.get('host', '127.0.0.1')
         self.port = connection_config.get('port', 7497)
         self.client_id = connection_config.get('client_id', 1)
@@ -356,9 +362,9 @@ class IbkrAutoTrader:
         
         # 向后兼容：如果统一配置为空，回退到旧配置
         if not self.account_id:
-            conn_params = config_manager.get("ibkr", {})
+            conn_params = config_manager.get("ibkr", {}) if hasattr(config_manager, 'get') else {}
             self.host = conn_params.get('host', self.host)
-            self.port = conn_params.get('port', self.port) 
+            self.port = conn_params.get('port', self.port)
             self.client_id = conn_params.get('client_id', self.client_id)
             self.account_id = conn_params.get('account_id', self.account_id)
             self.use_delayed_if_no_realtime = conn_params.get('use_delayed_if_no_realtime', self.use_delayed_if_no_realtime)
@@ -370,8 +376,7 @@ class IbkrAutoTrader:
         
         # 允许外部传入共享connection
         self.ib = ib_client if ib_client is not None else IB()
-        self.logger = logging.getLogger(self.__class__.__name__)
-        
+
         # 初始化稳健account数据管理器
         from .account_data_manager import RobustAccountDataManager
         self.account_manager = RobustAccountDataManager(self.ib, self.account_id)
@@ -412,7 +417,7 @@ class IbkrAutoTrader:
         self._stop_event: Optional[asyncio.Event] = None
         
         # account状态管理增强（从配置加载）
-        monitoring_config = self.centralized_config.get_section('monitoring')
+        monitoring_config = self.centralized_config.get_section('monitoring') if hasattr(self.centralized_config, 'get_section') else {}
         self.account_ready: bool = False
         self._last_account_update: float = 0.0
         # self._account_lock = asyncio.Lock()  # 已在上面使用threading.Lock初始化
@@ -458,7 +463,7 @@ class IbkrAutoTrader:
         self.logger.info("✅ 波动率自适应门控系统已启用")
         
   
-        price_config = self.centralized_config.get_section('price_validation')
+        price_config = self.centralized_config.get_section('price_validation') if hasattr(self.centralized_config, 'get_section') else {}
         price_validation_config = PriceValidationConfig(
             min_price=price_config.get('min_price', 0.01),
             max_price=price_config.get('max_price', 50000.0),
@@ -492,7 +497,7 @@ class IbkrAutoTrader:
         self.logger.info("✅ 简化配置，数据新鲜度评分已禁用")
         
         # 🎯 频率控制系统集成
-        frequency_config = self.centralized_config.get_section('frequency_control')
+        frequency_config = self.centralized_config.get_section('frequency_control') if hasattr(self.centralized_config, 'get_section') else {}
         if frequency_config.get('enable_frequency_control', True):
             from .frequency_controller import get_frequency_controller
             self.frequency_controller = get_frequency_controller(frequency_config)
@@ -1070,7 +1075,7 @@ class IbkrAutoTrader:
         """检查风控系统健康状态"""
         try:
             # 检查风控配置是否正常
-            risk_config = self.centralized_config.get_section('risk_management')
+            risk_config = self.centralized_config.get_section('risk_management') if hasattr(self.centralized_config, 'get_section') else {}
             return (
                 risk_config.get('max_single_position_pct', 0) > 0 and
                 risk_config.get('cash_reserve_pct', 0) >= 0
@@ -2364,7 +2369,7 @@ class IbkrAutoTrader:
             
             # 尝试通过IBKR获取历史数据
             try:
-                from ib_insync import Stock
+                from ib_async import Stock
                 contract = Stock(symbol, 'SMART', 'USD')
                 
                 # 获取历史数据

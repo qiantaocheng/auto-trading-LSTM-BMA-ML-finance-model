@@ -1,0 +1,22 @@
+﻿<Window x:Class="Trader.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:views="clr-namespace:Trader.App.Views"
+        mc:Ignorable="d"
+        Title="Trader AutoPilot" Height="720" Width="1200" Background="{StaticResource CardBackgroundBrush}">
+    <Grid Margin="16">
+        <TabControl>
+            <TabItem Header="Direct Prediction">
+                <views:DirectPredictionView DataContext="{Binding DirectPrediction}" />
+            </TabItem>
+            <TabItem Header="Monitor">
+                <views:MonitorView DataContext="{Binding Monitor}" />
+            </TabItem>
+            <TabItem Header="Database">
+                <views:DatabaseView DataContext="{Binding Database}" />
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

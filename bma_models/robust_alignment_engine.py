@@ -174,7 +174,7 @@ class RobustAlignmentEngine:
                 stacker_data[std_name] = pred
 
             # 固定目标列：统一T+5
-            target_col = 'ret_fwd_10d'
+            target_col = 'ret_fwd_5d'
             stacker_data[target_col] = target
 
             # 基础验证

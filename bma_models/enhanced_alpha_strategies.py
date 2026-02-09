@@ -232,7 +232,7 @@ class AlphaStrategiesEngine:
         # Define the required factors (removed ivol_60d due to multicollinearity with stability_score)
         required_17_factors = [
             'momentum_10d_ex1',
-            'rsi', 'bollinger_squeeze',
+            'rsi',
             'obv_momentum', 'atr_ratio', 'blowoff_ratio', 'stability_score',
             'liquidity_factor',
             'near_52w_high', 'reversal_1d', 'mom_accel_5_2'
@@ -273,7 +273,6 @@ class AlphaStrategiesEngine:
 
             # Mean reversion factors (2/17) - REMOVED: price_to_ma20
             'rsi': self._compute_rsi,
-            'bollinger_squeeze': self._compute_bollinger_squeeze,
 
             # Volume factors (1/17)
             'obv_momentum': self._compute_obv_momentum,
@@ -2030,7 +2029,7 @@ class AlphaStrategiesEngine:
                     # 只保留Alpha因子（移除了ivol_60d），移除原始市场数据和元数据列
                     required_17_factors = [
                         'momentum_10d_ex1',
-                        'rsi', 'bollinger_squeeze',
+                        'rsi',
                         'obv_momentum', 'atr_ratio', 'blowoff_ratio', 'stability_score',
                         'liquidity_factor',
                         'near_52w_high', 'reversal_1d', 'mom_accel_5_2'
@@ -3007,21 +3006,6 @@ class AlphaStrategiesEngine:
         except:
             return pd.Series(0, index=df.index)
     
-    def _compute_bollinger_squeeze(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Bollinger Band volatility squeeze
-        🔥 FIX: Shift for pre-market prediction (use previous day's volatility ratio)
-        """
-        if 'Close' not in df.columns or len(df) < 20:
-            return pd.Series(0, index=df.index)
-        try:
-            # 🔥 FIX: Shift for pre-market prediction
-            std_20 = df['Close'].rolling(20).std().shift(1)
-            std_5 = df['Close'].rolling(5).std().shift(1)
-            squeeze = std_5 / (std_20 + 1e-8)
-            return self.safe_fillna(squeeze, df)
-        except:
-            return pd.Series(0, index=df.index)
-
     # Volume factors (2/25)
     def _compute_obv_momentum(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         """On-Balance Volume momentum"""

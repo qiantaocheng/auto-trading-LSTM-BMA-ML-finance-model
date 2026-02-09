@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Direct Prediction Excel Ranking Report (NO EMA Smoothing)
-==========================================================
-Generates Excel ranking report with raw prediction scores only.
-NO EMA smoothing is applied - uses raw scores directly from the model.
+Direct Prediction Excel Ranking Report (EMA-smoothed)
+=====================================================
+Generates Excel ranking report using EMA-smoothed predictions (default: 4-day window, \u03b2=0.33).
 
-Generates Excel ranking report with:
-- Raw predictions for last 3 days (for comparison)
-- Rankings based on raw scores
-- Score changes between days
-- Model breakdowns
+Contents:
+- Smoothed scores for the last few sessions (with raw backups)
+- Rankings and score deltas after smoothing
+- Model breakdowns (LambdaRank, CatBoost, ElasticNet, XGBoost)
 """
 
 import sys
 import argparse
+import json
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -26,111 +25,94 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bma_models.model_registry import load_manifest
 from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+from bma_models.simple_25_factor_engine import T10_ALPHA_FACTORS as DEFAULT_FEATURES
+
+EXCLUDED_FEATURES = {"obv_divergence"}
+
+def _filter_disallowed_features(features, logger, context):
+    filtered = [f for f in features if f not in EXCLUDED_FEATURES]
+    removed = sorted(set(features) & EXCLUDED_FEATURES)
+    if removed:
+        logger.warning("Removing disabled features %s from %s", removed, context)
+    if not filtered:
+        raise ValueError(f"{context} is empty after filtering disallowed features")
+    return filtered
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
+feature_list = _filter_disallowed_features(list(DEFAULT_FEATURES), logger, "direct prediction default features")
+os.environ["BMA_FEATURE_OVERRIDES"] = json.dumps({
+    "elastic_net": feature_list,
+    "xgboost": feature_list,
+    "catboost": feature_list,
+    "lightgbm_ranker": feature_list,
+    "lambdarank": feature_list,
+})
+logger.info(f"Using default feature set ({len(feature_list)} factors) with obv_divergence disabled: {feature_list}")
 
-def calculate_ewma_smoothed_scores(predictions_df: pd.DataFrame, 
-                                   weights: tuple = (0.5, 0.3, 0.2),
+
+
+def calculate_ewma_smoothed_scores(predictions_df: pd.DataFrame,
+                                   weights: tuple = (0.41, 0.28, 0.19, 0.12),
                                    use_half_life: bool = False,
                                    half_life_days: float = 3.0) -> pd.DataFrame:
-    """
-    Calculate EWMA smoothed scores from last 3 days of predictions
-    
-    Args:
-        predictions_df: DataFrame with MultiIndex (date, ticker) and 'score' column
-        weights: Tuple of weights for (today, yesterday, day_before_yesterday)
-        use_half_life: If True, use half-life formula instead of fixed weights
-        half_life_days: Half-life in days (for EWMA calculation)
-    
-    Returns:
-        DataFrame with smoothed scores
-    """
+    """Calculate EMA-smoothed scores across an arbitrary lookback window."""
     if not isinstance(predictions_df.index, pd.MultiIndex):
         raise ValueError("predictions_df must have MultiIndex (date, ticker)")
-    
     if 'score' not in predictions_df.columns:
         raise ValueError("predictions_df must have 'score' column")
-    
-    # Get unique dates (sorted)
+
     dates = sorted(predictions_df.index.get_level_values('date').unique())
-    
-    if len(dates) < 3:
-        logger.warning(f"Only {len(dates)} days available, need at least 3 days for EWMA smoothing")
-        logger.warning("Returning original scores without smoothing")
+    if not dates:
         return predictions_df.copy()
-    
-    # Calculate weights based on half-life if requested
+
+    base_weights = tuple(float(w) for w in weights if float(w) > 0)
+    if not base_weights:
+        raise ValueError('At least one positive weight is required for EMA smoothing')
+
     if use_half_life:
-        # EWMA with half-life: alpha = 1 - exp(-ln(2) / half_life)
-        alpha = 1 - np.exp(-np.log(2) / half_life_days)
-        # Weights decay exponentially: w_t = alpha * (1-alpha)^(n-t)
-        weights = (
-            alpha,  # Today (t=0)
-            alpha * (1 - alpha),  # Yesterday (t=1)
-            alpha * (1 - alpha) ** 2  # Day before yesterday (t=2)
-        )
-        # Normalize weights to sum to 1
-        total = sum(weights)
-        weights = tuple(w / total for w in weights)
+        window_size = max(len(base_weights), 2)
+        alpha = 1 - np.exp(-np.log(2) / max(half_life_days, 1.0))
+        decay = [alpha * ((1 - alpha) ** i) for i in range(window_size)]
+        total = sum(decay)
+        weights = tuple(w / total for w in decay)
         logger.info(f"Using half-life={half_life_days} days, calculated weights: {weights}")
     else:
+        total = sum(base_weights)
+        weights = tuple(w / total for w in base_weights)
         logger.info(f"Using fixed weights: {weights}")
-    
-    # Create result DataFrame
+
+    window = len(weights)
+    if len(dates) < window:
+        logger.warning(f"Only {len(dates)} day(s) available; EMA window={window}. Will renormalize with available data")
+
     result_df = predictions_df.copy()
     result_df['score_raw'] = result_df['score'].copy()
     result_df['score_smoothed'] = np.nan
-    
-    # Process each ticker
-    tickers = predictions_df.index.get_level_values('ticker').unique()
-    
-    for ticker in tickers:
-        ticker_data = predictions_df.xs(ticker, level='ticker', drop_level=False)
-        
-        # Get last 3 days
-        last_3_dates = dates[-3:]
-        
-        for i, current_date in enumerate(dates):
-            if current_date < last_3_dates[0]:
-                # Not enough history, use raw score
-                result_df.loc[(current_date, ticker), 'score_smoothed'] = result_df.loc[(current_date, ticker), 'score']
-                continue
-            
-            # Get scores for last 3 days (including today)
+
+    for ticker in predictions_df.index.get_level_values('ticker').unique():
+        for idx, current_date in enumerate(dates):
             scores = []
-            available_dates = []
-            
-            for j, date_offset in enumerate([0, -1, -2]):
-                target_date_idx = i + date_offset
-                if target_date_idx >= 0 and target_date_idx < len(dates):
-                    target_date = dates[target_date_idx]
-                    if (target_date, ticker) in predictions_df.index:
-                        scores.append(predictions_df.loc[(target_date, ticker), 'score'])
-                        available_dates.append(target_date)
-            
-            if len(scores) == 0:
-                # No data available
-                result_df.loc[(current_date, ticker), 'score_smoothed'] = result_df.loc[(current_date, ticker), 'score']
-            elif len(scores) == 1:
-                # Only today available
-                result_df.loc[(current_date, ticker), 'score_smoothed'] = scores[0]
+            for offset in range(window):
+                pos = idx - offset
+                if pos < 0:
+                    break
+                candidate_date = dates[pos]
+                key = (candidate_date, ticker)
+                if key in predictions_df.index:
+                    scores.append(predictions_df.loc[key, 'score'])
+            if not scores:
+                smoothed = predictions_df.loc[(current_date, ticker), 'score'] if (current_date, ticker) in predictions_df.index else np.nan
             else:
-                # Calculate weighted average
-                # Use weights in reverse order (most recent first)
-                if len(scores) == 2:
-                    # Only today and yesterday
-                    smoothed = weights[0] * scores[0] + weights[1] * scores[1]
-                else:
-                    # All 3 days available
-                    smoothed = weights[0] * scores[0] + weights[1] * scores[1] + weights[2] * scores[2]
-                
+                used_weights = np.array(weights[:len(scores)], dtype=np.float64)
+                used_weights /= used_weights.sum()
+                smoothed = float(np.dot(used_weights, scores))
+            if (current_date, ticker) in result_df.index:
                 result_df.loc[(current_date, ticker), 'score_smoothed'] = smoothed
-    
-    # Use smoothed score as final score
+
     result_df['score'] = result_df['score_smoothed'].fillna(result_df['score_raw'])
-    
     return result_df
 
 
@@ -177,9 +159,8 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
     date_cell.font = Font(size=12)
     ws.merge_cells('A2:J2')
 
-    # Note: No EMA smoothing
     note_cell = ws['A3']
-    note_cell.value = f"Note: Top {top_n} only. Using raw prediction scores (no EMA smoothing applied)"
+    note_cell.value = f"Note: Top {top_n} list uses EMA-smoothed scores (default window 4, beta=0.33)."
     note_cell.font = Font(size=10, italic=True)
     ws.merge_cells('A3:J3')
 
@@ -201,14 +182,12 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
             logger.warning(f"Date {latest_date} not found in predictions, using all available data")
             latest_predictions = predictions_df.groupby(level='ticker').last()
         
-        # Ensure we have a 'score' column (use raw score, NOT smoothed)
+        # Ensure we have a smoothed score column
         if 'score' not in latest_predictions.columns:
-            if 'score_raw' in latest_predictions.columns:
-                latest_predictions['score'] = latest_predictions['score_raw']
-            elif 'score_smoothed' in latest_predictions.columns:
-                # Fallback to smoothed if raw not available, but log warning
-                logger.warning("score_raw not found, using score_smoothed as fallback (should not happen in Direct Predict)")
+            if 'score_smoothed' in latest_predictions.columns:
                 latest_predictions['score'] = latest_predictions['score_smoothed']
+            elif 'score_raw' in latest_predictions.columns:
+                latest_predictions['score'] = latest_predictions['score_raw']
             else:
                 logger.warning("No score column found, using first numeric column")
                 numeric_cols = latest_predictions.select_dtypes(include=[np.number]).columns
@@ -216,8 +195,7 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
                     latest_predictions['score'] = latest_predictions[numeric_cols[0]]
                 else:
                     raise ValueError("No score column found in predictions")
-        
-        # Sort by raw score (descending) - NO EMA smoothing
+
         latest_predictions = latest_predictions.sort_values('score', ascending=False)
         
         # 🔥 Limit to Top N only
@@ -231,26 +209,22 @@ def generate_excel_ranking_report(predictions_df: pd.DataFrame,
         for rank, (idx, row_data) in enumerate(latest_predictions.iterrows(), start=1):
             ticker = idx[1] if isinstance(idx, tuple) else idx
             
-            # Get raw scores (NO EMA smoothing)
-            score_meta_stacker = row_data.get('score_raw', np.nan)
+            # Use EMA-smoothed meta ranker scores
+            score_meta_stacker = row_data.get('score', np.nan)
             if np.isnan(score_meta_stacker):
-                score_meta_stacker = row_data.get('score', np.nan)  # Fallback to 'score' if 'score_raw' not available
-            
-            # Get base model scores
+                score_meta_stacker = row_data.get('score_raw', np.nan)
+
             score_lambdarank = row_data.get('score_lambdarank', np.nan)
             score_catboost = row_data.get('score_catboost', np.nan)
             score_elastic = row_data.get('score_elastic', np.nan)
             score_xgb = row_data.get('score_xgb', np.nan)
-            
+
             scores_yesterday = np.nan
             if len(prev_dates) >= 2:
                 yesterday_date = prev_dates[-2]
                 try:
                     if (yesterday_date, ticker) in predictions_df.index:
-                        # Use raw score, NOT smoothed
-                        scores_yesterday = predictions_df.loc[(yesterday_date, ticker), 'score_raw']
-                        if np.isnan(scores_yesterday):
-                            scores_yesterday = predictions_df.loc[(yesterday_date, ticker), 'score']
+                        scores_yesterday = predictions_df.loc[(yesterday_date, ticker), 'score']
                 except (KeyError, IndexError):
                     pass
             
@@ -577,8 +551,8 @@ def main():
     parser = argparse.ArgumentParser(description="Direct prediction with EWMA smoothing and Excel ranking report")
     parser.add_argument("--tickers", type=str, required=True, help="Comma-separated ticker symbols")
     parser.add_argument("--snapshot", type=str, default="latest", help="Snapshot ID or 'latest'")
-    parser.add_argument("--days", type=int, default=3, help="Number of days to fetch for EWMA (default: 3)")
-    parser.add_argument("--weights", type=str, default="0.5,0.3,0.2", help="EWMA weights (today,yesterday,day_before) or 'half-life'")
+    parser.add_argument("--days", type=int, default=4, help="Number of days to fetch for EWMA (default: 4)")
+    parser.add_argument("--weights", type=str, default="0.41,0.28,0.19,0.12", help="EMA weights (most recent first) or 'half-life'")
     parser.add_argument("--half-life", type=float, default=None, help="Half-life in days (overrides weights if provided)")
     parser.add_argument("--output", type=str, default="results/ewma_ranking_report.xlsx", help="Output Excel file path")
     parser.add_argument("--as-of-date", type=str, default=None, help="Prediction date (YYYY-MM-DD), default: today")
@@ -596,28 +570,39 @@ def main():
     logger.info(f"Tickers: {', '.join(tickers)}")
     logger.info(f"Days: {args.days}")
     
-    # Parse weights
+    # Parse EMA weights / half-life settings
     use_half_life = False
-    weights = (0.5, 0.3, 0.2)
-    
+    half_life_days = args.half_life if args.half_life else None
+    weights_tuple = (0.41, 0.28, 0.19, 0.12)
+
+    weights_arg = args.weights.lower().strip() if isinstance(args.weights, str) else ''
     if args.half_life:
         use_half_life = True
-        half_life_days = args.half_life
         logger.info(f"Using half-life: {half_life_days} days")
-    elif args.weights.lower() == 'half-life' or args.weights.lower() == 'halflife':
+    elif weights_arg in {'half-life', 'halflife'}:
         use_half_life = True
         half_life_days = 3.0
-        logger.info(f"Using half-life: {half_life_days} days (default)")
+        logger.info("Using half-life: 3.0 days (default)")
     else:
         try:
-            weight_list = [float(w.strip()) for w in args.weights.split(',')]
-            if len(weight_list) == 3:
-                weights = tuple(weight_list)
-                logger.info(f"Using fixed weights: {weights}")
+            weight_list = [float(w.strip()) for w in args.weights.split(',') if w.strip()]
+            if len(weight_list) >= 2:
+                weights_tuple = tuple(weight_list)
+                logger.info(f"Using fixed weights: {weights_tuple}")
             else:
-                logger.warning(f"Invalid weights format, using default (0.5, 0.3, 0.2)")
+                logger.warning("Invalid weights format, using default 4-day profile")
         except Exception as e:
-            logger.warning(f"Failed to parse weights: {e}, using default")
+            logger.warning(f"Failed to parse weights: {e}, using default 4-day profile")
+
+    if use_half_life:
+        ema_window = max(int(round(args.days)), 2)
+        weights_tuple = tuple([1.0] * ema_window)
+    else:
+        ema_window = len(weights_tuple)
+
+    if args.days < ema_window:
+        logger.info(f"Expanding --days from {args.days} to {ema_window} to match EMA window")
+        args.days = ema_window
     
     # Determine date range
     if args.as_of_date:
@@ -759,7 +744,7 @@ def main():
     logger.info("📊 Applying EWMA smoothing...")
     smoothed_predictions = calculate_ewma_smoothed_scores(
         combined_predictions,
-        weights=weights,
+        weights=weights_tuple,
         use_half_life=use_half_life,
         half_life_days=args.half_life if args.half_life else 3.0
     )

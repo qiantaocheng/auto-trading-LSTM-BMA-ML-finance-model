@@ -17,7 +17,8 @@ sys.path.insert(0, str(project_root))
 
 from bma_models.simple_25_factor_engine import Simple17FactorEngine
 
-def recalculate_and_update_multiindex(input_file: str, output_file: str = None, lookback_days: int = 120):
+def recalculate_and_update_multiindex(input_file: str, output_file: str = None,
+                                      lookback_days: int = 120, horizon: int = 5):
     """
     Recalculate all factors using Simple17FactorEngine and update multiindex parquet file
     
@@ -130,7 +131,7 @@ def recalculate_and_update_multiindex(input_file: str, output_file: str = None, 
         engine = Simple17FactorEngine(
             lookback_days=lookback_days,
             mode='predict',  # Use predict mode to compute all factors
-            horizon=10  # T+10 horizon
+            horizon=horizon
         )
         print(f"   Engine initialized with horizon: {engine.horizon}")
         print(f"   Alpha factors: {len(engine.alpha_factors)} factors")
@@ -191,6 +192,8 @@ def recalculate_and_update_multiindex(input_file: str, output_file: str = None, 
                     names=['date', 'ticker']
                 )
         
+        target_cols = [col for col in ['target', 'target_excess_qqq'] if col in factors_df.columns]
+
         # Remove Close column if present (we'll keep original)
         if 'Close' in factors_df.columns:
             factors_df = factors_df.drop(columns=['Close'])
@@ -234,11 +237,20 @@ def recalculate_and_update_multiindex(input_file: str, output_file: str = None, 
                 df_new[factor] = 0.0
                 print(f"   [WARN] Filled missing factor {factor} with zeros")
         
+        # Add target-style columns if available
+        for tgt in target_cols:
+            if tgt in factors_df_aligned.columns:
+                df_new[tgt] = factors_df_aligned[tgt]
+                print(f"   Added column: {tgt}")
+
         # Keep any other columns from original that aren't factors
         # But exclude old factors that are being replaced
         old_factors_to_remove = [
             'downside_beta_252',
             'downside_beta_ewm_21',
+            'rsrs_beta_18',
+            'ret_skew_20d',
+            'bollinger_squeeze',
             'feat_vol_price_div_30d',
             'obv_momentum_40d',
             'vol_ratio_30d',
@@ -246,11 +258,9 @@ def recalculate_and_update_multiindex(input_file: str, output_file: str = None, 
             'ivol_30',
             'blowoff_ratio_30d',
             'blowoff_ratio',
-            'bollinger_squeeze',
-            'feat_sato_momentum_10d',
-            'feat_sato_divergence_10d',
             'roa',
             'ebit',
+            'price_ma60_deviation',
             'making_new_low_5d',
         ]
         
@@ -289,15 +299,10 @@ def recalculate_and_update_multiindex(input_file: str, output_file: str = None, 
         print("\n" + "=" * 80)
         print("Summary:")
         print("=" * 80)
-        print(f"Removed factors:")
-        print(f"  - downside_beta_252")
-        print(f"  - downside_beta_ewm_21")
-        print(f"  - roa")
-        print(f"  - ebit")
-        print(f"  - making_new_low_5d")
-        print(f"  - bollinger_squeeze")
-        print(f"  - blowoff_ratio")
-        print(f"\nCurrent factor set (18 factors):")
+        print(f"Removed factors (legacy/deleted):")
+        print("  - downside_beta_252, downside_beta_ewm_21, rsrs_beta_18, ret_skew_20d, bollinger_squeeze")
+        print("  - roa, ebit, price_ma60_deviation, making_new_low_5d (if present)")
+        print(f"\nCurrent factor set ({len(expected_factors)} factors):")
         for i, factor in enumerate(expected_factors, 1):
             print(f"  {i:2d}. {factor}")
         print(f"\nAll factors recalculated using Simple17FactorEngine")
@@ -316,12 +321,14 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Recalculate factors using Simple17FactorEngine')
     parser.add_argument('--input', type=str, 
-                       default="D:/trade/data/factor_exports/polygon_factors_all_filtered_clean.parquet",
+                       default="D:/trade/data/factor_exports/polygon_factors_all_2021_2026_T5_final.parquet",
                        help='Input multiindex parquet file')
     parser.add_argument('--output', type=str, default=None,
                        help='Output file (default: adds _recalculated suffix)')
     parser.add_argument('--lookback', type=int, default=120,
                        help='Lookback days for factor calculation (default: 120)')
+    parser.add_argument('--horizon', type=int, default=5,
+                       help='Forward horizon (days) for target/excess calculation (default: 5)')
     parser.add_argument('--yes', action='store_true',
                        help='Skip confirmation prompt')
     
@@ -348,7 +355,12 @@ if __name__ == "__main__":
         except EOFError:
             print("\n[INFO] Non-interactive mode, proceeding...")
     
-    success = recalculate_and_update_multiindex(args.input, args.output, args.lookback)
+    success = recalculate_and_update_multiindex(
+        args.input,
+        args.output,
+        lookback_days=args.lookback,
+        horizon=args.horizon,
+    )
     
     if success:
         print("\n[SUCCESS] Factor recalculation completed!")

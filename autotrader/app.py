@@ -1,7525 +1,15315 @@
-# =============================================================================
+﻿# =============================================================================
+
 # SIGNAL CALCULATION RESTORED - Trading system now active
+
 # All signal generation systems are properly integrated and functional
+
 # Using unified signal processor with production-ready algorithms
+
 # =============================================================================
+
 import asyncio
+
 import threading
+
 import tkinter as tk
+
 from tkinter import filedialog, messagebox, ttk
+
 from dataclasses import dataclass
+
 from typing import Optional, List
+
 from pathlib import Path
+
 import os
+
 import sys
+
 import json
+
 import pandas as pd
+
 import numpy as np
+
 from datetime import datetime, timedelta
+
 from pandas.tseries.offsets import BDay
+
 import subprocess
 
-# 默认的BMA训练股票组合，用于一键生成最?年MultiIndex数据
+
+
+# ????BMA??????????????????????????MultiIndex????
+
 DEFAULT_AUTO_TRAIN_TICKERS = [
+
     "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
+
     "NVDA", "META", "NFLX", "CRM", "ADBE",
+
 ]
 
-# 自动训练配置：回溯年?+ 预测视窗（T+10?
+
+
+# ??????????????????+ ????????T+10?
+
 AUTO_TRAIN_LOOKBACK_YEARS = 4
+
 AUTO_TRAIN_HORIZON_DAYS = 10
+
+# Default 11 factors (same as TOP_FEATURE_SET in simple_25_factor_engine)
+TIMESPLIT_FEATURES = ['momentum_10d', 'ivol_20', 'hist_vol_20', 'rsi_21', 'near_52w_high', 'atr_ratio', 'vol_ratio_20d', '5_days_reversal', 'trend_r2_60', 'liquid_momentum']
+STAGE_A_DATA_PATH = Path(r"D:\trade\data\factor_exports\polygon_factors_stageA_default.parquet")
+# Direct Predict: tickers loaded from MultiIndex of this parquet (date, ticker)
+DIRECT_PREDICT_TICKER_DATA_PATH = Path(r"D:\trade\data\factor_exports\polygon_full_features_T5.parquet")
+
+DIRECT_PREDICT_SNAPSHOT_ID = "b35a35db-352b-43d8-ace8-4a54674c1da5"
+# Default EWMA weights (L2 Beta 0.7) for direct prediction smoothing
+DIRECT_PREDICT_EMA_WEIGHTS = (0.41, 0.28, 0.19, 0.12)  # 4-day EMA with beta=0.33
+DIRECT_PREDICT_MAX_CLOSE = 10000.0  # guardrail for obviously bad close prices
+
+
+
 
 
 from .ibkr_auto_trader import IbkrAutoTrader
+
 from .engine import Engine
+
 from .database import StockDatabase
+
 from .unified_trading_core import create_unified_trading_core
 
 
+
+
+
 def _attach_tooltip(widget, text: str) -> None:
+
     """Attach a simple tooltip to a Tk widget without external deps."""
+
     if not text:
+
         return
 
+
+
     class _SimpleTooltip:
+
         def __init__(self, w, t):
+
             self.widget = w
+
             self.text = t
+
             self.tip = None
+
             self.widget.bind("<Enter>", self._show, add="+")
+
             self.widget.bind("<Leave>", self._hide, add="+")
 
+
+
         def _show(self, _event=None):
+
             if self.tip or not self.text:
+
                 return
+
             try:
+
                 x = self.widget.winfo_rootx() + 20
+
                 y = self.widget.winfo_rooty() + self.widget.winfo_height() + 10
+
                 self.tip = tk.Toplevel(self.widget)
+
                 self.tip.wm_overrideredirect(True)
+
                 self.tip.wm_geometry(f"+{x}+{y}")
+
                 lbl = tk.Label(
+
                     self.tip,
+
                     text=self.text,
+
                     justify=tk.LEFT,
+
                     background="#ffffe0",
+
                     relief=tk.SOLID,
+
                     borderwidth=1,
+
                     font=("tahoma", 8)
+
                 )
+
                 lbl.pack(ipadx=4, ipady=2)
+
             except Exception:
+
                 # Fail silently; tooltip is best-effort
+
                 self.tip = None
+
+
 
         def _hide(self, _event=None):
+
             if self.tip is not None:
+
                 try:
+
                     self.tip.destroy()
+
                 except Exception:
+
                     pass
+
                 self.tip = None
 
+
+
     try:
+
         _SimpleTooltip(widget, text)
+
     except Exception:
+
         pass
 
 
+
+
+
 @dataclass
+
 class AppState:
+
     json_file: Optional[str] = None
+
     excel_file: Optional[str] = None
+
     sheet: Optional[str] = None
+
     column: Optional[str] = None
+
     symbols_csv: Optional[str] = None
+
     host: str = "127.0.0.1"
+
     port: int = 7497
+
     client_id: int = 3130
-    # 浜ゆ槗鍙傛暟
+
+    #  
+
     alloc: float = 0.03
+
     poll_sec: float = 3.0
+
     auto_sell_removed: bool = True
+
     fixed_qty: int = 0
-    # 鏁版嵁搴撶浉?
+
+    #  ?
+
     selected_stock_list_id: Optional[int] = None
+
     use_database: bool = True
 
 
+
+
+
+DIRECT_PREDICT_FEATURE_CACHE = {}
 class AutoTraderGUI(tk.Tk):
+
     def __init__(self) -> None:  # type: ignore
+
         super().__init__()
+
         
-        # 浣縰se缁熶竴閰嶇疆绠悊鍣?
+
+        #  use ???
+
         from bma_models.unified_config_loader import get_config_manager as get_default_config
+
         from autotrader.unified_event_manager import get_event_loop_manager
+
         from autotrader.unified_monitoring_system import get_resource_monitor
+
         
+
         self.config_manager = get_default_config()
+
         self.loop_manager = get_event_loop_manager()
+
         self.resource_monitor = get_resource_monitor()
+
         
+
         # Starting event loop manager
+
         if not self.loop_manager.start():
-            raise RuntimeError("no娉昐tarting event loop manager")
+
+            raise RuntimeError("no Starting event loop manager")
+
         
-        # start璧勬簮鐩戞帶
+
+        # start 
+
         self.resource_monitor.start_monitoring()
+
         
-        # 鍒濆鍖朅ppState浣縰se缁熶竴閰嶇疆锛屼笉鑷姩鍒嗛厤Client ID
+
+        #  ? AppState use ? Client ID
+
         conn_params = self.config_manager.get_connection_params(auto_allocate_client_id=False)
+
         self.state = AppState(
+
             port=conn_params['port'],
+
             client_id=conn_params['client_id'],
+
             host=conn_params['host']
+
         )
-        self.title("IBKR 自动交易控制系统")
+
+        self.title("IBKR ????????????")
+
         self.geometry("1000x700")
-        # 浣縰se items鐩唴鍥哄畾璺緞鏁版嵁鐩綍锛岄伩鍏嶅綋before宸ヤ綔鐩綍鍙樺寲瀵艰嚧涓㈠け
+
+        #  use items ? S? `? before `? 
+
         self.db = StockDatabase()
+
         self._top10_state_path = Path('cache/hetrs_top10_state.json')
+
         self._top10_state_path.parent.mkdir(parents=True, exist_ok=True)
+
         self._last_top10_refresh = self._load_top10_refresh_state()
-        # 鎻恇efore鍒濆鍖栨棩蹇楃浉鍏砯or璞★紝閬垮厤inUI灏氭湭鏋勫缓completedbefore璋僽selog寮曞彂灞炴ч敊璇?
+
+        #  before ? for inUI completedbefore uselog ? ??
+
         self._log_buffer: List[str] = []
+
         self._log_lock = threading.Lock()
+
         self.txt = None  # type: ignore
+
         self._build_ui()
+
         
+
         # === Add top menu & toolbar for Return Comparison quick access ===
+
         try:
+
             self._ensure_top_menu()
+
             self._ensure_toolbar()
+
         except Exception:
+
             pass
+
         
+
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+
         self.trader: Optional[IbkrAutoTrader] = None
+
         self.engine: Optional[Engine] = None
-        # 鏀箄se缁熶竴閰嶇疆绠悊鍣紝not鍐嶉渶瑕丠otConfig
+
+        #  use ? ?not HotConfig
+
         # self.hot_config: Optional[HotConfig] = HotConfig()
+
         self._loop_thread: Optional[threading.Thread] = None
+
         self._loop_ready_event: Optional[threading.Event] = None
+
         self._engine_loop_task: Optional[asyncio.Task] = None
-        # 鐘舵佽窡韪彉?
+
+        #  ? ??
+
         self._model_training: bool = False
+
         self._model_trained: bool = False
+
         self._daily_trade_count: int = 0
-        # 鐘舵佹爮缂撳瓨锛岄伩鍏嶆暟鍊兼姈鍔?闂?
+
+        #  ? ????
+
         self._last_net_liq: Optional[float] = None
+
         
+
         # Ensure proper cleanup on window close
+
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+
         
-        # 娣诲姞璧勬簮娓呯悊鍥炶皟
+
+        #  
+
         self.resource_monitor.add_alert_callback(self._on_resource_warning)
+
         
-        # 鍒濆鍖栦簨浠剁郴缁?
+
+        #  ? ??
+
         from autotrader.unified_event_manager import get_event_bus, GUIEventAdapter
+
         self.event_bus = get_event_bus()
+
         self.gui_adapter = GUIEventAdapter(self, self.event_bus)
+
         
+
         # Initialize strategy engine components
+
         self._init_enhanced_trading_components()
+
         self._init_strategy_components()
+
         try:
+
             self._maybe_refresh_top10_pool(force=False)
+
         except Exception:
+
             pass
+
+
 
     def _init_enhanced_trading_components(self):
-        """鍒濆鍖栧寮轰氦鏄撶粍浠讹細闃堝艰嚜閫傚+ 鍔ㄦ佸ご"""
+
+        """ ? ? ? ?+  ? """
+
         try:
+
             from autotrader.position_size_calculator import create_position_calculator
+
             from autotrader.volatility_adaptive_gating import create_volatility_gating
 
-            # 鍔ㄦ佸ご瀵歌妯¤绠楀?
+
+
+            #  ? ? ? ??
+
             self.position_calculator = create_position_calculator(
-                target_percentage=0.05,    # 鐩?%澶村?
-                min_percentage=0.04,       # 鏈?%
-                max_percentage=0.10,       # 鏈?0%
-                method="volatility_adjusted"  # 浣跨敤娉㈠姩鐜囪皟鏁存柟
+
+                target_percentage=0.05,    # ??% ??
+
+                min_percentage=0.04,       # ??%
+
+                max_percentage=0.10,       # ??0%
+
+                method="volatility_adjusted"  #  
+
             )
 
-            # 娉㈠姩鐜囪嚜閫傚簲闂ㄦ帶绯荤?
+
+
+            #  ??
+
             self.volatility_gating = create_volatility_gating(
-                base_k=0.5,               # 鍩虹闂ㄦ绯绘?
-                volatility_lookback=60,    # 60澶╂尝鍔ㄧ巼鍥炴?
-                use_atr=True,             # 浣跨敤ATR璁畻娉㈠姩?
-                enable_liquidity_filter=True  # 鍚敤娴佸姩鎬ц繃?
+
+                base_k=0.5,               #  ? ? ??
+
+                volatility_lookback=60,    # 60 ??
+
+                use_atr=True,             #  ATR ? ?
+
+                enable_liquidity_filter=True  #  ? ?
+
             )
 
-            self.log("澧炲己浜ゆ槗缁勪欢鍒濆鍖栨垚鍔? 鍔ㄦ佸ご瀵歌绠?+ 娉㈠姩鐜囪嚜閫傚簲闂ㄦ帶")
+
+
+            self.log(" ? ??  ? ???+  ")
+
+
 
         except Exception as e:
-            self.log(f"澧炲己浜ゆ槗缁勪欢鍒濆鍖栧け璐 {e}")
-            # 璁剧疆鍥為缁勪欢
+
+            self.log(f" ? ? {e}")
+
+            #  ? 
+
             self.position_calculator = None
+
             self.volatility_gating = None
+
     
+
     def _init_strategy_components(self):
+
         """Initialize all strategy engine components"""
+
         try:
+
             # Initialize Enhanced Alpha Strategies Engine
+
             import sys
+
             import os
+
             parent_dir = os.path.dirname(os.path.dirname(__file__))
+
             if parent_dir not in sys.path:
+
                 sys.path.insert(0, parent_dir)
+
             
-            # Enhanced alpha strategies宸插交搴曞簾?- 鐜板湪浣跨敤Simple 25绛栫?
+
+            # Enhanced alpha strategies ?-  Simple 25 ??
+
             from autotrader.unified_polygon_factors import  UnifiedPolygonFactors
+
             from .real_risk_balancer import get_risk_balancer_adapter
 
-            self.log("Enhanced alpha strategies宸插簾寮- 鐜板湪浣跨敤Simple 25绛栫")
+
+
+            self.log("Enhanced alpha strategies ?-  Simple 25 ?")
+
             
+
             # Initialize Polygon factors for automatic API connection  
+
             self.polygon_factors = None
+
             self._init_polygon_factors()
+
             
+
             if not hasattr(self, 'risk_balancer_adapter') or getattr(self, 'risk_balancer_adapter', None) is None:
+
                 self.risk_balancer_adapter = get_risk_balancer_adapter(enable_balancer=False)
+
             
+
             # Create strategy status tracking
+
             polygon_ready = self.polygon_factors is not None
+
             self.strategy_status = {
+
                 'alpha_engine_ready': True,
+
                 'polygon_factors_ready': polygon_ready,
+
                 'risk_balancer_ready': True,
+
                 'bma_model_loaded': False,
+
                 'lstm_model_loaded': False
+
             }
+
             
+
             self.log("Strategy Engine: Core components initialized successfully")
+
             
+
         except Exception as e:
+
             self.log(f"Strategy Engine: Initialization failed - {e}")
+
             # Set fallback status
+
             self.strategy_status = {
+
                 'alpha_engine_ready': False,
+
                 'polygon_factors_ready': False,
+
                 'risk_balancer_ready': False,
+
                 'bma_model_loaded': False,
+
                 'lstm_model_loaded': False
+
             }
+
+
 
     def _init_polygon_factors(self):
+
         """Initialize Polygon factors with automatic API connection"""
+
         try:
+
             from autotrader.unified_polygon_factors import  UnifiedPolygonFactors
+
             self.polygon_factors = UnifiedPolygonFactors()
+
             self.log("Polygon API: Connected and factors initialized")
+
             return True
+
         except Exception as e:
+
             self.log(f"Polygon API: Connection failed - {e}")
+
             self.polygon_factors = None
+
             return False
+
     
+
     def _ensure_polygon_factors(self):
+
         """Ensure Polygon factors are initialized"""
+
         if self.polygon_factors is None:
+
             return self._init_polygon_factors()
+
         return True
+
     
+
     def get_dynamic_price(self, symbol: str) -> float:
-        """鑾峰彇鍔ㄦ佷环- 浠呬娇鐢≒olygon API"""
+
+        """ ? -  Polygon API"""
+
         try:
+
             from polygon_client import polygon_client
+
             
-            # 鏂规?: 浣跨敤get_current_price鑾峰彇褰撳墠浠锋?
+
+            #  ??:  get_current_price ??
+
             if hasattr(polygon_client, 'get_current_price'):
+
                 price = polygon_client.get_current_price(symbol)
+
                 if price and price > 0:
+
                     return float(price)
+
             
-            # 鏂规?: 浣跨敤get_realtime_snapshot鑾峰彇瀹炴椂蹇収
+
+            #  ??:  get_realtime_snapshot ?
+
             if hasattr(polygon_client, 'get_realtime_snapshot'):
+
                 snapshot = polygon_client.get_realtime_snapshot(symbol)
+
                 if snapshot and 'last_trade' in snapshot and 'price' in snapshot['last_trade']:
+
                     return float(snapshot['last_trade']['price'])
+
             
-            # 鏂规?: 浣跨敤get_last_trade鑾峰彇鏈鍚庝氦鏄撲环鏍?
+
+            #  ??:  get_last_trade ? ??
+
             if hasattr(polygon_client, 'get_last_trade'):
+
                 trade_data = polygon_client.get_last_trade(symbol)
+
                 if trade_data and 'price' in trade_data:
+
                     return float(trade_data['price'])
+
                     
-            # 鏂规?: 浣跨敤鍘嗗彶鏁版嵁鑾峰彇鏈杩戜环鏍?
+
+            #  ??:  ? ??
+
             if hasattr(polygon_client, 'get_today_intraday'):
+
                 intraday_data = polygon_client.get_today_intraday(symbol)
+
                 if not intraday_data.empty:
+
                     return float(intraday_data['close'].iloc[-1])
+
                     
+
         except Exception as e:
-            self.log(f"Polygon API鑾峰彇浠锋牸澶辫{symbol}: {e}")
+
+            self.log(f"Polygon API ?{symbol}: {e}")
+
         
-        # 濡傛灉鎵鏈堿PI璋冪敤閮藉け璐ワ紝璁板綍閿欒浣嗕笉杩斿洖纭紪鐮佷环鏍?
-        self.log(f"璀﹀ 鏃犳硶浠嶱olygon API鑾峰?{symbol} 浠锋牸锛屽彲鑳藉奖鍝嶄氦鏄撳喅绛")
-        return 0.0  # 杩斿?琛ㄧず浠锋牸鑾峰彇澶辫触
+
+        #  ? API ? ? ??
+
+        self.log(f" ?  Polygon API ??{symbol}  ?")
+
+        return 0.0  #  ?? 
+
     
+
     def log_message(self, message: str) -> None:
-        """璁板綍鏃ュ織娑堟"""
+
+        """ ?"""
+
         self.log(message)
+
     
+
     def _stop_engine(self) -> None:
-        """鍋滄寮曟搸"""
+
+        """ ? """
+
         self._stop_engine_mode()
 
+
+
     def _build_ui(self) -> None:
-        # 椤跺眰鍙粴鍔ㄥ鍣紙Canvas + Scrollbar锛夛紝浣挎暣涓晫闈㈠彲寰涓嬫粴鍔?
+
+        #  ? ? ?Canvas + Scrollbar ? ? ??
+
         container = tk.Frame(self)
+
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+
+
         canvas = tk.Canvas(container, highlightthickness=0)
+
         scrollbar_main = tk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+
         scrollbar_main.pack(side=tk.RIGHT, fill=tk.Y)
+
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         canvas.configure(yscrollcommand=scrollbar_main.set)
 
+
+
         frm = tk.Frame(canvas)
+
         canvas.create_window((0, 0), window=frm, anchor="nw")
 
+
+
         def _on_frame_configure(event):
+
             try:
+
                 canvas.configure(scrollregion=canvas.bbox("all"))
+
             except Exception:
+
                 pass
+
         frm.bind("<Configure>", _on_frame_configure)
 
-        # 榧犳爣婊氳疆鏀寔锛圵indows?
+
+
+        #  k? Windows?
+
         def _on_mousewheel(event):
+
             try:
+
                 canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
             except Exception:
+
                 pass
+
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        # connection鍙傛?
+
+
+        # connection ??
+
         con = tk.LabelFrame(frm, text="connectionsettings")
+
         con.pack(fill=tk.X, pady=5)
+
         tk.Label(con, text="Host").grid(row=0, column=0)
+
         self.ent_host = tk.Entry(con)
+
         self.ent_host.insert(0, self.state.host)
+
         self.ent_host.grid(row=0, column=1)
+
         tk.Label(con, text="Port").grid(row=0, column=2)
+
         self.ent_port = tk.Entry(con, width=8)
+
         self.ent_port.insert(0, str(self.state.port))
+
         self.ent_port.grid(row=0, column=3)
+
         tk.Label(con, text="ClientId").grid(row=0, column=4)
+
         self.ent_cid = tk.Entry(con, width=8)
+
         self.ent_cid.insert(0, str(self.state.client_id))
+
         self.ent_cid.grid(row=0, column=5)
 
-        # 鍒涘缓绗旇鏈?items?
+
+
+        #  ???items?
+
         notebook = ttk.Notebook(frm)
+
         notebook.pack(fill=tk.BOTH, expand=True, pady=5)
+
         
-        # 鏁版嵁搴撹偂绁ㄧ鐞嗛?items?
+
+        #  ? ??items?
+
         db_frame = ttk.Frame(notebook)
+
         notebook.add(db_frame, text="Data Services")
+
         self._build_database_tab(db_frame)
+
         
-        # 鏂囦欢瀵煎叆閫?items?
+
+        #  ??items?
+
         file_frame = ttk.Frame(notebook)
+
         notebook.add(file_frame, text="File Imports")
+
         self._build_file_tab(file_frame)
 
-        # 椋庨櫓绠悊?items?
+
+
+        #  ??items?
+
         risk_frame = ttk.Frame(notebook)
+
         notebook.add(risk_frame, text="Risk Engine")
+
         self._build_risk_tab(risk_frame)
 
-        # Polygon API闆嗘垚閫夐」鍗?
+
+
+        # Polygon API ??
+
         polygon_frame = ttk.Frame(notebook)
+
         notebook.add(polygon_frame, text="Polygon API")
+
         self._build_polygon_tab(polygon_frame)
 
-        # 绛栫暐寮曟搸?items鍗★紙闆嗘垚妯紡2?
+
+
+        #  ?items ?2?
+
         engine_frame = ttk.Frame(notebook)
+
         notebook.add(engine_frame, text="Strategy Engine")
+
         self._build_engine_tab(engine_frame)
 
-        # 鐩存帴浜ゆ槗?items鍗★紙闆嗘垚妯紡3?
+
+
+        #  ?items ?3?
+
         direct_frame = ttk.Frame(notebook)
+
         notebook.add(direct_frame, text="Direct Trading")
+
         self._build_direct_tab(direct_frame)
 
-        # 鍥炴祴鍒嗘瀽閫?items?
-        backtest_frame = ttk.Frame(notebook)
-        notebook.add(backtest_frame, text="Backtest Analysis")
-        self._build_backtest_tab(backtest_frame)
 
-        # BMA棰勬祴閫夐」鍗★紙涓庤缁?鍥炴祴鍒嗙?
-        prediction_frame = ttk.Frame(notebook)
-        notebook.add(prediction_frame, text="BMA Prediction")
-        self._build_prediction_tab(prediction_frame)
 
-        # Kronos K绾块娴嬮夐」鍗?
-        kronos_frame = ttk.Frame(notebook)
-        notebook.add(kronos_frame, text="Kronos Backtest")
-        self._build_kronos_tab(kronos_frame)
+        # Time Split evaluation tab
 
-        # Temporal Stacking tab - Advanced meta-learner with signal trajectory
-        temporal_frame = ttk.Frame(notebook)
-        notebook.add(temporal_frame, text="Temporal Stacking")
-        self._build_temporal_stacking_tab(temporal_frame)
+        timesplit_frame = ttk.Frame(notebook)
 
-        # 浜ゆ槗鍙傛暟settings
+        notebook.add(timesplit_frame, text="80/20 OOS")
+
+        self._build_timesplit_tab(timesplit_frame)
+
+
+
+        #  settings
+
         params = tk.LabelFrame(frm, text="Trading Parameter Settings")
+
         params.pack(fill=tk.X, pady=5)
+
         
-        # 绗竴琛岋細璧勯噾鍒嗛厤and杞闂撮殧
+
+        #  ? and? 
+
         tk.Label(params, text="Allocation Ratio").grid(row=0, column=0, padx=5, pady=5)
+
         self.ent_alloc = tk.Entry(params, width=8)
+
         self.ent_alloc.insert(0, str(self.state.alloc))
+
         self.ent_alloc.grid(row=0, column=1, padx=5)
+
         
+
         tk.Label(params, text="Polling (seconds)").grid(row=0, column=2, padx=5)
+
         self.ent_poll = tk.Entry(params, width=8)
+
         self.ent_poll.insert(0, str(self.state.poll_sec or 3.0))
+
         self.ent_poll.grid(row=0, column=3, padx=5)
+
         
+
         tk.Label(params, text="Fixed Quantity").grid(row=0, column=4, padx=5)
+
         self.ent_fixed_qty = tk.Entry(params, width=8)
+
         self.ent_fixed_qty.insert(0, str(self.state.fixed_qty))
+
         self.ent_fixed_qty.grid(row=0, column=5, padx=5)
+
         
-        # 绗簩琛岋細鑷姩娓呬粨?items
+
+        #  ? ? ?items
+
         self.var_auto_sell = tk.BooleanVar(value=self.state.auto_sell_removed)
-        tk.Checkbutton(params, text="绉婚櫎鑲エwhen鑷姩娓呬粨", variable=self.var_auto_sell).grid(row=1, column=0, columnspan=3, sticky=tk.W, padx=5, pady=5)
+
+        tk.Checkbutton(params, text=" ?when ? ", variable=self.var_auto_sell).grid(row=1, column=0, columnspan=3, sticky=tk.W, padx=5, pady=5)
+
         
-        # 鍔ㄤ綔鎸夐挳
+
+        #  
+
         act = tk.LabelFrame(frm, text="Actions")
+
         act.pack(fill=tk.X, pady=5)
+
         tk.Button(act, text="Test Connection", command=self._test_connection, bg="lightblue").pack(side=tk.LEFT, padx=5)
+
         tk.Button(act, text="Disconnect API", command=self._disconnect_api, bg="#ffcccc").pack(side=tk.LEFT, padx=5)
+
         tk.Button(act, text="Start Auto Trading", command=self._start_autotrade, bg="lightgreen").pack(side=tk.LEFT, padx=5)
+
         tk.Button(act, text="Stop Trading", command=self._stop, bg="orange").pack(side=tk.LEFT, padx=5)
+
         tk.Button(act, text="Clear Log", command=self._clear_log, bg="lightgray").pack(side=tk.LEFT, padx=5)
+
         tk.Button(act, text="Show Account", command=self._show_account, bg="lightyellow").pack(side=tk.LEFT, padx=5)
-        tk.Button(act, text="Run BMA Models", command=self._run_bma_model, bg="#d8b7ff").pack(side=tk.LEFT, padx=5)
+
+
         tk.Button(act, text="Print Database", command=self._print_database, bg="white").pack(side=tk.LEFT, padx=5)
+
         tk.Button(act, text="Drop Database", command=self._delete_database, bg="#ff6666").pack(side=tk.RIGHT, padx=5)
 
-        # 杩愯鐘舵佸憡绀烘爮
+
+
+        #  ? ? 
+
         status_frame = tk.LabelFrame(frm, text="Status Overview")
+
         status_frame.pack(fill=tk.X, pady=5)
+
         self._build_status_panel(status_frame)
+
         
-        # 鏃ュ織锛堟坊鍔犲彲婊氬姩?
+
+        #  ?
+
         log_frame = tk.LabelFrame(frm, text="Live Log")
+
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
         self.txt = tk.Text(log_frame, height=8)
+
         scroll_y = tk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.txt.yview)
+
         self.txt.configure(yscrollcommand=scroll_y.set)
+
         self.txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-        # will缂撳啿鍖篿n鏃ュ織鍒锋柊to鐣岄?
+
+        # will in to ??
+
         try:
+
             with self._log_lock:
+
                 if getattr(self, "_log_buffer", None):
+
                     for _line in self._log_buffer:
+
                         self.txt.insert(tk.END, _line + "\n")
+
                     self.txt.see(tk.END)
+
                     self._log_buffer.clear()
+
         except Exception:
+
             pass
+
+
 
     def log(self, msg: str) -> None:
-        # 鍚寃hen杈撳嚭to鎺у埗鍙癮ndGUI
+
+        #  when to andGUI
+
         try:
-            print(msg)  # 杈撳嚭to缁堢鎺у埗鍙?
+
+            print(msg)  #  to ? ??
+
         except UnicodeEncodeError:
-            # Windows鎺у埗鍙癷n鏂囩紪鐮侀棶棰樺閫夋柟妗?
+
+            # Windows in ? ??
+
             print(msg.encode('gbk', errors='ignore').decode('gbk', errors='ignore'))
+
         except Exception:
-            # if鏋滄帶鍒跺彴杈撳嚭failed锛岃嚦灏戠‘淇滸UI鏃ュ織杩樿兘宸ヤ?
+
+            # if failed GUI ??
+
             pass
+
         
-        # UI灏氭湭completedorText灏氭湭鍒涘缓when锛屽厛鍐欏叆缂撳啿鍖?
+
+        # UI completedorText when ??
+
         try:
+
             if hasattr(self, "txt") and isinstance(self.txt, tk.Text):
+
                 self.txt.insert(tk.END, msg + "\n")
+
                 self.txt.see(tk.END)
+
             else:
-                # can鑳絠n鏋勫缓UI鏃╂湡be璋僽se
+
+                # can in UI be use
+
                 with self._log_lock:
+
                     if not hasattr(self, "_log_buffer"):
+
                         self._log_buffer = []  # type: ignore
+
                     self._log_buffer.append(msg)  # type: ignore
+
         except Exception:
-            # 鍗充究鏃ュ織failed涔焠ot褰卞搷涓绘祦?
+
+            #  failed not ?
+
             try:
+
                 with self._log_lock:
+
                     if not hasattr(self, "_log_buffer"):
+
                         self._log_buffer = []  # type: ignore
+
                     self._log_buffer.append(msg)  # type: ignore
+
             except Exception:
+
                 pass
 
+
+
     def _build_risk_tab(self, parent) -> None:
+
         from .database import StockDatabase
+
         frm = ttk.Frame(parent)
+
         frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+
+
         box1 = ttk.LabelFrame(frm, text="Capital Parameters")
+
         box1.pack(fill=tk.X, pady=5)
+
         ttk.Label(box1, text="Stop Loss %").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.rm_stop = ttk.Spinbox(box1, from_=0.1, to=50.0, increment=0.1, width=8)
+
         self.rm_stop.set(2.0)
+
         self.rm_stop.grid(row=0, column=1, padx=5)
+
         ttk.Label(box1, text="Take Profit %").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+
         self.rm_target = ttk.Spinbox(box1, from_=0.1, to=100.0, increment=0.1, width=8)
+
         self.rm_target.set(5.0)
+
         self.rm_target.grid(row=0, column=3, padx=5)
+
         ttk.Label(box1, text="Real-time Allocation %").grid(row=0, column=4, padx=5, pady=5, sticky=tk.W)
+
         self.rm_rt_alloc = ttk.Spinbox(box1, from_=0.0, to=1.0, increment=0.01, width=8)
+
         self.rm_rt_alloc.set(0.03)
+
         self.rm_rt_alloc.grid(row=0, column=5, padx=5)
 
+
+
         box2 = ttk.LabelFrame(frm, text="Risk Controls & Limits")
+
         box2.pack(fill=tk.X, pady=5)
+
         ttk.Label(box2, text="Price Floor ($)").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.rm_price_min = ttk.Spinbox(box2, from_=0.0, to=1000.0, increment=0.5, width=8)
+
         self.rm_price_min.set(2.0)
+
         self.rm_price_min.grid(row=0, column=1, padx=5)
+
         ttk.Label(box2, text="Price Ceiling ($)").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+
         self.rm_price_max = ttk.Spinbox(box2, from_=0.0, to=5000.0, increment=1.0, width=8)
+
         self.rm_price_max.set(800.0)
+
         self.rm_price_max.grid(row=0, column=3, padx=5)
+
         ttk.Label(box2, text="Cash Reserve %").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.rm_cash_reserve = ttk.Spinbox(box2, from_=0.0, to=0.9, increment=0.01, width=8)
+
         self.rm_cash_reserve.set(0.15)
+
         self.rm_cash_reserve.grid(row=1, column=1, padx=5)
+
         ttk.Label(box2, text="Max Single Position %").grid(row=1, column=2, padx=5, pady=5, sticky=tk.W)
+
         self.rm_single_max = ttk.Spinbox(box2, from_=0.01, to=0.9, increment=0.01, width=8)
+
         self.rm_single_max.set(0.12)
+
         self.rm_single_max.grid(row=1, column=3, padx=5)
+
         ttk.Label(box2, text="Minimum Order Value ($)").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.rm_min_order = ttk.Spinbox(box2, from_=0, to=10000, increment=50, width=8)
+
         self.rm_min_order.set(500)
+
         self.rm_min_order.grid(row=2, column=1, padx=5)
+
         ttk.Label(box2, text="Daily Order Limit").grid(row=2, column=2, padx=5, pady=5, sticky=tk.W)
+
         self.rm_daily_limit = ttk.Spinbox(box2, from_=1, to=200, increment=1, width=8)
+
         self.rm_daily_limit.set(20)
+
         self.rm_daily_limit.grid(row=2, column=3, padx=5)
 
+
+
         box3 = ttk.LabelFrame(frm, text="ATR / Bracket Cleanup")
+
         box3.pack(fill=tk.X, pady=5)
+
         self.rm_use_atr = tk.BooleanVar(value=False)
+
         ttk.Checkbutton(box3, text="Enable ATR Stops", variable=self.rm_use_atr).grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
         ttk.Label(box3, text="ATR Stop Multiplier").grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+
         self.rm_atr_stop = ttk.Spinbox(box3, from_=0.5, to=10.0, increment=0.1, width=8)
+
         self.rm_atr_stop.set(2.0)
+
         self.rm_atr_stop.grid(row=0, column=2, padx=5)
+
         ttk.Label(box3, text="ATR Target Multiplier").grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+
         self.rm_atr_target = ttk.Spinbox(box3, from_=0.5, to=10.0, increment=0.1, width=8)
+
         self.rm_atr_target.set(3.0)
+
         self.rm_atr_target.grid(row=0, column=4, padx=5)
+
         ttk.Label(box3, text="ATR Risk Scale").grid(row=0, column=5, padx=5, pady=5, sticky=tk.W)
+
         self.rm_atr_scale = ttk.Spinbox(box3, from_=0.1, to=20.0, increment=0.1, width=8)
+
         self.rm_atr_scale.set(5.0)
+
         self.rm_atr_scale.grid(row=0, column=6, padx=5)
+
         self.rm_allow_short = tk.BooleanVar(value=True)
+
         ttk.Checkbutton(box3, text="Allow Short Positions", variable=self.rm_allow_short).grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.rm_bracket_removed = tk.BooleanVar(value=False)
+
         ttk.Checkbutton(box3, text="Disable bracket order on delisted symbols", variable=self.rm_bracket_removed).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
 
+
+
         box4 = ttk.LabelFrame(frm, text="Webhook Settings")
+
         box4.pack(fill=tk.X, pady=5)
+
         ttk.Label(box4, text="Webhook URL").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.rm_webhook = ttk.Entry(box4, width=60)
+
         self.rm_webhook.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
 
+
+
         act = ttk.Frame(frm)
+
         act.pack(fill=tk.X, pady=10)
+
         ttk.Button(act, text="Load Config", command=self._risk_load).pack(side=tk.LEFT, padx=5)
+
         ttk.Button(act, text="Save Config", command=self._risk_save).pack(side=tk.LEFT, padx=5)
+
+
 
         self._risk_load()
 
+
+
     def _risk_load(self) -> None:
+
         from .database import StockDatabase
+
         try:
+
             db = StockDatabase()
+
             cfg = db.get_risk_config() or {}
+
             rm = cfg.get('risk_management', cfg) if isinstance(cfg, dict) else {}
+
             self.rm_stop.delete(0, tk.END); self.rm_stop.insert(0, str(rm.get('default_stop_pct', 0.02)*100))
+
             self.rm_target.delete(0, tk.END); self.rm_target.insert(0, str(rm.get('default_target_pct', 0.05)*100))
+
             self.rm_rt_alloc.delete(0, tk.END); self.rm_rt_alloc.insert(0, str(rm.get('realtime_alloc_pct', 0.03)))
+
             pr = rm.get('price_range', (2.0, 800.0))
+
             self.rm_price_min.delete(0, tk.END); self.rm_price_min.insert(0, str(pr[0]))
+
             self.rm_price_max.delete(0, tk.END); self.rm_price_max.insert(0, str(pr[1]))
+
             self.rm_cash_reserve.delete(0, tk.END); self.rm_cash_reserve.insert(0, str(rm.get('cash_reserve_pct', 0.15)))
+
             self.rm_single_max.delete(0, tk.END); self.rm_single_max.insert(0, str(rm.get('max_single_position_pct', 0.12)))
+
             self.rm_min_order.delete(0, tk.END); self.rm_min_order.insert(0, str(rm.get('min_order_value_usd', 500)))
+
             self.rm_daily_limit.delete(0, tk.END); self.rm_daily_limit.insert(0, str(rm.get('daily_order_limit', 20)))
+
             self.rm_use_atr.set(bool(rm.get('use_atr_stops', False)))
+
             self.rm_atr_stop.delete(0, tk.END); self.rm_atr_stop.insert(0, str(rm.get('atr_multiplier_stop', 2.0)))
+
             self.rm_atr_target.delete(0, tk.END); self.rm_atr_target.insert(0, str(rm.get('atr_multiplier_target', 3.0)))
+
             self.rm_atr_scale.delete(0, tk.END); self.rm_atr_scale.insert(0, str(rm.get('atr_risk_scale', 5.0)))
+
             self.rm_allow_short.set(bool(rm.get('allow_short', True)))
+
             self.rm_bracket_removed.set(bool(rm.get('use_bracket_on_removed', False)))
+
             self.rm_webhook.delete(0, tk.END); self.rm_webhook.insert(0, rm.get('webhook_url', ''))
+
             self.log("Risk configuration loaded")
+
         except Exception as e:
-            self.log(f"鍔犺浇椋庨櫓閰嶇疆failed: {e}")
+
+            self.log(f" failed: {e}")
+
+
 
     def _risk_save(self) -> None:
+
         from .database import StockDatabase
+
         try:
+
             rm = {
+
                 'default_stop_pct': float(self.rm_stop.get())/100.0,
+
                 'default_target_pct': float(self.rm_target.get())/100.0,
+
                 'price_range': (float(self.rm_price_min.get()), float(self.rm_price_max.get())),
+
                 'cash_reserve_pct': float(self.rm_cash_reserve.get()),
+
                 'max_single_position_pct': float(self.rm_single_max.get()),
+
                 'min_order_value_usd': float(self.rm_min_order.get()),
+
                 'daily_order_limit': int(self.rm_daily_limit.get()),
+
                 'use_atr_stops': bool(self.rm_use_atr.get()),
+
                 'atr_multiplier_stop': float(self.rm_atr_stop.get()),
+
                 'atr_multiplier_target': float(self.rm_atr_target.get()),
+
                 'atr_risk_scale': float(self.rm_atr_scale.get()),
+
                 'allow_short': bool(self.rm_allow_short.get()),
+
                 'use_bracket_on_removed': bool(self.rm_bracket_removed.get()),
+
                 'webhook_url': self.rm_webhook.get().strip(),
+
                 'realtime_alloc_pct': float(self.rm_rt_alloc.get()),
+
                 'symbol_overrides': {},
+
                 'strategy_settings': {},
+
             }
+
             cfg = {'risk_management': rm}
+
             db = StockDatabase()
+
             ok = db.save_risk_config(cfg)
+
             if ok:
-                self.log("椋庨櫓閰嶇疆淇濆瓨to鏁版嵁搴")
+
+                self.log(" to ?")
+
             else:
-                self.log("椋庨櫓閰嶇疆淇濆瓨failed")
+
+                self.log(" failed")
+
             db.close()
+
             
-            # 鍚寃henupdates缁熶竴閰嶇疆绠悊鍣ㄥ苟鎸佷箙鍖?
+
+            #  whenupdates ? ??
+
             self.config_manager.update_runtime_config({
+
                 'capital.cash_reserve_pct': rm['cash_reserve_pct'],
+
                 'capital.max_single_position_pct': rm['max_single_position_pct'],
+
                 'capital.max_portfolio_exposure': rm['realtime_alloc_pct'],
+
                 'orders.default_stop_loss_pct': rm['default_stop_pct'],
+
                 'orders.default_take_profit_pct': rm['default_target_pct'],
+
                 'orders.min_order_value_usd': rm['min_order_value_usd'],
+
                 'orders.daily_order_limit': rm['daily_order_limit'],
+
                 'risk.use_atr_stops': rm['use_atr_stops'],
+
                 'risk.atr_multiplier_stop': rm['atr_multiplier_stop'],
+
                 'risk.atr_multiplier_target': rm['atr_multiplier_target'],
+
                 'risk.allow_short': rm['allow_short']
+
             })
+
             
-            # 鎸佷箙鍖杢o鏂囦?
+
+            #  to ??
+
             if self.config_manager.persist_runtime_changes():
-                self.log(" 椋庨櫓閰嶇疆鎸佷箙鍖杢o閰嶇疆鏂囦欢")
+
+                self.log("  to ")
+
             else:
-                self.log(" 椋庨櫓閰嶇疆鎸佷箙鍖杅ailed锛屼絾淇濆瓨to鏁版嵁搴")
+
+                self.log("  failed to ?")
+
         except Exception as e:
-            self.log(f"淇濆瓨椋庨櫓閰嶇疆failed: {e}")
+
+            self.log(f" failed: {e}")
+
+
 
     def _build_polygon_tab(self, parent) -> None:
-        """Polygon API闆嗘垚閫夐」鍗"""
+
+        """Polygon API ?"""
+
         frm = ttk.Frame(parent)
+
         frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+
+
         # Polygon API Status
+
         status_frame = ttk.LabelFrame(frm, text="Polygon API Status")
+
         status_frame.pack(fill=tk.X, pady=5)
+
         
+
         self.polygon_status_label = tk.Label(status_frame, text="Status: Connecting...", fg="blue")
+
         self.polygon_status_label.pack(side=tk.LEFT, padx=10, pady=5)
+
         
+
         ttk.Button(status_frame, text="Refresh Connection", command=self._refresh_polygon_connection).pack(side=tk.RIGHT, padx=10, pady=5)
 
-        # 瀹炵敤鍔熻兘 (涓嶆槸娴嬭瘯鍔熻?
-        function_frame = ttk.LabelFrame(frm, text="甯傚満鏁版嵁鍔熻兘")
+
+
+        #   ( ??
+
+        function_frame = ttk.LabelFrame(frm, text=" ")
+
         function_frame.pack(fill=tk.X, pady=5)
+
         
-        ttk.Button(function_frame, text="鑾峰彇瀹炴椂鎶ヤ环", command=self._get_realtime_quotes).grid(row=0, column=0, padx=5, pady=5)
-        ttk.Button(function_frame, text="鑾峰彇鍘嗗彶鏁版, command=self._get_historical_data).grid(row=0, column=1, padx=5, pady=5")
+
+        ttk.Button(function_frame, text=" ", command=self._get_realtime_quotes).grid(row=0, column=0, padx=5, pady=5)
+
+        ttk.Button(function_frame, text=" ?, command=self._get_historical_data).grid(row=0, column=1, padx=5, pady=5")
+
         # Return comparison tool
+
         compare_frame = ttk.LabelFrame(frm, text="Return Comparison")
+
         compare_frame.pack(fill=tk.X, pady=5)
 
+
+
         tk.Label(compare_frame, text="Tickers (comma separated):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.polygon_compare_symbols = tk.Entry(compare_frame, width=40)
+
         self.polygon_compare_symbols.insert(0, "AAPL,MSFT,GOOGL")
+
         self.polygon_compare_symbols.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
 
+
+
         tk.Label(compare_frame, text="Start date (YYYY-MM-DD):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+
         self.polygon_compare_start = tk.Entry(compare_frame, width=15)
+
         self.polygon_compare_start.insert(0, (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d'))
+
         self.polygon_compare_start.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
 
+
+
         tk.Label(compare_frame, text="End date (YYYY-MM-DD):").grid(row=1, column=2, padx=5, pady=5, sticky=tk.W)
+
         self.polygon_compare_end = tk.Entry(compare_frame, width=15)
+
         self.polygon_compare_end.insert(0, datetime.now().strftime('%Y-%m-%d'))
+
         self.polygon_compare_end.grid(row=1, column=3, padx=5, pady=5, sticky=tk.W)
 
-        # Excel 鏂囦欢閫夋嫨?
-        tk.Label(compare_frame, text="Excel 鏂囦").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-        self.polygon_compare_excel_entry = tk.Entry(compare_frame, width=40)
-        self.polygon_compare_excel_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
-        ttk.Button(compare_frame, text="閫夋嫨Excel...", command=self._browse_excel_file).grid(row=2, column=2, padx=5, pady=5, sticky=tk.W)
 
-        # Excel Top20 T+5 鍥炴祴鎸夐挳锛堜笌鐜版湁return comparison鍚屽尯锛?
+
+        # Excel  ?
+
+        tk.Label(compare_frame, text="Excel  ?").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+
+        self.polygon_compare_excel_entry = tk.Entry(compare_frame, width=40)
+
+        self.polygon_compare_excel_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ttk.Button(compare_frame, text=" Excel...", command=self._browse_excel_file).grid(row=2, column=2, padx=5, pady=5, sticky=tk.W)
+
+
+
+        # Excel Top20 T+5  return comparison ??
+
         self.polygon_compare_excel_button = ttk.Button(
+
             compare_frame,
+
             text="Excel Top20 T+5 (vs SPY)",
+
             command=self._compare_returns_from_excel
+
         )
+
         self.polygon_compare_excel_button.grid(row=0, column=2, padx=5, pady=5, sticky=tk.E)
+
         try:
-            _attach_tooltip(self.polygon_compare_excel_button, "浠嶦xcel姣忎釜宸ヤ綔琛ㄥ彇鍓0鑲エ锛屾寜T+5璁畻骞冲潎鏀剁泭骞朵笌SPY瀵规瘮锛岃緭鍑篍xcel姹囨")
+
+            _attach_tooltip(self.polygon_compare_excel_button, " Excel ?0 ? T+5 ? SPY Excel ?")
+
         except Exception:
+
             pass
 
+
+
         self.polygon_compare_button = ttk.Button(compare_frame, text="Compute Return Comparison", command=self._compare_polygon_returns)
+
         self.polygon_compare_button.grid(row=0, column=3, padx=5, pady=5, sticky=tk.E)
 
+
+
         compare_frame.grid_columnconfigure(1, weight=1)
+
         compare_frame.grid_columnconfigure(3, weight=1)
 
+
+
         self.polygon_compare_output = tk.Text(compare_frame, height=6, wrap=tk.WORD, state=tk.DISABLED)
+
         self.polygon_compare_output.grid(row=3, column=0, columnspan=4, padx=5, pady=(5, 0), sticky=tk.EW)
 
+
+
         
-        # 鐘舵佷俊鎭樉绀?
-        info_frame = ttk.LabelFrame(frm, text="API淇")
+
+        #  ? n???
+
+        info_frame = ttk.LabelFrame(frm, text="API?")
+
         info_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
         
+
         self.polygon_info_text = tk.Text(info_frame, height=10, state=tk.DISABLED)
+
         info_scrollbar = ttk.Scrollbar(info_frame, orient=tk.VERTICAL, command=self.polygon_info_text.yview)
+
         self.polygon_info_text.configure(yscrollcommand=info_scrollbar.set)
+
         
+
         self.polygon_info_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         info_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         
-        # 鍒濆鍖栫姸鎬佹樉绀?
+
+        #  ? ??
+
         self._update_polygon_status()
 
+
+
     def _refresh_polygon_connection(self):
-        """鍒锋柊Polygon API杩炴"""
+
+        """ Polygon API ?"""
+
         try:
+
             self.log("Refreshing Polygon API connection...")
+
             self._ensure_polygon_factors()
+
             self._update_polygon_status()
+
         except Exception as e:
+
             self.log(f"Failed to refresh Polygon connection: {e}")
 
+
+
     def _get_realtime_quotes(self):
-        """鑾峰彇瀹炴椂鎶ヤ环"""
+
+        """ """
+
         try:
+
             if self.polygon_factors:
+
                 self.log("Fetching real-time quotes from Polygon API...")
-                # 杩欓噷鍙互娣诲姞鑾峰彇瀹炴椂鎶ヤ环鐨勯昏?
+
+                #  ? ???
+
                 self.log("Real-time quotes functionality ready")
+
             else:
+
                 self.log("Polygon API not connected")
+
         except Exception as e:
+
             self.log(f"Failed to get real-time quotes: {e}")
 
+
+
     def _get_historical_data(self):
-        """鑾峰彇鍘嗗彶鏁版"""
+
+        """ ?"""
+
         try:
+
             if self.polygon_factors:
+
                 self.log("Fetching historical data from Polygon API...")
-                # 杩欓噷鍙互娣诲姞鑾峰彇鍘嗗彶鏁版嵁鐨勯昏?
+
+                #  ? ???
+
                 self.log("Historical data functionality ready")
+
             else:
+
                 self.log("Polygon API not connected")
+
         except Exception as e:
+
             self.log(f"Failed to get historical data: {e}")
 
+
+
     def _compare_polygon_returns(self):
+
         """Compare ticker returns against QQQ using Polygon API."""
+
         if getattr(self, '_polygon_compare_running', False):
+
             self.log("[Polygon] Return comparison already running, please wait...")
+
             return
+
+
 
         symbols_entry = getattr(self, 'polygon_compare_symbols', None)
+
         start_entry = getattr(self, 'polygon_compare_start', None)
+
         end_entry = getattr(self, 'polygon_compare_end', None)
+
         output_widget = getattr(self, 'polygon_compare_output', None)
 
+
+
         if not all([symbols_entry, start_entry, end_entry, output_widget]):
+
             self.log("[Polygon] Return comparison widgets are not initialized.")
+
             return
+
+
 
         raw_symbols = symbols_entry.get().strip()
+
         start_str = start_entry.get().strip()
+
         end_str = end_entry.get().strip()
 
+
+
         if not raw_symbols:
+
             messagebox.showwarning("Warning", "Please enter at least one ticker (comma separated).")
+
             return
 
+
+
         def set_output(text_value: str) -> None:
+
             def _update() -> None:
+
                 output_widget.config(state=tk.NORMAL)
+
                 output_widget.delete(1.0, tk.END)
+
                 output_widget.insert(tk.END, text_value)
+
                 output_widget.config(state=tk.DISABLED)
+
             self.after(0, _update)
 
+
+
         def set_busy(is_busy: bool) -> None:
+
             def _update() -> None:
+
                 if hasattr(self, 'polygon_compare_button'):
+
                     self.polygon_compare_button.config(state=tk.DISABLED if is_busy else tk.NORMAL)
+
             self.after(0, _update)
+
+
 
         set_output("Calculating, please wait...")
 
+
+
         def worker(symbols: str, start_value: str, end_value: str) -> None:
+
             self._polygon_compare_running = True
+
             set_busy(True)
+
             try:
+
                 try:
+
                     start_dt = datetime.strptime(start_value, '%Y-%m-%d')
+
                 except ValueError:
+
                     self.after(0, lambda: messagebox.showerror("Date Format Error", "Please use YYYY-MM-DD for the date."))
+
                     set_output("Invalid start date format.")
+
                     return
+
+
 
                 if end_value:
+
                     try:
+
                         end_dt = datetime.strptime(end_value, '%Y-%m-%d')
+
                     except ValueError:
+
                         self.after(0, lambda: messagebox.showerror("Date Format Error", "Please use YYYY-MM-DD for the date."))
+
                         set_output("Invalid end date format.")
+
                         return
+
                 else:
+
                     end_dt = datetime.now()
 
+
+
                 if end_dt < start_dt:
+
                     self.after(0, lambda: messagebox.showerror("Date Error", "End date cannot be earlier than start date."))
+
                     set_output("End date is earlier than start date.")
+
                     return
+
+
 
                 start_norm = start_dt.strftime('%Y-%m-%d')
+
                 end_norm = end_dt.strftime('%Y-%m-%d')
 
+
+
                 tickers = [s.strip().upper() for s in symbols.split(',') if s.strip()]
+
                 if not tickers:
+
                     self.after(0, lambda: messagebox.showwarning("Warning", "No valid tickers were parsed."))
+
                     set_output("No valid tickers provided.")
+
                     return
+
+
 
                 # yfinance market-cap prefilter (>= $1B) before any downstream fetching
+
                 MCAP_THRESHOLD = 1_000_000_000
+
                 try:
+
                     import yfinance as yf
+
                     self.log(f"[Filter] Checking yfinance market caps (threshold ${MCAP_THRESHOLD:,})...")
+
                     kept, filtered, missing = [], [], []
+
                     for sym in tickers:
+
                         mcap = None
+
                         try:
+
                             yft = yf.Ticker(sym)
+
                             # Prefer fast_info when available
+
                             mcap = None
+
                             try:
+
                                 fi = getattr(yft, 'fast_info', None)
+
                                 if fi is not None:
+
                                     try:
+
                                         mcap = fi.get('market_cap', None)
+
                                     except Exception:
+
                                         mcap = getattr(fi, 'market_cap', None)
+
                             except Exception:
+
                                 pass
+
                             if mcap is None:
+
                                 info = yft.info
+
                                 if isinstance(info, dict):
+
                                     mcap = info.get('marketCap', None)
+
                         except Exception:
+
                             mcap = None
+
+
 
                         if isinstance(mcap, (int, float)) and mcap >= MCAP_THRESHOLD:
+
                             kept.append(sym)
+
                         elif mcap is None:
+
                             # Market cap data unavailable - keep the ticker anyway
+
                             missing.append(sym)
+
                             kept.append(sym)
+
                             self.log(f"[Filter] {sym}: market cap unavailable, keeping anyway")
+
                         else:
+
                             # Market cap below threshold
+
                             filtered.append(sym)
 
+
+
                     self.log(f"[Filter] {len(tickers)} -> {len(kept)} kept (filtered {len(filtered)}; missing mcap {len(missing)})")
+
                     if filtered:
+
                         self.log(f"[Filter] Excluded (first 10): {', '.join(filtered[:10])}")
+
                     if not kept:
+
                         self.log(f"[Filter] WARNING: All tickers filtered out, skipping market cap filter")
+
                         # Don't return - proceed with original tickers
+
                         tickers = tickers
+
                     else:
+
                         tickers = kept
+
                 except Exception as e:
+
                     self.log(f"[Filter] yfinance failed; skipping market cap filter: {e}")
 
+
+
                 try:
+
                     from polygon_client import polygon_client
+
                 except Exception as import_err:
+
                     msg = f"Failed to import polygon_client: {import_err}"
+
                     self.log(f"[Polygon] {msg}")
+
                     set_output(msg)
+
                     return
 
+
+
                 def compute_symbol(symbol: str):
+
                     df = polygon_client.get_historical_bars(symbol, start_norm, end_norm, 'day', 1)
+
                     if df is None or df.empty:
+
                         raise ValueError("No valid historical price data.")
+
                     df = df.sort_index()
+
                     start_row = df.iloc[0]
+
                     end_row = df.iloc[-1]
+
                     start_price = float(start_row['Open'])
+
                     end_price = float(end_row['Close'])
+
                     if start_price == 0:
+
                         raise ValueError("Start open price is zero; cannot compute return.")
+
                     return {
+
                         'symbol': symbol,
+
                         'start_date': start_row.name.strftime('%Y-%m-%d'),
+
                         'end_date': end_row.name.strftime('%Y-%m-%d'),
+
                         'start_price': float(start_row['Open']),
+
                         'end_price': float(end_row['Close']),
+
                         'return': float(end_row['Close']) / float(start_row['Open']) - 1,
+
                     }
+
+
 
                 self.log(f"[Polygon] Fetching returns for {', '.join(tickers)} from {start_norm} to {end_norm}.")
 
+
+
                 results = []
+
                 errors = []
 
+
+
                 for symbol in tickers:
+
                     try:
+
                         results.append(compute_symbol(symbol))
+
                         self.log(f"[Polygon] {symbol} return {results[-1]['return']:.2%}")
+
                     except Exception as symbol_err:
+
                         errors.append(f"{symbol}: {symbol_err}")
+
                         self.log(f"[Polygon] Failed to fetch {symbol}: {symbol_err}")
 
+
+
                 if not results:
+
                     summary_lines = ["No valid stock data retrieved."]
+
                     if errors:
+
                         summary_lines.extend(errors)
+
                     set_output("\n".join(summary_lines))
+
                     return
+
+
 
                 avg_return = sum(item['return'] for item in results) / len(results)
 
+
+
                 try:
+
                     qqq_result = compute_symbol('QQQ')
+
                 except Exception as qqq_err:
+
                     qqq_result = None
+
                     self.log(f"[Polygon] Failed to fetch QQQ data: {qqq_err}")
 
+
+
                 lines = [
+
                     f"{item['symbol']}: {item['start_date']} open {item['start_price']:.2f} -> {item['end_date']} close {item['end_price']:.2f}, return {item['return']:.2%}"
+
                     for item in results
+
                 ]
 
+
+
                 lines.append('-')
+
                 lines.append(f"Average return: {avg_return:.2%}")
 
+
+
                 if qqq_result:
+
                     lines.append(
+
                         f"QQQ: {qqq_result['start_date']} open {qqq_result['start_price']:.2f} -> {qqq_result['end_date']} close {qqq_result['end_price']:.2f}, return {qqq_result['return']:.2%}"
+
                     )
+
                     lines.append(f"Excess vs QQQ: {avg_return - qqq_result['return']:.2%}")
+
                     self.log(f"[Polygon] Average return {avg_return:.2%} vs QQQ {qqq_result['return']:.2%}")
+
                 else:
+
                     lines.append("Failed to retrieve QQQ data for comparison.")
+
                     self.log(f"[Polygon] Average return {avg_return:.2%}; QQQ data unavailable.")
 
+
+
                 if errors:
+
                     lines.append('-')
+
                     lines.append("Tickers with errors:")
+
                     lines.extend(errors)
 
+
+
                 set_output('\n'.join(lines))
+
             finally:
+
                 set_busy(False)
+
                 self._polygon_compare_running = False
 
+
+
         thread = threading.Thread(target=worker, args=(raw_symbols, start_str, end_str), daemon=True)
+
         thread.start()
 
+
+
     def _browse_excel_file(self):
-        """娴忚閫夋嫨Excel骞跺～鍏呭埌杈撳叆妗"""
+
+        """ ? Excel ?"""
+
         try:
+
             entry = getattr(self, 'polygon_compare_excel_entry', None)
+
             initial_dir = os.path.expanduser("~")
+
             path = filedialog.askopenfilename(
-                title="閫夋嫨鍖呭惈澶氫釜鏂规鐨凟xcel鏂囦",
+
+                title=" ? Excel ?",
+
                 initialdir=initial_dir,
+
                 filetypes=[("Excel Files", "*.xlsx;*.xls")]
+
             )
+
             if path and entry is not None:
+
                 entry.delete(0, tk.END)
+
                 entry.insert(0, path)
+
         except Exception as e:
+
             try:
-                messagebox.showerror("错误", f"选择Excel失败: {e}")
+
+                messagebox.showerror("????", f"???Excel???: {e}")
+
             except Exception:
+
                 pass
 
+
+
     def _compare_returns_from_excel(self):
-        """浠嶦xcel澶氳〃璇诲彇0鑲エ锛岃绠桾+5骞冲潎鏀剁泭骞朵笌SPY瀵规瘮锛岃緭鍑烘眹鎬籈xcel"""
+
+        """ Excel 0 ? ? T+5 SPY Excel"""
+
         if getattr(self, '_excel_backtest_running', False):
+
             self.log("[Excel] Backtest already running, please wait...")
+
             return
+
+
 
         output_widget = getattr(self, 'polygon_compare_output', None)
+
         if not output_widget:
+
             messagebox.showerror("Error", "Output widget not initialized")
+
             return
 
-        # 璇诲彇杈撳叆妗嗕腑鐨凟xcel璺緞锛涜嫢涓虹┖鍒欏脊妗嗛夋?
+
+
+        #  Excel S? ???
+
         entry = getattr(self, 'polygon_compare_excel_entry', None)
+
         excel_path = None
+
         try:
+
             if entry is not None:
+
                 excel_path = entry.get().strip()
+
         except Exception:
+
             excel_path = None
+
         if not excel_path:
+
             excel_path = filedialog.askopenfilename(
-                title="閫夋嫨鍖呭惈澶氫釜鏂规鐨凟xcel鏂囦",
+
+                title=" ? Excel ?",
+
                 filetypes=[("Excel Files", "*.xlsx;*.xls")]
+
             )
+
             if not excel_path:
+
                 return
 
-        # GUI杈撳嚭甯姪鍑芥?
+
+
+        # GUI ? ??
+
         def set_output(text_value: str) -> None:
+
             def _update() -> None:
+
                 output_widget.config(state=tk.NORMAL)
+
                 output_widget.delete(1.0, tk.END)
+
                 output_widget.insert(tk.END, text_value)
+
                 output_widget.config(state=tk.DISABLED)
+
             self.after(0, _update)
+
+
 
         def set_busy(is_busy: bool) -> None:
+
             def _update() -> None:
+
                 try:
+
                     self.polygon_compare_excel_button.config(state=tk.DISABLED if is_busy else tk.NORMAL)
+
                 except Exception:
+
                     pass
+
             self.after(0, _update)
 
-        set_output("杩愯涓紝璇风鍊..")
+
+
+        set_output(" ? S? ??..")
+
+
 
         TOP_N = 20
+
         HORIZON = 5
+
         BENCH = "SPY"
 
+
+
         def worker(path: str) -> None:
+
             self._excel_backtest_running = True
+
             set_busy(True)
+
             try:
+
                 try:
+
                     book = pd.read_excel(path, sheet_name=None)
+
                 except Exception as e:
-                    self.after(0, lambda: messagebox.showerror("璇诲彇澶辫触", f"鏃犳硶璇诲彇Excel: {e}"))
-                    set_output(f"璇诲彇Excel澶辫 {e}")
+
+                    self.after(0, lambda: messagebox.showerror(" ", f" Excel: {e}"))
+
+                    set_output(f" Excel ? {e}")
+
                     return
+
                 if not book:
-                    set_output("Excel涓病鏈変换浣曞伐浣滆")
+
+                    set_output("Excel ? ?")
+
                     return
+
+
 
                 # import polygon client
+
                 try:
+
                     from polygon_client import polygon_client
+
                 except Exception as import_err:
-                    msg = f"鏃犳硶瀵煎叆polygon_client: {import_err}"
+
+                    msg = f" polygon_client: {import_err}"
+
                     self.log(f"[Excel] {msg}")
+
                     set_output(msg)
+
                     return
+
+
 
                 def _parse_date(value):
+
                     if pd.isna(value):
+
                         return None
+
                     try:
+
                         return pd.to_datetime(value).tz_localize(None).normalize()
+
                     except Exception:
+
                         return None
+
+
 
                 def _sanitize_ticker(raw):
+
                     if raw is None or (isinstance(raw, float) and np.isnan(raw)):
+
                         return None
+
                     try:
+
                         s = str(raw).strip().upper()
+
                         if not s:
+
                             return None
+
                         return "".join(ch for ch in s if ch.isalnum() or ch in ".-")
+
                     except Exception:
+
                         return None
+
+
 
                 def _download_history(symbol: str, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> pd.DataFrame:
+
                     try:
+
                         df = polygon_client.get_historical_bars(
+
                             symbol, start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"), 'day', 1
+
                         )
+
                     except Exception:
+
                         df = pd.DataFrame()
+
                     if isinstance(df, pd.DataFrame) and not df.empty:
+
                         try:
+
                             df = df.sort_index()
+
                             idx = pd.to_datetime(df.index).tz_localize(None).normalize()
+
                             df.index = idx
+
                         except Exception:
+
                             pass
+
                     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
+
+
                 def _t_horizon_return_by_target(symbol: str, tdate: pd.Timestamp, h: int) -> Optional[float]:
+
                     start = (tdate - pd.Timedelta(days=30))
+
                     end = (tdate + pd.Timedelta(days=2))
+
                     hist = _download_history(symbol, start, end)
+
                     if hist.empty:
+
                         return None
+
                     dates = hist.index
+
                     pos = dates.searchsorted(tdate)
+
                     if pos == len(dates) or dates[pos] != tdate:
+
                         pos = max(0, dates.searchsorted(tdate, side="right") - 1)
+
                     if pos < 0 or pos >= len(dates):
+
                         return None
+
                     base_pos = pos - h
+
                     if base_pos < 0:
+
                         return None
+
                     try:
+
                         base_close = float(hist.iloc[base_pos]["Close"])
+
                         target_close = float(hist.iloc[pos]["Close"])
+
                         if base_close <= 0 or not np.isfinite(base_close) or not np.isfinite(target_close):
+
                             return None
+
                         return (target_close / base_close) - 1.0
+
                     except Exception:
+
                         return None
+
+
 
                 def _forward_horizon_return_from_base(symbol: str, base_date: pd.Timestamp, h: int) -> Optional[float]:
-                    # base_date ?base_date + h (浠ヤ氦鏄撴棩姝ヨ?
+
+                    # base_date ?base_date + h ( ??
+
                     start = (base_date - pd.Timedelta(days=2))
+
                     end = (base_date + pd.Timedelta(days=40))
+
                     hist = _download_history(symbol, start, end)
+
                     if hist.empty:
+
                         return None
+
                     dates = hist.index
+
                     pos = dates.searchsorted(base_date)
+
                     if pos == len(dates) or dates[pos] != base_date:
+
                         pos = max(0, dates.searchsorted(base_date, side="right") - 1)
+
                     if pos < 0 or pos >= len(dates):
+
                         return None
+
                     target_pos = pos + h
+
                     if target_pos >= len(dates):
+
                         return None
+
                     try:
+
                         base_close = float(hist.iloc[pos]["Close"])
+
                         target_close = float(hist.iloc[target_pos]["Close"])
+
                         if base_close <= 0 or not np.isfinite(base_close) or not np.isfinite(target_close):
+
                             return None
+
                         return (target_close / base_close) - 1.0
+
                     except Exception:
+
                         return None
+
+
 
                 def _select_top_n(df: pd.DataFrame, n: int) -> pd.DataFrame:
+
                     if df is None or df.empty:
+
                         return pd.DataFrame()
-                    # 瀹芥澗璇嗗埆鍒楀悕锛堝惈涓枃鍒悕?
+
+                    #  ? [??
+
                     cols = {str(c).strip().lower(): c for c in df.columns}
 
+
+
                     def _pick(colnames: list) -> Optional[str]:
+
                         for nm in colnames:
+
                             key = str(nm).strip().lower()
+
                             if key in cols:
+
                                 return cols[key]
+
                         return None
 
-                    rank_col = _pick(["rank", "排名", "排行", "名次"])
-                    score_col = _pick(["final_score", "score", "综合评分", "得分", "分数", "评分", "打分", "总分"])
+
+
+                    rank_col = _pick(["rank", "????", "????", "????"])
+
+                    score_col = _pick(["final_score", "score", "???????", "? ?", "????", "????", "???", "???"])
+
+
 
                     df2 = df.copy()
+
                     if rank_col:
+
                         c = rank_col
+
                         with pd.option_context('mode.use_inf_as_na', True):
+
                             df2 = df2.sort_values(c, ascending=True, na_position="last")
+
                     elif score_col:
+
                         c = score_col
+
                         with pd.option_context('mode.use_inf_as_na', True):
+
                             df2 = df2.sort_values(c, ascending=False, na_position="last")
+
                     return df2.head(n)
 
+
+
                 per_sheet_rows = []
+
                 details_per_sheet = {}
-                skipped_info = []  # 璁板綍琚烦杩囩殑sheet鍙婂師鍥?
+
+                skipped_info = []  #  ? sheet ??
+
+
 
                 for sheet_name, df in book.items():
+
                     if not isinstance(df, pd.DataFrame) or df.empty:
-                        skipped_info.append(f"{sheet_name}: 绌烘暟鎹紝璺宠")
+
+                        skipped_info.append(f"{sheet_name}:  ? ?")
+
                         continue
+
                     cols_map = {str(c).strip().lower(): c for c in df.columns}
 
+
+
                     def _pick_col(colnames: list) -> Optional[str]:
+
                         for nm in colnames:
+
                             key = str(nm).strip().lower()
+
                             if key in cols_map:
+
                                 return cols_map[key]
+
                         return None
 
-                    tick_col = _pick_col(["ticker", "symbol", "代码", "股票代码", "证券代码", "标的", "股票", "股票代號", "证券代碼"])
+
+
+                    tick_col = _pick_col(["ticker", "symbol", "????", "???????", "??????", "???", "???", "??????", "?????a"])
+
                     if not tick_col:
-                        self.log(f"[Excel] {sheet_name}: 缂哄皯ticker鍒楋紝璺宠繃")
-                        skipped_info.append(f"{sheet_name}: 缂哄皯ticker/浠ｇ爜鍒楋紝璺宠")
+
+                        self.log(f"[Excel] {sheet_name}:  ticker ")
+
+                        skipped_info.append(f"{sheet_name}:  ticker/ ?")
+
                         continue
 
-                    # 鍙朤op N
+
+
+                    #  Top N
+
                     top_df = _select_top_n(df, TOP_N).copy()
+
                     top_df["__ticker__"] = top_df[tick_col].map(_sanitize_ticker)
+
                     top_df = top_df.dropna(subset=["__ticker__"]).drop_duplicates(subset=["__ticker__"])
 
-                    # 鐩爣鏃ユ湡
-                    date_col = _pick_col(["date", "目标日期", "目标日期", "target_date", "交易日期", "信号日期", "日期", "预测日期", "base_date", "基准日期", "signal_date"])
+
+
+                    #  L? 
+
+                    date_col = _pick_col(["date", "???????", "???????", "target_date", "????????", "???????", "????", "???????", "base_date", "???????", "signal_date"])
+
                     if date_col and date_col in top_df.columns:
+
                         top_df["__target_date__"] = top_df[date_col].map(_parse_date)
+
                     else:
-                        # 灏濊瘯鐢ㄦ暣琛ㄤ腑鏈甯歌鏃ユ?
+
+                        #  ? ? ??
+
                         tdate = None
+
                         if date_col and date_col in df.columns:
+
                             candidates = df[date_col].dropna().map(_parse_date)
+
                             if isinstance(candidates, pd.Series) and candidates.notna().any():
+
                                 mode_vals = candidates.mode()
+
                                 tdate = mode_vals.iloc[0] if len(mode_vals) > 0 else None
+
                         top_df["__target_date__"] = tdate
 
-                    # 鏂瑰悜鑷傚簲锛氬皾璇曚袱绉嶆柟鍚戯紝鍙栨湁鏁堟牱鏈洿澶氳?
+
+
+                    #  ? ??
+
                     realized_target, bench_target = [], []
+
                     realized_forward, bench_forward = [], []
+
                     for _, row in top_df.iterrows():
+
                         sym = row["__ticker__"]
+
                         tdate = row["__target_date__"]
+
                         if tdate is None:
+
                             realized_target.append(None)
+
                             bench_target.append(None)
+
                             realized_forward.append(None)
+
                             bench_forward.append(None)
+
                             continue
+
                         rt = _t_horizon_return_by_target(sym, tdate, HORIZON)
+
                         bt = _t_horizon_return_by_target(BENCH, tdate, HORIZON)
+
                         realized_target.append(rt)
+
                         bench_target.append(bt)
 
+
+
                         rf = _forward_horizon_return_from_base(sym, tdate, HORIZON)
+
                         bf = _forward_horizon_return_from_base(BENCH, tdate, HORIZON)
+
                         realized_forward.append(rf)
+
                         bench_forward.append(bf)
 
-                    # 閫夋嫨鏈夋晥鏍锋湰鏇村鐨勬柟鍚?
+
+
+                    #  ? ??
+
                     cnt_t = int(pd.Series(realized_target).notna().sum())
+
                     cnt_f = int(pd.Series(realized_forward).notna().sum())
+
                     use_forward = cnt_f > cnt_t
 
+
+
                     if use_forward:
+
                         top_df["realized_ret"] = realized_forward
+
                         top_df["bench_ret"] = bench_forward
+
                     else:
+
                         top_df["realized_ret"] = realized_target
+
                         top_df["bench_ret"] = bench_target
 
+
+
                     valid_mask = top_df["realized_ret"].notna()
+
                     n_ok = int(valid_mask.sum())
+
                     avg_ret = float(top_df.loc[valid_mask, "realized_ret"].mean()) if n_ok > 0 else np.nan
+
                     avg_bmk = float(top_df.loc[valid_mask, "bench_ret"].mean()) if n_ok > 0 else np.nan
+
                     alpha = (avg_ret - avg_bmk) if np.isfinite(avg_ret) and np.isfinite(avg_bmk) else np.nan
 
+
+
                     per_sheet_rows.append({
+
                         "sheet": sheet_name,
+
                         "top_n": min(TOP_N, len(top_df)),
+
                         "n_computed": n_ok,
+
                         "avg_return_pct": None if pd.isna(avg_ret) else round(avg_ret * 100.0, 3),
+
                         "avg_sp500_pct": None if pd.isna(avg_bmk) else round(avg_bmk * 100.0, 3),
+
                         "alpha_pct": None if pd.isna(alpha) else round(alpha * 100.0, 3),
-                        "direction": "base鈫抌ase+H" if use_forward else "target-H鈫抰arget"
+
+                        "direction": "base base+H" if use_forward else "target-H target"
+
                     })
 
-                    # 淇濆瓨鏄庣粏锛堟洿鍙嬪ソ鍛藉悕锛?
+
+
+                    #  ??
+
                     out_cols = [tick_col]
+
                     if date_col and date_col in top_df.columns:
+
                         out_cols.append(date_col)
+
                     det = pd.DataFrame({
+
                         "ticker": top_df[tick_col].values,
+
                         "date": top_df[date_col].values if (date_col and date_col in top_df.columns) else [None] * len(top_df),
+
                         "realized_ret_pct": (top_df["realized_ret"] * 100.0).round(3),
+
                         "benchmark_ret_pct": (top_df["bench_ret"] * 100.0).round(3),
+
                         "alpha_pct": ((top_df["realized_ret"] - top_df["bench_ret"]) * 100.0).round(3)
+
                     })
+
                     details_per_sheet[sheet_name] = det
 
+
+
                 if not per_sheet_rows:
-                    set_output("鏈兘鍦‥xcel涓В鏋愬埌鍙敤鐨勫伐浣滆鏁版")
+
+                    set_output(" ? Excel ? ? ? ?")
+
                     return
+
+
 
                 summary_df = pd.DataFrame(per_sheet_rows).sort_values("alpha_pct", ascending=False)
 
-                # 鍐欒緭鍑篍xcel鍒颁笌杈撳叆鍚岀洰褰曚笅?backtest_results
+
+
+                #  Excel ?backtest_results
+
                 out_dir = os.path.join("D:", os.sep, "trade", "backtest_results")
+
                 try:
+
                     os.makedirs(out_dir, exist_ok=True)
+
                 except Exception:
+
                     pass
+
                 base = os.path.splitext(os.path.basename(path))[0]
+
                 out_path = os.path.join(out_dir, f"{base}_avg_return_backtest.xlsx")
 
-                try:
-                    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-                        summary_df.to_excel(writer, index=False, sheet_name="summary")
-                        for sheet, det in details_per_sheet.items():
-                            safe_name = sheet[:31] if sheet else "sheet"
-                            det.to_excel(writer, index=False, sheet_name=safe_name)
-                except Exception as e:
-                    self.log(f"[Excel] 鍐欏嚭缁撴灉澶辫 {e}")
 
-                # 杈撳嚭鍒癎UI
-                lines = ["Excel Top20 T+5 鍥炴祴瀹屾"]
-                for _, row in summary_df.iterrows():
-                    lines.append(
-                        f"{row['sheet']}: n={int(row['n_computed'])}/{int(row['top_n'])}  "
-                        f"avg={row['avg_return_pct']}%  SPY={row['avg_sp500_pct']}%  alpha={row['alpha_pct']}%  dir={row.get('direction','')}"
-                    )
-                if skipped_info:
-                    lines.append("")
-                    lines.append("璺宠繃鐨勫伐浣滆")
-                    lines.extend(skipped_info)
-                lines.append(f"杈撳嚭鏂囦欢: {out_path}")
-                set_output("\n".join(lines))
+
                 try:
-                    self.after(0, lambda: messagebox.showinfo("完成", f"Excel回测完成，已输出: {out_path}"))
+
+                    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+
+                        summary_df.to_excel(writer, index=False, sheet_name="summary")
+
+                        for sheet, det in details_per_sheet.items():
+
+                            safe_name = sheet[:31] if sheet else "sheet"
+
+                            det.to_excel(writer, index=False, sheet_name=safe_name)
+
+                except Exception as e:
+
+                    self.log(f"[Excel]  ? {e}")
+
+
+
+                #  GUI
+
+                lines = ["Excel Top20 T+5  ?"]
+
+                for _, row in summary_df.iterrows():
+
+                    lines.append(
+
+                        f"{row['sheet']}: n={int(row['n_computed'])}/{int(row['top_n'])}  "
+
+                        f"avg={row['avg_return_pct']}%  SPY={row['avg_sp500_pct']}%  alpha={row['alpha_pct']}%  dir={row.get('direction','')}"
+
+                    )
+
+                if skipped_info:
+
+                    lines.append("")
+
+                    lines.append(" ?")
+
+                    lines.extend(skipped_info)
+
+                lines.append(f" : {out_path}")
+
+                set_output("\n".join(lines))
+
+                try:
+
+                    self.after(0, lambda: messagebox.showinfo("???", f"Excel????????????: {out_path}"))
+
                 except Exception:
+
                     pass
+
             finally:
+
                 set_busy(False)
+
                 self._excel_backtest_running = False
 
+
+
     def _enable_polygon_factors(self):
-        """鍚痷sePolygon鍥犲"""
+
+        """ usePolygon ?"""
+
         try:
+
             if hasattr(self, 'trader') and self.trader:
+
                 self.trader.enable_polygon_factors()
-                self.log("Polygon鍥犲瓙鍚痷se")
+
+                self.log("Polygon use")
+
             else:
-                self.log("璇峰厛connection浜ゆ槗绯荤粺")
+
+                self.log(" connection ")
+
         except Exception as e:
-            self.log(f"鍚痷sePolygon鍥犲瓙failed: {e}")
+
+            self.log(f" usePolygon failed: {e}")
+
+
 
     def _clear_polygon_cache(self):
-        """娓呯悊Polygon缂撳"""
+
+        """ Polygon ?"""
+
         try:
+
             if hasattr(self, 'trader') and self.trader:
+
                 self.trader.clear_polygon_cache()
-                self.log("Polygon缂撳瓨娓呯悊")
+
+                self.log("Polygon ")
+
             else:
-                self.log("璇峰厛connection浜ゆ槗绯荤粺")
+
+                self.log(" connection ")
+
         except Exception as e:
-            self.log(f"娓呯悊Polygon缂撳瓨failed: {e}")
+
+            self.log(f" Polygon failed: {e}")
+
+
 
     def _toggle_polygon_balancer(self):
-        """鍒囨崲risk control鏀剁泭骞宠　鍣ㄧ姸鎬"""
+
+        """ risk control ?"""
+
         try:
+
             if hasattr(self, 'trader') and self.trader:
+
                 if self.polygon_balancer_var.get():
+
                     self.trader.enable_polygon_risk_balancer()
-                    self.log("risk control鏀剁泭骞宠　鍣ㄥ惎use")
+
+                    self.log("risk control use")
+
                 else:
+
                     self.trader.disable_polygon_risk_balancer()
-                    self.log("risk control鏀剁泭骞宠　鍣ㄧuse")
+
+                    self.log("risk control ?use")
+
             else:
-                self.log("璇峰厛connection浜ゆ槗绯荤粺")
+
+                self.log(" connection ")
+
                 self.polygon_balancer_var.set(False)
+
         except Exception as e:
-            self.log(f"鍒囨崲risk control鏀剁泭骞宠　鍣ㄧ姸鎬乫ailed: {e}")
+
+            self.log(f" risk control failed: {e}")
+
             self.polygon_balancer_var.set(False)
 
+
+
     def _open_balancer_config(self):
-        """鎵撳紑risk control鏀剁泭骞宠　鍣ㄩ厤缃潰鏉"""
+
+        """ risk control D??"""
+
         try:
-            # 瀵煎叆GUI闈㈡?
+
+            #  GUI ??
+
             import sys
+
             import os
+
             sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
             
+
             from .real_risk_balancer import create_standalone_gui
+
             
-            # in鏂扮嚎绋媔n鎵撳紑GUI锛岄伩鍏嶉樆濉炰富鐣岄潰
+
+            # in in GUI 
+
             import threading
+
             gui_thread = threading.Thread(target=create_standalone_gui, daemon=True)
+
             gui_thread.start()
+
             
-            self.log("risk control鏀剁泭骞宠　鍣ㄩ厤缃潰鏉挎墦寮")
+
+            self.log("risk control D? ?")
+
             
+
         except Exception as e:
-            self.log(f"鎵撳紑閰嶇疆闈㈡澘failed: {e}")
+
+            self.log(f" failed: {e}")
+
+
 
     def _update_polygon_status(self):
-        """updatesPolygon鐘舵佹樉绀"""
+
+        """updatesPolygon ? ?"""
+
         try:
+
             if hasattr(self, 'trader') and self.trader:
-                # checkPolygonconnection鐘舵?
+
+                # checkPolygonconnection ??
+
                 polygon_enabled = hasattr(self.trader, 'polygon_enabled') and self.trader.polygon_enabled
+
                 balancer_enabled = hasattr(self.trader, 'polygon_risk_balancer_enabled') and self.trader.polygon_risk_balancer_enabled
+
                 
+
                 if polygon_enabled:
-                    status_text = "鐘舵 Polygonconnection"
+
+                    status_text = " ? Polygonconnection"
+
                     status_color = "green"
+
                 else:
-                    status_text = "鐘舵 Polygon鏈猚onnection"
+
+                    status_text = " ? Polygon connection"
+
                     status_color = "red"
+
                 
+
                 self.polygon_status_label.config(text=status_text, fg=status_color)
+
                 self.polygon_balancer_var.set(balancer_enabled)
+
                 
-                # updates缁熻淇伅
+
+                # updates ? R?
+
                 stats = self.trader.get_polygon_stats()
+
                 if stats:
-                    stats_text = "Polygon缁熻淇伅:\n"
-                    stats_text += f"  启用状态: {'是' if stats.get('enabled', False) else '否'}\n"
-                    stats_text += f"  risk control平衡: {'是' if stats.get('risk_balancer_enabled', False) else '否'}\n"
-                    stats_text += f"  缂撳瓨澶у {stats.get('cache_size', 0)}\n"
-                    stats_text += f"  鎬昏绠楁 {stats.get('total_calculations', 0)}\n"
-                    stats_text += f"  success娆 {stats.get('successful_calculations', 0)}\n"
-                    stats_text += f"  failed娆 {stats.get('failed_calculations', 0)}\n"
-                    stats_text += f"  缂撳瓨鍛絠n: {stats.get('cache_hits', 0)}\n"
+
+                    stats_text = "Polygon ? R?:\n"
+
+                    stats_text += f"  ??????: {'??' if stats.get('enabled', False) else '??'}\n"
+
+                    stats_text += f"  risk control???: {'??' if stats.get('risk_balancer_enabled', False) else '??'}\n"
+
+                    stats_text += f"   ? {stats.get('cache_size', 0)}\n"
+
+                    stats_text += f"   ? ? {stats.get('total_calculations', 0)}\n"
+
+                    stats_text += f"  success? {stats.get('successful_calculations', 0)}\n"
+
+                    stats_text += f"  failed? {stats.get('failed_calculations', 0)}\n"
+
+                    stats_text += f"   in: {stats.get('cache_hits', 0)}\n"
+
                     
-                    # 缁勪欢鐘舵?
+
+                    #  ??
+
                     components = stats.get('components', {})
-                    stats_text += "\n缁勪欢鐘舵\n"
+
+                    stats_text += "\n ?\n"
+
                     for comp, status in components.items():
+
                         stats_text += f"  {comp}: {'[OK]' if status else '[FAIL]'}\n"
+
                     
+
                     self.polygon_stats_text.config(state=tk.NORMAL)
+
                     self.polygon_stats_text.delete(1.0, tk.END)
+
                     self.polygon_stats_text.insert(1.0, stats_text)
+
                     self.polygon_stats_text.config(state=tk.DISABLED)
+
                 else:
+
                     self.polygon_stats_text.config(state=tk.NORMAL)
+
                     self.polygon_stats_text.delete(1.0, tk.END)
-                    self.polygon_stats_text.insert(1.0, "鏆俷o缁熻淇伅")
+
+                    self.polygon_stats_text.insert(1.0, " no ? R?")
+
                     self.polygon_stats_text.config(state=tk.DISABLED)
+
             else:
-                self.polygon_status_label.config(text="鐘舵 鏈猚onnection浜ゆ槗绯荤粺", fg="gray")
+
+                self.polygon_status_label.config(text=" ?  connection ", fg="gray")
+
                 
+
         except Exception as e:
-            self.polygon_status_label.config(text=f"鐘舵 checkfailed ({e})", fg="red")
+
+            self.polygon_status_label.config(text=f" ? checkfailed ({e})", fg="red")
+
+
 
     def _schedule_polygon_update(self):
-        """瀹歸henupdatesPolygon鐘舵"""
+
+        """ whenupdatesPolygon ?"""
+
         self._update_polygon_status()
-        self.after(5000, self._schedule_polygon_update)  # ? secondsupdates涓?
+
+        self.after(5000, self._schedule_polygon_update)  # ? secondsupdates??
+
+
 
     def _build_engine_tab(self, parent) -> None:
+
         frm = ttk.Frame(parent)
+
         frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+
+
         # Strategy Engine Control Section
+
         engine_box = ttk.LabelFrame(frm, text="Strategy Engine Control")
+
         engine_box.pack(fill=tk.X, pady=8)
 
+
+
         ttk.Button(engine_box, text="Start Engine (Connect/Subscribe)", command=self._start_engine).grid(row=0, column=0, padx=6, pady=6)
+
         ttk.Button(engine_box, text="Run Signal & Trading Once", command=self._engine_once).grid(row=0, column=1, padx=6, pady=6)
+
         ttk.Button(engine_box, text="Stop Engine", command=self._stop_engine_mode).grid(row=0, column=2, padx=6, pady=6)
 
+
+
         # Strategy Engine Section (simplified)
+
         strategy_box = ttk.LabelFrame(frm, text="Strategy Engine")
+
         strategy_box.pack(fill=tk.X, pady=8)
 
+
+
         ttk.Button(strategy_box, text="Run BMA Model", command=self._run_bma_model).grid(row=0, column=0, padx=6, pady=6)
+
         ttk.Button(strategy_box, text="Direct Predict (Snapshot)", command=self._direct_predict_snapshot).grid(row=0, column=2, padx=6, pady=6)
+
         ttk.Button(strategy_box, text="Generate Trading Signals", command=self._generate_trading_signals).grid(row=0, column=1, padx=6, pady=6)
 
+
+
         # Risk Management Section
+
         risk_box = ttk.LabelFrame(frm, text="Risk Management")
+
         risk_box.pack(fill=tk.X, pady=8)
 
+
+
         # Risk balancer status
+
         self.risk_balancer_var = tk.BooleanVar()
+
         ttk.Checkbutton(risk_box, text="Enable Risk Balancer", variable=self.risk_balancer_var, 
+
                        command=self._toggle_risk_balancer).grid(row=0, column=0, padx=6, pady=6)
+
         
+
         ttk.Button(risk_box, text="View Risk Stats", command=self._view_risk_stats).grid(row=0, column=1, padx=6, pady=6)
+
         ttk.Button(risk_box, text="Reset Risk Limits", command=self._reset_risk_limits).grid(row=0, column=2, padx=6, pady=6)
 
+
+
         # Strategy Status Display
+
         status_box = ttk.LabelFrame(frm, text="Strategy Status")
+
         status_box.pack(fill=tk.BOTH, expand=True, pady=8)
+
         
+
         self.strategy_status_text = tk.Text(status_box, height=8, width=80)
+
         self.strategy_status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         
+
         # Add scrollbar
+
         scrollbar = tk.Scrollbar(status_box)
+
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         self.strategy_status_text.config(yscrollcommand=scrollbar.set)
+
         scrollbar.config(command=self.strategy_status_text.yview)
+
         
+
         # Update status display
+
         self._update_strategy_status()
 
+
+
         tip = ttk.Label(frm, text="Strategy Engine: Uses unified configuration manager to scan universe, compute multi-factor signals and place orders.")
+
         tip.pack(anchor=tk.W, pady=6)
 
+
+
     def _direct_predict_snapshot(self) -> None:
+
         """
+
         Direct predict using latest saved snapshot with Excel output.
+
         Features:
+
         - Auto-fetch data from Polygon API
+
         - Calculate features automatically
+
         - Predict with snapshot (no retrain)
+
         - Generate Excel ranking report with raw scores (no EMA smoothing)
+
         """
+
         try:
-            from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+
+            from bma_models._bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+
             from datetime import datetime, timedelta
+
             import pandas as pd
+
             import numpy as np
+
             from pathlib import Path
+
             import sys
 
-            # Load default tickers from data file
-            default_tickers_file = Path(r"D:\trade\data\factor_exports\polygon_factors_all_filtered_clean_final_v2.parquet")
+
+
+            # Load default tickers from MultiIndex of CLEAN_STANDARDIZED parquet
+
+            default_tickers_file = DIRECT_PREDICT_TICKER_DATA_PATH
+
             default_tickers: list[str] = []
+
             
+
             try:
+
                 if default_tickers_file.exists():
-                    self.log(f"[DirectPredict] 📂 从数据文件加载股票列表: {default_tickers_file}")
+
+                    self.log(f"[DirectPredict] ?? ???????????????? ?: {default_tickers_file}")
+
                     df_tickers = pd.read_parquet(default_tickers_file)
+
                     if isinstance(df_tickers.index, pd.MultiIndex):
+
                         default_tickers = sorted(df_tickers.index.get_level_values('ticker').unique().tolist())
+
                     elif 'ticker' in df_tickers.columns:
+
                         default_tickers = sorted(df_tickers['ticker'].unique().tolist())
-                    self.log(f"[DirectPredict] ✅ 从数据文件加载了 {len(default_tickers)} 只股票")
+
+                    self.log(f"[DirectPredict] ? ??????????????? {len(default_tickers)} ????")
+
                 else:
-                    self.log(f"[DirectPredict] ⚠️ 数据文件不存在: {default_tickers_file}")
+
+                    self.log(f"[DirectPredict] ?? ?????????????: {default_tickers_file}")
+
             except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ 加载默认股票列表失败: {e}")
+
+                self.log(f"[DirectPredict] ?? ?????????? ????: {e}")
+
                 import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
+
 
             # Determine tickers: prefer pool selection, then default from file, else prompt user input
-            tickers: list[str] = []
-            try:
-                if hasattr(self, 'selected_pool_info') and self.selected_pool_info and 'tickers' in self.selected_pool_info:
-                    tickers = list(set([t.strip().upper() for t in self.selected_pool_info['tickers'] if isinstance(t, str) and t.strip()]))
-                    self.log(f"[DirectPredict] 📌 使用股票池中的 {len(tickers)} 只股票")
-            except Exception:
-                tickers = []
+            # Determine tickers: prefer CLEAN_STANDARDIZED parquet (MultiIndex tickers), fall back to pool selection or user input
 
-            # Use default tickers from file if no pool selection
-            if not tickers and default_tickers:
+            tickers: list[str] = []
+
+            if default_tickers:
+
                 tickers = default_tickers.copy()
-                self.log(f"[DirectPredict] 📋 使用数据文件中的默认股票列表: {len(tickers)} 只股票")
+
+                self.log(f"[DirectPredict] Loaded {len(tickers)} tickers from CLEAN_STANDARDIZED parquet (MultiIndex): {default_tickers_file}")
+
+            else:
+
+                try:
+
+                    if hasattr(self, 'selected_pool_info') and self.selected_pool_info and 'tickers' in self.selected_pool_info:
+
+                        tickers = list(set([t.strip().upper() for t in self.selected_pool_info['tickers'] if isinstance(t, str) and t.strip()]))
+
+                        self.log(f"[DirectPredict] Loaded {len(tickers)} tickers from selected pool")
+
+                except Exception:
+
+                    tickers = []
+
             
+
             # If still no tickers, prompt user
+
             if not tickers:
+
                 import tkinter as tk
+
                 from tkinter import simpledialog
+
                 root = self.winfo_toplevel()
+
                 default_str = ','.join(default_tickers[:50]) if default_tickers else ""  # Show first 50 as example
+
                 sym_str = simpledialog.askstring(
+
                     "Direct Predict", 
-                    f"输入股票代码（逗号分隔）\n数据文件包含 {len(default_tickers)} 只股票\n示例: {default_str[:100]}...", 
+
+                    f"?????????????????\n??????????? {len(default_tickers)} ????\n???: {default_str[:100]}...", 
+
                     parent=root,
+
                     initialvalue=default_str[:500] if default_tickers else ""  # Pre-fill with first 500 tickers
+
                 )
+
                 if not sym_str:
-                    self.log("[DirectPredict] 已取消")
+
+                    self.log("[DirectPredict] ?????")
+
                     return
+
                 tickers = list({s.strip().upper() for s in sym_str.split(',') if s.strip()})
 
-            self.log(f"[DirectPredict] 预测股票 {len(tickers)} 只")
-            self.log(f"[DirectPredict] 股票列表: {', '.join(tickers[:10])}{'...' if len(tickers) > 10 else ''}")
+
+
+            self.log(f"[DirectPredict] ????? {len(tickers)} ?")
+
+            self.log(f"[DirectPredict] ???? ?: {', '.join(tickers[:10])}{'...' if len(tickers) > 10 else ''}")
+
+
 
             # Use default T+10 prediction horizon (no user input needed)
+
             # Get horizon from model config (default 10 days)
+
             try:
+
                 from bma_models.unified_config_loader import get_time_config
+
                 time_config = get_time_config()
+
                 prediction_horizon = getattr(time_config, 'prediction_horizon_days', 10)
+
             except Exception:
+
                 prediction_horizon = 10  # Default T+10
+
             
-            self.log(f"[DirectPredict] 预测horizon: T+{prediction_horizon} 天（使用上一个交易日的数据预测未来{prediction_horizon}天）")
+
+            self.log(f"[DirectPredict] Prediction horizon: T+{prediction_horizon} days")
+            required_features = self._get_direct_predict_features()
+            self.log(f"[DirectPredict] Snapshot feature list: {required_features}")
 
             # Import Excel report function
+
             scripts_path = Path(__file__).parent.parent / "scripts"
+
             if str(scripts_path) not in sys.path:
+
                 sys.path.insert(0, str(scripts_path))
+
             try:
+
                 import sys
+
                 from pathlib import Path
+
                 scripts_dir = Path(__file__).parent.parent / "scripts"
+
                 if str(scripts_dir) not in sys.path:
+
                     sys.path.insert(0, str(scripts_dir))
+
                 from direct_predict_ewma_excel import generate_excel_ranking_report
+
             except ImportError as e:
-                self.log(f"[DirectPredict] ⚠️ 无法导入Excel报告函数: {e}")
-                self.log("[DirectPredict] 将跳过Excel报告生成")
+
+                self.log(f"[DirectPredict] ?? ???????Excel??? ??: {e}")
+
+                self.log("[DirectPredict] ??????Excel????????")
+
+
 
             # Initialize model
+
             model = UltraEnhancedQuantitativeModel()
-            self.log("[DirectPredict] 📡 自动获取数据并计算特征...")
+
+            self.log("[DirectPredict] ?? ???????????????????...")
+
             
+
             # Get predictions for T+10 horizon
+
             # Logic: Use previous trading day as base date, predict future T+10 days
+
             # Need 280+ days total: 280 days (for factor calculation) + buffer
+
             MIN_REQUIRED_LOOKBACK_DAYS = 280  # For 252-day rolling window factors
+
             total_lookback_days = MIN_REQUIRED_LOOKBACK_DAYS + 30  # Extra buffer for weekends/holidays
+
             
-            # 🔥 Use today as initial end_date to fetch latest available data
+
+            # ?? Use today as initial end_date to fetch latest available data
+
             # We'll determine the actual last trading day with complete close data from fetched data
+
             today = pd.Timestamp.today()
+
             initial_base_date = today - BDay(1)  # Initial estimate (will be updated after fetching data)
+
             # Calculate start_date: use calendar days for API call (API handles trading days)
+
             start_date = initial_base_date - pd.Timedelta(days=total_lookback_days)
+
             
-            self.log(f"[DirectPredict] 📊 数据获取范围: {start_date.strftime('%Y-%m-%d')} 至 {today.strftime('%Y-%m-%d')} (获取最新可用数据)")
-            self.log(f"[DirectPredict]   历史数据: {MIN_REQUIRED_LOOKBACK_DAYS} 天 (用于因子计算)")
-            self.log(f"[DirectPredict]   预测horizon: T+{prediction_horizon} 天")
-            self.log(f"[DirectPredict]   基准日期: 将从获取的数据中确定最后有收盘数据的交易日（只要找到一个就足够）")
+
+            self.log(f"[DirectPredict] ?? ???????? : {start_date.strftime('%Y-%m-%d')} ?? {today.strftime('%Y-%m-%d')} (??????????????)")
+
+            self.log(f"[DirectPredict]   ???????: {MIN_REQUIRED_LOOKBACK_DAYS} ?? (???????????)")
+
+            self.log(f"[DirectPredict]   ???horizon: T+{prediction_horizon} ??")
+
+            self.log(f"[DirectPredict]   ???????: ???????????????????????????????????????????????????")
+
             
+
             # base_date will be determined after fetching market data (see below)
+
             base_date = initial_base_date  # Temporary, will be updated
+
             
+
             # Fetch all data once (more efficient than fetching separately for each day)
-            self.log(f"[DirectPredict] 📡 一次性获取 {total_lookback_days} 天的数据...")
+
+            self.log(f"[DirectPredict] ?? ??????? {total_lookback_days} ???????...")
+
             
+
             # Initialize predictions list
+
             all_predictions = []
+
             
+
             try:
+
                 # Get all feature data for the entire period
+
                 from bma_models.simple_25_factor_engine import Simple17FactorEngine
+
                 
+
                 engine = Simple17FactorEngine(
+
                     lookback_days=total_lookback_days,
+
                     mode='predict',
+
                     horizon=prediction_horizon  # Use T+10 horizon
+
                 )
+
                 
+
                 # Fetch market data - use today as end_date to get the latest available data
+
                 # We'll determine the actual last trading day with complete close data from the fetched data
+
                 market_data = engine.fetch_market_data(
+
                     symbols=tickers,
+
                     use_optimized_downloader=True,
+
                     start_date=start_date.strftime('%Y-%m-%d'),
+
                     end_date=today.strftime('%Y-%m-%d')  # Use today to get latest available data
+
                 )
+
                 
+
                 if market_data.empty:
+
                     raise ValueError(f"Failed to fetch market data for {len(tickers)} tickers")
+
                 
-                self.log(f"[DirectPredict] ✅ 市场数据获取完成: {market_data.shape}")
-                
-                # 🔥 Determine the last trading day with close data
-                # Find the latest date where we have ANY close data (只要找到一个就足够)
+
+                self.log(f"[DirectPredict] ? ? ??????????: {market_data.shape}")
+
+                close_col = None
+                for candidate in ('Close', 'close', 'adj_close'):
+                    if candidate in market_data.columns:
+                        close_col = candidate
+                        break
+                if close_col:
+                    close_values = market_data[close_col]
+                    invalid_mask = (~pd.to_numeric(close_values, errors='coerce').notna()) | (close_values <= 0) | (close_values > DIRECT_PREDICT_MAX_CLOSE)
+                    if invalid_mask.any():
+                        removed_rows = market_data[invalid_mask]
+                        try:
+                            sample = removed_rows[['date', 'ticker', close_col]].head(5).to_dict('records')
+                        except Exception:
+                            sample = []
+                        self.log(f"[DirectPredict] Removing {invalid_mask.sum()} rows with invalid close prices (<=0 or > {DIRECT_PREDICT_MAX_CLOSE}). Sample: {sample}")
+                        market_data = market_data[~invalid_mask]
+                        if market_data.empty:
+                            raise ValueError("All market data rows removed due to invalid close prices")
+
+                # ?? Determine the last trading day with close data
+
+                # Find the latest date where we have ANY close data (????????????)
+
                 if isinstance(market_data.index, pd.MultiIndex):
+
                     # MultiIndex (date, ticker) - find latest date with ANY close data
+
                     if 'Close' in market_data.columns:
+
                         close_col = 'Close'
+
                     elif 'close' in market_data.columns:
+
                         close_col = 'close'
+
                     elif 'adj_close' in market_data.columns:
+
                         close_col = 'adj_close'
+
                     else:
+
                         close_col = None
+
                     
+
                     if close_col:
+
                         # Get all dates from the index
+
                         all_dates = market_data.index.get_level_values('date').unique()
+
                         all_dates = sorted([pd.Timestamp(d) for d in all_dates if isinstance(d, (pd.Timestamp, str))])
+
                         
-                        # Find the latest date where we have ANY close data (只要找到一个就足够)
+
+                        # Find the latest date where we have ANY close data (????????????)
+
                         last_valid_date = None
+
                         for date in reversed(all_dates):
+
                             date_data = market_data.xs(date, level='date', drop_level=False)
+
                             if not date_data.empty and close_col in date_data.columns:
+
                                 # Check if there's at least ONE ticker with valid close data
+
                                 valid_close_count = date_data[close_col].notna().sum()
+
                                 
-                                if valid_close_count > 0:  # 只要找到一个就足够
+
+                                if valid_close_count > 0:  # ????????????
+
                                     last_valid_date = date
+
                                     total_tickers = len(date_data)
+
                                     coverage_ratio = valid_close_count / total_tickers if total_tickers > 0 else 0
-                                    self.log(f"[DirectPredict] 📊 找到最后有效交易日: {date.strftime('%Y-%m-%d')} ({valid_close_count} 只股票有收盘数据, 覆盖率: {coverage_ratio:.1%})")
+
+                                    self.log(f"[DirectPredict] ?? ???????? ??????: {date.strftime('%Y-%m-%d')} ({valid_close_count} ??????????????, ??????: {coverage_ratio:.1%})")
+
                                     break
+
                         
+
                         if last_valid_date is None:
+
                             # Fallback: use the latest date in the data
+
                             last_valid_date = all_dates[-1] if all_dates else base_date
-                            self.log(f"[DirectPredict] ⚠️ 未找到有收盘数据的日期，使用最新日期: {last_valid_date.strftime('%Y-%m-%d')}")
+
+                            self.log(f"[DirectPredict] ??  ??????????????????????????????: {last_valid_date.strftime('%Y-%m-%d')}")
+
                         
+
                         # Update base_date to the last valid trading day with close data
+
                         base_date = pd.Timestamp(last_valid_date).normalize()
-                        self.log(f"[DirectPredict] ✅ 确定基准日期: {base_date.strftime('%Y-%m-%d')} (最后有收盘数据的交易日，只要找到一个就足够)")
+
+                        self.log(f"[DirectPredict] ? ??????????: {base_date.strftime('%Y-%m-%d')} (????????????????????????????????)")
+
                     else:
-                        self.log(f"[DirectPredict] ⚠️ 未找到收盘价格列，使用原定基准日期: {base_date.strftime('%Y-%m-%d')}")
+
+                        self.log(f"[DirectPredict] ??  ?????????? ??????????????: {base_date.strftime('%Y-%m-%d')}")
+
                 else:
+
                     # Single index - try to infer from date column or index
+
                     if 'date' in market_data.columns:
+
                         last_date = pd.to_datetime(market_data['date']).max()
+
                         base_date = pd.Timestamp(last_date).normalize()
-                        self.log(f"[DirectPredict] ✅ 从date列确定基准日期: {base_date.strftime('%Y-%m-%d')}")
+
+                        self.log(f"[DirectPredict] ? ??date????????????: {base_date.strftime('%Y-%m-%d')}")
+
                     else:
-                        self.log(f"[DirectPredict] ⚠️ 无法确定最后交易日，使用原定基准日期: {base_date.strftime('%Y-%m-%d')}")
+
+                        self.log(f"[DirectPredict] ?? ???????????????????????????: {base_date.strftime('%Y-%m-%d')}")
+
                 
+
                 # Calculate all factors for the entire period
-                self.log(f"[DirectPredict] 🔮 计算所有因子特征...")
+
+                self.log(f"[DirectPredict] ?? ????????????????...")
+
                 all_feature_data = engine.compute_all_17_factors(market_data, mode='predict')
-                
                 if all_feature_data.empty:
+
                     raise ValueError("Failed to compute features from market data")
+
+
+
+
+
+
+
+
+                feature_columns = [col for col in required_features if col in all_feature_data.columns]
+                missing_cols = sorted(set(required_features) - set(feature_columns))
+                if missing_cols:
+
+                    self.log(f"[DirectPredict] Missing snapshot features: {missing_cols}")
+
+                if not feature_columns:
+
+                    raise ValueError("None of the required snapshot features are available")
+
+                all_feature_data = all_feature_data[feature_columns]
+
+
                 
-                # 🔥 Ensure Sato factors are computed (if not already in the data)
-                if 'feat_sato_momentum_10d' not in all_feature_data.columns or 'feat_sato_divergence_10d' not in all_feature_data.columns:
-                    try:
-                        self.log(f"[DirectPredict] 🔮 计算Sato平方根因子...")
-                        from scripts.sato_factor_calculation import calculate_sato_factors
-                        
-                        # Prepare data for Sato calculation
-                        sato_data = all_feature_data.copy()
-                        if 'adj_close' not in sato_data.columns and 'Close' in sato_data.columns:
-                            sato_data['adj_close'] = sato_data['Close']
-                        
-                        has_vol_ratio = 'vol_ratio_20d' in sato_data.columns
-                        if 'Volume' not in sato_data.columns:
-                            if has_vol_ratio:
-                                base_volume = 1_000_000
-                                sato_data['Volume'] = base_volume * sato_data['vol_ratio_20d'].fillna(1.0).clip(lower=0.1, upper=10.0)
-                                use_vol_ratio = True
-                            else:
-                                use_vol_ratio = False
-                                sato_data['Volume'] = 1_000_000  # Fallback
-                        else:
-                            use_vol_ratio = has_vol_ratio
-                        
-                        # Calculate Sato factors
-                        sato_factors_df = calculate_sato_factors(
-                            df=sato_data,
-                            price_col='adj_close',
-                            volume_col='Volume',
-                            vol_ratio_col='vol_ratio_20d',
-                            lookback_days=10,
-                            vol_window=20,
-                            use_vol_ratio_directly=use_vol_ratio
-                        )
-                        
-                        # Add Sato factors to all_feature_data
-                        # 🔧 FIX: Ensure sato_factors_df has MultiIndex format before reindexing
-                        if not isinstance(sato_factors_df.index, pd.MultiIndex):
-                            if 'date' in sato_factors_df.columns and 'ticker' in sato_factors_df.columns:
-                                sato_factors_df = sato_factors_df.set_index(['date', 'ticker'])
-                                self.log(f"[DirectPredict] ✅ Converted sato_factors_df to MultiIndex")
-                        
-                        # Ensure all_feature_data maintains MultiIndex format
-                        if not isinstance(all_feature_data.index, pd.MultiIndex):
-                            raise ValueError("all_feature_data must have MultiIndex format before adding Sato factors")
-                        
-                        all_feature_data['feat_sato_momentum_10d'] = sato_factors_df['feat_sato_momentum_10d'].reindex(all_feature_data.index).fillna(0.0)
-                        all_feature_data['feat_sato_divergence_10d'] = sato_factors_df['feat_sato_divergence_10d'].reindex(all_feature_data.index).fillna(0.0)
-                        
-                        # Verify MultiIndex format is maintained
-                        if not isinstance(all_feature_data.index, pd.MultiIndex):
-                            raise ValueError("all_feature_data lost MultiIndex format after adding Sato factors!")
-                        
-                        self.log(f"[DirectPredict] ✅ Sato因子计算完成，MultiIndex格式保持: {all_feature_data.index.names}")
-                    except Exception as e:
-                        self.log(f"[DirectPredict] ⚠️ Sato因子计算失败: {e}, 继续...")
-                        # Add zero-filled columns if missing
-                        if 'feat_sato_momentum_10d' not in all_feature_data.columns:
-                            all_feature_data['feat_sato_momentum_10d'] = 0.0
-                        if 'feat_sato_divergence_10d' not in all_feature_data.columns:
-                            all_feature_data['feat_sato_divergence_10d'] = 0.0
-                
-                # 🔧 FIX: Final verification and standardization of all_feature_data format
+
+                # ?? Ensure Sato factors are computed (if not already in the data)
+                needs_sato = any(name.startswith('feat_sato') for name in required_features)
+                if needs_sato:
+
+                                    if 'feat_sato_momentum_10d' not in all_feature_data.columns or 'feat_sato_divergence_10d' not in all_feature_data.columns:
+
+                                        try:
+
+                                            self.log(f"[DirectPredict] ?? ????Sato?????????...")
+
+                                            from scripts.sato_factor_calculation import calculate_sato_factors
+
+
+
+                                            # Prepare data for Sato calculation
+
+                                            sato_data = all_feature_data.copy()
+
+                                            if 'adj_close' not in sato_data.columns and 'Close' in sato_data.columns:
+
+                                                sato_data['adj_close'] = sato_data['Close']
+
+
+
+                                            has_vol_ratio = 'vol_ratio_20d' in sato_data.columns
+
+                                            if 'Volume' not in sato_data.columns:
+
+                                                if has_vol_ratio:
+
+                                                    base_volume = 1_000_000
+
+                                                    sato_data['Volume'] = base_volume * sato_data['vol_ratio_20d'].fillna(1.0).clip(lower=0.1, upper=10.0)
+
+                                                    use_vol_ratio = True
+
+                                                else:
+
+                                                    use_vol_ratio = False
+
+                                                    sato_data['Volume'] = 1_000_000  # Fallback
+
+                                            else:
+
+                                                use_vol_ratio = has_vol_ratio
+
+
+
+                                            # Calculate Sato factors
+
+                                            sato_factors_df = calculate_sato_factors(
+
+                                                df=sato_data,
+
+                                                price_col='adj_close',
+
+                                                volume_col='Volume',
+
+                                                vol_ratio_col='vol_ratio_20d',
+
+                                                lookback_days=10,
+
+                                                vol_window=20,
+
+                                                use_vol_ratio_directly=use_vol_ratio
+
+                                            )
+
+
+
+                                            # Add Sato factors to all_feature_data
+
+                                            # ?? FIX: Ensure sato_factors_df has MultiIndex format before reindexing
+
+                                            if not isinstance(sato_factors_df.index, pd.MultiIndex):
+
+                                                if 'date' in sato_factors_df.columns and 'ticker' in sato_factors_df.columns:
+
+                                                    sato_factors_df = sato_factors_df.set_index(['date', 'ticker'])
+
+                                                    self.log(f"[DirectPredict] ? Converted sato_factors_df to MultiIndex")
+
+
+
+                                            # Ensure all_feature_data maintains MultiIndex format
+
+                                            if not isinstance(all_feature_data.index, pd.MultiIndex):
+
+                                                raise ValueError("all_feature_data must have MultiIndex format before adding Sato factors")
+
+
+
+                                            all_feature_data['feat_sato_momentum_10d'] = sato_factors_df['feat_sato_momentum_10d'].reindex(all_feature_data.index).fillna(0.0)
+
+                                            all_feature_data['feat_sato_divergence_10d'] = sato_factors_df['feat_sato_divergence_10d'].reindex(all_feature_data.index).fillna(0.0)
+
+
+
+                                            # Verify MultiIndex format is maintained
+
+                                            if not isinstance(all_feature_data.index, pd.MultiIndex):
+
+                                                raise ValueError("all_feature_data lost MultiIndex format after adding Sato factors!")
+
+
+
+                                            self.log(f"[DirectPredict] ? Sato???????????MultiIndex???????: {all_feature_data.index.names}")
+
+                                        except Exception as e:
+
+                                            self.log(f"[DirectPredict] ?? Sato??????????: {e}, ????...")
+
+                                            # Add zero-filled columns if missing
+
+                                            if 'feat_sato_momentum_10d' not in all_feature_data.columns:
+
+                                                all_feature_data['feat_sato_momentum_10d'] = 0.0
+
+                                            if 'feat_sato_divergence_10d' not in all_feature_data.columns:
+
+                                                all_feature_data['feat_sato_divergence_10d'] = 0.0
+
+
+
+                # ?? FIX: Final verification and standardization of all_feature_data format
+
                 # Ensure format matches training parquet file exactly
+
                 if not isinstance(all_feature_data.index, pd.MultiIndex):
+
                     raise ValueError(f"all_feature_data must have MultiIndex format, got: {type(all_feature_data.index)}")
+
                 
+
                 index_names = all_feature_data.index.names
+
                 if 'date' not in index_names or 'ticker' not in index_names:
+
                     raise ValueError(f"all_feature_data MultiIndex must have 'date' and 'ticker' levels, got: {index_names}")
+
                 
-                # 🔧 FIX: Standardize MultiIndex to match training file format exactly
+
+                # ?? FIX: Standardize MultiIndex to match training file format exactly
+
                 # Training file format: MultiIndex(['date', 'ticker'])
+
                 # - date: datetime64[ns], normalized (no time component)
+
                 # - ticker: object/string
+
                 
+
                 # Normalize date level (remove time component)
+
                 date_level = all_feature_data.index.get_level_values('date')
+
                 if not pd.api.types.is_datetime64_any_dtype(date_level):
+
                     raise ValueError(f"Date level must be datetime, got: {date_level.dtype}")
+
                 
-                # 🔧 FIX: Handle DatetimeIndex vs Series - DatetimeIndex doesn't have .dt accessor
+
+                # ?? FIX: Handle DatetimeIndex vs Series - DatetimeIndex doesn't have .dt accessor
+
                 # get_level_values can return DatetimeIndex directly, so check type first
+
                 if isinstance(date_level, pd.DatetimeIndex):
+
                     # DatetimeIndex has methods directly, not through .dt accessor
+
                     if date_level.tz is not None:
+
                         date_normalized = date_level.tz_localize(None).normalize()
+
                     else:
+
                         date_normalized = date_level.normalize()
+
                 else:
+
                     # Convert to datetime if needed, then use .dt accessor for Series
+
                     date_converted = pd.to_datetime(date_level)
+
                     if isinstance(date_converted, pd.DatetimeIndex):
+
                         # If conversion results in DatetimeIndex, use direct methods
+
                         if date_converted.tz is not None:
+
                             date_normalized = date_converted.tz_localize(None).normalize()
+
                         else:
+
                             date_normalized = date_converted.normalize()
+
                     else:
+
                         # Series has .dt accessor
+
                         if date_converted.dt.tz is not None:
+
                             date_normalized = date_converted.dt.tz_localize(None).dt.normalize()
+
                         else:
+
                             date_normalized = date_converted.dt.normalize()
+
                 
-                # 🔧 FIX: Ensure ticker format matches training file exactly
+
+                # ?? FIX: Ensure ticker format matches training file exactly
+
                 # Training file uses uppercase tickers (as seen in 80/20 eval)
+
                 ticker_level = all_feature_data.index.get_level_values('ticker').astype(str).str.strip().str.upper()
+
                 
+
                 # Recreate MultiIndex with standardized format (matching training file)
+
                 # Training file format: MultiIndex(['date', 'ticker'])
+
                 # - date: datetime64[ns], normalized (no time component)
+
                 # - ticker: object/string, UPPERCASE (matching 80/20 eval and training)
+
                 all_feature_data.index = pd.MultiIndex.from_arrays(
+
                     [date_normalized, ticker_level],
+
                     names=['date', 'ticker']
+
                 )
+
                 
+
                 # Verify format matches training file
-                self.log(f"[DirectPredict] ✅ 特征计算完成: shape={all_feature_data.shape}")
-                self.log(f"[DirectPredict] ✅ MultiIndex格式验证: levels={all_feature_data.index.names}")
-                self.log(f"[DirectPredict] ✅ 日期类型: {all_feature_data.index.get_level_values('date').dtype} (normalized)")
-                self.log(f"[DirectPredict] ✅ Ticker类型: {all_feature_data.index.get_level_values('ticker').dtype}")
-                self.log(f"[DirectPredict] ✅ Unique dates: {all_feature_data.index.get_level_values('date').nunique()}, unique tickers: {all_feature_data.index.get_level_values('ticker').nunique()}")
+
+                self.log(f"[DirectPredict] ? ???????????: shape={all_feature_data.shape}")
+
+                self.log(f"[DirectPredict] ? MultiIndex??????: levels={all_feature_data.index.names}")
+
+                self.log(f"[DirectPredict] ? ????????: {all_feature_data.index.get_level_values('date').dtype} (normalized)")
+
+                self.log(f"[DirectPredict] ? Ticker????: {all_feature_data.index.get_level_values('ticker').dtype}")
+
+                self.log(f"[DirectPredict] ? Unique dates: {all_feature_data.index.get_level_values('date').nunique()}, unique tickers: {all_feature_data.index.get_level_values('ticker').nunique()}")
+
                 
+
                 # Final check: ensure no duplicates
+
                 duplicates = all_feature_data.index.duplicated()
+
                 if duplicates.any():
+
                     dup_count = duplicates.sum()
-                    self.log(f"[DirectPredict] ⚠️ Removing {dup_count} duplicate indices before prediction")
+
+                    self.log(f"[DirectPredict] ?? Removing {dup_count} duplicate indices before prediction")
+
                     all_feature_data = all_feature_data[~duplicates]
+
                     all_feature_data = all_feature_data.groupby(level=['date', 'ticker']).first()
-                    self.log(f"[DirectPredict] ✅ After deduplication: shape={all_feature_data.shape}")
+
+                    self.log(f"[DirectPredict] ? After deduplication: shape={all_feature_data.shape}")
+
                 
-                # 🔥 Predict using base_date (last trading day with close data) for T+10 horizon
-                # 只要找到一个有收盘数据的交易日就足够，立即开始预测
+
+                # ?? Predict using base_date (last trading day with close data) for T+10 horizon
+
+                # ???????????????????????????????????????
+
                 pred_date = base_date  # Use last trading day with close data as base date
+
                 pred_date_str = pred_date.strftime('%Y-%m-%d')
+
                 
-                self.log(f"[DirectPredict] 🔮 基于 {pred_date_str} (最后有收盘数据的交易日，只要找到一个就足够) 预测 T+{prediction_horizon} 天...")
+
+                self.log(f"[DirectPredict] ?? ???? {pred_date_str} (????????????????????????????????) ??? T+{prediction_horizon} ??...")
+
                 
+
                 try:
+
                     # Extract feature data up to and including base_date for factor calculation
-                    # 🔧 FIX: Ensure all_feature_data is MultiIndex format
+
+                    # ?? FIX: Ensure all_feature_data is MultiIndex format
+
                     if not isinstance(all_feature_data.index, pd.MultiIndex):
-                        self.log(f"[DirectPredict] ⚠️ all_feature_data is not MultiIndex, converting...")
+
+                        self.log(f"[DirectPredict] ?? all_feature_data is not MultiIndex, converting...")
+
                         # Try to convert to MultiIndex
+
                         if 'date' in all_feature_data.columns and 'ticker' in all_feature_data.columns:
+
                             all_feature_data = all_feature_data.set_index(['date', 'ticker'])
-                            self.log(f"[DirectPredict] ✅ Converted to MultiIndex using date and ticker columns")
+
+                            self.log(f"[DirectPredict] ? Converted to MultiIndex using date and ticker columns")
+
                         else:
+
                             raise ValueError("Cannot convert to MultiIndex: missing 'date' or 'ticker' columns")
+
                     
+
                     # Verify MultiIndex format
+
                     if not isinstance(all_feature_data.index, pd.MultiIndex):
+
                         raise ValueError("all_feature_data must have MultiIndex (date, ticker)")
+
                     
+
                     index_names = all_feature_data.index.names
+
                     if 'date' not in index_names or 'ticker' not in index_names:
+
                         raise ValueError(f"MultiIndex must have 'date' and 'ticker' levels, got: {index_names}")
+
                     
-                    self.log(f"[DirectPredict] ✅ all_feature_data format: MultiIndex with levels {index_names}, shape: {all_feature_data.shape}")
+
+                    self.log(f"[DirectPredict] ? all_feature_data format: MultiIndex with levels {index_names}, shape: {all_feature_data.shape}")
+
                     
+
                     # Extract feature data up to and including base_date
+
                     date_mask = all_feature_data.index.get_level_values('date') <= pred_date
+
                     date_feature_data = all_feature_data[date_mask].copy()
+
                     
-                    # 🔧 FIX: Ensure date_feature_data maintains MultiIndex format
+
+                    # ?? FIX: Ensure date_feature_data maintains MultiIndex format
+
                     if not isinstance(date_feature_data.index, pd.MultiIndex):
+
                         raise ValueError("date_feature_data lost MultiIndex format after filtering!")
+
                     
+
                     # Remove duplicate indices (if any)
+
                     duplicates = date_feature_data.index.duplicated()
+
                     if duplicates.any():
+
                         dup_count = duplicates.sum()
-                        self.log(f"[DirectPredict] ⚠️ Removing {dup_count} duplicate indices from date_feature_data")
+
+                        self.log(f"[DirectPredict] ?? Removing {dup_count} duplicate indices from date_feature_data")
+
                         date_feature_data = date_feature_data[~duplicates]
+
                     
+
                     # Ensure each (date, ticker) combination appears only once
+
                     date_feature_data = date_feature_data.groupby(level=['date', 'ticker']).first()
+
                     
+
                     if date_feature_data.empty:
-                        self.log(f"[DirectPredict] ⚠️ {pred_date_str}: 无特征数据")
+
+                        self.log(f"[DirectPredict] ?? {pred_date_str}: ??????????")
+
                         raise ValueError(f"No feature data available for {pred_date_str}")
+
                     
-                    self.log(f"[DirectPredict] ✅ date_feature_data format: MultiIndex, shape: {date_feature_data.shape}, unique dates: {date_feature_data.index.get_level_values('date').nunique()}, unique tickers: {date_feature_data.index.get_level_values('ticker').nunique()}")
+
+                    self.log(f"[DirectPredict] ? date_feature_data format: MultiIndex, shape: {date_feature_data.shape}, unique dates: {date_feature_data.index.get_level_values('date').nunique()}, unique tickers: {date_feature_data.index.get_level_values('ticker').nunique()}")
+
                     
+
                     # Get predictions using the pre-computed features
-                    # Try to load snapshot ID from latest_snapshot_id.txt, fallback to None (latest from DB)
-                    snapshot_id_to_use = None
-                    try:
-                        latest_snapshot_file = Path(__file__).resolve().parent.parent / "latest_snapshot_id.txt"
-                        if latest_snapshot_file.exists():
-                            snapshot_id_to_use = latest_snapshot_file.read_text(encoding="utf-8").strip()
-                            if not snapshot_id_to_use:
-                                snapshot_id_to_use = None
-                    except Exception:
-                        pass  # Fallback to None (latest from DB)
-                    
-                    # Predict with T+10 horizon
-                    results = model.predict_with_snapshot(
-                        feature_data=date_feature_data,  # Use pre-computed features
-                        snapshot_id=snapshot_id_to_use,  # Use snapshot from latest_snapshot_id.txt or latest from DB
-                        universe_tickers=tickers,
-                        as_of_date=pred_date,
-                        prediction_days=prediction_horizon  # Use T+10 horizon
+
+                    # Always use the configured Direct Predict snapshot (env override supported)
+
+                    snapshot_id_to_use = os.environ.get(
+
+                        "DIRECT_PREDICT_SNAPSHOT_ID",
+
+                        DIRECT_PREDICT_SNAPSHOT_ID
+
                     )
+
+                    snapshot_id_to_use = (snapshot_id_to_use or "").strip() or DIRECT_PREDICT_SNAPSHOT_ID
+
+                    self.log(f"[DirectPredict] Using snapshot ID: {snapshot_id_to_use}")
+
+
+
+                    # Predict with T+10 horizon
+
+                    results = model.predict_with_snapshot(
+
+                        feature_data=date_feature_data,  # Use pre-computed features
+
+                        snapshot_id=snapshot_id_to_use,  # Force configured snapshot for Direct Predict
+
+                        universe_tickers=tickers,
+
+                        as_of_date=pred_date,
+
+                        prediction_days=prediction_horizon  # Use T+10 horizon
+
+                    )
+
                         
+
                     if results.get('success', False):
+
                         # Get raw predictions (no EMA smoothing)
+
                         predictions_raw = results.get('predictions_raw')
+
                         if predictions_raw is None:
+
                             # Fallback to predictions if raw not available
+
                             predictions_raw = results.get('predictions')
+
                         
+
                         # Get base model predictions (LambdaRank, CatBoost, etc.)
+
                         base_predictions = results.get('base_predictions')  # DataFrame with pred_lambdarank, pred_catboost, etc.
+
                         
+
                         # Debug: Log base_predictions status
+
                         if base_predictions is not None:
-                            self.log(f"[DirectPredict] 📊 Base predictions available: {type(base_predictions)}, shape: {base_predictions.shape if hasattr(base_predictions, 'shape') else 'N/A'}")
+
+                            self.log(f"[DirectPredict] ?? Base predictions available: {type(base_predictions)}, shape: {base_predictions.shape if hasattr(base_predictions, 'shape') else 'N/A'}")
+
                             if isinstance(base_predictions, pd.DataFrame):
-                                self.log(f"[DirectPredict] 📊 Base predictions columns: {list(base_predictions.columns)}")
+
+                                self.log(f"[DirectPredict] ?? Base predictions columns: {list(base_predictions.columns)}")
+
                         else:
-                            self.log(f"[DirectPredict] ⚠️ Base predictions not available in results")
+
+                            self.log(f"[DirectPredict] ?? Base predictions not available in results")
+
                         
+
                         if predictions_raw is not None:
+
                             # Debug: Log predictions_raw structure
-                            self.log(f"[DirectPredict] 📊 predictions_raw type: {type(predictions_raw)}")
+
+                            self.log(f"[DirectPredict] ?? predictions_raw type: {type(predictions_raw)}")
+
                             if isinstance(predictions_raw, pd.Series):
-                                self.log(f"[DirectPredict] 📊 predictions_raw shape: {predictions_raw.shape}, unique values: {predictions_raw.nunique()}")
-                                self.log(f"[DirectPredict] 📊 predictions_raw sample (first 5): {predictions_raw.head().to_dict()}")
-                                self.log(f"[DirectPredict] 📊 predictions_raw value range: min={predictions_raw.min():.6f}, max={predictions_raw.max():.6f}, mean={predictions_raw.mean():.6f}")
-                                # 🔍 DIAGNOSTIC: Check for duplicate indices
+
+                                self.log(f"[DirectPredict] ?? predictions_raw shape: {predictions_raw.shape}, unique values: {predictions_raw.nunique()}")
+
+                                self.log(f"[DirectPredict] ?? predictions_raw sample (first 5): {predictions_raw.head().to_dict()}")
+
+                                self.log(f"[DirectPredict] ?? predictions_raw value range: min={predictions_raw.min():.6f}, max={predictions_raw.max():.6f}, mean={predictions_raw.mean():.6f}")
+
+                                # ?? DIAGNOSTIC: Check for duplicate indices
+
                                 if isinstance(predictions_raw.index, pd.MultiIndex):
-                                    self.log(f"[DirectPredict] 📊 predictions_raw unique dates: {predictions_raw.index.get_level_values('date').nunique()}")
-                                    self.log(f"[DirectPredict] 📊 predictions_raw unique tickers: {predictions_raw.index.get_level_values('ticker').nunique()}")
+
+                                    self.log(f"[DirectPredict] ?? predictions_raw unique dates: {predictions_raw.index.get_level_values('date').nunique()}")
+
+                                    self.log(f"[DirectPredict] ?? predictions_raw unique tickers: {predictions_raw.index.get_level_values('ticker').nunique()}")
+
                                     duplicates = predictions_raw.index.duplicated()
+
                                     if duplicates.any():
-                                        self.log(f"[DirectPredict] ⚠️ predictions_raw has {duplicates.sum()} duplicate indices!")
+
+                                        self.log(f"[DirectPredict] ?? predictions_raw has {duplicates.sum()} duplicate indices!")
+
                                         dup_indices = predictions_raw.index[duplicates]
-                                        self.log(f"[DirectPredict] 📊 Sample duplicate indices: {dup_indices[:5].tolist()}")
+
+                                        self.log(f"[DirectPredict] ?? Sample duplicate indices: {dup_indices[:5].tolist()}")
+
                                         # Remove duplicates
+
                                         predictions_raw = predictions_raw[~duplicates]
-                                        self.log(f"[DirectPredict] ✅ Removed {duplicates.sum()} duplicate indices from predictions_raw")
+
+                                        self.log(f"[DirectPredict] ? Removed {duplicates.sum()} duplicate indices from predictions_raw")
+
                                 pred_df = predictions_raw.to_frame('score')
+
                             else:
+
                                 pred_df = predictions_raw.copy()
+
                                 if 'score' not in pred_df.columns and len(pred_df.columns) > 0:
+
                                     pred_df.columns = ['score']
-                                self.log(f"[DirectPredict] 📊 pred_df shape: {pred_df.shape}, score unique values: {pred_df['score'].nunique()}")
-                                self.log(f"[DirectPredict] 📊 pred_df score range: min={pred_df['score'].min():.6f}, max={pred_df['score'].max():.6f}, mean={pred_df['score'].mean():.6f}")
+
+                                self.log(f"[DirectPredict] ?? pred_df shape: {pred_df.shape}, score unique values: {pred_df['score'].nunique()}")
+
+                                self.log(f"[DirectPredict] ?? pred_df score range: min={pred_df['score'].min():.6f}, max={pred_df['score'].max():.6f}, mean={pred_df['score'].mean():.6f}")
+
                             
+
                             # Ensure MultiIndex with date and ticker
+
                             if not isinstance(pred_df.index, pd.MultiIndex):
+
                                 # Create MultiIndex from ticker index
+
                                 tickers_from_index = pred_df.index.tolist()
+
                                 dates_list = [pred_date] * len(tickers_from_index)
+
                                 pred_df.index = pd.MultiIndex.from_arrays(
+
                                     [dates_list, tickers_from_index],
+
                                     names=['date', 'ticker']
+
                                 )
+
                             else:
+
                                 # Update date level to ensure correct date
+
                                 new_index = pd.MultiIndex.from_arrays([
+
                                     [pred_date] * len(pred_df),
+
                                     pred_df.index.get_level_values('ticker')
+
                                 ], names=['date', 'ticker'])
+
                                 pred_df.index = new_index
+
                             
-                            # 🔧 FIX: Remove duplicate indices after MultiIndex creation
+
+                            # ?? FIX: Remove duplicate indices after MultiIndex creation
+
                             if pred_df.index.duplicated().any():
-                                self.log(f"[DirectPredict] ⚠️ pred_df has {pred_df.index.duplicated().sum()} duplicate indices after MultiIndex creation, removing duplicates...")
+
+                                self.log(f"[DirectPredict] ?? pred_df has {pred_df.index.duplicated().sum()} duplicate indices after MultiIndex creation, removing duplicates...")
+
                                 pred_df = pred_df[~pred_df.index.duplicated(keep='first')]
-                                self.log(f"[DirectPredict] ✅ pred_df after deduplication: {len(pred_df)} rows")
+
+                                self.log(f"[DirectPredict] ? pred_df after deduplication: {len(pred_df)} rows")
+
                             
-                            # 🔧 FIX: Ensure each (date, ticker) combination appears only once
+
+                            # ?? FIX: Ensure each (date, ticker) combination appears only once
+
                             if isinstance(pred_df.index, pd.MultiIndex):
+
                                 ticker_level = pred_df.index.get_level_values('ticker')
+
                                 if ticker_level.duplicated().any():
-                                    self.log(f"[DirectPredict] ⚠️ pred_df has duplicate tickers in same date, grouping by (date, ticker)...")
+
+                                    self.log(f"[DirectPredict] ?? pred_df has duplicate tickers in same date, grouping by (date, ticker)...")
+
                                     pred_df = pred_df.groupby(level=['date', 'ticker']).first()
-                                    self.log(f"[DirectPredict] ✅ pred_df after grouping: {len(pred_df)} rows, unique tickers: {pred_df.index.get_level_values('ticker').nunique()}")
+
+                                    self.log(f"[DirectPredict] ? pred_df after grouping: {len(pred_df)} rows, unique tickers: {pred_df.index.get_level_values('ticker').nunique()}")
+
                             
+
                             # Add base model predictions if available
+
                             if base_predictions is not None and isinstance(base_predictions, pd.DataFrame):
-                                self.log(f"[DirectPredict] 🔧 Adding base model predictions to pred_df...")
+
+                                self.log(f"[DirectPredict] ?? Adding base model predictions to pred_df...")
+
                                 
-                                # 🔍 DIAGNOSTIC: Check base_predictions structure
-                                self.log(f"[DirectPredict] 📊 base_predictions index type: {type(base_predictions.index)}")
+
+                                # ?? DIAGNOSTIC: Check base_predictions structure
+
+                                self.log(f"[DirectPredict] ?? base_predictions index type: {type(base_predictions.index)}")
+
                                 if isinstance(base_predictions.index, pd.MultiIndex):
-                                    self.log(f"[DirectPredict] 📊 base_predictions unique dates: {base_predictions.index.get_level_values('date').nunique()}")
-                                    self.log(f"[DirectPredict] 📊 base_predictions unique tickers: {base_predictions.index.get_level_values('ticker').nunique()}")
-                                    self.log(f"[DirectPredict] 📊 base_predictions total rows: {len(base_predictions)}")
+
+                                    self.log(f"[DirectPredict] ?? base_predictions unique dates: {base_predictions.index.get_level_values('date').nunique()}")
+
+                                    self.log(f"[DirectPredict] ?? base_predictions unique tickers: {base_predictions.index.get_level_values('ticker').nunique()}")
+
+                                    self.log(f"[DirectPredict] ?? base_predictions total rows: {len(base_predictions)}")
+
                                     duplicates = base_predictions.index.duplicated()
+
                                     if duplicates.any():
-                                        self.log(f"[DirectPredict] ⚠️ base_predictions has {duplicates.sum()} duplicate indices!")
+
+                                        self.log(f"[DirectPredict] ?? base_predictions has {duplicates.sum()} duplicate indices!")
+
                                         # Remove duplicates before alignment
+
                                         base_predictions = base_predictions[~duplicates]
-                                        self.log(f"[DirectPredict] ✅ Removed {duplicates.sum()} duplicate indices from base_predictions")
+
+                                        self.log(f"[DirectPredict] ? Removed {duplicates.sum()} duplicate indices from base_predictions")
+
                                 
+
                                 # Ensure base_predictions has same index structure
+
                                 if isinstance(base_predictions.index, pd.MultiIndex):
+
                                     base_predictions_aligned = base_predictions.reindex(pred_df.index)
+
                                 else:
+
                                     # Try to align by ticker
+
                                     base_predictions_aligned = base_predictions.reindex(pred_df.index.get_level_values('ticker'))
+
                                     base_predictions_aligned.index = pred_df.index
+
                                 
-                                # 🔧 FIX: Remove duplicate indices after alignment
+
+                                # ?? FIX: Remove duplicate indices after alignment
+
                                 if base_predictions_aligned.index.duplicated().any():
-                                    self.log(f"[DirectPredict] ⚠️ base_predictions_aligned has duplicate indices after reindex, removing duplicates...")
+
+                                    self.log(f"[DirectPredict] ?? base_predictions_aligned has duplicate indices after reindex, removing duplicates...")
+
                                     base_predictions_aligned = base_predictions_aligned[~base_predictions_aligned.index.duplicated(keep='first')]
+
                                 
+
                                 # Debug: Log alignment result
-                                self.log(f"[DirectPredict] 📊 Base predictions aligned shape: {base_predictions_aligned.shape}")
-                                self.log(f"[DirectPredict] 📊 Base predictions aligned columns: {list(base_predictions_aligned.columns)}")
+
+                                self.log(f"[DirectPredict] ?? Base predictions aligned shape: {base_predictions_aligned.shape}")
+
+                                self.log(f"[DirectPredict] ?? Base predictions aligned columns: {list(base_predictions_aligned.columns)}")
+
                                 if isinstance(base_predictions_aligned.index, pd.MultiIndex):
-                                    self.log(f"[DirectPredict] 📊 Base predictions aligned unique tickers: {base_predictions_aligned.index.get_level_values('ticker').nunique()}")
+
+                                    self.log(f"[DirectPredict] ?? Base predictions aligned unique tickers: {base_predictions_aligned.index.get_level_values('ticker').nunique()}")
+
                                 
+
                                 # Add LambdaRank and CatBoost scores
+
                                 if 'pred_lambdarank' in base_predictions_aligned.columns:
+
                                     pred_df['score_lambdarank'] = base_predictions_aligned['pred_lambdarank']
-                                    self.log(f"[DirectPredict] ✅ Added score_lambdarank: {pred_df['score_lambdarank'].notna().sum()} non-null values")
+
+                                    self.log(f"[DirectPredict] ? Added score_lambdarank: {pred_df['score_lambdarank'].notna().sum()} non-null values")
+
                                 else:
-                                    self.log(f"[DirectPredict] ⚠️ pred_lambdarank not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
+                                    self.log(f"[DirectPredict] ?? pred_lambdarank not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
                                 
+
                                 if 'pred_catboost' in base_predictions_aligned.columns:
+
                                     pred_df['score_catboost'] = base_predictions_aligned['pred_catboost']
-                                    self.log(f"[DirectPredict] ✅ Added score_catboost: {pred_df['score_catboost'].notna().sum()} non-null values")
+
+                                    self.log(f"[DirectPredict] ? Added score_catboost: {pred_df['score_catboost'].notna().sum()} non-null values")
+
                                 else:
-                                    self.log(f"[DirectPredict] ⚠️ pred_catboost not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
+                                    self.log(f"[DirectPredict] ?? pred_catboost not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
                                 
+
                                 if 'pred_elastic' in base_predictions_aligned.columns:
+
                                     pred_df['score_elastic'] = base_predictions_aligned['pred_elastic']
-                                    self.log(f"[DirectPredict] ✅ Added score_elastic: {pred_df['score_elastic'].notna().sum()} non-null values")
+
+                                    self.log(f"[DirectPredict] ? Added score_elastic: {pred_df['score_elastic'].notna().sum()} non-null values")
+
                                 else:
-                                    self.log(f"[DirectPredict] ⚠️ pred_elastic not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
+                                    self.log(f"[DirectPredict] ?? pred_elastic not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
                                 
+
                                 if 'pred_xgb' in base_predictions_aligned.columns:
+
                                     pred_df['score_xgb'] = base_predictions_aligned['pred_xgb']
-                                    self.log(f"[DirectPredict] ✅ Added score_xgb: {pred_df['score_xgb'].notna().sum()} non-null values")
+
+                                    self.log(f"[DirectPredict] ? Added score_xgb: {pred_df['score_xgb'].notna().sum()} non-null values")
+
                                 else:
-                                    self.log(f"[DirectPredict] ⚠️ pred_xgb not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
+                                    self.log(f"[DirectPredict] ?? pred_xgb not found in base_predictions. Available columns: {list(base_predictions_aligned.columns)}")
+
                             else:
-                                self.log(f"[DirectPredict] ⚠️ Base predictions not available or not DataFrame. Type: {type(base_predictions)}")
+
+                                self.log(f"[DirectPredict] ?? Base predictions not available or not DataFrame. Type: {type(base_predictions)}")
+
                             
+
                             all_predictions.append(pred_df)
-                            self.log(f"[DirectPredict] ✅ {pred_date_str}: T+{prediction_horizon} 天预测完成 ({len(pred_df)} 只股票)")
+
+                            self.log(f"[DirectPredict] ? {pred_date_str}: T+{prediction_horizon} ???????? ({len(pred_df)} ????)")
+
                         else:
-                            self.log(f"[DirectPredict] ⚠️ {pred_date_str}: 无预测数据")
+
+                            self.log(f"[DirectPredict] ?? {pred_date_str}: ?????????")
+
                             raise ValueError(f"No predictions returned for {pred_date_str}")
+
                     else:
+
                         error_msg = results.get('error', 'Unknown error')
-                        self.log(f"[DirectPredict] ⚠️ {pred_date_str} 预测失败: {error_msg}")
+
+                        self.log(f"[DirectPredict] ?? {pred_date_str} ??????: {error_msg}")
+
                         raise RuntimeError(f"Prediction failed: {error_msg}")
+
                 except Exception as e:
-                    self.log(f"[DirectPredict] ❌ {pred_date_str} 预测异常: {e}")
+
+                    self.log(f"[DirectPredict] ? {pred_date_str} ?????: {e}")
+
                     import traceback
-                    self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                    self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
                     # Don't raise here - continue to check all_predictions
+
                     # If all_predictions is empty, it will be handled below
+
                     pass
+
                         
+
             except Exception as e:
-                self.log(f"[DirectPredict] ❌ 数据获取或特征计算失败: {e}")
+
+                self.log(f"[DirectPredict] ? ???????????????????: {e}")
+
                 import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
                 # Ensure all_predictions is initialized even if exception occurs
+
                 if 'all_predictions' not in locals():
+
                     all_predictions = []
+
                 if not all_predictions:
+
                     return
 
+
+
             # Ensure all_predictions is initialized
+
             if 'all_predictions' not in locals():
+
                 all_predictions = []
+
             
+
             if not all_predictions:
-                self.log("[DirectPredict] ❌ 未获取到任何预测数据")
+
+                self.log("[DirectPredict] ?  ?????? ????????")
+
                 return
 
-            # Combine all predictions
-            if len(all_predictions) == 1:
-                combined_predictions = all_predictions[0]
-            else:
-                combined_predictions = pd.concat(all_predictions, axis=0)
-            
-            # 🔧 FIX: Remove duplicate indices after concatenation
-            if combined_predictions.index.duplicated().any():
-                self.log(f"[DirectPredict] ⚠️ combined_predictions has {combined_predictions.index.duplicated().sum()} duplicate indices after concat, removing duplicates...")
-                combined_predictions = combined_predictions[~combined_predictions.index.duplicated(keep='first')]
-                self.log(f"[DirectPredict] ✅ combined_predictions after deduplication: {len(combined_predictions)} rows")
-            
-            # 🔧 FIX: Ensure each (date, ticker) combination appears only once
-            if isinstance(combined_predictions.index, pd.MultiIndex):
-                ticker_level = combined_predictions.index.get_level_values('ticker')
-                date_level = combined_predictions.index.get_level_values('date')
-                # Check for duplicates within same date
-                for date in date_level.unique():
-                    date_mask = date_level == date
-                    date_tickers = ticker_level[date_mask]
-                    if date_tickers.duplicated().any():
-                        self.log(f"[DirectPredict] ⚠️ Date {date} has {date_tickers.duplicated().sum()} duplicate tickers, grouping...")
-                        combined_predictions = combined_predictions.groupby(level=['date', 'ticker']).first()
-                        break  # Only need to group once
-            
-            self.log(f"[DirectPredict] ✅ 合并预测数据: {len(combined_predictions)} 行")
-            dates_in_pred = sorted(combined_predictions.index.get_level_values('date').unique())
-            self.log(f"[DirectPredict] 日期范围: {dates_in_pred[0]} 至 {dates_in_pred[-1]} ({len(dates_in_pred)} 天)")
-            
-            # 🔍 DIAGNOSTIC: Log unique tickers per date
-            if isinstance(combined_predictions.index, pd.MultiIndex):
-                for date in dates_in_pred[-3:]:  # Check last 3 dates
-                    date_mask = combined_predictions.index.get_level_values('date') == date
-                    date_tickers = combined_predictions.index.get_level_values('ticker')[date_mask]
-                    self.log(f"[DirectPredict] 📊 Date {date}: {date_tickers.nunique()} unique tickers, {len(date_tickers)} total rows")
-                    if date_tickers.duplicated().any():
-                        self.log(f"[DirectPredict] ⚠️ Date {date} has {date_tickers.duplicated().sum()} duplicate tickers!")
 
-            # Use raw predictions directly (no EMA smoothing)
+
+            # Combine all predictions
+
+            if len(all_predictions) == 1:
+
+                combined_predictions = all_predictions[0]
+
+            else:
+
+                combined_predictions = pd.concat(all_predictions, axis=0)
+
+            
+
+            # ?? FIX: Remove duplicate indices after concatenation
+
+            if combined_predictions.index.duplicated().any():
+
+                self.log(f"[DirectPredict] ?? combined_predictions has {combined_predictions.index.duplicated().sum()} duplicate indices after concat, removing duplicates...")
+
+                combined_predictions = combined_predictions[~combined_predictions.index.duplicated(keep='first')]
+
+                self.log(f"[DirectPredict] ? combined_predictions after deduplication: {len(combined_predictions)} rows")
+
+            
+
+            # ?? FIX: Ensure each (date, ticker) combination appears only once
+
+            if isinstance(combined_predictions.index, pd.MultiIndex):
+
+                ticker_level = combined_predictions.index.get_level_values('ticker')
+
+                date_level = combined_predictions.index.get_level_values('date')
+
+                # Check for duplicates within same date
+
+                for date in date_level.unique():
+
+                    date_mask = date_level == date
+
+                    date_tickers = ticker_level[date_mask]
+
+                    if date_tickers.duplicated().any():
+
+                        self.log(f"[DirectPredict] ?? Date {date} has {date_tickers.duplicated().sum()} duplicate tickers, grouping...")
+
+                        combined_predictions = combined_predictions.groupby(level=['date', 'ticker']).first()
+
+                        break  # Only need to group once
+
+            
+
+            self.log(f"[DirectPredict] ? ??????????: {len(combined_predictions)} ??")
+
+            dates_in_pred = sorted(combined_predictions.index.get_level_values('date').unique())
+
+            self.log(f"[DirectPredict] ????? : {dates_in_pred[0]} ?? {dates_in_pred[-1]} ({len(dates_in_pred)} ??)")
+
+            
+
+            # ?? DIAGNOSTIC: Log unique tickers per date
+
+            if isinstance(combined_predictions.index, pd.MultiIndex):
+
+                for date in dates_in_pred[-3:]:  # Check last 3 dates
+
+                    date_mask = combined_predictions.index.get_level_values('date') == date
+
+                    date_tickers = combined_predictions.index.get_level_values('ticker')[date_mask]
+
+                    self.log(f"[DirectPredict] ?? Date {date}: {date_tickers.nunique()} unique tickers, {len(date_tickers)} total rows")
+
+                    if date_tickers.duplicated().any():
+
+                        self.log(f"[DirectPredict] ?? Date {date} has {date_tickers.duplicated().sum()} duplicate tickers!")
+
+
+
+            # Apply EMA smoothing so UI + Excel ranking match CLI workflow
+
             final_predictions = combined_predictions.copy()
-            if 'score_raw' not in final_predictions.columns:
-                final_predictions['score_raw'] = final_predictions['score']
-            self.log("[DirectPredict] ✅ 使用原始预测分数（无EMA平滑）")
+
+            final_predictions = self._apply_direct_predict_ema(
+
+                final_predictions,
+
+                score_columns=['score', 'score_lambdarank']
+
+            )
+
+
 
             # Get latest date predictions for recommendations
+
             latest_date = dates_in_pred[-1] if dates_in_pred else None
+
             if latest_date:
+
                 try:
+
                     latest_predictions = final_predictions.xs(latest_date, level='date', drop_level=False)
+
                     
-                    # 🔍 DIAGNOSTIC: Log latest_predictions structure
-                    self.log(f"[DirectPredict] 📊 latest_predictions shape after xs: {latest_predictions.shape}")
+
+                    # ?? DIAGNOSTIC: Log latest_predictions structure
+
+                    self.log(f"[DirectPredict] ?? latest_predictions shape after xs: {latest_predictions.shape}")
+
                     if isinstance(latest_predictions.index, pd.MultiIndex):
+
                         ticker_level = latest_predictions.index.get_level_values('ticker')
-                        self.log(f"[DirectPredict] 📊 latest_predictions unique tickers: {ticker_level.nunique()}")
-                        self.log(f"[DirectPredict] 📊 latest_predictions total rows: {len(latest_predictions)}")
+
+                        self.log(f"[DirectPredict] ?? latest_predictions unique tickers: {ticker_level.nunique()}")
+
+                        self.log(f"[DirectPredict] ?? latest_predictions total rows: {len(latest_predictions)}")
+
                         duplicates = ticker_level.duplicated()
+
                         if duplicates.any():
-                            self.log(f"[DirectPredict] ⚠️ latest_predictions has {duplicates.sum()} duplicate tickers!")
+
+                            self.log(f"[DirectPredict] ?? latest_predictions has {duplicates.sum()} duplicate tickers!")
+
                             ticker_counts = ticker_level.value_counts()
+
                             dup_tickers = ticker_counts[ticker_counts > 1]
-                            self.log(f"[DirectPredict] 📊 Duplicate tickers: {dup_tickers.head(10).to_dict()}")
+
+                            self.log(f"[DirectPredict] ?? Duplicate tickers: {dup_tickers.head(10).to_dict()}")
+
                     
-                    # 🔧 FIX: Remove duplicate tickers (keep first occurrence)
+
+                    # ?? FIX: Remove duplicate tickers (keep first occurrence)
+
                     if isinstance(latest_predictions.index, pd.MultiIndex):
+
                         ticker_level = latest_predictions.index.get_level_values('ticker')
+
                         if ticker_level.duplicated().any():
-                            self.log(f"[DirectPredict] 🔧 Removing {ticker_level.duplicated().sum()} duplicate tickers from latest_predictions...")
+
+                            self.log(f"[DirectPredict] ?? Removing {ticker_level.duplicated().sum()} duplicate tickers from latest_predictions...")
+
                             latest_predictions = latest_predictions[~ticker_level.duplicated(keep='first')]
-                            self.log(f"[DirectPredict] ✅ latest_predictions after deduplication: {len(latest_predictions)} rows, {latest_predictions.index.get_level_values('ticker').nunique()} unique tickers")
+
+                            self.log(f"[DirectPredict] ? latest_predictions after deduplication: {len(latest_predictions)} rows, {latest_predictions.index.get_level_values('ticker').nunique()} unique tickers")
+
                     else:
+
                         # If not MultiIndex, assume index is ticker
+
                         if latest_predictions.index.duplicated().any():
-                            self.log(f"[DirectPredict] 🔧 Removing {latest_predictions.index.duplicated().sum()} duplicate indices from latest_predictions...")
+
+                            self.log(f"[DirectPredict] ?? Removing {latest_predictions.index.duplicated().sum()} duplicate indices from latest_predictions...")
+
                             latest_predictions = latest_predictions[~latest_predictions.index.duplicated(keep='first')]
+
                     
+
                     latest_predictions = latest_predictions.sort_values('score', ascending=False)
+
                     
+
                     # Final diagnostic
+
                     unique_tickers = latest_predictions.index.get_level_values('ticker').nunique() if isinstance(latest_predictions.index, pd.MultiIndex) else latest_predictions.index.nunique()
-                    self.log(f"[DirectPredict] 📊 Final latest_predictions: {len(latest_predictions)} rows, {unique_tickers} unique tickers")
+
+                    self.log(f"[DirectPredict] ?? Final latest_predictions: {len(latest_predictions)} rows, {unique_tickers} unique tickers")
+
                     
+
                     # Debug: Log latest_predictions before creating recommendations
-                    self.log(f"[DirectPredict] 📊 latest_predictions shape: {latest_predictions.shape}")
-                    self.log(f"[DirectPredict] 📊 latest_predictions columns: {list(latest_predictions.columns)}")
-                    self.log(f"[DirectPredict] 📊 latest_predictions score unique values: {latest_predictions['score'].nunique()}")
-                    self.log(f"[DirectPredict] 📊 latest_predictions score range: min={latest_predictions['score'].min():.6f}, max={latest_predictions['score'].max():.6f}")
-                    self.log(f"[DirectPredict] 📊 Top 5 scores: {latest_predictions['score'].head().tolist()}")
+
+                    self.log(f"[DirectPredict] ?? latest_predictions shape: {latest_predictions.shape}")
+
+                    self.log(f"[DirectPredict] ?? latest_predictions columns: {list(latest_predictions.columns)}")
+
+                    self.log(f"[DirectPredict] ?? latest_predictions score unique values: {latest_predictions['score'].nunique()}")
+
+                    self.log(f"[DirectPredict] ?? latest_predictions score range: min={latest_predictions['score'].min():.6f}, max={latest_predictions['score'].max():.6f}")
+
+                    self.log(f"[DirectPredict] ?? Top 5 scores: {latest_predictions['score'].head().tolist()}")
+
                     
+
                     # Create recommendations list
+
                     recs = []
+
                     for idx, row in latest_predictions.iterrows():
+
                         ticker = idx[1] if isinstance(idx, tuple) else idx
+
                         score = row.get('score', 0.0)
+
                         # Debug: Log if score is same as previous
+
                         if len(recs) > 0 and abs(float(score) - recs[-1]['score']) < 1e-6:
-                            self.log(f"[DirectPredict] ⚠️ Duplicate score detected: {ticker}={float(score):.6f}, previous={recs[-1]['ticker']}={recs[-1]['score']:.6f}")
+
+                            self.log(f"[DirectPredict] ?? Duplicate score detected: {ticker}={float(score):.6f}, previous={recs[-1]['ticker']}={recs[-1]['score']:.6f}")
+
                         recs.append({'ticker': ticker, 'score': float(score)})
+
                 except Exception as e:
-                    self.log(f"[DirectPredict] ⚠️ 生成推荐列表失败: {e}")
+
+                    self.log(f"[DirectPredict] ?? ???????? ????: {e}")
+
                     recs = []
+
             else:
+
                 recs = []
 
-            # Persist results to DB (monitoring.db) for audit
-            try:
-                import sqlite3, time
-                db_path = os.path.join("data", "monitoring.db")
-                os.makedirs(os.path.dirname(db_path), exist_ok=True)
-                conn = sqlite3.connect(db_path)
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS direct_predictions (
-                        ts INTEGER,
-                        snapshot_id TEXT,
-                        ticker TEXT,
-                        score REAL
-                    )
-                    """
-                )
-                ts = int(time.time())
-                sid = results.get('snapshot_used', 'latest') if 'results' in locals() else 'latest'
-                rows = [(ts, sid, r.get('ticker'), float(r.get('score', 0.0))) for r in recs if r.get('ticker')]
-                if rows:
-                    cur.executemany("INSERT INTO direct_predictions (ts, snapshot_id, ticker, score) VALUES (?, ?, ?, ?)", rows)
-                    conn.commit()
-                conn.close()
-                self.log(f"[DirectPredict] ✅ 已写入数据库 {len(rows)} 条记录")
-            except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ 写入数据库失败: {e}")
 
-            # Generate Excel report
+
+            # Persist results to DB (monitoring.db) for audit
+
             try:
+
+                import sqlite3, time
+
+                db_path = os.path.join("data", "monitoring.db")
+
+                os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+                conn = sqlite3.connect(db_path)
+
+                cur = conn.cursor()
+
+                cur.execute(
+
+                    """
+
+                    CREATE TABLE IF NOT EXISTS direct_predictions (
+
+                        ts INTEGER,
+
+                        snapshot_id TEXT,
+
+                        ticker TEXT,
+
+                        score REAL
+
+                    )
+
+                    """
+
+                )
+
+                ts = int(time.time())
+
+                sid = results.get('snapshot_used', 'latest') if 'results' in locals() else 'latest'
+
+                rows = [(ts, sid, r.get('ticker'), float(r.get('score', 0.0))) for r in recs if r.get('ticker')]
+
+                if rows:
+
+                    cur.executemany("INSERT INTO direct_predictions (ts, snapshot_id, ticker, score) VALUES (?, ?, ?, ?)", rows)
+
+                    conn.commit()
+
+                conn.close()
+
+                self.log(f"[DirectPredict] ? ?? ??????? {len(rows)} ?????")
+
+            except Exception as e:
+
+                self.log(f"[DirectPredict] ??  ??????????: {e}")
+
+
+
+            # Generate a single Excel report (Top-30 for all models)
+
+            try:
+
                 output_dir = Path("results")
                 output_dir.mkdir(parents=True, exist_ok=True)
-                excel_path = output_dir / f"direct_predict_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                
-                # Debug: Log final_predictions columns before Excel generation
-                self.log(f"[DirectPredict] 📊 Final predictions columns: {list(final_predictions.columns)}")
-                if 'score_lambdarank' in final_predictions.columns:
-                    self.log(f"[DirectPredict] ✅ score_lambdarank available: {final_predictions['score_lambdarank'].notna().sum()} non-null values")
-                else:
-                    self.log(f"[DirectPredict] ⚠️ score_lambdarank NOT in final_predictions")
-                if 'score_catboost' in final_predictions.columns:
-                    self.log(f"[DirectPredict] ✅ score_catboost available: {final_predictions['score_catboost'].notna().sum()} non-null values")
-                else:
-                    self.log(f"[DirectPredict] ⚠️ score_catboost NOT in final_predictions")
-                
-                self.log(f"[DirectPredict] 📊 生成Excel报告: {excel_path}")
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+                excel_path = output_dir / f"direct_predict_top30_{timestamp}.xlsx"
+                self.log(f"[DirectPredict] Generating combined Top30 Excel (all models): {excel_path}")
+
                 generate_excel_ranking_report(
                     final_predictions,
                     str(excel_path),
                     model_name="MetaRankerStacker",
-                    top_n=20  # Only show Top 20
+                    top_n=30
                 )
-                self.log(f"[DirectPredict] ✅ Excel报告已保存: {excel_path}")
-            except NameError:
-                # generate_excel_ranking_report not imported, skip Excel generation
-                self.log("[DirectPredict] ⚠️ Excel报告函数未导入，跳过Excel报告生成")
-            except ImportError:
-                self.log("[DirectPredict] ⚠️ openpyxl未安装，跳过Excel报告生成")
-            except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ Excel报告生成失败: {e}")
-                import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
 
-            # Display top recommendations (MetaRankerStacker)
+                self.log("[DirectPredict] Excel report saved (Meta + LambdaRank + base models on dedicated sheets)")
+
+            except NameError:
+
+                self.log("[DirectPredict] ?? Excel Excel ")
+
+            except ImportError:
+
+                self.log("[DirectPredict] ?? openpyxl Excel ")
+
+            except Exception as e:
+
+                self.log(f"[DirectPredict] ?? Excel : {e}")
+
+                import traceback
+
+                self.log(f"[DirectPredict]  : {traceback.format_exc()}")
+
+# Display top recommendations (MetaRankerStacker)
+
             try:
+
                 top_show = min(20, len(recs))
-                self.log(f"[DirectPredict] 🏆 MetaRankerStacker Top {top_show} 推荐:")
+
+                self.log(f"[DirectPredict] ?? MetaRankerStacker Top {top_show} ???:")
+
                 for i, r in enumerate(recs[:top_show], 1):
+
                     score = r.get('score', 0.0)
+
                     ticker = r.get('ticker', 'N/A')
+
                     self.log(f"  {i:2d}. {ticker:8s}: {score:8.6f}")
+
             except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ 显示推荐失败: {e}")
+
+                self.log(f"[DirectPredict] ?? ?????????: {e}")
+
             
+
             # Helper function to get top N unique tickers by score
+
             def get_top_n_unique_tickers(df, score_col, n=20):
+
                 """Get top N unique tickers by score, handling MultiIndex"""
+
                 if score_col not in df.columns:
+
                     return pd.DataFrame()
+
                 
+
                 try:
+
                     # Extract ticker level from index
+
                     if isinstance(df.index, pd.MultiIndex):
-                        # If MultiIndex, extract ticker level
-                        ticker_level = df.index.get_level_values('ticker')
-                        # Create a temporary DataFrame with ticker as column for grouping
+
+                        # If MultiIndex, extract ticker level by resetting that level only.
+                        # Using reset_index avoids the "ticker is both column and index" ambiguity.
+
                         temp_df = df[[score_col]].copy()
-                        temp_df['ticker'] = ticker_level
+
+                        temp_df = temp_df.reset_index(level='ticker')
+
+                        temp_df = temp_df.rename(columns={'ticker': 'ticker'})
+
                         # Remove NaN scores
+
                         temp_df = temp_df.dropna(subset=[score_col])
+
                         # Group by ticker and take the maximum score (in case of duplicates)
+
                         grouped = temp_df.groupby('ticker')[score_col].max().reset_index()
+
                         # Sort and get top N
+
                         top_n = grouped.nlargest(n, score_col).reset_index(drop=True)
+
                         return top_n
+
                     else:
+
                         # If not MultiIndex, assume index is ticker
+
                         temp_df = df[[score_col]].copy()
+
                         temp_df['ticker'] = df.index.astype(str)
+
                         # Remove NaN scores
+
                         temp_df = temp_df.dropna(subset=[score_col])
+
                         # Remove duplicates by ticker (keep max score)
+
                         grouped = temp_df.groupby('ticker')[score_col].max().reset_index()
+
                         top_n = grouped.nlargest(n, score_col).reset_index(drop=True)
+
                         return top_n
+
                 except Exception as e:
-                    self.log(f"[DirectPredict] ⚠️ Error in get_top_n_unique_tickers: {e}")
+
+                    self.log(f"[DirectPredict] ?? Error in get_top_n_unique_tickers: {e}")
+
                     import traceback
-                    self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                    self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
                     return pd.DataFrame()
+
             
+
             # Display CatBoost Top 20
+
             try:
+
                 if latest_date and 'score_catboost' in latest_predictions.columns:
+
                     catboost_top20 = get_top_n_unique_tickers(latest_predictions, 'score_catboost', 20)
+
                     if len(catboost_top20) > 0:
-                        self.log(f"\n[DirectPredict] 🏆 CatBoost Top {len(catboost_top20)}:")
+
+                        self.log(f"\n[DirectPredict] ?? CatBoost Top {len(catboost_top20)}:")
+
                         for idx, row in catboost_top20.iterrows():
+
                             ticker = str(row['ticker']).strip()
+
                             score = float(row['score_catboost'])
+
                             self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+
                     else:
-                        self.log(f"[DirectPredict] ⚠️ CatBoost Top20: No valid scores found")
+
+                        self.log(f"[DirectPredict] ?? CatBoost Top20: No valid scores found")
+
                 else:
-                    self.log(f"[DirectPredict] ⚠️ CatBoost scores not available")
+
+                    self.log(f"[DirectPredict] ?? CatBoost scores not available")
+
             except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ 显示CatBoost Top20失败: {e}")
+
+                self.log(f"[DirectPredict] ?? ???CatBoost Top20???: {e}")
+
                 import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
             
+
             # Display LambdaRanker Top 20
+
             try:
+
                 if latest_date and 'score_lambdarank' in latest_predictions.columns:
+
                     lambdarank_top20 = get_top_n_unique_tickers(latest_predictions, 'score_lambdarank', 20)
+
                     if len(lambdarank_top20) > 0:
-                        self.log(f"\n[DirectPredict] 🏆 LambdaRanker Top {len(lambdarank_top20)}:")
+
+                        self.log(f"\n[DirectPredict] ?? LambdaRanker Top {len(lambdarank_top20)}:")
+
                         for idx, row in lambdarank_top20.iterrows():
+
                             ticker = str(row['ticker']).strip()
+
                             score = float(row['score_lambdarank'])
+
                             self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+
                     else:
-                        self.log(f"[DirectPredict] ⚠️ LambdaRanker Top20: No valid scores found")
+
+                        self.log(f"[DirectPredict] ?? LambdaRanker Top20: No valid scores found")
+
                 else:
-                    self.log(f"[DirectPredict] ⚠️ LambdaRanker scores not available")
+
+                    self.log(f"[DirectPredict] ?? LambdaRanker scores not available")
+
             except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ 显示LambdaRanker Top20失败: {e}")
+
+                self.log(f"[DirectPredict] ?? ???LambdaRanker Top20???: {e}")
+
                 import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
             
+
             # Display ElasticNet Top 20
+
             try:
+
                 if latest_date and 'score_elastic' in latest_predictions.columns:
+
                     elastic_top20 = get_top_n_unique_tickers(latest_predictions, 'score_elastic', 20)
+
                     if len(elastic_top20) > 0:
-                        self.log(f"\n[DirectPredict] 🏆 ElasticNet Top {len(elastic_top20)}:")
+
+                        self.log(f"\n[DirectPredict] ?? ElasticNet Top {len(elastic_top20)}:")
+
                         for idx, row in elastic_top20.iterrows():
+
                             ticker = str(row['ticker']).strip()
+
                             score = float(row['score_elastic'])
+
                             self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+
                     else:
-                        self.log(f"[DirectPredict] ⚠️ ElasticNet Top20: No valid scores found")
+
+                        self.log(f"[DirectPredict] ?? ElasticNet Top20: No valid scores found")
+
                 else:
-                    self.log(f"[DirectPredict] ⚠️ ElasticNet scores not available")
+
+                    self.log(f"[DirectPredict] ?? ElasticNet scores not available")
+
             except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ 显示ElasticNet Top20失败: {e}")
+
+                self.log(f"[DirectPredict] ?? ???ElasticNet Top20???: {e}")
+
                 import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
             
+
             # Display XGBoost Top 20
+
             try:
+
                 if latest_date and 'score_xgb' in latest_predictions.columns:
+
                     xgb_top20 = get_top_n_unique_tickers(latest_predictions, 'score_xgb', 20)
+
                     if len(xgb_top20) > 0:
-                        self.log(f"\n[DirectPredict] 🏆 XGBoost Top {len(xgb_top20)}:")
+
+                        self.log(f"\n[DirectPredict] ?? XGBoost Top {len(xgb_top20)}:")
+
                         for idx, row in xgb_top20.iterrows():
+
                             ticker = str(row['ticker']).strip()
+
                             score = float(row['score_xgb'])
+
                             self.log(f"  {idx+1:2d}. {ticker:8s}: {score:8.6f}")
+
                     else:
-                        self.log(f"[DirectPredict] ⚠️ XGBoost Top20: No valid scores found")
+
+                        self.log(f"[DirectPredict] ?? XGBoost Top20: No valid scores found")
+
                 else:
-                    self.log(f"[DirectPredict] ⚠️ XGBoost scores not available")
+
+                    self.log(f"[DirectPredict] ?? XGBoost scores not available")
+
             except Exception as e:
-                self.log(f"[DirectPredict] ⚠️ 显示XGBoost Top20失败: {e}")
+
+                self.log(f"[DirectPredict] ?? ???XGBoost Top20???: {e}")
+
                 import traceback
-                self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+                self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
+
 
         except Exception as e:
-            self.log(f"[DirectPredict] ❌ 错误: {e}")
+
+            self.log(f"[DirectPredict] ? ????: {e}")
+
             import traceback
-            self.log(f"[DirectPredict] 详细错误: {traceback.format_exc()}")
+
+            self.log(f"[DirectPredict] ???????: {traceback.format_exc()}")
+
+
+
+    def _run_timesplit_eval(self) -> None:
+        try:
+            selected_features = [feat for feat, var in getattr(self, 'timesplit_feature_vars', {}).items() if var.get()]
+        except AttributeError:
+            messagebox.showerror("80/20 Evaluation", "Timesplit UI not initialized yet.")
+            return
+        if not selected_features:
+            messagebox.showerror("80/20 Evaluation", "Select at least one feature before running the evaluation.")
+            return
+        split_value = float(getattr(self, 'timesplit_split_var', tk.DoubleVar(value=0.8)).get())
+        split_value = max(0.60, min(0.95, split_value))
+        ema_top_n = "0" if getattr(self, 'var_timesplit_ema', tk.BooleanVar(value=False)).get() else "-1"
+        cmd = [
+            sys.executable,
+            str(Path('scripts') / 'time_split_80_20_oos_eval.py'),
+            '--data-file', str(STAGE_A_DATA_PATH),
+            '--train-data', str(STAGE_A_DATA_PATH),
+            '--horizon-days', '10',
+            '--split', f"{split_value:.3f}",
+            '--model', 'lambdarank',
+            '--models', 'lambdarank',
+            '--output-dir', str(Path('results') / 'timesplit_gui'),
+            '--log-level', 'INFO',
+            '--features',
+        ] + selected_features + ['--ema-top-n', ema_top_n]
+        if getattr(self, '_timesplit_thread', None) and self._timesplit_thread.is_alive():
+            messagebox.showinfo("80/20 Evaluation", "An evaluation is already running. Please wait for it to finish.")
+            return
+        self.log(f"[TimeSplit] Starting 80/20 evaluation with split={split_value:.2f}, EMA={'ON' if ema_top_n == '0' else 'OFF'}")
+        cwd = Path(__file__).resolve().parent.parent
+        thread = threading.Thread(target=self._run_timesplit_eval_thread, args=(cmd, cwd), daemon=True)
+        self._timesplit_thread = thread
+        thread.start()
+
+    def _run_timesplit_eval_thread(self, cmd: list[str], cwd: Path) -> None:
+        try:
+            proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception as exc:
+            self.after(0, lambda: self.log(f"[TimeSplit] Failed to start evaluation: {exc}"))
+            messagebox.showerror("80/20 Evaluation", f"Failed to start process: {exc}")
+            return
+        for line in proc.stdout or []:
+            msg = line.rstrip()
+            if msg:
+                self.after(0, lambda m=msg: self.log(f"[TimeSplit] {m}"))
+        proc.wait()
+        status = "completed successfully" if proc.returncode == 0 else f"finished with code {proc.returncode}"
+        self.after(0, lambda: self.log(f"[TimeSplit] Evaluation {status}."))
+        if proc.returncode == 0:
+            self.after(0, lambda: messagebox.showinfo("80/20 Evaluation", "Evaluation finished successfully. Check results/timesplit_gui for outputs."))
+        else:
+            self.after(0, lambda: messagebox.showerror("80/20 Evaluation", f"Evaluation failed with code {proc.returncode}. See log for details."))
+
+    def _open_timesplit_results(self) -> None:
+        results_path = Path('results') / 'timesplit_gui'
+        results_path.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform.startswith('win'):
+                os.startfile(results_path)  # type: ignore[attr-defined]
+            elif sys.platform.startswith('darwin'):
+                subprocess.Popen(['open', str(results_path)])
+            else:
+                subprocess.Popen(['xdg-open', str(results_path)])
+        except Exception as exc:
+            self.log(f"[TimeSplit] Failed to open results folder: {exc}")
+            messagebox.showerror("80/20 Evaluation", f"Unable to open folder: {exc}")
+
 
     def _build_direct_tab(self, parent) -> None:
+
         frm = ttk.Frame(parent)
+
         frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # ?锛氬熀鏈弬鏁?
-        row1 = ttk.LabelFrame(frm, text="order placement鍙傛")
+
+
+        # ? F???
+
+        row1 = ttk.LabelFrame(frm, text="order placement ?")
+
         row1.pack(fill=tk.X, pady=6)
+
         ttk.Label(row1, text=").grid(row=0, column=0, padx=5, pady=5")
+
         self.d_sym = ttk.Entry(row1, width=12); self.d_sym.grid(row=0, column=1, padx=5)
-        ttk.Label(row1, text="鏁伴).grid(row=0, column=2, padx=5")
+
+        ttk.Label(row1, text=" ?).grid(row=0, column=2, padx=5")
+
         self.d_qty = ttk.Entry(row1, width=10); self.d_qty.insert(0, "100"); self.d_qty.grid(row=0, column=3, padx=5)
+
         ttk.Label(row1, text="limit").grid(row=0, column=4, padx=5)
+
         self.d_px = ttk.Entry(row1, width=10); self.d_px.grid(row=0, column=5, padx=5)
 
-        # ?锛氬熀鏈寜閽?
-        row2 = ttk.LabelFrame(frm, text="鍩虹order placement")
-        row2.pack(fill=tk.X, pady=6)
-        ttk.Button(row2, text="market买入", command=lambda: self._direct_market("BUY")).grid(row=0, column=0, padx=6, pady=6)
-        ttk.Button(row2, text="market卖出", command=lambda: self._direct_market("SELL")).grid(row=0, column=1, padx=6, pady=6)
-        ttk.Button(row2, text="limit买入", command=lambda: self._direct_limit("BUY")).grid(row=0, column=2, padx=6, pady=6)
-        ttk.Button(row2, text="limit卖出", command=lambda: self._direct_limit("SELL")).grid(row=0, column=3, padx=6, pady=6)
 
-        # ?锛歜racket order
+
+        # ? D???
+
+        row2 = ttk.LabelFrame(frm, text=" ?order placement")
+
+        row2.pack(fill=tk.X, pady=6)
+
+        ttk.Button(row2, text="market????", command=lambda: self._direct_market("BUY")).grid(row=0, column=0, padx=6, pady=6)
+
+        ttk.Button(row2, text="market???", command=lambda: self._direct_market("SELL")).grid(row=0, column=1, padx=6, pady=6)
+
+        ttk.Button(row2, text="limit????", command=lambda: self._direct_limit("BUY")).grid(row=0, column=2, padx=6, pady=6)
+
+        ttk.Button(row2, text="limit???", command=lambda: self._direct_limit("SELL")).grid(row=0, column=3, padx=6, pady=6)
+
+
+
+        # ? bracket order
+
         row3 = ttk.LabelFrame(frm, text="Bracket Orders")
+
         row3.pack(fill=tk.X, pady=6)
+
         ttk.Label(row3, text="Stop Loss %").grid(row=0, column=0, padx=5)
+
         self.d_stop = ttk.Entry(row3, width=8); self.d_stop.insert(0, "2.0"); self.d_stop.grid(row=0, column=1)
+
         ttk.Label(row3, text="Take Profit %").grid(row=0, column=2, padx=5)
+
         self.d_tp = ttk.Entry(row3, width=8); self.d_tp.insert(0, "5.0"); self.d_tp.grid(row=0, column=3)
+
         ttk.Button(row3, text="Market Bracket (Buy)", command=lambda: self._direct_bracket("BUY")).grid(row=0, column=4, padx=6, pady=6)
+
         ttk.Button(row3, text="Market Bracket (Sell)", command=lambda: self._direct_bracket("SELL")).grid(row=0, column=5, padx=6, pady=6)
+
         
+
         # System Operations Section (essential functions only)
+
         ops_box = ttk.LabelFrame(frm, text="System Operations")
+
         ops_box.pack(fill=tk.X, pady=6)
+
         
+
         ttk.Button(ops_box, text="Test Connection", command=self._test_connection).grid(row=0, column=0, padx=6, pady=6)
+
         
+
         # Strategy Integration Section
+
         strategy_box = ttk.LabelFrame(frm, text="Strategy Integration")
+
         strategy_box.pack(fill=tk.X, pady=6)
+
         
+
         ttk.Button(strategy_box, text="Manual Signal Entry", command=self._manual_signal_entry).grid(row=0, column=0, padx=6, pady=6)
+
         ttk.Button(strategy_box, text="Execute Alpha Signals", command=self._execute_alpha_signals).grid(row=0, column=1, padx=6, pady=6)
+
         ttk.Button(strategy_box, text="Portfolio Rebalance", command=self._portfolio_rebalance).grid(row=0, column=2, padx=6, pady=6)
+
         
+
         # System Status Section
+
         status_display_box = ttk.LabelFrame(frm, text="System Status")
+
         status_display_box.pack(fill=tk.BOTH, expand=True, pady=6)
+
         
+
         self.system_status_text = tk.Text(status_display_box, height=8, width=80)
+
         self.system_status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         
+
         # Add scrollbar for system status
+
         status_scrollbar = tk.Scrollbar(status_display_box)
+
         status_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         self.system_status_text.config(yscrollcommand=status_scrollbar.set)
+
         status_scrollbar.config(command=self.system_status_text.yview)
+
         
+
         # Initialize system status
+
         self._update_system_status()
 
-        # ?锛氶珮绾ф墽琛?
-        row4 = ttk.LabelFrame(frm, text="楂樼骇鎵ц")
+
+
+        # ? ??
+
+        row4 = ttk.LabelFrame(frm, text=" ?")
+
         row4.pack(fill=tk.X, pady=6)
-        ttk.Label(row4, text="绠楁).grid(row=0, column=0, padx=5")
+
+        ttk.Label(row4, text=" ?).grid(row=0, column=0, padx=5")
+
         self.d_algo = ttk.Combobox(row4, values=["TWAP", "VWAP", "ICEBERG"], width=10)
+
         self.d_algo.current(0)
+
         self.d_algo.grid(row=0, column=1, padx=5)
-        ttk.Label(row4, text="鎸佺鍒嗛").grid(row=0, column=2, padx=5)
+
+        ttk.Label(row4, text=" ? ?").grid(row=0, column=2, padx=5)
+
         self.d_dur = ttk.Entry(row4, width=8); self.d_dur.insert(0, "30"); self.d_dur.grid(row=0, column=3, padx=5)
-        ttk.Button(row4, text="鎵ц澶у崟(", command=lambda: self._direct_algo("BUY")).grid(row=0, column=4, padx=6, pady=6)
-        ttk.Button(row4, text="鎵ц澶у崟(", command=lambda: self._direct_algo("SELL")).grid(row=0, column=5, padx=6, pady=6)
+
+        ttk.Button(row4, text=" ? (", command=lambda: self._direct_algo("BUY")).grid(row=0, column=4, padx=6, pady=6)
+
+        ttk.Button(row4, text=" ? (", command=lambda: self._direct_algo("SELL")).grid(row=0, column=5, padx=6, pady=6)
+
+
+    def _build_timesplit_tab(self, parent) -> None:
+        container = ttk.Frame(parent)
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        dataset_frame = ttk.LabelFrame(container, text="Dataset & Split")
+        dataset_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(dataset_frame, text=f"Dataset: {STAGE_A_DATA_PATH}", anchor='w').pack(fill=tk.X, padx=5, pady=2)
+
+        split_row = ttk.Frame(dataset_frame)
+        split_row.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(split_row, text="Training Split (0.60 - 0.95)").pack(side=tk.LEFT)
+        self.timesplit_split_var = tk.DoubleVar(value=0.80)
+        split_value_label = ttk.Label(split_row, text="0.80")
+        split_value_label.pack(side=tk.RIGHT, padx=5)
+        ttk.Scale(split_row, from_=0.60, to=0.95, orient=tk.HORIZONTAL, variable=self.timesplit_split_var, length=260, command=lambda v: split_value_label.config(text=f"{float(v):.2f}")).pack(fill=tk.X, expand=True, padx=5)
+
+        feature_frame = ttk.LabelFrame(container, text="Feature Combination")
+        feature_frame.pack(fill=tk.X, pady=5)
+        self.timesplit_feature_vars = {}
+        for idx, feature in enumerate(TIMESPLIT_FEATURES):
+            var = tk.BooleanVar(value=True)
+            chk = ttk.Checkbutton(feature_frame, text=feature, variable=var)
+            chk.grid(row=idx // 3, column=idx % 3, sticky=tk.W, padx=5, pady=2)
+            self.timesplit_feature_vars[feature] = var
+
+        options_frame = ttk.LabelFrame(container, text="Options")
+        options_frame.pack(fill=tk.X, pady=5)
+        self.var_timesplit_ema = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_frame, text="Enable EMA smoothing (LambdaRank only)", variable=self.var_timesplit_ema).pack(anchor='w', padx=5, pady=2)
+
+        action_frame = ttk.Frame(container)
+        action_frame.pack(fill=tk.X, pady=10)
+        ttk.Button(action_frame, text="Run 80/20 Evaluation", command=self._run_timesplit_eval).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="Open Results Folder", command=self._open_timesplit_results).pack(side=tk.LEFT, padx=5)
+
 
     def _start_engine(self) -> None:
+
         try:
-            # 閲囬泦鏈鏂癠I鍙傛?
+
+            #  ? UI ??
+
             self._capture_ui()
-            # 绔嬪嵆in涓荤嚎绋嬫彁绀猴紝閬垮?no鍙嶅?鎰熷?
-            self.log(f"鍑嗗start寮曟connection/subscription)... Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
+
+            #  in ??no ?? ??
+
+            self.log(f" ?start ?connection/subscription)... Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
+
             loop = self._ensure_loop()
+
             async def _run():
+
                 try:
-                    # 绾跨▼瀹夊叏鏃ュ織
+
+                    #  
+
                     try:
+
                         self.after(0, lambda: self.log(
-                            f"start寮曟搸鍙傛暟: Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}"))
+
+                            f"start : Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}"))
+
                     except Exception:
+
                         pass
-                    # startbefore鍏堟柇寮鐜癶asconnection锛岄伩鍏峜lientId鍗爑se
+
+                    # startbefore ? hasconnection clientId use
+
                     if self.trader and getattr(self.trader, 'ib', None) and self.trader.ib.isConnected():
+
                         try:
+
                             await self.trader.close()
+
                             try:
-                                self.after(0, lambda: self.log("鏂紑涔媌eforeAPIconnection"))
+
+                                self.after(0, lambda: self.log(" ? beforeAPIconnection"))
+
                             except Exception as e:
-                                # GUI鏇存柊澶辫触涓嶅奖鍝嶆牳蹇冮昏?
-                                self.log(f"GUI鏃ュ織鏇存柊澶辫 {e}")
+
+                                # GUI ???
+
+                                self.log(f"GUI ? {e}")
+
                         except Exception as e:
-                            # 杩炴帴鍏抽棴澶辫触鏄叧閿敊璇紝闇瑕佽褰曞苟鍙兘褰卞搷鍚庣画鎿嶄綔
-                            self.log(f"涓ラ噸閿欒锛氭棤娉曞叧闂棫杩炴帴: {e}")
-                            # 璁剧疆閿欒鐘舵佷絾缁х画灏濊瘯鏂拌繛鎺?
-                            self._set_connection_error_state(f"鏃ц繛鎺ュ叧闂け {e}")
-                    # 鍒涘缓骞禼onnection浜ゆ槗鍣紝浣縰se缁熶竴閰嶇疆
+
+                            #  M? ? ?? ? ? 
+
+                            self.log(f" ? K? : {e}")
+
+                            #  ? ? ??
+
+                            self._set_connection_error_state(f" X? {e}")
+
+                    #  connection ? use 
+
                     self.trader = IbkrAutoTrader(config_manager=self.config_manager)
-                    # 娉ㄥ唽to璧勬簮鐩戞帶
+
+                    #  to 
+
                     self.resource_monitor.register_connection(self.trader)
+
                     
-                    # ?Engine 缁熶竴璐熻矗 connect andsubscription锛屼娇use缁熶竴閰嶇疆
+
+                    # ?Engine   connect andsubscription use 
+
                     self.engine = Engine(self.config_manager, self.trader)
+
                     await self.engine.start()
+
                     try:
-                        self.after(0, lambda: self.log("绛栫暐寮曟搸start骞禼ompletedsubscription"))
-                        self.after(0, lambda: self._update_signal_status("寮曟搸start", "green"))
+
+                        self.after(0, lambda: self.log(" start completedsubscription"))
+
+                        self.after(0, lambda: self._update_signal_status(" start", "green"))
+
                     except Exception:
+
                         pass
+
                 except Exception as e:
+
                     error_msg = str(e)
+
                     try:
-                        self.after(0, lambda e_msg=error_msg: self.log(f"绛栫暐寮曟搸startfailed: {e_msg}"))
+
+                        self.after(0, lambda e_msg=error_msg: self.log(f" startfailed: {e_msg}"))
+
                     except Exception:
-                        print(f"绛栫暐寮曟搸startfailed: {e}")  # 闄嶇骇鏃ュ織
-            # 浣縰se绾跨▼瀹夊叏浜嬩欢寰幆绠悊鍣紙闈為樆濉烇?
+
+                        print(f" startfailed: {e}")  #  
+
+            #  use ? ? ? ??
+
             try:
+
                 task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                self.after(0, lambda: self.log(f"绛栫暐寮曟搸浠诲姟鎻愪氦 (ID: {task_id[:8]}...)"))
+
+                self.after(0, lambda: self.log(f"  (ID: {task_id[:8]}...)"))
+
             except Exception as e:
+
                 error_msg = str(e)
-                self.after(0, lambda e_msg=error_msg: self.log(f"绛栫暐寮曟搸startfailed: {e_msg}"))
+
+                self.after(0, lambda e_msg=error_msg: self.log(f" startfailed: {e_msg}"))
+
         except Exception as e:
-            self.log(f"start寮曟搸閿欒: {e}")
+
+            self.log(f"start ?: {e}")
+
+
 
     def _engine_once(self) -> None:
+
         try:
+
             if not self.engine:
-                self.log("璇峰厛start寮曟")
+
+                self.log(" start ?")
+
                 return
-            # 浣縰se闈為樆濉炴彁浜ら伩鍏岹UI鍗?
+
+            #  use GUI??
+
             if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
+
                 task_id = self.loop_manager.submit_coroutine_nowait(self.engine.on_signal_and_trade())
-                self.log(f"淇彿浜ゆ槗鎻愪氦锛屼换鍔D: {task_id}")
+
+                self.log(f" ? ?D: {task_id}")
+
             else:
-                self.log("浜嬩欢寰幆鏈繍琛岋紝no娉曟墽琛屼俊鍙蜂氦鏄")
-            self.log("瑙﹀彂涓娆′俊鍙穉nd浜ゆ")
-            self._update_signal_status("鎵ц浜ゆ槗淇彿", "blue")
+
+                self.log(" ? c? no ?")
+
+            self.log(" ? and ?")
+
+            self._update_signal_status(" ? ?", "blue")
+
         except Exception as e:
-            self.log(f"杩愯寮曟搸涓娆ailed: {e}")
+
+            self.log(f" ? ??ailed: {e}")
+
+
 
     def _stop_engine_mode(self) -> None:
+
         try:
-            self.log("绛栫暐寮曟搸鍋滄锛歝an閫氳繃鍋滄浜ゆ槗鎸夐挳涓骞舵柇寮connectionand浠诲")
-            self._update_signal_status("停止", "red")
+
+            self.log(" ? can ? ? ?connectionand ?")
+
+            self._update_signal_status("??", "red")
+
         except Exception as e:
-            self.log(f"鍋滄寮曟搸failed: {e}")
+
+            self.log(f" ? failed: {e}")
+
+
 
     def _direct_market(self, side: str) -> None:
+
         try:
+
             sym = (self.d_sym.get() or "").strip().upper()
+
             qty = int(self.d_qty.get().strip())
+
             if not sym or qty <= 0:
-                messagebox.showwarning("警告", "请输入有效的标的和数量")
+
+                messagebox.showwarning("????", "???????? ?????????")
+
                 return
+
             loop = self._ensure_loop()
+
             async def _run():
+
                 try:
+
                     if not self.trader:
+
                         self.trader = IbkrAutoTrader(config_manager=self.config_manager)
+
                         await self.trader.connect()
+
                     await self.trader.place_market_order(sym, side, qty)
-                    self.log(f"鎻愪氦market {side} {qty} {sym}")
+
+                    self.log(f" market {side} {qty} {sym}")
+
                 except Exception as e:
-                    self.log(f"market鍗昮ailed: {e}")
-            # 浣縰se闈為樆濉炴彁浜ら伩鍏岹UI鍗?
+
+                    self.log(f"market failed: {e}")
+
+            #  use GUI??
+
             if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
+
                 task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                self.log(f"order placement浠诲姟鎻愪氦锛屼换鍔D: {task_id}")
+
+                self.log(f"order placement ?D: {task_id}")
+
             else:
-                self.log("浜嬩欢寰幆鏈繍琛岋紝no娉曟墽琛宱rder placement鎿嶄")
+
+                self.log(" ? c? no order placement ?")
+
         except Exception as e:
-            self.log(f"marketorder placement閿欒 {e}")
+
+            self.log(f"marketorder placement ? {e}")
+
+
 
     def _direct_limit(self, side: str) -> None:
+
         try:
+
             sym = (self.d_sym.get() or "").strip().upper()
+
             qty = int(self.d_qty.get().strip())
+
             px_str = (self.d_px.get() or "").strip()
+
             if not sym or qty <= 0 or not px_str:
-                messagebox.showwarning("警告", "请输入标的/数量和limit价格")
+
+                messagebox.showwarning("????", "????????/??????limit???")
+
                 return
+
             px = float(px_str)
+
             loop = self._ensure_loop()
+
             async def _run():
+
                 try:
+
                     if not self.trader:
+
                         self.trader = IbkrAutoTrader(config_manager=self.config_manager)
+
                         await self.trader.connect()
+
                     await self.trader.place_limit_order(sym, side, qty, px)
-                    self.log(f"鎻愪氦limit {side} {qty} {sym} @ {px}")
+
+                    self.log(f" limit {side} {qty} {sym} @ {px}")
+
                 except Exception as e:
-                    self.log(f"limit鍗昮ailed: {e}")
-            # 浣縰se闈為樆濉炴彁浜ら伩鍏岹UI鍗?
+
+                    self.log(f"limit failed: {e}")
+
+            #  use GUI??
+
             if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
+
                 task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                self.log(f"order placement浠诲姟鎻愪氦锛屼换鍔D: {task_id}")
+
+                self.log(f"order placement ?D: {task_id}")
+
             else:
-                self.log("浜嬩欢寰幆鏈繍琛岋紝no娉曟墽琛宱rder placement鎿嶄")
+
+                self.log(" ? c? no order placement ?")
+
         except Exception as e:
-            self.log(f"limitorder placement閿欒 {e}")
+
+            self.log(f"limitorder placement ? {e}")
+
+
 
     def _direct_bracket(self, side: str) -> None:
+
         try:
+
             sym = (self.d_sym.get() or "").strip().upper()
+
             qty = int(self.d_qty.get().strip())
+
             stop_pct = float((self.d_stop.get() or "2.0").strip())/100.0
+
             tp_pct = float((self.d_tp.get() or "5.0").strip())/100.0
+
             if not sym or qty <= 0:
-                messagebox.showwarning("警告", "请输入标的和数量")
+
+                messagebox.showwarning("????", "?????????????")
+
                 return
+
             loop = self._ensure_loop()
+
             async def _run():
+
                 try:
+
                     if not self.trader:
+
                         self.trader = IbkrAutoTrader(config_manager=self.config_manager)
+
                         await self.trader.connect()
+
                     await self.trader.place_market_order_with_bracket(sym, side, qty, stop_pct=stop_pct, target_pct=tp_pct)
-                    self.log(f"鎻愪氦bracket order: {side} {qty} {sym} (姝㈡崯{stop_pct*100:.1f}%, 姝㈢泩{tp_pct*100:.1f}%)")
+
+                    self.log(f" bracket order: {side} {qty} {sym} ( {stop_pct*100:.1f}%,  {tp_pct*100:.1f}%)")
+
                 except Exception as e:
+
                     self.log(f"bracket orderfailed: {e}")
-            # 浣縰se闈為樆濉炴彁浜ら伩鍏岹UI鍗?
+
+            #  use GUI??
+
             if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
+
                 task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                self.log(f"order placement浠诲姟鎻愪氦锛屼换鍔D: {task_id}")
+
+                self.log(f"order placement ?D: {task_id}")
+
             else:
-                self.log("浜嬩欢寰幆鏈繍琛岋紝no娉曟墽琛宱rder placement鎿嶄")
+
+                self.log(" ? c? no order placement ?")
+
         except Exception as e:
-            self.log(f"bracket order閿欒 {e}")
+
+            self.log(f"bracket order ? {e}")
+
+
 
     def _direct_algo(self, side: str) -> None:
+
         try:
+
             sym = (self.d_sym.get() or "").strip().upper()
+
             qty = int(self.d_qty.get().strip())
+
             algo = (self.d_algo.get() or "TWAP").strip().upper()
+
             dur_min = int((self.d_dur.get() or "30").strip())
+
             if not sym or qty <= 0:
-                messagebox.showwarning("警告", "请输入标的和数量")
+
+                messagebox.showwarning("????", "?????????????")
+
                 return
+
             loop = self._ensure_loop()
+
             async def _run():
+
                 try:
+
                     if not self.trader:
+
                         self.trader = IbkrAutoTrader(config_manager=self.config_manager)
+
                         await self.trader.connect()
+
                     await self.trader.execute_large_order(sym, side, qty, algorithm=algo, duration_minutes=dur_min)
-                    self.log(f"鎻愪氦澶у崟鎵ц {algo} {side} {qty} {sym} / {dur_min}min")
+
+                    self.log(f" ? {algo} {side} {qty} {sym} / {dur_min}min")
+
                 except Exception as e:
-                    self.log(f"澶у崟鎵цfailed: {e}")
-            # 浣縰se闈為樆濉炴彁浜ら伩鍏岹UI鍗?
+
+                    self.log(f" ?failed: {e}")
+
+            #  use GUI??
+
             if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
+
                 task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                self.log(f"order placement浠诲姟鎻愪氦锛屼换鍔D: {task_id}")
+
+                self.log(f"order placement ?D: {task_id}")
+
             else:
-                self.log("浜嬩欢寰幆鏈繍琛岋紝no娉曟墽琛宱rder placement鎿嶄")
+
+                self.log(" ? c? no order placement ?")
+
         except Exception as e:
-            self.log(f"澶у崟鎵ц閿欒 {e}")
+
+            self.log(f" ? ? {e}")
+
+
 
     def _delete_database(self) -> None:
-        """涓閿垹闄ゆ暟鎹簱鏂囦欢锛堝惈纭and閲嶅缓锛"""
+
+        """? ? ? ?and ?"""
+
         try:
+
             import os
+
             db_path = getattr(self.db, 'db_path', None)
+
             if not db_path:
-                messagebox.showerror("错误", "无法找到数据库路径")
+
+                messagebox.showerror("????", "??????????? ??")
+
                 return
+
             
+
             if not os.path.exists(db_path):
-                messagebox.showinfo("提示", "数据库文件不存在，无法删除")
+
+                messagebox.showinfo("???", "?????????????????????")
+
                 return
+
             
+
             confirm = messagebox.askyesno(
-                "纭鍒犻櫎",
-                f"will鍒犻櫎鏁版嵁搴撴枃浠\n{db_path}\n\n姝ゆ搷浣渘otcan鎭㈠锛宨s鍚︾户缁紵"
+
+                "? ",
+
+                f"will ?\n{db_path}\n\n notcan ? is ?"
+
             )
+
             if not confirm:
+
                 return
+
             
-            # 鍏抽棴connection鍐嶅垹闄?
+
+            #  connection ??
+
             try:
+
                 self.db.close()
+
             except Exception:
+
                 pass
+
             
+
             os.remove(db_path)
-            self.log(f"鍒犻櫎鏁版嵁 {db_path}")
+
+            self.log(f"  {db_path}")
+
             
-            # 閲嶆柊鍒濆鍖栨暟鎹簱骞跺埛鏂癠I
+
+            #  ? ? UI
+
             self.db = StockDatabase()
+
             self._refresh_stock_lists()
+
             self._refresh_configs()
-            messagebox.showinfo("completed", "鏁版嵁搴撳垹闄ゅ苟閲嶅缓as绌哄")
+
+            messagebox.showinfo("completed", " as ?")
+
         
+
         except Exception as e:
-            self.log(f"鍒犻櫎鏁版嵁搴揻ailed: {e}")
-            messagebox.showerror("错误", f"删除数据库失败: {e}")
+
+            self.log(f" failed: {e}")
+
+            messagebox.showerror("????", f"???????????: {e}")
+
+
 
     def _print_database(self) -> None:
-        """鎵撳嵃褰揵efore鏁版嵁搴撳唴瀹箃o鏃ュ織锛堝叏灞tickers銆佽偂绁ㄥ垪琛ㄣ侀塱n鍒楄〃銆佷氦鏄撻厤缃級"""
+
+        """ before to ?tickers ??in X?"""
+
         try:
-            # 鍏ㄥ?tickers
+
+            #  ??tickers
+
             tickers = []
+
             try:
+
                 tickers = self.db.get_all_tickers()
+
             except Exception:
+
                 pass
+
             if tickers:
+
                 preview = ", ".join(tickers[:200]) + ("..." if len(tickers) > 200 else "")
-                self.log(f"鍏ㄥtickers ?{len(tickers)}: {preview}")
-            else:
-                self.log("鍏ㄥtickers: no")
 
-            # 鑲エ鍒楄〃姒傝
+                self.log(f" ?tickers ?{len(tickers)}: {preview}")
+
+            else:
+
+                self.log(" ?tickers: no")
+
+
+
+            #  ? ?
+
             try:
+
                 lists = self.db.get_stock_lists()
-            except Exception:
-                lists = []
-            if lists:
-                summary = ", ".join([f"{it['name']}({it.get('stock_count', 0)})" for it in lists])
-                self.log(f"鑲エ鍒楄{len(lists)} ? {summary}")
-            else:
-                self.log("鑲エ鍒楄 no")
 
-            # 褰揵efore閫塱n鍒楄〃鏄庣粏
-            try:
-                if self.state.selected_stock_list_id:
-                    rows = self.db.get_stocks_in_list(self.state.selected_stock_list_id)
-                    syms = [r.get('symbol') for r in rows]
-                    preview = ", ".join(syms[:200]) + ("..." if len(syms) > 200 else "")
-                    self.log(f"褰揵efore鍒楄{self.stock_list_var.get()} ?{len(syms)}: {preview}")
             except Exception:
+
+                lists = []
+
+            if lists:
+
+                summary = ", ".join([f"{it['name']}({it.get('stock_count', 0)})" for it in lists])
+
+                self.log(f" ? ?{len(lists)} ? {summary}")
+
+            else:
+
+                self.log(" ? ? no")
+
+
+
+            #  before in 
+
+            try:
+
+                if self.state.selected_stock_list_id:
+
+                    rows = self.db.get_stocks_in_list(self.state.selected_stock_list_id)
+
+                    syms = [r.get('symbol') for r in rows]
+
+                    preview = ", ".join(syms[:200]) + ("..." if len(syms) > 200 else "")
+
+                    self.log(f" before ?{self.stock_list_var.get()} ?{len(syms)}: {preview}")
+
+            except Exception:
+
                 pass
 
-            # 浜ゆ槗閰嶇疆鍚嶇О
+
+
+            #  
+
             try:
+
                 cfgs = self.db.get_trading_configs()
+
             except Exception:
+
                 cfgs = []
+
             if cfgs:
+
                 names = ", ".join([c.get('name', '') for c in cfgs])
-                self.log(f"浜ゆ槗閰嶇疆 {len(cfgs)}  {names}")
+
+                self.log(f"  {len(cfgs)}  {names}")
+
             else:
-                self.log("浜ゆ槗閰嶇疆: no")
+
+                self.log(" : no")
+
+
 
         except Exception as e:
-            self.log(f"鎵撳嵃鏁版嵁搴揻ailed: {e}")
+
+            self.log(f" failed: {e}")
+
+
 
     def _build_database_tab(self, parent):
+
         """Build the data services tab"""
-        # 宸︿晶锛氬叏灞浜ゆ槗鑲エ锛堜粎鏄剧ず浼歜e浜ゆ槗鍏ㄥ眬tickers?
+
+        #  ? ? be tickers?
+
         left_frame = tk.Frame(parent)
+
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+
+
         stock_frame = tk.LabelFrame(left_frame, text="Trading Tickers")
+
         stock_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
         
-        # 鍒涘缓Treeview锛屼粎鏄剧ずsymbolandadded_at
+
+        #  Treeview symbolandadded_at
+
         columns = ('symbol', 'added_at')
+
         self.stock_tree = ttk.Treeview(stock_frame, columns=columns, show='headings', height=10)
+
         self.stock_tree.heading('symbol', text='Ticker')
+
         self.stock_tree.heading('added_at', text='Added At')
+
         self.stock_tree.column('symbol', width=100)
+
         self.stock_tree.column('added_at', width=150)
+
         
-        # 婊氬?records
+
+        #  ??records
+
         stock_scroll = ttk.Scrollbar(stock_frame, orient=tk.VERTICAL, command=self.stock_tree.yview)
+
         self.stock_tree.configure(yscrollcommand=stock_scroll.set)
+
         
+
         self.stock_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         stock_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
         
-        # 鍙充晶锛氭搷浣滈潰鏉匡紙浠ュ叏灞tickersas涓伙?
+
+        #  ?tickersas ??
+
         right_frame = tk.Frame(parent)
+
         right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
+
         
-        # 鏁版嵁搴撲俊?
+
+        #  ?
+
         info_frame = tk.LabelFrame(right_frame, text="Database Info")
+
         info_frame.pack(fill=tk.X, pady=5)
+
         try:
+
             db_path_text = getattr(self.db, 'db_path', '') or ''
+
         except Exception:
+
             db_path_text = ''
+
         tk.Label(info_frame, text=f"Path: {db_path_text}", wraplength=220, justify=tk.LEFT, fg="gray").pack(anchor=tk.W, padx=5, pady=3)
 
-        # 娣诲姞鑲エ锛堝啓鍏ュ叏灞tickers?
+
+
+        #  ? ?tickers?
+
         add_frame = tk.LabelFrame(right_frame, text="Add Trading Ticker")
+
         add_frame.pack(fill=tk.X, pady=5)
+
         
+
         tk.Label(add_frame, text="Ticker:").grid(row=0, column=0, padx=5, pady=5)
+
         self.ent_symbol = tk.Entry(add_frame, width=15)
+
         self.ent_symbol.grid(row=0, column=1, padx=5, pady=5)
+
         
+
         tk.Button(add_frame, text="Add Ticker", command=self._add_ticker_global, bg="lightgreen").grid(row=1, column=0, columnspan=2, pady=5)
+
         
-        # 鑲エ姹犵?
+
+        #  ? ??
+
         pool_frame = tk.LabelFrame(right_frame, text="Stock Pools")
+
         pool_frame.pack(fill=tk.X, pady=5)
+
         
+
         tk.Button(pool_frame, text="Open Stock Pool Manager", command=self._open_stock_pool_manager, 
+
                  bg="#FF9800", fg="white", font=("Arial", 10)).pack(pady=5)
+
         tk.Button(pool_frame, text="Export Factor Dataset", command=self._export_factor_dataset,
+
                  bg="#4CAF50", fg="white").pack(pady=3)
+
         
-        # 鎵归噺瀵煎叆to鍏ㄥ眬tickers
+
+        #  to tickers
+
         import_frame = tk.LabelFrame(right_frame, text="Batch Import Tickers")
+
         import_frame.pack(fill=tk.X, pady=5)
 
+
+
         tk.Label(import_frame, text="CSV Input (supports blank lines / comments):").grid(row=0, column=0, columnspan=2, padx=5, pady=5)
+
         self.ent_batch_csv = tk.Text(import_frame, width=20, height=4)
+
         self.ent_batch_csv.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+
         self.ent_batch_csv.insert(tk.END, "AAPL,MSFT,GOOGL")
 
-        # 娣诲姞瑙勮寖鍖栨寜閽?
-        _btn_norm = tk.Button(import_frame, text="Normalize", command=self._normalize_batch_input_text, bg="lightblue")
-        _btn_norm.grid(row=2, column=0, padx=5, pady=5, sticky=tk.EW)
-        _attach_tooltip(_btn_norm, "Trim whitespace and convert to uppercase tickers")
-        tk.Button(import_frame, text="Batch Import", command=self._batch_import_global, bg="lightyellow").grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
-        
-        # 鍒犻櫎鍏ㄥ眬tickersin鑲?
-        delete_frame = tk.LabelFrame(right_frame, text="Remove Trading Tickers")
-        delete_frame.pack(fill=tk.X, pady=5)
-        
-        tk.Button(delete_frame, text="Delete Selected", command=self._delete_selected_ticker_global, bg="lightcoral").grid(row=0, column=0, padx=5, pady=5)
-        
-        # 閰嶇疆绠悊
-        config_frame = tk.LabelFrame(right_frame, text="Configuration Management")
-        config_frame.pack(fill=tk.X, pady=5)
-        
-        tk.Label(config_frame, text="Config Name").grid(row=0, column=0, padx=5, pady=5)
-        self.config_name_var = tk.StringVar()
-        self.config_combo = ttk.Combobox(config_frame, textvariable=self.config_name_var, width=15)
-        self.config_combo.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
-        
-        tk.Button(config_frame, text="淇濆瓨閰嶇疆", command=self._save_config, bg="lightblue").grid(row=2, column=0, padx=2, pady=5)
-        tk.Button(config_frame, text="鍔犺浇閰嶇疆", command=self._load_config, bg="lightgreen").grid(row=2, column=1, padx=2, pady=5)
 
-        # 鍚屾鍔熻兘绉婚櫎锛堜粎淇濈暀鍏ㄥ眬tickers浣渁s鍞竴浜ゆ槗婧愶?
+
+        #  ??
+
+        _btn_norm = tk.Button(import_frame, text="Normalize", command=self._normalize_batch_input_text, bg="lightblue")
+
+        _btn_norm.grid(row=2, column=0, padx=5, pady=5, sticky=tk.EW)
+
+        _attach_tooltip(_btn_norm, "Trim whitespace and convert to uppercase tickers")
+
+        tk.Button(import_frame, text="Batch Import", command=self._batch_import_global, bg="lightyellow").grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+
         
-        # 鍒濆鍖栨暟?
+
+        #  tickersin??
+
+        delete_frame = tk.LabelFrame(right_frame, text="Remove Trading Tickers")
+
+        delete_frame.pack(fill=tk.X, pady=5)
+
+        
+
+        tk.Button(delete_frame, text="Delete Selected", command=self._delete_selected_ticker_global, bg="lightcoral").grid(row=0, column=0, padx=5, pady=5)
+
+        
+
+        #  ?
+
+        config_frame = tk.LabelFrame(right_frame, text="Configuration Management")
+
+        config_frame.pack(fill=tk.X, pady=5)
+
+        
+
+        tk.Label(config_frame, text="Config Name").grid(row=0, column=0, padx=5, pady=5)
+
+        self.config_name_var = tk.StringVar()
+
+        self.config_combo = ttk.Combobox(config_frame, textvariable=self.config_name_var, width=15)
+
+        self.config_combo.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+
+        
+
+        tk.Button(config_frame, text=" ", command=self._save_config, bg="lightblue").grid(row=2, column=0, padx=2, pady=5)
+
+        tk.Button(config_frame, text=" ", command=self._load_config, bg="lightgreen").grid(row=2, column=1, padx=2, pady=5)
+
+
+
+        #  ? tickers as ? ??
+
+        
+
+        #  ? ?
+
         self._refresh_global_tickers_table()
+
         self._refresh_configs()
 
+
+
     def _export_factor_dataset(self) -> None:
-        """浠庤偂绁ㄦ睜瀵煎嚭杩囧幓浜斿勾鐨勫洜瀛愭暟鎹紙鍚庡彴绾跨▼鎵ц锛夈"""
+
+        """ ? ? ?"""
+
         if getattr(self, '_exporting_factors', False):
+
             try:
+
                 messagebox.showinfo('Notice', 'Factor export already running; please wait until it completes.')
+
             except Exception:
+
                 pass
+
             return
+
+
 
         pool_info = getattr(self, 'selected_pool_info', {}) or {}
+
         if not pool_info.get('tickers'):
+
             try:
+
                 from .stock_pool_selector import select_stock_pool
+
                 pool_choice = select_stock_pool(self)
+
                 if not pool_choice:
+
                     self.log('[INFO] No pool selected; returning.')
+
                     return
+
                 pool_info = pool_choice
+
                 self.selected_pool_info = dict(pool_choice)
+
             except Exception as exc:
+
                 self.log(f"[ERROR] Pool selection failed: {exc}")
+
                 messagebox.showerror('Error', f'Could not open stock pool picker: {exc}')
+
                 return
 
+
+
         symbols = [s.strip().upper() for s in pool_info.get('tickers', []) if isinstance(s, str) and s.strip()]
+
         if not symbols:
+
             messagebox.showerror('Error', 'Selected pool contains no valid tickers.')
+
             return
+
         pool_name = pool_info.get('pool_name', f"{len(symbols)} tickers")
 
+
+
         base_dir = Path('data/factor_exports')
+
         base_dir.mkdir(parents=True, exist_ok=True)
+
         safe_name = pool_name.replace('/', '_').replace(' ', '_')
+
         out_dir = base_dir / f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
         out_dir.mkdir(parents=True, exist_ok=True)
 
+
+
         self._exporting_factors = True
+
         self.log(f"[INFO] Starting factor export for pool {pool_name} -> {out_dir}")
 
+
+
         def ui_log_safe(msg: str) -> None:
+
             try:
+
                 self.after(0, lambda m=msg: self.log(m))
+
             except Exception:
+
                 try:
+
                     self.log(msg)
+
                 except Exception:
+
                     pass
+
+
 
         def worker() -> None:
+
             try:
+
                 ui_log_safe('[INFO] Factor export job running, logging progress...')
+
                 try:
+
                     from autotrader.factor_export_service import export_polygon_factors  # type: ignore
+
                 except Exception:
+
                     from .factor_export_service import export_polygon_factors  # type: ignore
 
+
+
                 result = export_polygon_factors(
+
                     years=5,
+
                     output_dir=out_dir,
+
                     log_level='INFO',
+
                     status_callback=ui_log_safe,
+
                     symbols=symbols,
+
                     pool_name=pool_name,
+
                     max_symbols=len(symbols),
+
                     mode='train',  # Train mode: with target and dropna
+
                     keep_multiindex=True,  # Keep MultiIndex for ML training
+
                 )
 
+
+
                 summary = (
+
                     f"Export complete: {result.get('batch_count', 0)} batches "
+
                     f"from {result.get('start_date')} to {result.get('end_date')} "
+
                     f"output saved to {result.get('output_dir')}"
+
                 )
+
                 ui_log_safe(f"[SUCCESS] {summary}")
+
                 try:
+
                     self.after(0, lambda: messagebox.showinfo('Export Complete', summary))
+
                 except Exception:
+
                     pass
+
             except Exception as exc:
+
                 ui_log_safe(f"[ERROR] Factor export failed: {exc}")
+
                 try:
+
                     self.after(0, lambda: messagebox.showerror('Error', f'Factor export failed: {exc}'))
+
                 except Exception:
+
                     pass
+
             finally:
+
                 def _reset_flag() -> None:
+
                     setattr(self, '_exporting_factors', False)
+
                 try:
+
                     self.after(0, _reset_flag)
+
                 except Exception:
+
                     self._exporting_factors = False
+
+
 
         threading.Thread(target=worker, daemon=True).start()
 
 
+
+
+
     def _build_file_tab(self, parent):
-        """鏋勫缓鏂囦欢瀵煎叆閫items"""
-        # 鑲エ杈撳叆
-        wl = tk.LabelFrame(parent, text="鑲エ鍒楄〃锛堜笁閫変竴or缁勫悎锛")
+
+        """ ?items"""
+
+        #  ? 
+
+        wl = tk.LabelFrame(parent, text=" ? or ?")
+
         wl.pack(fill=tk.X, pady=5)
-        tk.Button(wl, text="閫夋JSON 鏂囦?, command=self._pick_json).grid(row=0, column=0, padx=5, pady=5")
-        tk.Button(wl, text="閫夋Excel 鏂囦?, command=self._pick_excel).grid(row=0, column=1, padx=5, pady=5")
+
+        tk.Button(wl, text=" ?JSON  ??, command=self._pick_json).grid(row=0, column=0, padx=5, pady=5")
+
+        tk.Button(wl, text=" ?Excel  ??, command=self._pick_excel).grid(row=0, column=1, padx=5, pady=5")
+
         tk.Label(wl, text="Sheet").grid(row=0, column=2)
+
         self.ent_sheet = tk.Entry(wl, width=10)
+
         self.ent_sheet.grid(row=0, column=3)
+
         tk.Label(wl, text="Column").grid(row=0, column=4)
+
         self.ent_col = tk.Entry(wl, width=10)
+
         self.ent_col.grid(row=0, column=5)
-        tk.Label(wl, text="鎵嬪姩CSV").grid(row=1, column=0)
+
+        tk.Label(wl, text=" CSV").grid(row=1, column=0)
+
         self.ent_csv = tk.Entry(wl, width=50)
+
         self.ent_csv.grid(row=1, column=1, columnspan=5, sticky=tk.EW, padx=5)
-        self.ent_csv.insert(0, "AAPL,MSFT,GOOGL,AMZN,TSLA")  # 榛樿绀轰緥
+
+        self.ent_csv.insert(0, "AAPL,MSFT,GOOGL,AMZN,TSLA")  #  ? 
+
         
-        # 鏂囦欢璺緞鏄剧?
-        self.lbl_json = tk.Label(wl, text="JSON: 无", fg="gray")
+
+        #  S? ??
+
+        self.lbl_json = tk.Label(wl, text="JSON: ??", fg="gray")
+
         self.lbl_json.grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=5)
-        self.lbl_excel = tk.Label(wl, text="Excel: 无", fg="gray")
+
+        self.lbl_excel = tk.Label(wl, text="Excel: ??", fg="gray")
+
         self.lbl_excel.grid(row=2, column=3, columnspan=3, sticky=tk.W, padx=5)
+
         
-        # 瀵煎叆閫?items
-        import_options = tk.LabelFrame(parent, text="鏂囦欢瀵煎叆閫items")
+
+        #  ??items
+
+        import_options = tk.LabelFrame(parent, text=" ?items")
+
         import_options.pack(fill=tk.X, pady=5)
+
         
+
         self.var_auto_clear = tk.BooleanVar(value=True)
-        tk.Checkbutton(import_options, text="涓婁紶鏂版枃-> 鏇挎崲鍏ㄥ眬tickers 骞禼an閫夋竻浠揵e绉婚櫎鏍", 
+
+        tk.Checkbutton(import_options, text=" ->  tickers  can be ?", 
+
                       variable=self.var_auto_clear).pack(anchor=tk.W, padx=5, pady=5)
+
         
-        tk.Button(import_options, text="瀵煎叆to鏁版嵁搴擄紙鏇挎崲鍏ㄥ眬tickers", 
+
+        tk.Button(import_options, text=" to tickers", 
+
                  command=self._import_file_to_database, bg="orange").pack(side=tk.LEFT, padx=5, pady=5)
-        tk.Button(import_options, text="瀵煎叆to鏁版嵁搴擄紙杩藉姞to鍏ㄥ眬tickers", 
+
+        tk.Button(import_options, text=" to to tickers", 
+
                  command=self._append_file_to_database, bg="lightgreen").pack(side=tk.LEFT, padx=5, pady=5)
 
+
+
     def _pick_json(self) -> None:
-        path = filedialog.askopenfilename(title="閫夋嫨JSON", filetypes=[("JSON", "*.json"), ("All", "*.*")])
+
+        path = filedialog.askopenfilename(title=" JSON", filetypes=[("JSON", "*.json"), ("All", "*.*")])
+
         if path:
+
             self.state.json_file = path
+
             try:
+
                 import os
+
                 name = os.path.basename(path)
+
             except Exception:
+
                 name = path
+
             self.lbl_json.config(text=f"JSON: {name}", fg="blue")
-            self.log(f"閫夋嫨JSON: {path}")
+
+            self.log(f" JSON: {path}")
+
+
 
     def _pick_excel(self) -> None:
-        path = filedialog.askopenfilename(title="閫夋嫨Excel", filetypes=[("Excel", "*.xlsx;*.xls"), ("All", "*.*")])
+
+        path = filedialog.askopenfilename(title=" Excel", filetypes=[("Excel", "*.xlsx;*.xls"), ("All", "*.*")])
+
         if path:
+
             self.state.excel_file = path
+
             try:
+
                 import os
+
                 name = os.path.basename(path)
+
             except Exception:
+
                 name = path
+
             self.lbl_excel.config(text=f"Excel: {name}", fg="blue")
-            self.log(f"閫夋嫨Excel: {path}")
+
+            self.log(f" Excel: {path}")
+
+
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+
         """Enhanced event loop management with proper cleanup"""
+
         if self.loop and not self.loop.is_closed() and self.loop.is_running():
+
             return self.loop
+
         
+
         def run_loop() -> None:
-            # 娉ㄦ剰锛氭绾跨▼鍐呯姝㈢洿鎺ヨ皟use Tk 鏂规硶锛岄渶浣縰se self.after 杩涘叆涓荤嚎?
+
+            #  ? ? use Tk  use self.after  ?
+
             def safe_log(msg: str) -> None:
+
                 try:
+
                     self.after(0, lambda m=msg: self.log(m))
+
                 except Exception:
+
                     try:
+
                         print(msg)
+
                     except Exception:
+
                         pass
+
             try:
+
                 loop = asyncio.new_event_loop()
+
                 asyncio.set_event_loop(loop)
+
                 self.loop = loop
-                # 鐩存帴缃綅灏辩华浜嬩欢锛堟鍒籰oop鍒涘缓锛夛紝閬垮厤绛夊緟瓒厀hen
+
+                #  Y? ? loop when
+
                 if self._loop_ready_event is None:
+
                     self._loop_ready_event = threading.Event()
+
                 try:
+
                     self._loop_ready_event.set()
+
                 except Exception:
+
                     pass
-                safe_log("浜嬩欢寰幆鍒涘缓骞跺嵆willstart")
+
+                safe_log(" ? willstart")
+
                 loop.run_forever()
+
             except Exception as e:
-                safe_log(f"浜嬩欢寰幆寮傚 {e}")
+
+                safe_log(f" ? ? {e}")
+
             finally:
+
                 try:
+
                     # Clean up any remaining tasks
+
                     if loop and not loop.is_closed():
+
                         pending = asyncio.all_tasks(loop)
+
                         if pending:
-                            safe_log(f"姝n娓呯{len(pending)} 涓湭completed浠诲?..")
+
+                            safe_log(f"?n ?{len(pending)}  ?completed ??..")
+
                             for task in pending:
+
                                 task.cancel()
+
                             # Wait a bit for tasks to cancel
+
                             try:
+
                                 loop.run_until_complete(
+
                                     asyncio.wait(pending, timeout=3, return_when=asyncio.ALL_COMPLETED)
+
                                 )
+
                             except Exception:
+
                                 pass
+
                         loop.close()
+
                 except Exception as e:
-                    safe_log(f"浜嬩欢寰幆娓呯悊寮傚父: {e}")
+
+                    safe_log(f" ? : {e}")
+
         
+
         self._loop_thread = threading.Thread(target=run_loop, daemon=True)
+
         self._loop_thread.start()
+
         
-        # Wait for loop to be ready (闄嶇骇鏂规锛氱煭绛夊緟+瀛榠n鍗宠繑鍥?
+
+        # Wait for loop to be ready ( ? + in ??
+
         import time
+
         if self._loop_ready_event is None:
+
             self._loop_ready_event = threading.Event()
+
         self._loop_ready_event.wait(timeout=1.0)
+
         if self.loop is not None:
+
             return self.loop  # type: ignore
+
         # If still not running, provide a helpful log and raise
-        self.log("浜嬩欢寰幆鏈兘in棰勬湡when闂村唴start锛岃閲嶈瘯'娴嬭瘯connection'or'start鑷姩浜ゆ槗'")
+
+        self.log(" ? ?in when start ? ' connection'or'start ? '")
+
         raise RuntimeError("Failed to start event loop")
 
+
+
+    def _get_direct_predict_features(self):
+        """Load the feature list expected by the current Direct Predict snapshot."""
+        cache_key = os.environ.get('DIRECT_PREDICT_SNAPSHOT_ID', DIRECT_PREDICT_SNAPSHOT_ID).strip() or DIRECT_PREDICT_SNAPSHOT_ID
+        cached = getattr(self, '_direct_predict_features', None)
+        if cached and cached.get('snapshot_id') == cache_key:
+            return cached['features']
+
+        features = None
+        try:
+            snapshots_root = Path(__file__).resolve().parent.parent / 'cache' / 'model_snapshots'
+            manifest_paths = list(snapshots_root.glob(f'**/{cache_key}/manifest.json'))
+            if manifest_paths:
+                manifest_data = json.loads(manifest_paths[0].read_text(encoding='utf-8'))
+                manifest_features = manifest_data.get('feature_names')
+                if manifest_features:
+                    features = manifest_features
+                    self.log(f"[DirectPredict] Snapshot features loaded from manifest: {features}")
+        except Exception as err:
+            self.log(f"[DirectPredict] Failed to read snapshot manifest: {err}")
+
+        if not features:
+            try:
+                from bma_models.simple_25_factor_engine import TOP_FEATURE_SET
+                features = TOP_FEATURE_SET
+            except Exception:
+                features = ['momentum_10d', 'ivol_20', 'hist_vol_20', 'rsi_21', 'near_52w_high', 'atr_ratio', 'vol_ratio_20d', '5_days_reversal', 'trend_r2_60', 'liquid_momentum']
+            self.log(f"[DirectPredict] Fallback feature set in use: {features}")
+
+        self._direct_predict_features = {'snapshot_id': cache_key, 'features': features}
+        return features
+
+    def _apply_direct_predict_ema(self, predictions_df, score_columns=None, weights=DIRECT_PREDICT_EMA_WEIGHTS):
+        """Apply EWMA smoothing to the provided score columns for Direct Predict."""
+        if predictions_df is None or len(predictions_df) == 0:
+            return predictions_df
+
+        if not isinstance(predictions_df.index, pd.MultiIndex):
+            self.log("[DirectPredict] EMA smoothing skipped: predictions lack MultiIndex (date, ticker)")
+            return predictions_df
+
+        score_columns = score_columns or ['score']
+        numeric_weights = tuple(float(w) for w in weights if isinstance(w, (int, float)) and float(w) > 0)
+        if not numeric_weights:
+            self.log("[DirectPredict] EMA smoothing skipped: invalid weights provided")
+            return predictions_df
+
+        weight_sum = sum(numeric_weights)
+        normalized_weights = tuple(w / weight_sum for w in numeric_weights)
+
+        unique_dates = sorted(predictions_df.index.get_level_values('date').unique())
+        if len(unique_dates) < 2:
+            self.log("[DirectPredict] EMA smoothing skipped: need at least 2 trading days of predictions")
+            return predictions_df
+
+        df = predictions_df.sort_index(level=['date', 'ticker']).copy()
+        tickers = df.index.get_level_values('ticker').unique()
+
+        for column in score_columns:
+            if column not in df.columns:
+                continue
+
+            raw_col = f"{column}_raw"
+            if raw_col not in df.columns:
+                df[raw_col] = df[column]
+
+            ema_col = f"{column}_ema"
+            df[ema_col] = np.nan
+
+            smoothed_points = 0
+            for ticker in tickers:
+                try:
+                    ticker_series = df.xs(ticker, level='ticker')[raw_col].sort_index()
+                except KeyError:
+                    continue
+
+                if ticker_series.dropna().empty:
+                    continue
+
+                values = ticker_series.values
+                date_index = list(ticker_series.index)
+
+                for idx_pos, current_date in enumerate(date_index):
+                    weighted_sum = 0.0
+                    weight_total = 0.0
+
+                    for offset, weight in enumerate(normalized_weights):
+                        prev_idx = idx_pos - offset
+                        if prev_idx < 0:
+                            break
+                        prev_value = values[prev_idx]
+                        if pd.isna(prev_value):
+                            continue
+                        weighted_sum += weight * float(prev_value)
+                        weight_total += weight
+
+                    if weight_total:
+                        smoothed_value = weighted_sum / weight_total
+                        df.loc[(current_date, ticker), ema_col] = smoothed_value
+                        smoothed_points += 1
+
+            df[column] = df[ema_col].fillna(df[column])
+            self.log(
+                f"[DirectPredict] Applied EMA smoothing to {column}: {smoothed_points} data points updated (weights={normalized_weights})"
+            )
+
+        return df
     def _capture_ui(self) -> None:
+
         self.state.host = self.ent_host.get().strip() or "127.0.0.1"
+
         try:
-            # 鑷畾涔夌鍙ndclientId锛氬畬鍏ㄥ皧閲島se鎴疯緭鍏?
+
+            #  U? ??ndclientId use ??
+
             port_input = (self.ent_port.get() or "").strip()
+
             cid_input = (self.ent_cid.get() or "").strip()
+
             self.state.port = int(port_input) if port_input else self.state.port
+
             self.state.client_id = int(cid_input) if cid_input else self.state.client_id
+
             self.state.alloc = float(self.ent_alloc.get().strip() or 0.03)
+
             self.state.poll_sec = float(self.ent_poll.get().strip() or 10.0)
+
             self.state.fixed_qty = int(self.ent_fixed_qty.get().strip() or 0)
+
         except ValueError as e:
-            error_msg = f"鍙傛暟鏍煎紡閿欒 {e}"
+
+            error_msg = f" ? {e}"
+
             self.log(error_msg)
-            messagebox.showerror("鍙傛暟閿欒", "绔ClientId蹇呴』is鏁存暟锛岃祫閲憆atio/杞闂撮殧蹇呴』is鏁板")
+
+            messagebox.showerror(" ?", "?ClientId is ratio/? is ?")
+
             raise ValueError(error_msg) from e
+
         except Exception as e:
-            error_msg = f"鍙傛暟鎹曡幏failed: {e}"
+
+            error_msg = f" failed: {e}"
+
             self.log(error_msg)
-            messagebox.showerror("鍙傛暟閿欒", error_msg)
+
+            messagebox.showerror(" ?", error_msg)
+
             raise
+
         self.state.sheet = self.ent_sheet.get().strip() or None
+
         self.state.column = self.ent_col.get().strip() or None
+
         self.state.symbols_csv = self.ent_csv.get().strip() or None
+
         self.state.auto_sell_removed = self.var_auto_sell.get()
+
         
-        # 鍚寃henupdates缁熶竴閰嶇疆绠悊鍣?
+
+        #  whenupdates ???
+
         self.config_manager.update_runtime_config({
+
             'connection.host': self.state.host,
+
             'connection.port': self.state.port,
+
             'connection.client_id': self.state.client_id,
+
             'trading.alloc_pct': self.state.alloc,
+
             'trading.poll_interval': self.state.poll_sec,
+
             'trading.fixed_quantity': self.state.fixed_qty,
+
             'trading.auto_sell_removed': self.state.auto_sell_removed
+
         })
+
     
-    def _run_async_safe(self, coro, operation_name: str = "鎿嶄, timeout: int = 30"):
-        """瀹夊叏鍦拌繍琛屽紓姝ユ搷浣滐紝閬垮厤闃诲GUI"""
+
+    def _run_async_safe(self, coro, operation_name: str = " ?, timeout: int = 30"):
+
+        """ ?GUI"""
+
         try:
+
             if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
-                # 浣縰seno绛夊緟鎻愪氦閬垮厤闃诲涓荤嚎绋?
+
+                #  useno ? ??
+
                 task_id = self.loop_manager.submit_coroutine_nowait(coro)
-                self.log(f"{operation_name}鎻愪氦锛屼换鍔D: {task_id}")
+
+                self.log(f"{operation_name} ?D: {task_id}")
+
                 return task_id
+
             else:
-                # 鏀硅繘鐨勫洖閫绛栫暐锛氫娇鐢╡vent loop manager锛岄伩鍏嶅啿?
+
+                #  ? event loop manager ?
+
                 if hasattr(self, 'loop_manager'):
-                    # 灏濊瘯鍚姩loop_manager濡傛灉瀹冭繕娌湁杩愯?
+
+                    #  ?loop_manager c? ??
+
                     if not self.loop_manager.is_running:
-                        self.log(f"尝试启动事件循环管理器用于{operation_name}")
+
+                        self.log(f"???????????????????????{operation_name}")
+
                         if self.loop_manager.start():
+
                             task_id = self.loop_manager.submit_coroutine_nowait(coro)
-                            self.log(f"{operation_name}鎻愪氦鍒伴噸鏂板惎鍔ㄧ殑浜嬩欢寰幆锛屼换鍔D: {task_id}")
+
+                            self.log(f"{operation_name} ? ?D: {task_id}")
+
                             return task_id
+
                 
-                # 鏈鍚庣殑鍥為锛氫娇鐢ㄥ崗璋冪殑寮傛鎵ц锛岄伩鍏岹UI鍐茬?
+
+                # ? ? ? ? GUI ??
+
                 import asyncio
+
                 from concurrent.futures import ThreadPoolExecutor
+
                 
+
                 def run_in_isolated_loop():
-                    """鍦ㄩ殧绂荤殑浜嬩欢寰幆涓繍琛岋紝閬垮厤GUI鍐茬"""
+
+                    """ ? ? GUI ?"""
+
                     try:
-                        # 鍒涘缓鏂扮殑浜嬩欢寰幆锛屼絾涓嶈缃负褰撳墠绾跨▼鐨勯粯璁ゅ惊鐜?
+
+                        #  ? ? U? ??
+
                         loop = asyncio.new_event_loop()
+
                         asyncio.set_event_loop(loop)
+
                         try:
+
                             loop.run_until_complete(coro)
+
                         finally:
+
                             loop.close()
+
                     except Exception as e:
-                        self.log(f"{operation_name}闅旂鎵ц澶辫触: {e}")
+
+                        self.log(f"{operation_name} ? ? : {e}")
+
                 
+
                 thread_name = f"{operation_name}Thread"
+
                 threading.Thread(
+
                     target=run_in_isolated_loop,
+
                     daemon=True,
+
                     name=thread_name
+
                 ).start()
-                self.log(f"{operation_name}鍦ㄩ殧绂讳簨浠跺惊鐜腑鍚")
+
+                self.log(f"{operation_name} s??")
+
                 return None
+
         except Exception as e:
+
             self.log(f"{operation_name}startfailed: {e}")
+
             return None
+
+
 
     def _test_connection(self) -> None:
+
         try:
+
             self._capture_ui()
-            self.log(f"姝n娴嬭瘯connection... Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
+
+            self.log(f"?n connection... Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
+
             
+
             async def _run():
+
                 try:
-                    # 鏄剧ず瀹為檯浣縰seconnection鍙傛?
-                    self.log(f"connection鍙傛 Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}")
-                    # startbefore鍏堟柇寮鐜癶asconnection锛岄伩鍏峜lientId鍗爑se
+
+                    #  useconnection ??
+
+                    self.log(f"connection ? Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}")
+
+                    # startbefore ? hasconnection clientId use
+
                     if self.trader and getattr(self.trader, 'ib', None) and self.trader.ib.isConnected():
+
                         try:
+
                             await self.trader.close()
-                            self.log("鏂紑涔媌eforeAPIconnection")
+
+                            self.log(" ? beforeAPIconnection")
+
                         except Exception:
+
                             pass
+
                     self.trader = IbkrAutoTrader(config_manager=self.config_manager)
+
                     await self.trader.connect()
+
                     self.log("[OK] connectionsuccess")
+
                 except Exception as e:
+
                     self.log(f"[FAIL] connectionfailed: {e}")
+
             
-            # 浣縰se闈為樆濉炲紓姝ユ墽琛岋紝閬垮厤GUI鍗?
+
+            #  use GUI??
+
             def _async_test():
+
                 try:
+
                     if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
-                        # 浣縰seno绛夊緟鎻愪氦閬垮厤闃诲涓荤嚎绋?
+
+                        #  useno ? ??
+
                         task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                        self.log(f"connection娴嬭瘯鎻愪氦锛屼换鍔D: {task_id}")
+
+                        self.log(f"connection ?D: {task_id}")
+
                     else:
-                        # 浣跨敤瀹夊叏鐨勫紓姝ユ墽琛屾柟娉曪紝閬垮厤GUI鍐茬?
-                        self._run_async_safe(_run(), "connection娴嬭")
+
+                        #  GUI ??
+
+                        self._run_async_safe(_run(), "connection ?")
+
                 except Exception as e:
-                    self.log(f"connection娴嬭瘯startfailed: {e}")
+
+                    self.log(f"connection startfailed: {e}")
+
             
+
             _async_test()
+
             
+
         except Exception as e:
-            self.log(f"测试connection错误: {e}")
-            messagebox.showerror("错误", f"测试connection失败: {e}")
+
+            self.log(f"????connection????: {e}")
+
+            messagebox.showerror("????", f"????connection???: {e}")
+
+
 
     def _start_autotrade(self) -> None:
+
         try:
+
             self._capture_ui()
-            self.log(f"姝nstart鑷姩浜ゆ槗锛堢瓥鐣ュ紩鎿庢ā寮忥.. Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
+
+            self.log(f"?nstart ? ?.. Host={self.state.host} Port={self.state.port} ClientId={self.state.client_id}")
+
+
 
             async def _run():
+
                 try:
-                    # 鏄剧ず瀹為檯浣縰seconnection鍙傛?
-                    self.log(f"start寮曟搸鍙傛暟: Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}")
-                    # 1) 鍑嗗?Trader connection
-                    # startbefore鍏堟柇寮鐜癶asconnection锛岄伩鍏峜lientId鍗爑se
+
+                    #  useconnection ??
+
+                    self.log(f"start : Host={self.state.host}, Port={self.state.port}, ClientID={self.state.client_id}")
+
+                    # 1)  ??Trader connection
+
+                    # startbefore ? hasconnection clientId use
+
                     if self.trader and getattr(self.trader, 'ib', None) and self.trader.ib.isConnected():
+
                         try:
+
                             await self.trader.close()
-                            self.log("鏂紑涔媌eforeAPIconnection")
+
+                            self.log(" ? beforeAPIconnection")
+
                         except Exception:
+
                             pass
+
                     # Always create new trader after closing the old one
+
                     self.trader = IbkrAutoTrader(config_manager=self.config_manager)
+
                     await self.trader.connect()
 
-                    # 2) 鍑嗗?Engine and Universe锛堜紭鍏堟暟鎹?澶栭儴鏂囦欢/鎵嬪姩CSV?
+
+
+                    # 2)  ??Engine and Universe ?? / CSV?
+
                     self._maybe_refresh_top10_pool(force=False)
+
                     uni = []
+
                     try:
+
                         db_csv = self._get_current_stock_symbols()
+
                         if db_csv:
+
                             uni = [s for s in db_csv.split(',') if s.strip()]
+
                         elif any([self.state.json_file, self.state.excel_file, self.state.symbols_csv]):
+
                             uni = self._extract_symbols_from_files()
+
                     except Exception:
+
                         pass
-                    # 浣縰se缁熶竴閰嶇疆绠悊鍣?
+
+                    #  use ???
+
                     cfg = self.config_manager
+
                     if uni:
+
                         cfg.set_runtime("scanner.universe", uni)
-                        self.log(f"绛栫暐寮曟搸浣縰se鑷畾涔塙niverse: {len(uni)} 鍙")
+
+                        self.log(f" use U? Universe: {len(uni)} ?")
+
+
 
                     if not self.engine:
+
                         self.engine = Engine(cfg, self.trader)
+
                     await self.engine.start()
 
-                    # 3) 鍛ㄦ湡鎬ф墽琛屼俊鍙封啋risk control鈫抩rder placement锛堝畬鏁村寮虹瓥鐣ワ級
-                    self.log(f"绛栫暐寰幆start: 闂撮{self.state.poll_sec}s")
+
+
+                    # 3)  risk control order placement ? 
+
+                    self.log(f" ?start:  ?{self.state.poll_sec}s")
+
+
 
                     async def _engine_loop():
+
                         try:
+
                             while True:
+
                                 await self.engine.on_signal_and_trade()
+
                                 await asyncio.sleep(max(1.0, float(self.state.poll_sec)))
+
                         except asyncio.CancelledError:
+
                             return
+
                         except Exception as e:
-                            self.log(f"绛栫暐寰幆寮傚 {e}")
 
-                    # in浜嬩欢寰幆in鍒涘缓浠诲姟骞朵繚瀛樺紩use
+                            self.log(f" ? ? {e}")
+
+
+
+                    # in ?in use
+
                     self._engine_loop_task = asyncio.create_task(_engine_loop())
-                    self.log("绛栫暐寮曟搸start骞惰繘鍏ュ惊")
-                    self._update_signal_status("寰幆杩愯in", "green")
-                except Exception as e:
-                    self.log(f"鑷姩浜ゆ槗startfailed: {e}")
 
-            # 浣縰se闈為樆濉炲紓姝ユ墽琛岋紝閬垮厤GUI鍗?
-            def _async_start():
-                try:
-                    if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
-                        # 浣縰seno绛夊緟鎻愪氦閬垮厤闃诲涓荤嚎绋?
-                        task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                        self.log(f"鑷姩浜ゆ槗start鎻愪氦锛屼换鍔D: {task_id}")
-                    else:
-                        # 浣跨敤瀹夊叏鐨勫紓姝ユ墽琛屾柟娉曪紝閬垮厤GUI鍐茬?
-                        self._run_async_safe(_run(), "鑷姩浜ゆ槗鍚")
+                    self.log(" start ")
+
+                    self._update_signal_status(" ? ?in", "green")
+
                 except Exception as e:
-                    self.log(f"鑷姩浜ゆ槗startfailed: {e}")
+
+                    self.log(f" ? startfailed: {e}")
+
+
+
+            #  use GUI??
+
+            def _async_start():
+
+                try:
+
+                    if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
+
+                        #  useno ? ??
+
+                        task_id = self.loop_manager.submit_coroutine_nowait(_run())
+
+                        self.log(f" ? start ?D: {task_id}")
+
+                    else:
+
+                        #  GUI ??
+
+                        self._run_async_safe(_run(), " ? ?")
+
+                except Exception as e:
+
+                    self.log(f" ? startfailed: {e}")
+
             
+
             _async_start()
 
+
+
         except Exception as e:
-            self.log(f"start自动交易错误: {e}")
-            messagebox.showerror("错误", f"启动失败: {e}")
+
+            self.log(f"start??????????: {e}")
+
+            messagebox.showerror("????", f"??????: {e}")
+
+
 
     def _stop(self) -> None:
-        """Enhanced stop mechanism with proper cleanup"""
-        try:
-            if not self.trader and not self.loop:
-                self.log("娌as娲诲姩浜ゆ槗connection")
-                return
-                
-            self.log("姝n鍋滄浜ゆ槗...")
-            
-            # Signal the trader to stop
-            if self.trader:
-                try:
-                    if hasattr(self.trader, '_stop_event'):
-                        if not self.trader._stop_event:
-                            self.trader._stop_event = asyncio.Event()
-                        self.trader._stop_event.set()
-                        self.log("鍙戦佸仠姝俊鍙穞o浜ゆ槗鍣")
-                except Exception as e:
-                    self.log(f"鍙戦佸仠姝俊鍙穎ailed: {e}")
 
-                # 鍋滄绛栫暐寮曟搸寰幆
+        """Enhanced stop mechanism with proper cleanup"""
+
+        try:
+
+            if not self.trader and not self.loop:
+
+                self.log("?as connection")
+
+                return
+
+                
+
+            self.log("?n ? ...")
+
+            
+
+            # Signal the trader to stop
+
+            if self.trader:
+
                 try:
-                    if self.loop and self.loop.is_running() and self._engine_loop_task and not self._engine_loop_task.done():
-                        def _cancel_task(task: asyncio.Task):
-                            if not task.done():
-                                task.cancel()
-                        self.loop.call_soon_threadsafe(_cancel_task, self._engine_loop_task)
-                        self.log("璇锋眰鍋滄绛栫暐寮曟搸寰")
-                        self._update_signal_status("寰幆鍋滄", "red")
+
+                    if hasattr(self.trader, '_stop_event'):
+
+                        if not self.trader._stop_event:
+
+                            self.trader._stop_event = asyncio.Event()
+
+                        self.trader._stop_event.set()
+
+                        self.log("Stop event signaled")
+
                 except Exception as e:
-                    self.log(f"鍋滄绛栫暐寰幆failed: {e}")
+
+                    self.log(f"Stop event cleanup failed: {e}")
+
+
+
+                #  ? ?
+
+                try:
+
+                    if self.loop and self.loop.is_running() and self._engine_loop_task and not self._engine_loop_task.done():
+
+                        def _cancel_task(task: asyncio.Task):
+
+                            if not task.done():
+
+                                task.cancel()
+
+                        self.loop.call_soon_threadsafe(_cancel_task, self._engine_loop_task)
+
+                        self.log(" ? ?")
+
+                        self._update_signal_status(" ? ?", "red")
+
+                except Exception as e:
+
+                    self.log(f" ? ?failed: {e}")
+
+
 
                 # Stop engine and close trader connection
+
                 if self.loop and self.loop.is_running():
+
                     async def _cleanup_all():
+
                         try:
+
                             # Stop engine first
+
                             if self.engine:
+
                                 await self.engine.stop()
-                                self.log("寮曟搸鍋滄")
+
+                                self.log(" ?")
+
                                 self.engine = None
+
                             
+
                             # Then close trader connection
+
                             if self.trader:
+
                                 await self.trader.close()
-                                self.log("浜ゆ槗connection鍏抽")
+
+                                self.log(" connection ?")
+
                                 self.trader = None
+
                         except Exception as e:
-                            self.log(f"鍋滄寮曟搸/浜ゆ槗鍣╢ailed: {e}")
+
+                            self.log(f" ? / failed: {e}")
+
                             
+
                     self.loop_manager.submit_coroutine_nowait(_cleanup_all())
-                    self.log("娓呯悊浠诲姟鎻愪氦toafter")
+
+                    self.log(" toafter")
+
                 else:
+
                     self.trader = None
+
             
+
             # Clean up event loop
+
             if self.loop and not self.loop.is_closed():
+
                 try:
+
                     if self.loop.is_running():
+
                         # Schedule loop stop
+
                         self.loop.call_soon_threadsafe(self.loop.stop)
-                        self.log("瀹夋帓鍋滄浜嬩欢寰幆")
+
+                        self.log(" ? ?")
+
                         
+
                         # Give some time for cleanup
+
                         def reset_loop():
+
                             if self.loop and self.loop.is_closed():
+
                                 self.loop = None
+
                         
+
                         self.after(2000, reset_loop)  # Reset after 2 seconds
+
                         
+
                 except Exception as e:
-                    self.log(f"鍋滄浜嬩欢寰幆failed: {e}")
+
+                    self.log(f" ? ?failed: {e}")
+
             
-            self.log("鍋滄鎿嶄綔completed")
+
+            self.log(" ? completed")
+
                 
+
         except Exception as e:
-            self.log(f"停止交易错误: {e}")
-            messagebox.showerror("错误", f"停止失败: {e}")
+
+            self.log(f"?????????: {e}")
+
+            messagebox.showerror("????", f"?????: {e}")
+
+
 
     def _disconnect_api(self) -> None:
-        """涓閿柇寮APIconnection锛坣ot褰卞搷寮曟搸缁撴瀯锛屾竻鐞哻lientId鍗爑se"""
+
+        """? ??APIconnection not clientId use"""
+
         try:
+
             if not self.trader:
-                self.log("no娲诲姩APIconnection")
+
+                self.log("no APIconnection")
+
                 return
-            self.log("姝n鏂紑APIconnection...")
+
+            self.log("?n ?APIconnection...")
+
             if self.loop and self.loop.is_running():
-                # 鍏坕n绾跨▼瀹夊叏鍦扮珛鍗虫柇寮搴曞眰IBconnection锛岄伩鍏峜lientId鍗爑se
+
+                #  in ? IBconnection clientId use
+
                 try:
+
                     if getattr(self.trader, 'ib', None):
+
                         self.loop.call_soon_threadsafe(self.trader.ib.disconnect)
+
                 except Exception:
+
                     pass
-                # 鐒禷fter杩涜瀹屾暣娓呯悊锛屽苟绛夊緟缁撴灉浠ュ弽棣堟棩蹇?
+
+                #  after ? ??
+
                 async def _do_close():
+
                     try:
+
                         await self.trader.close()
-                        self.log("APIconnection鏂")
+
+                        self.log("APIconnection?")
+
                     except Exception as e:
-                        self.log(f"鏂紑APIfailed: {e}")
+
+                        self.log(f" ?APIfailed: {e}")
+
                 try:
+
                     self.loop_manager.submit_coroutine_nowait(_do_close())
-                    self.log("鍏抽棴浠诲姟鎻愪氦toafter")
+
+                    self.log(" toafter")
+
                 except Exception:
+
                     pass
+
             else:
+
                 try:
+
                     import asyncio as _a
-                    # 鍏堟柇寮搴曞眰IB
+
+                    #  ? IB
+
                     try:
+
                         if getattr(self.trader, 'ib', None):
+
                             self.trader.ib.disconnect()
+
                     except Exception:
+
                         pass
-                    # 鍐嶅畬鏁存竻?
+
+                    #  ?
+
                     _a.run(self.trader.close())
+
                 except Exception:
+
                     pass
-                self.log("APIconnection鏂no浜嬩欢寰幆)")
-            # 缃?trader锛岄噴鏀綾lientId
+
+                self.log("APIconnection?no ?)")
+
+            # ??trader clientId
+
             self.trader = None
-            # updates鐘舵佹樉绀?
+
+            # updates ? ??
+
             try:
+
                 self._update_status()
-                self._update_signal_status("停止", "red")
+
+                self._update_signal_status("??", "red")
+
             except Exception:
+
                 pass
+
             try:
-                # 鍗冲埢鍙嶉
-                messagebox.showinfo("提示", "API connection已关闭")
+
+                #  ?
+
+                messagebox.showinfo("???", "API connection????")
+
             except Exception:
+
                 pass
+
         except Exception as e:
-            self.log(f"鏂紑API鍑洪 {e}")
+
+            self.log(f" ?API ? {e}")
+
+
 
     def _show_stock_selection_dialog(self):
-        """鏄剧ず鑲エ閫夋嫨瀵硅瘽妗"""
+
+        """ ? ?"""
+
         import tkinter.simpledialog as simpledialog
+
         
-        # 鍒涘缓鑷畾涔夊璇濇
+
+        #  U? ? ?
+
         dialog = tk.Toplevel(self)
-        dialog.title("BMA Enhanced 鑲エ閫夋嫨")
-        dialog.geometry("600x700")  # 澧炲姞楂樺害浠ュ绾虫柊鐨勭姸鎬佹鏋跺拰鎸夐挳
+
+        dialog.title("BMA Enhanced  ? ")
+
+        dialog.geometry("600x700")  #  ? ? 
+
         dialog.transient(self)
+
         dialog.grab_set()
+
         
+
         result = {'tickers': None, 'confirmed': False, 'training_data_path': None}
+
         
-        # 涓绘鏋?
+
+        #  ???
+
         main_frame = tk.Frame(dialog)
+
         main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
         
-        # 鏍囬?
+
+        #  ??
+
         title_label = tk.Label(main_frame, text="BMA Enhanced Model Selection", 
+
                               font=("Arial", 14, "bold"))
+
         title_label.pack(pady=(0, 15))
+
         
-        # 閫夋嫨妗嗘灦
+
+        #  
+
         selection_frame = tk.LabelFrame(main_frame, text="Ticker Selection", font=("Arial", 10))
+
         selection_frame.pack(fill=tk.X, pady=(0, 15))
+
         
-        # 閫夋嫨鍙橀?
+
+        #  ??
+
         choice_var = tk.StringVar(value="default")
+
         
-        # 榛樿鑲エ姹犻夐?
+
+        #  ? ? ???
+
         default_radio = tk.Radiobutton(selection_frame, 
+
                                      text="Use default universe (AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, NFLX, CRM, ADBE) - auto-load 4 years history",
+
                                      variable=choice_var, value="default",
+
                                      font=("Arial", 9))
+
         default_radio.pack(anchor=tk.W, padx=10, pady=5)
+
         
-        # 鑲エ姹犻夐?
+
+        #  ? ???
+
         pool_radio = tk.Radiobutton(selection_frame, 
+
                                    text="Use selected stock pool",
+
                                    variable=choice_var, value="pool",
+
                                    font=("Arial", 9))
+
         pool_radio.pack(anchor=tk.W, padx=10, pady=5)
+
         
-        # 鑲エ姹犻夋嫨妗嗘?
+
+        #  ? ? ??
+
         pool_frame = tk.Frame(selection_frame)
+
         pool_frame.pack(fill=tk.X, padx=30, pady=5)
+
         
-        # 鑲エ姹犱俊鎭樉绀?
+
+        #  ? n???
+
         pool_info_var = tk.StringVar(value="No pool selected")
+
         pool_info_label = tk.Label(pool_frame, textvariable=pool_info_var, 
+
                                   font=("Arial", 9), fg="blue")
+
         pool_info_label.pack(anchor=tk.W, pady=2)
+
         
-        # 鑲エ姹犻夋嫨鍜岀鐞嗘寜?
+
+        #  ? ? ? ?
+
         pool_buttons_frame = tk.Frame(pool_frame)
+
         pool_buttons_frame.pack(anchor=tk.W, pady=2)
+
         
-        # 瀛樺偍閫変腑鐨勮偂绁ㄦ睜淇?
+
+        #  ??
+
         selected_pool_info = {}
+
         
+
         def open_pool_selector():
+
             try:
-                # 瀵煎叆鑲エ姹犻夋嫨鍣?
+
+                #  ? ? ??
+
                 from autotrader.stock_pool_selector import select_stock_pool
+
                 
-                # 鏄剧ず鑲エ姹犻夋嫨瀵硅瘽妗?
+
+                #  ? ? ??
+
                 pool_result = select_stock_pool(dialog)
+
                 
+
                 if pool_result:
-                    # 鐢ㄦ埛纭閫夋嫨浜嗚偂绁ㄦ?
+
+                    #  ? ??
+
                     selected_pool_info.update(pool_result)
+
                     try:
+
                         self.selected_pool_info = dict(pool_result)
+
                     except Exception:
+
                         self.selected_pool_info = pool_result
+
                     pool_info_var.set(
+
                         f"Chosen pool: {pool_result['pool_name']} ({len(pool_result['tickers'])} tickers)"
+
                     )
-                    choice_var.set("pool")  # 鑷姩閫夋嫨鑲エ姹犻夐
-                    # 鏇存柊鎸夐挳澶栬浠ユ彁绀虹敤鎴峰彲浠ュ紑濮嬭缁?
+
+                    choice_var.set("pool")  #  ? ? ??
+
+                    #  ? ???
+
                     start_button.config(bg="#228B22", text="Start with selected pool")
+
                     self.log(f"[BMA] Selected pool {pool_result['pool_name']} ({len(pool_result['tickers'])} tickers)")
+
                 else:
+
                     self.log("[BMA] User cancelled pool selection")
+
                 
+
             except Exception as e:
-                messagebox.showerror("错误", f"打开股票池选择器失败: {e}")
-                self.log(f"[ERROR] 鎵撳紑鑲エ姹犻夋嫨鍣ㄥけ {e}")
+
+                messagebox.showerror("????", f"???????????????: {e}")
+
+                self.log(f"[ERROR]  ? ?  {e}")
+
         
+
         def open_pool_manager():
+
             try:
-                # 瀵煎叆鑲エ姹犵鐞嗗櫒
+
+                #  ? ? 
+
                 import os
+
                 import sys
+
                 current_dir = os.path.dirname(os.path.abspath(__file__))
+
                 if current_dir not in sys.path:
+
                     sys.path.insert(0, current_dir)
+
                 from stock_pool_gui import StockPoolWindow
+
                 
-                # 鍒涘缓瀹屾暣鐨勮偂绁ㄦ睜绠悊绐楀彛锛堢敤浜庣鐞嗭級
+
+                #  ? ? 
+
                 pool_window = StockPoolWindow()
+
                 
+
             except Exception as e:
-                messagebox.showerror("错误", f"打开股票池管理器失败: {e}")
-                self.log(f"[ERROR] 鎵撳紑鑲エ姹犵鐞嗗櫒澶辫 {e}")
+
+                messagebox.showerror("????", f"???????????????: {e}")
+
+                self.log(f"[ERROR]  ? ? ? {e}")
+
         
+
         tk.Button(pool_buttons_frame, text="Select Pool", command=open_pool_selector,
+
                  bg="#4CAF50", fg="white", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+
         
+
         tk.Button(pool_buttons_frame, text="Manage Pools", command=open_pool_manager,
+
                  bg="#2196F3", fg="white", font=("Arial", 9)).pack(side=tk.LEFT)
+
         
-        # 鑷畾涔夎偂绁ㄩ夐?
+
+        #  U? ???
+
         custom_radio = tk.Radiobutton(selection_frame, 
+
                                     text="Enter custom ticker list",
+
                                     variable=choice_var, value="custom",
+
                                     font=("Arial", 9))
+
         custom_radio.pack(anchor=tk.W, padx=10, pady=5)
+
         
-        # 鑷畾涔夎緭鍏ユ鏋?
+
+        #  U? ???
+
         custom_frame = tk.Frame(selection_frame)
+
         custom_frame.pack(fill=tk.X, padx=10, pady=5)
+
         
+
         tk.Label(custom_frame, text="Enter tickers (comma separated):", font=("Arial", 9)).pack(anchor=tk.W)
+
         custom_entry = tk.Text(custom_frame, height=4, width=50, font=("Arial", 9))
+
         custom_entry.pack(fill=tk.X, pady=5)
-        custom_entry.insert("1.0", "UUUU, AAPL, MSFT")  # 绀轰緥
+
+        custom_entry.insert("1.0", "UUUU, AAPL, MSFT")  #  
+
         
+
         # ========================================================================
-        # 馃敟 涓撲笟绾ф灦鏋勶細浠庨涓嬭浇鐨凪ultiIndex鏂囦欢鍔犺浇璁粌鏁版嵁
+
+        # ??  ? MultiIndex ? 
+
         # ========================================================================
+
         file_radio = tk.Radiobutton(selection_frame, 
+
                                    text="Load multi-index training files",
+
                                    variable=choice_var, value="file",
+
                                    font=("Arial", 9, "bold"), fg="#1976D2")
+
         file_radio.pack(anchor=tk.W, padx=10, pady=5)
+
         
-        # 鏂囦欢閫夋嫨妗嗘?
+
+        #  ??
+
         file_frame = tk.Frame(selection_frame)
+
         file_frame.pack(fill=tk.X, padx=30, pady=5)
+
         
-        # 鏂囦欢璺緞鏄剧?
+
+        #  S? ??
+
         training_file_var = tk.StringVar(value="No training file selected")
+
         training_file_label = tk.Label(file_frame, textvariable=training_file_var, 
+
                                        font=("Arial", 9), fg="blue", wraplength=400)
+
         training_file_label.pack(anchor=tk.W, pady=2)
 
-        # 瀛樺偍閫変腑鐨勮缁冩枃浠惰矾寰?        selected_training_file = {'path': None}
+
+
+        #  ? ??        selected_training_file = {'path': None}
+
         
+
         def browse_training_file():
+
             from tkinter import filedialog
-            # 鍏堝皾璇曢夋嫨鏂囦?
+
+            #  ? ??
+
             file_path = filedialog.askopenfilename(
-                title="閫夋嫨璁粌鏁版嵁鏂囦欢",
+
+                title=" ? ",
+
                 filetypes=[
+
                     ("Parquet Files", "*.parquet"),
+
                     ("Pickle Files", "*.pkl;*.pickle"),
+
                     ("All Files", "*.*")
+
                 ],
+
                 initialdir="D:\\trade\\data\\factor_exports"
+
             )
+
             if file_path:
+
                 selected_training_file['path'] = file_path
-                training_file_var.set(f"宸查夋嫨鏂囦欢: {os.path.basename(file_path)}")
+
+                training_file_var.set(f" ? : {os.path.basename(file_path)}")
+
                 choice_var.set("file")
-                start_button.config(bg="#1976D2", text="寮濮嬭缁(浠庢枃浠跺姞")
-                self.log(f"[BMA] 宸查夋嫨璁粌鏁版嵁鏂囦欢: {file_path}")
+
+                start_button.config(bg="#1976D2", text="? ??( ")
+
+                self.log(f"[BMA]  ? ? : {file_path}")
+
+
 
         def browse_multiple_training_files():
+
             from tkinter import filedialog
+
             file_paths = filedialog.askopenfilenames(
-                title="閫夋嫨澶氫釜璁粌鏁版嵁鏂囦",
+
+                title=" ? ?",
+
                 filetypes=[
+
                     ("Parquet Files", "*.parquet"),
+
                     ("Pickle Files", "*.pkl;*.pickle"),
+
                     ("All Files", "*.*")
+
                 ],
+
                 initialdir="D:\\trade\\data\\factor_exports"
+
             )
+
             if file_paths:
+
                 paths = list(file_paths)
+
                 selected_training_file['path'] = paths
-                training_file_var.set(f"宸查夋?{len(paths)} 涓枃浠")
+
+                training_file_var.set(f" ???{len(paths)}  ??")
+
                 choice_var.set("file")
-                start_button.config(bg="#1976D2", text="寮濮嬭缁(浠庢枃浠跺姞")
-                self.log(f"[BMA] 宸查夋{len(paths)} 涓缁冩暟鎹枃浠")
+
+                start_button.config(bg="#1976D2", text="? ??( ")
+
+                self.log(f"[BMA]  ??{len(paths)} ? ??")
+
+
 
         def browse_training_dir():
+
             from tkinter import filedialog
-            # 选择包含多个parquet分片的目录
+
+            # ?????????parquet???????
+
             dir_path = filedialog.askdirectory(
-                title="选择训练数据目录（包含parquet分片）",
+
+                title="??????????????????parquet?????",
+
                 initialdir="D:\\trade\\data\\factor_exports"
+
             )
+
             if dir_path:
+
                 selected_training_file['path'] = dir_path
-                training_file_var.set(f"宸查夋嫨鐩綍: {os.path.basename(dir_path)}")
+
+                training_file_var.set(f" ? `?: {os.path.basename(dir_path)}")
+
                 choice_var.set("file")
-                start_button.config(bg="#1976D2", text="寮濮嬭缁(浠庢枃浠跺姞")
-                self.log(f"[BMA] 宸查夋嫨璁粌鏁版嵁鐩綍: {dir_path}")
+
+                start_button.config(bg="#1976D2", text="? ??( ")
+
+                self.log(f"[BMA]  ? ? `?: {dir_path}")
+
         
+
         file_buttons_frame = tk.Frame(file_frame)
+
         file_buttons_frame.pack(anchor=tk.W, pady=2)
+
         
+
         tk.Button(file_buttons_frame, text="Choose File", command=browse_training_file,
+
                  bg="#1976D2", fg="white", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
 
+
+
         tk.Button(file_buttons_frame, text="Choose Multiple Files", command=browse_multiple_training_files,
+
                  bg="#0b5394", fg="white", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
 
+
+
         tk.Button(file_buttons_frame, text="Choose Directory", command=browse_training_dir,
+
                  bg="#1565C0", fg="white", font=("Arial", 9)).pack(side=tk.LEFT)
 
+
+
         tk.Button(file_buttons_frame, text="Start Training", command=lambda: on_confirm(),
+
                  bg="#4CAF50", fg="white", font=("Arial", 9, 'bold')).pack(side=tk.LEFT, padx=(10, 0))
+
         
-        # 鏂囦欢鏍煎紡璇存?
+
+        #  ??
+
         file_hint = tk.Label(file_frame, 
+
                             text="Supported: .parquet (preserves MultiIndex date+ticker). Data should include features + target.",
+
                             font=("Arial", 8), fg="gray", justify=tk.LEFT)
+
         file_hint.pack(anchor=tk.W, pady=2)
+
         
-        # 鏃堕棿鑼冨洿妗嗘?
+
+        #  ??
+
         time_frame = tk.LabelFrame(main_frame, text="Timing Info", font=("Arial", 10))
+
         time_frame.pack(fill=tk.X, pady=(0, 10))
+
         
+
         time_info = tk.Label(time_frame, 
+
                            text="Training window: uses approx 252 trading days per year. System automatically updates two trading cycles for reliable data coverage.",
+
                            font=("Arial", 9), justify=tk.LEFT)
+
         time_info.pack(anchor=tk.W, padx=10, pady=10)
+
         
-        # 绯荤粺鐘舵佹?- 鏂板鐘舵佹寚绀哄櫒
+
+        #  ???-  ? ? 
+
         status_frame = tk.LabelFrame(main_frame, text="System Status", font=("Arial", 10))
+
         status_frame.pack(fill=tk.X, pady=(0, 15))
+
         
-        # 鐘舵佹寚绀哄櫒
+
+        #  ? 
+
         status_text = "BMA Enhanced system overview:\n- Alpha engine running (58 signals across industries)\n- Strategy models in staging configuration\n- Models ready; you can start trading once data is loaded"
+
         status_label = tk.Label(status_frame, 
+
                                text=status_text,
+
                                font=("Arial", 9), 
-                               fg="#2E8B57",  # 娣辩豢鑹
+
+                               fg="#2E8B57",  #  ?
+
                                justify=tk.LEFT)
+
         status_label.pack(anchor=tk.W, padx=10, pady=8)
+
         
-        # 鎸夐挳妗嗘灦 - 鍥哄畾鍦ㄥ簳閮ㄧ‘淇濆彲瑙佹?
+
+        #   -  ??
+
         button_frame = tk.Frame(main_frame, height=80, bg="#f0f0f0")
+
         button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
-        button_frame.pack_propagate(False)  # 闃叉妗嗘灦鏀剁缉
+
+        button_frame.pack_propagate(False)  #  ? 
+
         
+
         def on_confirm():
+
             if choice_var.get() == "default":
+
                 result['tickers'] = self._normalize_ticker_list(DEFAULT_AUTO_TRAIN_TICKERS)
+
                 result['training_data_path'] = None
+
             elif choice_var.get() == "pool":
-                # 浣跨敤閫変腑鐨勮偂绁ㄦ睜
+
+                #  
+
                 if selected_pool_info and 'tickers' in selected_pool_info:
+
                     pool_tickers = self._normalize_ticker_list(selected_pool_info['tickers'])
+
                     result['tickers'] = pool_tickers
+
                     result['training_data_path'] = None
+
                     self.log(f"[BMA] Using pool {selected_pool_info['pool_name']} with {len(pool_tickers)} tickers")
+
                 else:
+
                     messagebox.showerror("Error", "Please select a stock pool first")
+
                     return
+
             elif choice_var.get() == "file":
-                # 馃敟 浠庢枃浠跺姞杞借缁冩暟鎹紙涓撲笟绾ф灦鏋勶級
+
+                # ??  ? ? 
+
                 if selected_training_file.get('path'):
-                    result['tickers'] = []  # 灏嗕粠鏂囦欢涓彁鍙?                    result['training_data_path'] = selected_training_file['path']
+
+                    result['tickers'] = []  #  D???                    result['training_data_path'] = selected_training_file['path']
+
                     path_info = selected_training_file['path']
+
                     if isinstance(path_info, (list, tuple)):
+
                         self.log(f"[BMA] Selected {len(path_info)} training files")
+
                     else:
+
                         self.log(f"[BMA] Selected training file {path_info}")
+
                 else:
+
                     messagebox.showerror("Error", "Please choose a training file or directory")
+
                     return
+
             else:
-                # 瑙ｆ瀽鑷畾涔夎偂绁?
+
+                #  U? ??
+
                 custom_text = custom_entry.get("1.0", tk.END).strip()
+
                 if custom_text:
+
                     normalized_csv = self.normalize_ticker_input(custom_text)
+
                     tickers = normalized_csv.split(',') if normalized_csv else []
+
                     if tickers:
+
                         result['tickers'] = tickers
+
                         result['training_data_path'] = None
+
                     else:
+
                         messagebox.showerror("Error", "Please enter valid existing tickers")
+
                         return
+
                 else:
+
                     messagebox.showerror("Error", "Please select a stock pool or enter tickers")
+
                     return
+
+
 
             result['confirmed'] = True
+
             dialog.destroy()
 
+
+
         def on_cancel():
+
             result['confirmed'] = False
+
             dialog.destroy()
+
         
-        # 鍒涘缓鎸夐挳 - 澧炲ぇ灏哄纭繚鍙
+
+        #   -  ? ??
+
         start_button = tk.Button(button_frame, text="Start Selection", command=on_confirm, 
+
                                 bg="#4CAF50", fg="white", font=("Arial", 11, "bold"),
+
                                 width=18, height=2)
+
         start_button.pack(side=tk.RIGHT, padx=10, pady=10)
+
         
+
         cancel_button = tk.Button(button_frame, text="Cancel", command=on_cancel,
+
                                  bg="#f44336", fg="white", font=("Arial", 11),
+
                                  width=10, height=2)
+
         cancel_button.pack(side=tk.RIGHT, padx=10, pady=10)
+
         
-        # 绛夊緟瀵硅瘽妗嗗叧?
+
+        #  ?
+
         dialog.wait_window()
+
         
+
         if result['confirmed']:
-            # 杩斿洖鍖呭惈tickers鍜宼raining_data_path鐨勫瓧鍏?
+
+            #  tickers training_data_path ??
+
             return {
+
                 'tickers': result['tickers'],
+
                 'training_data_path': result.get('training_data_path')
+
             }
+
         else:
+
             return None
+
+
+
 
 
     def _compute_prediction_window(self, lookback_years: int = 3) -> dict:
+
         """Automatically determine the prediction window (today -> T+5)."""
 
+
+
         today = datetime.now().date()
+
         start_dt = today - timedelta(days=int(lookback_years * 365))
 
+
+
         # Use pandas BDay to advance 5 trading days for the T+5 target label
+
         base_ts = pd.Timestamp(today)
+
         target_ts = (base_ts + BDay(5)).date()
 
+
+
         return {
+
             'start_date': start_dt.strftime('%Y-%m-%d'),
+
             'end_date': today.strftime('%Y-%m-%d'),
+
             'target_date': target_ts.strftime('%Y-%m-%d')
+
         }
 
+
+
     def _auto_build_multiindex_training_file(self, tickers: List[str], years: int = AUTO_TRAIN_LOOKBACK_YEARS,
+
                                              horizon: int = AUTO_TRAIN_HORIZON_DAYS) -> Optional[dict]:
+
         """Download recent market data, compute factors, and persist a MultiIndex training file."""
+
         from pathlib import Path
-        from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
-        from bma_models.simple_25_factor_engine import Simple17FactorEngine
+
+        from bma_models._bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+
+        from bma_models.simple_25_factor_engine import Simple17FactorEngine, MAX_CLOSE_THRESHOLD
+
+
 
         clean_tickers = self._normalize_ticker_list(tickers)
+
         if not clean_tickers:
+
             return None
+
+
 
         end_dt = pd.Timestamp(datetime.utcnow().date())
+
         lookback_days = max(int(years * 252), 252)
+
         start_dt = (end_dt - BDay(lookback_days)).date()
+
         start_date = start_dt.strftime('%Y-%m-%d')
+
         end_date = end_dt.date().strftime('%Y-%m-%d')
 
+
+
         model = UltraEnhancedQuantitativeModel(preserve_state=False)
+
         model.use_simple_25_factors = True
+
         model.horizon = horizon
+
         factor_engine = Simple17FactorEngine(
+
             mode='predict',
+
             lookback_days=lookback_days + horizon + 10,
+
             horizon=horizon
+
         )
+
         model.simple_25_engine = factor_engine
 
+
+
         feature_df = model.get_data_and_features(clean_tickers, start_date, end_date, mode='predict')
+
         if feature_df is None or len(feature_df) == 0:
+
             return None
+
+
 
         feature_df = model._ensure_standard_feature_index(feature_df)
 
+
+
         drop_cols = [col for col in feature_df.columns if col.lower() == 'sector']
+
         if drop_cols:
+
             feature_df = feature_df.drop(columns=drop_cols)
 
+
+
         output_dir = Path('data/factor_exports/auto_training')
+
         output_dir.mkdir(parents=True, exist_ok=True)
+
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
         file_path = output_dir / f'auto_multiindex_{timestamp}.parquet'
+
         feature_df.to_parquet(file_path)
 
+
+
         train_rows = int(feature_df['target'].notna().sum()) if 'target' in feature_df.columns else len(feature_df)
+
         predict_rows = int(feature_df['target'].isna().sum()) if 'target' in feature_df.columns else 0
 
+
+
         return {
+
             'path': str(file_path),
+
             'start_date': start_date,
+
             'end_date': end_date,
+
             'ticker_count': int(feature_df.index.get_level_values('ticker').nunique()),
+
             'row_count': int(len(feature_df)),
+
             'train_rows': train_rows,
+
             'predict_rows': predict_rows,
+
             'horizon': horizon,
+
         }
+
+
+
 
 
     def _open_stock_pool_manager(self) -> None:
-        """鎵撳紑鑲エ姹犵鐞嗗櫒"""
+
+        """ ? ? """
+
         try:
-            # 浼樺厛浣跨敤鍖呭唴缁濆瀵煎叆锛岄伩鍏嶇浉瀵瑰鍏ョ幆澧冮棶棰?
+
+            #  ? ? ??
+
             try:
+
                 from autotrader.stock_pool_gui import StockPoolWindow  # type: ignore
+
             except Exception:
+
                 from .stock_pool_gui import StockPoolWindow  # type: ignore
+
             
-            # 鍒涘缓鑲エ姹犵鐞嗙獥?
+
+            #  ? ? ?
+
             pool_window = StockPoolWindow()
-            self.log("[INFO] 鑲エ姹犵鐞嗗櫒宸叉墦寮")
+
+            self.log("[INFO]  ? ? ?")
+
             
+
         except Exception as e:
-            messagebox.showerror("错误", f"打开股票池管理器失败: {e}")
-            self.log(f"[ERROR] 鎵撳紑鑲エ姹犵鐞嗗櫒澶辫 {e}")
+
+            messagebox.showerror("????", f"???????????????: {e}")
+
+            self.log(f"[ERROR]  ? ? ? {e}")
+
+
 
     def _clear_log(self) -> None:
+
         self.txt.delete(1.0, tk.END)
-        self.log("鏃ュ織娓呯┖")
+
+        self.log(" ")
+
+
 
     def _show_account(self) -> None:
-        try:
-            if not self.trader:
-                self.log("璇峰厛connectionIBKR")
-                return
-                
-            self.log("姝nretrievalaccount淇..")
-            loop = self._ensure_loop()
-            
-            async def _run():
-                try:
-                    await self.trader.refresh_account_balances_and_positions()
-                    self.log(f"鐜伴噾浣欓: ${self.trader.cash_balance:,.2f}")
-                    self.log(f"account鍑 ${self.trader.net_liq:,.2f}")
-                    self.log(f"positions鏁伴 {len(self.trader.positions)} 鍙偂绁")
-                    for symbol, qty in self.trader.positions.items():
-                        if qty != 0:
-                            self.log(f"  {symbol}: {qty} ")
-                except Exception as e:
-                    self.log(f"retrievalaccount淇伅failed: {e}")
-                    
-            # 浣縰se闈為樆濉炴彁浜ら伩鍏岹UI鍗?
-            if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
-                task_id = self.loop_manager.submit_coroutine_nowait(_run())
-                self.log(f"order placement浠诲姟鎻愪氦锛屼换鍔D: {task_id}")
-            else:
-                self.log("浜嬩欢寰幆鏈繍琛岋紝no娉曟墽琛宱rder placement鎿嶄")
-            
-        except Exception as e:
-            self.log(f"鏌ョ湅account閿欒 {e}")
 
-    # ==================== 鏁版嵁搴撶鐞嗘柟娉?====================
-    
-    def _refresh_stock_lists(self):
-        """鍒锋柊鑲エ鍒楄〃涓嬫媺"""
         try:
-            lists = self.db.get_stock_lists()
-            list_names = [f"{lst['name']} ({lst['stock_count']}" for lst in lists]
-            self.stock_list_combo['values'] = list_names
-            
-            # 淇濆瓨鍒楄〃ID鏄犲?
-            self.stock_list_mapping = {f"{lst['name']} ({lst['stock_count']}": lst['id'] for lst in lists}
-            
-            if list_names:
-                self.stock_list_combo.current(0)
-                self._on_stock_list_changed(None)
-                
-        except Exception as e:
-            self.log(f"鍒锋柊鑲エ鍒楄〃failed: {e}")
-    
-    def _refresh_configs(self):
-        """鍒锋柊閰嶇疆涓嬫媺妗"""
-        try:
-            configs = self.db.get_trading_configs()
-            config_names = [cfg['name'] for cfg in configs]
-            self.config_combo['values'] = config_names
-            
-            if config_names:
-                self.config_combo.current(0)
-                
-        except Exception as e:
-            self.log(f"鍒锋柊閰嶇疆failed: {e}")
-    
-    # ===== 鍏ㄥ眬tickers瑙嗗浘and鎿嶄綔锛堝敮涓浜ゆ槗婧愶級 =====
-    def _refresh_global_tickers_table(self) -> None:
-        """鍒锋柊鍏ㄥ眬tickersin琛ㄦ牸in鏄剧"""
-        try:
-            # 娓呯┖琛ㄦ牸
-            for item in self.stock_tree.get_children():
-                self.stock_tree.delete(item)
-            # 杞藉叆鍏ㄥ眬tickers
-            rows = []
-            try:
-                rows = self.db.get_all_tickers_with_meta()
-            except Exception:
-                rows = []
-            for r in rows:
-                symbol = (r.get('symbol') or '').upper()
-                added_at = (r.get('added_at') or '')
-                self.stock_tree.insert('', 'end', values=(symbol, added_at[:16]))
-        except Exception as e:
-            self.log(f"鍒锋柊浜ゆ槗鑲エfailed: {e}")
-    
-    def _add_ticker_global(self) -> None:
-        """娣诲姞to鍏ㄥ眬tickers"""
-        try:
-            raw = (self.ent_symbol.get() or '')
-            try:
-                try:
-                    from autotrader.stock_pool_manager import StockPoolManager  # type: ignore
-                except Exception:
-                    from .stock_pool_manager import StockPoolManager  # type: ignore
-                symbol = StockPoolManager._sanitize_ticker(raw) or ''
-            except Exception:
-                symbol = (raw or '').strip().upper().replace('"','').replace("'", '')
-                symbol = ''.join(c for c in symbol if not c.isspace())
-            if not symbol:
-                messagebox.showwarning("提示", "请输入要添加的股票")
+
+            if not self.trader:
+
+                self.log(" connectionIBKR")
+
                 return
-            if self.db.add_ticker(symbol):
-                self.log(f"娣诲姞to鍏ㄥ眬tickers: {symbol}")
+
+                
+
+            self.log("?nretrievalaccount?..")
+
+            loop = self._ensure_loop()
+
+            
+
+            async def _run():
+
                 try:
-                    self.ent_symbol.delete(0, tk.END)
-                except Exception:
-                    pass
-                self._refresh_global_tickers_table()
+
+                    await self.trader.refresh_account_balances_and_positions()
+
+                    self.log(f" ?: ${self.trader.cash_balance:,.2f}")
+
+                    self.log(f"account? ${self.trader.net_liq:,.2f}")
+
+                    self.log(f"positions ? {len(self.trader.positions)}  ??")
+
+                    for symbol, qty in self.trader.positions.items():
+
+                        if qty != 0:
+
+                            self.log(f"  {symbol}: {qty} ")
+
+                except Exception as e:
+
+                    self.log(f"retrievalaccount R?failed: {e}")
+
+                    
+
+            #  use GUI??
+
+            if hasattr(self, 'loop_manager') and self.loop_manager.is_running:
+
+                task_id = self.loop_manager.submit_coroutine_nowait(_run())
+
+                self.log(f"order placement ?D: {task_id}")
+
             else:
-                messagebox.showwarning("提示", f"{symbol} 已在列表中")
+
+                self.log(" ? c? no order placement ?")
+
+            
+
         except Exception as e:
-            self.log(f"娣诲姞鍏ㄥ眬tickerfailed: {e}")
-            messagebox.showerror("错误", f"添加失败: {e}")
+
+            self.log(f" account ? {e}")
+
+
+
+    # ====================  ? ??====================
+
     
+
+    def _refresh_stock_lists(self):
+
+        """ ? """
+
+        try:
+
+            lists = self.db.get_stock_lists()
+
+            list_names = [f"{lst['name']} ({lst['stock_count']}" for lst in lists]
+
+            self.stock_list_combo['values'] = list_names
+
+            
+
+            #  ID ??
+
+            self.stock_list_mapping = {f"{lst['name']} ({lst['stock_count']}": lst['id'] for lst in lists}
+
+            
+
+            if list_names:
+
+                self.stock_list_combo.current(0)
+
+                self._on_stock_list_changed(None)
+
+                
+
+        except Exception as e:
+
+            self.log(f" ? failed: {e}")
+
+    
+
+    def _refresh_configs(self):
+
+        """ ?"""
+
+        try:
+
+            configs = self.db.get_trading_configs()
+
+            config_names = [cfg['name'] for cfg in configs]
+
+            self.config_combo['values'] = config_names
+
+            
+
+            if config_names:
+
+                self.config_combo.current(0)
+
+                
+
+        except Exception as e:
+
+            self.log(f" failed: {e}")
+
+    
+
+    # =====  tickers and ?  =====
+
+    def _refresh_global_tickers_table(self) -> None:
+
+        """ tickersin in ?"""
+
+        try:
+
+            #  
+
+            for item in self.stock_tree.get_children():
+
+                self.stock_tree.delete(item)
+
+            #  tickers
+
+            rows = []
+
+            try:
+
+                rows = self.db.get_all_tickers_with_meta()
+
+            except Exception:
+
+                rows = []
+
+            for r in rows:
+
+                symbol = (r.get('symbol') or '').upper()
+
+                added_at = (r.get('added_at') or '')
+
+                self.stock_tree.insert('', 'end', values=(symbol, added_at[:16]))
+
+        except Exception as e:
+
+            self.log(f" ?failed: {e}")
+
+    
+
+    def _add_ticker_global(self) -> None:
+
+        """ to tickers"""
+
+        try:
+
+            raw = (self.ent_symbol.get() or '')
+
+            try:
+
+                try:
+
+                    from autotrader.stock_pool_manager import StockPoolManager  # type: ignore
+
+                except Exception:
+
+                    from .stock_pool_manager import StockPoolManager  # type: ignore
+
+                symbol = StockPoolManager._sanitize_ticker(raw) or ''
+
+            except Exception:
+
+                symbol = (raw or '').strip().upper().replace('"','').replace("'", '')
+
+                symbol = ''.join(c for c in symbol if not c.isspace())
+
+            if not symbol:
+
+                messagebox.showwarning("???", "?????????????")
+
+                return
+
+            if self.db.add_ticker(symbol):
+
+                self.log(f" to tickers: {symbol}")
+
+                try:
+
+                    self.ent_symbol.delete(0, tk.END)
+
+                except Exception:
+
+                    pass
+
+                self._refresh_global_tickers_table()
+
+            else:
+
+                messagebox.showwarning("???", f"{symbol} ????? ???")
+
+        except Exception as e:
+
+            self.log(f" tickerfailed: {e}")
+
+            messagebox.showerror("????", f"??????: {e}")
+
+    
+
     def _normalize_ticker_list(self, tickers: List[str]) -> List[str]:
+
         """Normalize ticker inputs by uppercasing, stripping spaces, and removing duplicates."""
+
         normalized: List[str] = []
+
         for ticker in tickers or []:
+
             cleaned = (ticker or '').strip().upper().replace('\"', '').replace("'", '')
+
             cleaned = ''.join(c for c in cleaned if not c.isspace())
+
             if cleaned and cleaned not in normalized:
+
                 normalized.append(cleaned)
+
         return normalized
 
 
+
+
+
     def normalize_ticker_input(self, text: str) -> str:
+
         """
-        瑙勮寖鍖栬偂绁ㄤ唬鍙疯緭鍏ワ細灏嗙┖鏍煎拰鎹㈣绗﹁浆鎹负閫楀?
+
+         ? ? ??
+
+
 
         Args:
-            text: 鍘熷杈撳叆鏂囨湰锛屽彲鑳藉寘鍚┖鏍笺佹崲琛屻侀楀彿绛夊垎闅旂?
+
+            text:  ? ? ? ?? ??
+
+
 
         Returns:
-            瑙勮寖鍖栧悗鐨勫瓧绗︿覆锛岃偂绁ㄤ唬鍙风敤閫楀彿鍒嗛殧
+
+             
+
+
 
         Example:
-            杈撳? "AAPL MSFT\nGOOGL,AMZN  TSLA"
-            杈撳? "AAPL,MSFT,GOOGL,AMZN,TSLA"
+
+             ?? "AAPL MSFT\nGOOGL,AMZN  TSLA"
+
+             ?? "AAPL,MSFT,GOOGL,AMZN,TSLA"
+
         """
+
         if not text:
+
             return ""
 
-        # 鎻愬彇鎵鏈夎偂绁ㄤ唬鍙凤紙鎸夌┖鏍笺佹崲琛屻侀楀彿銆佸埗琛ㄧ绛夊垎闅旓?
+
+
+        #  ? ? ?? ? ??
+
         import re
-        # 鍒嗗壊鎵鏈夊彲鑳界殑鍒嗛殧?
+
+        #  ? ?
+
         tokens = re.split(r'[\s,;]+', text.strip())
 
-        # 娓呯悊骞惰繃婊ょ┖鍊?
+
+
+        #  ??
+
         cleaned_tickers = []
+
         for token in tokens:
-            # 绉婚櫎寮曞彿鍜屽浣欑┖?
+
+            #  ? ?
+
             cleaned = token.strip().upper().replace('"', '').replace("'", '')
-            if cleaned:  # 杩囨护绌哄瓧绗︿?
+
+            if cleaned:  #  ??
+
                 cleaned_tickers.append(cleaned)
 
-        # 鍘婚噸骞朵繚鎸侀『搴?
+
+
+        #  ??
+
         unique_tickers = list(dict.fromkeys(cleaned_tickers))
 
-        # 鐢ㄩ楀彿杩炴帴
+
+
+        #  ? 
+
         return ','.join(unique_tickers)
 
+
+
     def _normalize_batch_input_text(self) -> None:
-        """瑙勮寖鍖栨壒閲忚緭鍏ユ枃鏈涓殑鑲エ浠ｅ彿"""
+
+        """ ? ? ? """
+
         try:
-            # 鑾峰彇褰撳墠鏂囨?
+
+            #  ??
+
             raw_text = self.ent_batch_csv.get(1.0, tk.END).strip()
+
             if not raw_text:
-                messagebox.showinfo("提示", "文本框内容为空")
+
+                messagebox.showinfo("???", "????????????")
+
                 return
 
-            # 瑙勮寖鍖?
+
+
+            #  ??
+
             normalized = self.normalize_ticker_input(raw_text)
 
+
+
             if not normalized:
-                messagebox.showwarning("提示", "未找到有效的股票符号")
+
+                messagebox.showwarning("???", " ????? ????????")
+
                 return
 
-            # 鏇存柊鏂囨湰?
+
+
+            #  ?
+
             self.ent_batch_csv.delete(1.0, tk.END)
+
             self.ent_batch_csv.insert(1.0, normalized)
 
-            # 缁熻鑲エ鏁伴?
+
+
+            #  ? ? ??
+
             ticker_count = len(normalized.split(','))
-            self.log(f"规范化完成，识别到{ticker_count}个股票符号")
+
+            self.log(f"? Z?????????{ticker_count}?????????")
+
             preview = normalized[:100] + ('...' if len(normalized) > 100 else '')
+
             messagebox.showinfo(
-                "完成",
-                f"规范化完成\n识别到{ticker_count}个股票符号\n\n{preview}"
+
+                "???",
+
+                f"? Z?????\n???{ticker_count}?????????\n\n{preview}"
+
             )
 
+
+
         except Exception as e:
-            self.log(f"瑙勮寖鍖栧け {e}")
-            messagebox.showerror("错误", f"规范化失败: {e}")
+
+            self.log(f"  {e}")
+
+            messagebox.showerror("????", f"? Z?????: {e}")
+
+
 
     def _batch_import_global(self) -> None:
-        """鎵归噺瀵煎叆to鍏ㄥ眬tickers"""
+
+        """ to tickers"""
+
         try:
+
             csv_text = (self.ent_batch_csv.get(1.0, tk.END) or '').strip()
+
             if not csv_text:
-                messagebox.showwarning("提示", "请输入要导入的股票符号")
+
+                messagebox.showwarning("???", "??????????????????")
+
                 return
+
             tokens = []
+
             for line in csv_text.split('\n'):
+
                 tokens.extend(line.replace(',', ' ').split())
+
             symbols = []
+
             try:
+
                 try:
+
                     from autotrader.stock_pool_manager import StockPoolManager  # type: ignore
+
                 except Exception:
+
                     from .stock_pool_manager import StockPoolManager  # type: ignore
+
                 for tok in tokens:
+
                     s = StockPoolManager._sanitize_ticker(tok)
+
                     if s:
+
                         symbols.append(s)
+
             except Exception:
+
                 for tok in tokens:
+
                     s = (tok or '').strip().upper().replace('"','').replace("'", '')
+
                     s = ''.join(c for c in s if not c.isspace())
+
                     if s:
+
                         symbols.append(s)
+
             success = 0
+
             fail = 0
+
             for s in symbols:
+
                 if self.db.add_ticker(s):
+
                     success += 1
+
                 else:
+
                     fail += 1
-            self.log(f"鎵归噺瀵煎鍏ㄥ?completed: success {success}锛宖ailed {fail}")
+
+            self.log(f" ? ??completed: success {success} failed {fail}")
+
             try:
+
                 self.ent_batch_csv.delete(1.0, tk.END)
+
             except Exception:
+
                 pass
-            self._refresh_global_tickers_table()
-        except Exception as e:
-            self.log(f"鎵归噺瀵煎鍏ㄥ?failed: {e}")
-            messagebox.showerror("错误", f"批量导入失败: {e}")
-    
-    def _delete_selected_ticker_global(self) -> None:
-        """from鍏ㄥ眬tickers鍒犻櫎閫塱n鑲エ锛屽苟瑙﹀彂鑷姩娓呬粨銆"""
-        try:
-            selected_items = self.stock_tree.selection()
-            if not selected_items:
-                messagebox.showwarning("提示", "请先选择要删除的股票")
-                return
-            symbols = []
-            for item in selected_items:
-                values = self.stock_tree.item(item, 'values')
-                if values:
-                    symbols.append(values[0])
-            if not symbols:
-                return
-            result = messagebox.askyesno("纭鍒犻櫎", f"纭畾瑕乫rom鍏ㄥ眬tickers鍒犻櫎锛歕n{', '.join(symbols)}")
-            if not result:
-                return
-            removed = []
-            for symbol in symbols:
-                if self.db.remove_ticker(symbol):
-                    removed.append(symbol)
-            self.log(f"from鍏ㄥ眬tickers鍒犻{len(removed)} ? {', '.join(removed) if removed else ''}")
+
             self._refresh_global_tickers_table()
 
-            # 瑙﹀彂鑷姩娓呬粨锛坢arket鍗栧嚭be鍒犻櫎鏍囩幇haspositions?
+        except Exception as e:
+
+            self.log(f" ? ??failed: {e}")
+
+            messagebox.showerror("????", f"???????????: {e}")
+
+    
+
+    def _delete_selected_ticker_global(self) -> None:
+
+        """from tickers in ? ? ?"""
+
+        try:
+
+            selected_items = self.stock_tree.selection()
+
+            if not selected_items:
+
+                messagebox.showwarning("???", "???????????????")
+
+                return
+
+            symbols = []
+
+            for item in selected_items:
+
+                values = self.stock_tree.item(item, 'values')
+
+                if values:
+
+                    symbols.append(values[0])
+
+            if not symbols:
+
+                return
+
+            result = messagebox.askyesno("? ", f" ? from tickers \n{', '.join(symbols)}")
+
+            if not result:
+
+                return
+
+            removed = []
+
+            for symbol in symbols:
+
+                if self.db.remove_ticker(symbol):
+
+                    removed.append(symbol)
+
+            self.log(f"from tickers ?{len(removed)} ? {', '.join(removed) if removed else ''}")
+
+            self._refresh_global_tickers_table()
+
+
+
+            #  ? market be haspositions?
+
             if removed:
+
                 if self.trader and self.loop and self.loop.is_running():
+
                     try:
+
                         task_id = self.loop_manager.submit_coroutine_nowait(self._auto_sell_stocks(removed))
-                        self.log(f"鑷姩娓呬粨浠诲姟鎻愪氦 (ID: {task_id[:8]}...)")
+
+                        self.log(f" ?  (ID: {task_id[:8]}...)")
+
                     except Exception as e:
-                        self.log(f"瑙﹀彂鑷姩娓呬粨failed: {e}")
+
+                        self.log(f" ? failed: {e}")
+
                 else:
-                    self.log("褰揵efore鏈猚onnection浜ゆ槗or浜嬩欢寰幆鏈繍琛岋紝no娉曡嚜鍔ㄦ竻浠撱傜afterconnectionaftercanin鏂囦欢瀵煎叆椤祏se鏇挎崲鍔熻兘娓呬粨銆")
+
+                    self.log(" before connection or ? c? no ??afterconnectionaftercanin use ?")
+
         except Exception as e:
-            self.log(f"鍒犻櫎鍏ㄥ眬tickerfailed: {e}")
-            messagebox.showerror("错误", f"删除失败: {e}")
+
+            self.log(f" tickerfailed: {e}")
+
+            messagebox.showerror("????", f"??????: {e}")
+
     
+
     def _on_stock_list_changed(self, event):
-        """鑲エ鍒楄〃閫夋嫨鍙樺"""
+
+        """ ? ?"""
+
         try:
+
             selected = self.stock_list_var.get()
+
             if selected and selected in self.stock_list_mapping:
+
                 list_id = self.stock_list_mapping[selected]
+
                 self.state.selected_stock_list_id = list_id
+
                 self._refresh_stock_table(list_id)
+
                 
+
         except Exception as e:
-            self.log(f"鍒囨崲鑲エ鍒楄〃failed: {e}")
+
+            self.log(f" ? failed: {e}")
+
     
+
     def _refresh_stock_table(self, list_id):
-        """鍒锋柊Stock table"""
+
+        """ Stock table"""
+
         try:
-            # 娓呯┖琛ㄦ牸
+
+            #  
+
             for item in self.stock_tree.get_children():
+
                 self.stock_tree.delete(item)
+
             
-            # 鍔犺浇鑲エ
+
+            #  ?
+
             stocks = self.db.get_stocks_in_list(list_id)
+
             for stock in stocks:
+
                 self.stock_tree.insert('', 'end', values=(
+
                     stock['symbol'], 
+
                     stock['name'] or '', 
+
                     stock['added_at'][:16] if stock['added_at'] else ''
+
                 ))
+
                 
+
         except Exception as e:
-            self.log(f"鍒锋柊Stock table鏍糵ailed: {e}")
+
+            self.log(f" Stock table failed: {e}")
+
     
+
     def _create_stock_list(self):
-        """鍒涘缓鏂拌偂绁ㄥ垪琛"""
+
+        """ ?"""
+
         try:
-            name = tk.simpledialog.askstring("新建股票列表", "请输入列表名称")
+
+            name = tk.simpledialog.askstring("??????? ?", "??????? ?????")
+
             if not name:
+
                 return
+
                 
-            description = tk.simpledialog.askstring("新建股票列表", "请输入描述（可选）") or ""
+
+            description = tk.simpledialog.askstring("??????? ?", "?????????????????") or ""
+
             
+
             list_id = self.db.create_stock_list(name, description)
-            self.log(f"success鍒涘缓鑲エ鍒楄 {name}")
+
+            self.log(f"success ? ? {name}")
+
             self._refresh_stock_lists()
+
             
+
         except ValueError as e:
-            messagebox.showerror("错误", str(e))
+
+            messagebox.showerror("????", str(e))
+
         except Exception as e:
-            self.log(f"鍒涘缓鑲エ鍒楄〃failed: {e}")
-            messagebox.showerror("错误", f"创建失败: {e}")
+
+            self.log(f" ? failed: {e}")
+
+            messagebox.showerror("????", f"???????: {e}")
+
     
+
     def _delete_stock_list(self):
-        """鍒犻櫎鑲エ鍒楄"""
+
+        """ ? ?"""
+
         try:
+
             if not self.state.selected_stock_list_id:
-                messagebox.showwarning("提示", "请先选择股票列表")
+
+                messagebox.showwarning("???", "?????????? ?")
+
                 return
+
                 
+
             selected = self.stock_list_var.get()
-            result = messagebox.askyesno("纭鍒犻櫎", f"纭畾瑕佸垹闄よ偂绁ㄥ垪'{selected}' 鍚楋紵\n姝ゆ搷浣渨ill鍒犻櫎鍒楄〃in鎵has鑲エ锛")
+
+            result = messagebox.askyesno("? ", f" ? '{selected}'  \n will in?has ??")
+
             
+
             if result:
+
                 if self.db.delete_stock_list(self.state.selected_stock_list_id):
-                    self.log(f"success鍒犻櫎鑲エ鍒楄 {selected}")
+
+                    self.log(f"success ? ? {selected}")
+
                     self._refresh_stock_lists()
+
                 else:
-                    messagebox.showerror("错误", "删除失败")
+
+                    messagebox.showerror("????", "??????")
+
                     
+
         except Exception as e:
-            self.log(f"鍒犻櫎鑲エ鍒楄〃failed: {e}")
-            messagebox.showerror("错误", f"删除失败: {e}")
+
+            self.log(f" ? failed: {e}")
+
+            messagebox.showerror("????", f"??????: {e}")
+
     
+
     def _add_stock(self):
-        """添加单只股票"""
-        messagebox.showinfo("提示", "请先在交易界面添加股票")
+
+        """????????"""
+
+        messagebox.showinfo("???", "?????????????????")
+
     
+
     def _batch_import(self):
-        """搴熷純锛堝垪琛ㄦā寮忕Щ闄わ"""
-        messagebox.showinfo("提示", "请先在菜单中选择批量导入")
+
+        """ ?"""
+
+        messagebox.showinfo("???", "?????????????????????")
+
     
+
     def _delete_selected_stock(self):
-        """提醒：先选中股票"""
-        messagebox.showinfo("提示", "请先在列表中选中要删除的股票")
+
+        """????????? ??"""
+
+        messagebox.showinfo("???", "??????? ??????????????")
+
+
 
     def _sync_global_to_current_list_replace(self):
-        """will鍏ㄥ眬tickers鏇挎崲鍐欏叆褰揵efore閫塱n鍒楄〃锛坰tocks琛級銆"""
+
+        """will tickers before in stocks ??"""
+
         try:
+
             if not self.state.selected_stock_list_id:
-                messagebox.showwarning("提示", "请先选择一个股票列表")
+
+                messagebox.showwarning("???", "?????????????? ?")
+
                 return
+
             tickers = self.db.get_all_tickers()
+
             if not tickers:
-                messagebox.showinfo("提示", "股票池为空，无法同步")
+
+                messagebox.showinfo("???", "???????????????")
+
                 return
+
             ok = messagebox.askyesno(
-                "确认",
-                f"将使用股票池中的{len(tickers)}只股票替换当前列表。确定继续？"
+
+                "???",
+
+                f"???? ????? ?{len(tickers)}????? I???? ???????????"
+
             )
+
             if not ok:
+
                 return
+
             removed_symbols = self.db.clear_stock_list(self.state.selected_stock_list_id)
+
             added = 0
+
             for sym in tickers:
+
                 if self.db.add_stock(self.state.selected_stock_list_id, sym):
+
                     added += 1
-            self.log(f"鍚屾completed锛氭竻绌哄師has {len(removed_symbols)} 鍙紝鍐欏叆 {added} ")
+
+            self.log(f" ?completed has {len(removed_symbols)}  ?  {added} ")
+
             self._refresh_stock_table(self.state.selected_stock_list_id)
+
             self._refresh_stock_lists()
+
         except Exception as e:
-            self.log(f"鍏ㄥ眬鈫掑垪琛ㄥ悓姝ailed: {e}")
-            messagebox.showerror("错误", f"同步失败: {e}")
+
+            self.log(f" ?ailed: {e}")
+
+            messagebox.showerror("????", f"??????: {e}")
+
+
 
     def _sync_current_list_to_global_replace(self):
-        """will褰揵efore閫塱n鍒楄〃鏇挎崲鍐欏叆鍏ㄥ眬tickers锛坈an瑙﹀彂鑷姩娓呬粨閫昏緫锛夈"""
+
+        """will before in tickers can ? ?"""
+
         try:
+
             if not self.state.selected_stock_list_id:
-                messagebox.showwarning("提示", "请先选择股票列表")
+
+                messagebox.showwarning("???", "?????????? ?")
+
                 return
+
             rows = self.db.get_stocks_in_list(self.state.selected_stock_list_id)
+
             symbols = [r.get('symbol') for r in rows if r.get('symbol')]
+
             ok = messagebox.askyesno(
-                "确认",
-                f"将当前列表的{len(symbols)}只股票同步到股票池，覆盖原有内容。确定继续？"
+
+                "???",
+
+                f"?????? ??{len(symbols)}????????????????????????????????????"
+
             )
+
             if not ok:
+
                 return
+
             removed_before, success, fail = self.db.replace_all_tickers(symbols)
-            self.log(f"鍒楄〃鈫掑叏灞鍚屾completed锛氱Щ{len(removed_before)}锛屽啓鍏uccess {success}锛宖ailed {fail}")
-            # 鏍规嵁鍕鹃?items瑙﹀彂鑷姩娓呬?
+
+            self.log(f" ? ?completed {len(removed_before)} ?uccess {success} failed {fail}")
+
+            #  ??items ? ??
+
             auto_clear = bool(self.var_auto_clear.get())
+
             if auto_clear and removed_before:
+
                 if self.trader and self.loop and self.loop.is_running():
+
                     task_id = self.loop_manager.submit_coroutine_nowait(self._auto_sell_stocks(removed_before))
-                    self.log(f"鑷姩娓呬粨浠诲姟鎻愪氦 (ID: {task_id[:8]}...)")
+
+                    self.log(f" ?  (ID: {task_id[:8]}...)")
+
                 else:
-                    self.log("妫娴媡obe绉婚櫎鏍囷紝浣嗗綋before鏈猚onnection浜ゆ槗or浜嬩欢寰幆鏈繍琛岋紝璺宠繃鑷姩娓呬粨銆")
+
+                    self.log("? tobe before connection or ? c? ? ?")
+
         except Exception as e:
-            self.log(f"鍒楄〃鈫掑叏灞鍚屾failed: {e}")
-            messagebox.showerror("错误", f"同步失败: {e}")
+
+            self.log(f" ? ?failed: {e}")
+
+            messagebox.showerror("????", f"??????: {e}")
+
     
+
     def _save_config(self):
-        """淇濆瓨浜ゆ槗閰嶇"""
+
+        """ ?"""
+
         try:
+
             name = self.config_name_var.get().strip()
+
             if not name:
-                name = tk.simpledialog.askstring("淇濆瓨閰嶇疆", "璇疯緭鍏ラ厤缃悕绉")
+
+                name = tk.simpledialog.askstring(" ", " ??")
+
                 if not name:
+
                     return
+
             
-            # retrieval褰揵eforeUI鍙傛?
+
+            # retrieval beforeUI ??
+
             try:
+
                 alloc = float(self.ent_alloc.get().strip() or 0.03)
+
                 poll_sec = float(self.ent_poll.get().strip() or 10.0)
+
                 fixed_qty = int(self.ent_fixed_qty.get().strip() or 0)
+
                 auto_sell = self.var_auto_sell.get()
+
             except ValueError:
-                messagebox.showerror("错误", "参数格式错误")
+
+                messagebox.showerror("????", "???????????")
+
                 return
+
             
+
             if self.db.save_trading_config(name, alloc, poll_sec, auto_sell, fixed_qty):
-                self.log(f"success淇濆瓨閰嶇疆to鏁版嵁搴 {name}")
+
+                self.log(f"success to ? {name}")
+
                 self._refresh_configs()
+
                 self.config_name_var.set(name)
+
                 
-                # 鍚寃henupdates缁熶竴閰嶇疆绠悊鍣?
+
+                #  whenupdates ???
+
                 self.config_manager.update_runtime_config({
+
                     'trading.alloc_pct': alloc,
+
                     'trading.poll_interval': poll_sec,
+
                     'trading.auto_sell_removed': auto_sell,
+
                     'trading.fixed_quantity': fixed_qty
+
                 })
+
                 
-                # 鎸佷箙鍖杢o鏂囦?
+
+                #  to ??
+
                 if self.config_manager.persist_runtime_changes():
-                    self.log(" 浜ゆ槗閰嶇疆鎸佷箙鍖杢o閰嶇疆鏂囦欢")
+
+                    self.log("  to ")
+
                 else:
-                    self.log(" 浜ゆ槗閰嶇疆鎸佷箙鍖杅ailed锛屼絾淇濆瓨to鏁版嵁搴")
+
+                    self.log("  failed to ?")
+
             else:
-                messagebox.showerror("错误", "保存配置失败")
+
+                messagebox.showerror("????", "???????????")
+
                 
+
         except Exception as e:
-            self.log(f"淇濆瓨閰嶇疆failed: {e}")
-            messagebox.showerror("错误", f"保存失败: {e}")
+
+            self.log(f" failed: {e}")
+
+            messagebox.showerror("????", f"???????: {e}")
+
     
+
     def _load_config(self):
-        """鍔犺浇浜ゆ槗閰嶇"""
+
+        """ ?"""
+
         try:
+
             name = self.config_name_var.get().strip()
+
             if not name:
-                messagebox.showwarning("提示", "请选择配置")
+
+                messagebox.showwarning("???", "?????????")
+
                 return
+
             
+
             config = self.db.load_trading_config(name)
+
             if config:
+
                 # updatesUI
+
                 self.ent_alloc.delete(0, tk.END)
+
                 self.ent_alloc.insert(0, str(config['alloc']))
+
                 
+
                 self.ent_poll.delete(0, tk.END)
+
                 self.ent_poll.insert(0, str(config['poll_sec']))
+
                 
+
                 self.ent_fixed_qty.delete(0, tk.END)
+
                 self.ent_fixed_qty.insert(0, str(config['fixed_qty']))
+
                 
+
                 self.var_auto_sell.set(config['auto_sell_removed'])
+
                 
-                self.log(f"success鍔犺浇閰嶇疆: {name}")
+
+                self.log(f"success : {name}")
+
             else:
-                messagebox.showerror("错误", "加载配置失败")
+
+                messagebox.showerror("????", "???????????")
+
                 
+
         except Exception as e:
-            self.log(f"鍔犺浇閰嶇疆failed: {e}")
-            messagebox.showerror("错误", f"加载失败: {e}")
+
+            self.log(f" failed: {e}")
+
+            messagebox.showerror("????", f"???????: {e}")
+
+
 
     def _get_current_stock_symbols(self) -> str:
-        """retrieval褰揵efore鏁版嵁搴搃n鑲エ浠ｇ爜锛堜綔as瀛榠n鎬heckuse锛夈"""
+
+        """retrieval before in ? as in?heckuse ?"""
+
         try:
+
             tickers = self.db.get_all_tickers()
+
             return ",".join(tickers)
+
         except Exception as e:
-            self.log(f"retrieval鑲エ鍒楄〃failed: {e}")
+
+            self.log(f"retrieval ? failed: {e}")
+
             return ""
 
+
+
     def _load_top10_refresh_state(self) -> Optional[datetime]:
+
         try:
+
             if self._top10_state_path.exists():
+
                 data = json.loads(self._top10_state_path.read_text(encoding='utf-8'))
+
                 date_str = data.get('last_refresh_date')
+
                 if date_str:
+
                     return datetime.fromisoformat(date_str)
+
         except Exception as e:
-            self.log(f"[TOP10] 无法读取刷新状 {e}")
+
+            self.log(f"[TOP10] ?????????? {e}")
+
         return None
 
+
+
     def _save_top10_refresh_state(self, when: datetime, symbols: List[str]) -> None:
+
         try:
+
             payload = {'last_refresh_date': when.isoformat(), 'symbols': symbols}
+
             self._top10_state_path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+
         except Exception as e:
-            self.log(f"[TOP10] 无法写入刷新状 {e}")
+
+            self.log(f"[TOP10] ??? ?????? {e}")
+
+
 
     @staticmethod
+
     def _is_biweekly_monday(day: datetime) -> bool:
+
         return day.weekday() == 0 and (day.isocalendar()[1] % 2 == 0)
 
+
+
     def _load_top10_from_predictions(self) -> List[str]:
+
         try:
+
             result_dir = Path('result/model_backtest')
+
             if not result_dir.exists():
+
                 return []
+
             files = sorted(result_dir.glob('ridge_stacking_predictions_*.parquet'), key=lambda p: p.stat().st_mtime, reverse=True)
+
             for file in files:
+
                 df = pd.read_parquet(file)
+
                 if df.empty or 'ticker' not in df.columns or 'date' not in df.columns:
+
                     continue
+
                 df['date'] = pd.to_datetime(df['date'])
+
                 latest = df['date'].max()
+
                 latest_df = df[df['date'] == latest].sort_values('prediction', ascending=False).head(10)
+
                 tickers = latest_df['ticker'].dropna().astype(str).tolist()
+
                 if tickers:
+
                     return tickers
+
         except Exception as e:
-            self.log(f"[TOP10] 读取BMA预测失败: {e}")
+
+            self.log(f"[TOP10] ???BMA??????: {e}")
+
         return []
 
+
+
     def _load_top10_from_text(self) -> List[str]:
+
         txt = Path('result/bma_top10.txt')
+
         if not txt.exists():
+
             return []
+
         try:
+
             return [line.strip().upper() for line in txt.read_text(encoding='utf-8').splitlines() if line.strip()]
+
         except Exception as e:
-            self.log(f"[TOP10] 读取文本Top10失败: {e}")
+
+            self.log(f"[TOP10] ??????Top10???: {e}")
+
             return []
+
+
 
     def _apply_top10_to_stock_pool(self, symbols: List[str]) -> List[str]:
+
         try:
+
             try:
+
                 from autotrader.stock_pool_manager import StockPoolManager  # type: ignore
+
             except Exception:
+
                 from .stock_pool_manager import StockPoolManager  # type: ignore
+
             sanitized = StockPoolManager._sanitize_tickers(symbols)
+
         except Exception:
+
             sanitized = [s.strip().upper() for s in symbols if s.strip()]
+
         if not sanitized:
+
             sanitized = ['QQQ']
+
         existing = self.db.get_all_tickers()
+
         removed = [sym for sym in existing if sym not in sanitized]
+
         if not self.db.clear_tickers():
-            raise RuntimeError('无法清空股票池')
+
+            raise RuntimeError('??????????')
+
         self.db.batch_add_tickers(sanitized)
+
         self._refresh_global_tickers_table()
-        self.log(f"[TOP10] 已刷新股票池, {len(sanitized)} ")
+
+        self.log(f"[TOP10] ????1????, {len(sanitized)} ")
+
         if removed:
-            self.log(f"[TOP10] 移除股票: {', '.join(removed)}")
+
+            self.log(f"[TOP10] ??????: {', '.join(removed)}")
+
         return removed
 
+
+
     def _maybe_refresh_top10_pool(self, force: bool = False) -> None:
+
         now = datetime.utcnow()
+
         if not force:
+
             if not self._is_biweekly_monday(now):
+
                 return
+
             if self._last_top10_refresh and self._last_top10_refresh.date() >= now.date():
+
                 return
+
         tickers = self._load_top10_from_predictions()
+
         if not tickers:
+
             tickers = self._load_top10_from_text()
+
         if not tickers:
+
             tickers = ['QQQ']
+
         removed = self._apply_top10_to_stock_pool(tickers)
+
         self._last_top10_refresh = datetime.utcnow()
+
         self._save_top10_refresh_state(self._last_top10_refresh, tickers)
+
         if removed and self.trader:
+
             try:
+
                 self._run_async_safe(self._auto_sell_stocks(removed), "auto_sell_top10")
+
             except Exception:
+
                 pass
+
+
 
     async def _auto_sell_stocks(self, symbols_to_sell: List[str]):
-        """鑷姩娓呬粨鎸囧畾鑲エ"""
+
+        """ ? ?"""
+
         if not symbols_to_sell:
+
             return
+
             
+
         try:
+
             if not self.trader:
-                self.log("鏈猚onnection浜ゆ槗鎺ュ彛锛宯o娉曡嚜鍔ㄦ竻")
+
+                self.log(" connection no ")
+
                 return
+
                 
-            self.log(f"starting鑷姩娓呬粨 {len(symbols_to_sell)} 鍙偂绁 {', '.join(symbols_to_sell)}")
+
+            self.log(f"starting ?  {len(symbols_to_sell)}  ?? {', '.join(symbols_to_sell)}")
+
             
+
             for symbol in symbols_to_sell:
+
                 try:
-                    # retrieval褰揵eforepositions
+
+                    # retrieval beforepositions
+
                     if hasattr(self.trader, 'positions') and symbol in self.trader.positions:
+
                         position = self.trader.positions.get(symbol, 0)
+
                         if position > 0:
-                            self.log(f"娓呬{symbol}: {position} ")
+
+                            self.log(f" ?{symbol}: {position} ")
+
                             await self.trader.place_market_order(symbol, "SELL", position)
+
                         else:
-                            self.log(f"{symbol} nopositionsor娓呬")
+
+                            self.log(f"{symbol} nopositionsor ?")
+
                     else:
-                        self.log(f"no娉時etrieval {symbol} positions淇")
+
+                        self.log(f"no retrieval {symbol} positions?")
+
                         
+
                 except Exception as e:
-                    self.log(f"娓呬{symbol} failed: {e}")
+
+                    self.log(f" ?{symbol} failed: {e}")
+
                     
+
         except Exception as e:
-            self.log(f"鑷姩娓呬粨failed: {e}")
+
+            self.log(f" ? failed: {e}")
+
+
 
     def _import_file_to_database(self):
-        """will鏂囦欢鍐呭瀵煎叆to鏁版嵁搴擄紙鏇挎崲妯紡-> 浣渦seat鍏ㄥ?tickers """
-        try:
-            # 鍚屾鏈鏂拌〃鍗曡緭鍏ワ紙sheet/column/鎵嬪姩CSV?
-            self._capture_ui()
-            # retrieval瑕佸鍏ヨ偂绁紙鏀寔 json/excel/csv 鎵嬪姩锛?
-            symbols_to_import = self._extract_symbols_from_files()
-            self.log(f"寰呭鍏ヨ偂绁ㄦ {len(symbols_to_import)}")
-            if not symbols_to_import:
-                messagebox.showwarning("提示", "请选择要导入的文件")
-                return
-            
-            # 纭for璇濇?
-            auto_clear = self.var_auto_clear.get()
-            
-            preview_list = symbols_to_import[:50]
-            preview_text = ", ".join(preview_list)
-            if len(symbols_to_import) > 50:
-                preview_text += "..."
-            if auto_clear:
-                msg = (
-                    "确认要替换全部股票池吗？\n\n"
-                    "操作将：\n"
-                    "1. 先自动清仓当前持仓\n"
-                    f"2. 替换为新股票：{preview_text}\n\n"
-                    "此操作不可撤销"
-                )
-            else:
-                msg = (
-                    "确认要导入这些股票吗？\n\n"
-                    "操作将：\n"
-                    "1. 清空当前列表并添加新股票\n"
-                    f"2. 新股票：{preview_text}\n\n"
-                    "此操作不可撤销"
-                )
-                
-            result = messagebox.askyesno("纭鏇挎崲", msg)
-            if not result:
-                return
-            
-            # 鎵ц瀵煎叆锛氭浛鎹㈠叏灞?tickers
-            removed_before, success, fail = self.db.replace_all_tickers(symbols_to_import)
-            
-            self.log(f"鑲エ鍒楄〃鏇挎崲completed:")
-            self.log(f"  鍒犻 {len(removed_before)} 鍙偂绁")
-            self.log(f"  瀵煎 success {success} 鍙紝failed {fail} ")
 
-            # 鍗硍hen鎵撳嵃褰揵efore鍏ㄥ?tickers 姒傝?
+        """will ? to ?->  useat ??tickers """
+
+        try:
+
+            #  ?? sheet/column/ CSV?
+
+            self._capture_ui()
+
+            # retrieval ? ? k? json/excel/csv  ??
+
+            symbols_to_import = self._extract_symbols_from_files()
+
+            self.log(f" ? ? {len(symbols_to_import)}")
+
+            if not symbols_to_import:
+
+                messagebox.showwarning("???", "??????????????")
+
+                return
+
+            
+
+            # ?for ??
+
+            auto_clear = self.var_auto_clear.get()
+
+            
+
+            preview_list = symbols_to_import[:50]
+
+            preview_text = ", ".join(preview_list)
+
+            if len(symbols_to_import) > 50:
+
+                preview_text += "..."
+
+            if auto_clear:
+
+                msg = (
+
+                    "????? I??????????\n\n"
+
+                    "????????\n"
+
+                    "1. ?????????????\n"
+
+                    f"2. ? I??1????{preview_text}\n\n"
+
+                    "????????????"
+
+                )
+
+            else:
+
+                msg = (
+
+                    "?????????? ?????\n\n"
+
+                    "????????\n"
+
+                    "1. ?????? ??????1??\n"
+
+                    f"2. ?1????{preview_text}\n\n"
+
+                    "????????????"
+
+                )
+
+                
+
+            result = messagebox.askyesno("? ", msg)
+
+            if not result:
+
+                return
+
+            
+
+            #  ? ??tickers
+
+            removed_before, success, fail = self.db.replace_all_tickers(symbols_to_import)
+
+            
+
+            self.log(f" ? completed:")
+
+            self.log(f"   ? {len(removed_before)}  ??")
+
+            self.log(f"   ? success {success}  ?failed {fail} ")
+
+
+
+            #  when before ??tickers  ??
+
             try:
+
                 all_ticks = self.db.get_all_tickers()
+
                 preview = ", ".join(all_ticks[:200]) + ("..." if len(all_ticks) > 200 else "")
-                self.log(f"褰揵efore鍏ㄥtickers ?{len(all_ticks)}: {preview}")
+
+                self.log(f" before ?tickers ?{len(all_ticks)}: {preview}")
+
                 try:
-                    messagebox.showinfo("瀵煎叆completed", f"褰揵efore鍏ㄥtickers ?{len(all_ticks)}  records")
+
+                    messagebox.showinfo(" completed", f" before ?tickers ?{len(all_ticks)}  records")
+
                 except Exception:
+
                     pass
+
             except Exception as e:
-                self.log(f"璇诲彇鍏ㄥ眬tickersfailed: {e}")
+
+                self.log(f" tickersfailed: {e}")
+
             
-            # if鏋滃惎use鑷姩娓呬粨涓斾氦鏄撳櫒connection涓斾簨浠跺惊鐜痠n杩愯锛屽垯寮傛娓呬粨
+
+            # if use ? connection in ? ? 
+
             if auto_clear and removed_before:
+
                 if self.trader and self.loop and self.loop.is_running():
+
                     self.loop_manager.submit_coroutine(
+
                         self._auto_sell_stocks(removed_before), timeout=30)
+
                 else:
-                    self.log("妫娴媡o绉婚櫎鑲エ锛屼絾褰揵efore鏈猚onnection浜ゆ槗or浜嬩欢寰幆鏈繍琛岋紝璺宠繃鑷姩娓呬粨銆")
+
+                    self.log("? to ? before connection or ? c? ? ?")
+
             
-            # 鍒锋柊鐣岄潰
+
+            #  
+
             try:
+
                 if getattr(self, 'state', None) and self.state.selected_stock_list_id:
+
                     self._refresh_stock_table(self.state.selected_stock_list_id)
+
             except Exception:
+
                 pass
+
             
+
         except Exception as e:
-            self.log(f"瀵煎叆failed: {e}")
-            messagebox.showerror("错误", f"导入失败: {e}")
+
+            self.log(f" failed: {e}")
+
+            messagebox.showerror("????", f"???????: {e}")
+
+
 
     def _append_file_to_database(self):
-        """will鏂囦欢鍐呭瀵煎叆to鏁版嵁搴擄紙杩藉姞妯紡-> 浣渦seat鍏ㄥ?tickers """
-        try:
-            # 鍚屾鏈鏂拌〃鍗曡緭?
-            self._capture_ui()
-            # retrieval瑕佸鍏ヨ偂绁紙鏀寔 json/excel/csv 鎵嬪姩锛?
-            symbols_to_import = self._extract_symbols_from_files()
-            self.log(f"寰呰拷鍔犺偂绁ㄦ {len(symbols_to_import)}")
-            if not symbols_to_import:
-                messagebox.showwarning("提示", "请选择要导入的文件")
-                return
-            
-            preview_list = symbols_to_import[:50]
-            preview_text = ", ".join(preview_list)
-            if len(symbols_to_import) > 50:
-                preview_text += "..."
-            msg = (
-                "确认要将这些股票追加到股票池吗？\n\n"
-                f"将追加：{preview_text}\n"
-                "此操作可恢复"
-            )
-            result = messagebox.askyesno("确认追加", msg)
-            if not result:
-                return
-            
-            # 鎵ц杩藉姞瀵煎叆to鍏ㄥ?tickers
-            success, fail = 0, 0
-            for s in symbols_to_import:
-                if self.db.add_ticker(s):
-                    success += 1
-                else:
-                    fail += 1
-            
-            self.log(f"鑲エ杩藉姞completed: success {success} 鍙紝failed {fail} ")
 
-            # 鍗硍hen鎵撳嵃褰揵efore鍏ㄥ?tickers 姒傝?
+        """will ? to ?->  useat ??tickers """
+
+        try:
+
+            #  ?? ?
+
+            self._capture_ui()
+
+            # retrieval ? ? k? json/excel/csv  ??
+
+            symbols_to_import = self._extract_symbols_from_files()
+
+            self.log(f" ? {len(symbols_to_import)}")
+
+            if not symbols_to_import:
+
+                messagebox.showwarning("???", "??????????????")
+
+                return
+
+            
+
+            preview_list = symbols_to_import[:50]
+
+            preview_text = ", ".join(preview_list)
+
+            if len(symbols_to_import) > 50:
+
+                preview_text += "..."
+
+            msg = (
+
+                "???????? ??????????????\n\n"
+
+                f"??????{preview_text}\n"
+
+                "?????????"
+
+            )
+
+            result = messagebox.askyesno("??????", msg)
+
+            if not result:
+
+                return
+
+            
+
+            #  ? to ??tickers
+
+            success, fail = 0, 0
+
+            for s in symbols_to_import:
+
+                if self.db.add_ticker(s):
+
+                    success += 1
+
+                else:
+
+                    fail += 1
+
+            
+
+            self.log(f" ? completed: success {success}  ?failed {fail} ")
+
+
+
+            #  when before ??tickers  ??
+
             try:
+
                 all_ticks = self.db.get_all_tickers()
+
                 preview = ", ".join(all_ticks[:200]) + ("..." if len(all_ticks) > 200 else "")
-                self.log(f"褰揵efore鍏ㄥtickers ?{len(all_ticks)}: {preview}")
+
+                self.log(f" before ?tickers ?{len(all_ticks)}: {preview}")
+
                 try:
-                    messagebox.showinfo("杩藉姞completed", f"褰揵efore鍏ㄥtickers ?{len(all_ticks)}  records")
+
+                    messagebox.showinfo(" completed", f" before ?tickers ?{len(all_ticks)}  records")
+
                 except Exception:
+
                     pass
+
             except Exception as e:
-                self.log(f"璇诲彇鍏ㄥ眬tickersfailed: {e}")
+
+                self.log(f" tickersfailed: {e}")
+
             
-            # 鍒锋柊鐣岄潰
+
+            #  
+
             try:
+
                 if getattr(self, 'state', None) and self.state.selected_stock_list_id:
+
                     self._refresh_stock_table(self.state.selected_stock_list_id)
+
             except Exception:
+
                 pass
+
             
+
         except Exception as e:
-            self.log(f"杩藉姞瀵煎叆failed: {e}")
-            messagebox.showerror("错误", f"追加导入失败: {e}")
+
+            self.log(f" failed: {e}")
+
+            messagebox.showerror("????", f"?????????: {e}")
+
+
 
     def _extract_symbols_from_files(self) -> List[str]:
-        """fromJSON/Excel/CSV鏂囦欢in鎻愬彇鑲エ浠ｇ爜锛堣繑鍥瀌eduplicationafter鍒楄〃锛"""
+
+        """fromJSON/Excel/CSV in ? deduplicationafter ?"""
+
         try:
+
             symbols = []
+
             
-            # fromJSON鏂囦欢璇诲彇
+
+            # fromJSON 
+
             if self.state.json_file:
+
                 import json
+
                 with open(self.state.json_file, 'r', encoding='utf-8') as f:
+
                     data = json.load(f)
+
                     if isinstance(data, list):
+
                         symbols.extend([str(s).upper() for s in data])
+
                     else:
-                        self.log("JSON鏂囦欢鏍煎紡閿欒锛氬簲璇s鑲エ浠ｇ爜鏁扮")
+
+                        self.log("JSON ? ?s ? ?")
+
             
-            # fromExcel鏂囦欢璇诲彇
+
+            # fromExcel 
+
             if self.state.excel_file:
+
                 try:
+
                     import pandas as pd
+
                     sheet = self.state.sheet or 0
+
                     column = self.state.column or 0
+
                     
+
                     df = pd.read_excel(self.state.excel_file, sheet_name=sheet)
+
                     if isinstance(column, str):
+
                         col_data = df[column].dropna()
+
                     else:
+
                         col_data = df.iloc[:, int(column)].dropna()
+
                     
+
                     symbols.extend([str(s).upper() for s in col_data])
+
                 except ImportError:
-                    self.log("缂哄皯pandas搴擄紝no娉曡鍙朎xcel鏂囦")
+
+                    self.log(" pandas no ? Excel ?")
+
                 except Exception as e:
-                    self.log(f"璇诲彇Excel鏂囦欢failed: {e}")
+
+                    self.log(f" Excel failed: {e}")
+
             
-            # from鎵嬪姩CSV璇诲?
+
+            # from CSV ??
+
             if self.state.symbols_csv:
+
                 csv_symbols = [s.strip().upper() for s in self.state.symbols_csv.split(",") if s.strip()]
+
                 symbols.extend(csv_symbols)
+
             
-            # deduplication骞惰繑鍥?
-            unique_symbols = list(dict.fromkeys(symbols))  # 淇濇寔椤哄簭deduplication
+
+            # deduplication ??
+
+            unique_symbols = list(dict.fromkeys(symbols))  #  deduplication
+
             return unique_symbols
+
             
+
         except Exception as e:
-            self.log(f"鎻愬彇鑲エ浠ｇ爜failed: {e}")
+
+            self.log(f" ? failed: {e}")
+
             return []
+
+
+
 
 
     def _on_resource_warning(self, warning_type: str, data: dict):
-        """璧勬簮璀﹀憡鍥炶皟"""
+
+        """ """
+
         try:
-            warning_msg = f"璧勬簮璀﹀[{warning_type}]: {data.get('message', str(data))}"
+
+            warning_msg = f" ?[{warning_type}]: {data.get('message', str(data))}"
+
             self.after(0, lambda msg=warning_msg: self.log(msg))
+
         except Exception:
+
             pass
+
     
+
     def _on_closing(self) -> None:
+
         """Enhanced cleanup when closing the application with proper resource management"""
+
         try:
-            self.log("姝n鍏抽棴搴攗se...")
+
+            self.log("?n use...")
+
             
+
             # First, cancel engine loop task if running
+
             if hasattr(self, '_engine_loop_task') and self._engine_loop_task and not self._engine_loop_task.done():
+
                 try:
+
                     self._engine_loop_task.cancel()
-                    self.log("鍙栨秷绛栫暐寮曟搸寰幆浠诲")
+
+                    self.log(" ? ?")
+
                 except Exception as e:
-                    self.log(f"鍙栨秷绛栫暐寮曟搸寰幆failed: {e}")
+
+                    self.log(f" ?failed: {e}")
+
             
+
             # Then, gracefully stop trader
+
             if self.trader:
+
                 try:
+
                     if hasattr(self.trader, '_stop_event') and self.trader._stop_event:
+
                         self.trader._stop_event.set()
-                        self.log("settings浜ゆ槗鍣ㄥ仠姝俊鍙")
+
+                        self.log("settings {??")
+
                 except Exception:
+
                     pass
+
             
+
             # Force cleanup after brief delay to allow graceful shutdown
+
             def force_cleanup():
+
                 try:
+
                     # Stop engine and close trader connection if exists
+
                     if (self.engine or self.trader) and self.loop and self.loop.is_running():
+
                         async def _cleanup_all():
+
                             try:
+
                                 # Stop engine first
+
                                 if self.engine:
+
                                     await self.engine.stop()
-                                    self.log("寮曟搸鍋滄")
+
+                                    self.log(" ?")
+
                                 
+
                                 # Then close trader connection
+
                                 if self.trader:
+
                                     await self.trader.close()
-                                    self.log("浜ゆ槗鍣╟onnection鍏抽")
+
+                                    self.log(" connection ?")
+
                             except Exception as e:
-                                self.log(f"鍋滄寮曟搸/浜ゆ槗鍣╢ailed: {e}")
+
+                                self.log(f" ? / failed: {e}")
+
                         
+
                         try:
+
                             self.loop_manager.submit_coroutine_nowait(_cleanup_all())
-                            self.log("娓呯悊浠诲姟鎻愪氦toafter")
+
+                            self.log(" toafter")
+
                         except Exception:
+
                             pass
+
                     
+
                     # Clean up event loop
+
                     if self.loop and not self.loop.is_closed():
+
                         try:
+
                             if self.loop.is_running():
+
                                 self.loop.call_soon_threadsafe(self.loop.stop)
+
                             
+
                             # Wait for loop to stop
+
                             import time
+
                             for _ in range(10):  # Wait up to 1 second
+
                                 time.sleep(0.1)
+
                                 if not self.loop.is_running():
+
                                     break
+
                             
+
                             # Force close if needed
+
                             if not self.loop.is_closed():
+
                                 self.loop.close()
+
                                 
+
                         except Exception as e:
-                            self.log(f"浜嬩欢寰幆娓呯悊failed: {e}")
+
+                            self.log(f" ? failed: {e}")
+
                     
+
                     # Wait for thread to finish
+
                     if hasattr(self, '_loop_thread') and self._loop_thread and self._loop_thread.is_alive():
+
                         try:
+
                             self._loop_thread.join(timeout=1.0)
+
                         except Exception:
+
                             pass
+
                     
+
                     # Close database connection
+
                     if hasattr(self, 'db'):
+
                         try:
+
                             self.db.close()
+
                         except Exception:
+
                             pass
+
                     
-                    # 鍋滄璧勬簮鐩戞?
+
+                    #  ? ??
+
                     try:
+
                         self.resource_monitor.stop_monitoring()
-                        self.log("璧勬簮鐩戞帶鍋滄")
+
+                        self.log(" ?")
+
                     except Exception as e:
-                        self.log(f"鍋滄璧勬簮鐩戞帶failed: {e}")
+
+                        self.log(f" ? failed: {e}")
+
                     
-                    # 鍋滄浜嬩欢寰幆绠悊?
+
+                    #  ? ? ??
+
                     try:
+
                         self.loop_manager.stop()
-                        self.log("浜嬩欢寰幆绠悊鍣ㄥ仠")
+
+                        self.log(" ? ? ")
+
                     except Exception as e:
-                        self.log(f"鍋滄浜嬩欢寰幆绠悊鍣╢ailed: {e}")
+
+                        self.log(f" ? ? ? failed: {e}")
+
                     
-                    # 鍋滄浜嬩欢鎬荤?
+
+                    #  ? ??
+
                     try:
+
                         from autotrader.unified_event_manager import shutdown_event_bus
+
                         shutdown_event_bus()
-                        self.log("浜嬩欢鎬荤嚎鍋滄")
+
+                        self.log(" ?")
+
                     except Exception as e:
-                        self.log(f"鍋滄浜嬩欢鎬荤嚎failed: {e}")
+
+                        self.log(f" ? failed: {e}")
+
                     
-                    # 淇濆瓨閰嶇疆鍙樻洿to鏂囦欢锛堟寔涔呭寲锛?
+
+                    #  to ??
+
                     try:
+
                         if hasattr(self, 'config_manager'):
+
                             self.config_manager.persist_runtime_changes()
-                            self.log("閰嶇疆鑷姩淇濆")
+
+                            self.log(" ? ?")
+
                     except Exception as e:
-                        self.log(f"鑷姩淇濆瓨閰嶇疆failed: {e}")
+
+                        self.log(f" ? failed: {e}")
+
                     
+
                     # Reset references
+
                     self.trader = None
+
                     self.loop = None
+
                     self._loop_thread = None
+
                     
+
                     # Destroy the GUI
+
                     self.destroy()
+
                     
+
                 except Exception as e:
-                    print(f"寮哄埗娓呯悊鍑洪 {e}")
+
+                    print(f" ? {e}")
+
                     self.destroy()  # Force close regardless
+
             
+
             # Schedule cleanup and destruction
+
             self.after(500, force_cleanup)  # Reduced delay for faster shutdown
+
             
+
         except Exception as e:
-            print(f"绋嬪簭鍏抽棴鍑洪 {e}")
+
+            print(f" ? {e}")
+
             self.destroy()  # Force close on error
 
+
+
     def _run_bma_model(self) -> None:
-        """杩愯BMA Enhanced妯- 鏀寔鑷畾涔夎偂绁ㄨ緭鍏ュ拰浠庢枃浠跺姞杞借缁冩暟鎹"""
+
+        """ ?BMA Enhanced?-  k? U? ? ?"""
+
         try:
-            # 寮瑰嚭鑲エ閫夋嫨瀵硅瘽妗?
+
+            #  ? ??
+
             selection_result = self._show_stock_selection_dialog()
-            if selection_result is None:  # 鐢ㄦ埛鍙栨秷
+
+            if selection_result is None:  #  
+
                 return
+
             
-            # 馃敟 涓撲笟绾ф灦鏋勶細瑙ｆ瀽閫夋嫨缁撴?
+
+            # ??  ??
+
             selected_tickers = selection_result.get('tickers') or []
+
             training_data_path = selection_result.get('training_data_path')
 
+
+
             normalized_tickers = self._normalize_ticker_list(selected_tickers) if selected_tickers else []
+
             auto_training_spec = None
 
-            if not training_data_path:
-                if not normalized_tickers:
-                    normalized_tickers = self._normalize_ticker_list(DEFAULT_AUTO_TRAIN_TICKERS)
-                auto_training_spec = {
-                    'tickers': normalized_tickers,
-                    'years': AUTO_TRAIN_LOOKBACK_YEARS,
-                    'horizon': AUTO_TRAIN_HORIZON_DAYS
-                }
-                self.log(f"[BMA] 鎻愬崌锛氳嚜鍔ㄦ嬁鍒{AUTO_TRAIN_LOOKBACK_YEARS} 骞村簭鏁版嵁锛屽璞¤偂绁ㄦ暟: {len(normalized_tickers)}")
 
-            # 鑷姩纭畾棰勬祴绐楀彛锛堜粖?-> T+5?            prediction_window = self._compute_prediction_window()
+
+            if not training_data_path:
+
+                if not normalized_tickers:
+
+                    normalized_tickers = self._normalize_ticker_list(DEFAULT_AUTO_TRAIN_TICKERS)
+
+                auto_training_spec = {
+
+                    'tickers': normalized_tickers,
+
+                    'years': AUTO_TRAIN_LOOKBACK_YEARS,
+
+                    'horizon': AUTO_TRAIN_HORIZON_DAYS
+
+                }
+
+                self.log(f"[BMA]  ?{AUTO_TRAIN_LOOKBACK_YEARS}  ? : {len(normalized_tickers)}")
+
+
+
+            #  ? ? ?-> T+5?            prediction_window = self._compute_prediction_window()
+
             start_date = prediction_window['start_date']
+
             end_date = prediction_window['end_date']
+
             target_date = prediction_window['target_date']
 
-            # 鏃ュ織杈撳嚭
-            self.log(f"[BMA] 寮濮婤MA Enhanced璁..")
-            self.log(f"[BMA] 馃攳 鑷姩妫娴嬮娴嬪熀鍑嗘 {end_date}")
-            self.log(f"[BMA] 馃敭 棰勬祴鏈潵5涓氦鏄撴棩 (鐩 T+5 鎴?{target_date})")
 
-            # 鐩存帴璋冪敤BMA Enhanced妯?
+
+            #  
+
+            self.log(f"[BMA] ? BMA Enhanced?..")
+
+            self.log(f"[BMA] ??  ?? ? ? {end_date}")
+
+            self.log(f"[BMA] ??  ?5 ?  (? T+5 ??{target_date})")
+
+
+
+            #  BMA Enhanced??
+
             import threading
+
             def _run_bma_enhanced():
+
                 try:
-                    # 灏哹ma_models鏃ュ織瀹炴椂杞彂鍒癎UI缁堢?
+
+                    #  bma_models J? GUI ??
+
                     import logging as _logging
+
                     class _TkinterLogHandler(_logging.Handler):
+
                         def __init__(self, log_cb):
+
                             super().__init__(_logging.INFO)
+
                             self._cb = log_cb
+
                         def emit(self, record):
+
                             try:
+
                                 if str(record.name).startswith('bma_models'):
+
                                     msg = self.format(record)
-                                    # 鍒囧洖UI绾跨▼杈撳嚭
+
+                                    #  UI 
+
                                     self._cb(msg)
+
                             except Exception:
+
                                 pass
+
+
 
                     _root_logger = _logging.getLogger()
-                    _tk_handler = _TkinterLogHandler(lambda m: self.after(0, lambda s=m: self.log(s)))
-                    _tk_handler.setFormatter(_logging.Formatter('%(message)s'))
-                    _root_logger.addHandler(_tk_handler)
-                    _root_logger.setLevel(_logging.INFO)
-                    try:
-                        # 鏍囪妯瀷寮濮嬭?
-                        self._model_training = True
-                        self._model_trained = False
-                        self.after(0, lambda: self.log("[BMA] 寮濮嬪垵濮嬪寲BMA Enhanced妯.."))
 
-                        # 瀵煎叆BMA Enhanced妯?
+                    _tk_handler = _TkinterLogHandler(lambda m: self.after(0, lambda s=m: self.log(s)))
+
+                    _tk_handler.setFormatter(_logging.Formatter('%(message)s'))
+
+                    _root_logger.addHandler(_tk_handler)
+
+                    _root_logger.setLevel(_logging.INFO)
+
+                    try:
+
+                        #  ? ?? ??
+
+                        self._model_training = True
+
+                        self._model_trained = False
+
+                        self.after(0, lambda: self.log("[BMA] ? BMA Enhanced?.."))
+
+
+
+                        #  BMA Enhanced??
+
                         import sys
+
                         import os
+
                         bma_path = os.path.join(os.path.dirname(__file__), '..', 'bma_models')
+
                         if bma_path not in sys.path:
+
                             sys.path.append(bma_path)
 
-                        from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
 
-                        self.after(0, lambda: self.log("[BMA] 鍒涘缓妯瀷瀹炰.."))
+
+                        from bma_models._bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+
+
+
+                        self.after(0, lambda: self.log("[BMA]  ? ?.."))
+
                         if not hasattr(self, '_bma_model_instance') or self._bma_model_instance is None:
+
                             self._bma_model_instance = UltraEnhancedQuantitativeModel()
+
                         model = self._bma_model_instance
 
-                        self.after(0, lambda: self.log("[BMA] 寮濮嬫墽琛屼笓涓氱骇璁粌/棰勬祴娴佺▼..."))
+
+
+                        self.after(0, lambda: self.log("[BMA] ? ?/ ..."))
+
+
 
                         effective_training_path = training_data_path
+
                         auto_generation_stats = None
+
                         try:
+
                             if auto_training_spec:
-                                self.after(0, lambda: self.log(f"[BMA] 浠诲姟锛氳嚜鍔ㄦ嬁鍒{len(auto_training_spec['tickers'])} 鍙偂绁?鏁版"))
+
+                                self.after(0, lambda: self.log(f"[BMA]  ?{len(auto_training_spec['tickers'])}  ??? ?"))
+
                                 auto_generation_stats = self._auto_build_multiindex_training_file(
+
                                     auto_training_spec['tickers'],
+
                                     years=auto_training_spec.get('years', AUTO_TRAIN_LOOKBACK_YEARS),
+
                                     horizon=auto_training_spec.get('horizon', AUTO_TRAIN_HORIZON_DAYS)
+
                                 )
+
                                 if not auto_generation_stats or not auto_generation_stats.get('path'):
-                                    raise RuntimeError("鑷姩鐢熸垚MultiIndex鏂囦欢澶辫触: 鏃犱笂浼犺矾")
+
+                                    raise RuntimeError(" ? MultiIndex :  ")
+
                                 effective_training_path = auto_generation_stats['path']
-                                self.after(0, lambda p=effective_training_path: self.log(f"[BMA] 馃搨 鑷姩璁惧MultiIndex鏂囦 {p}"))
+
+                                self.after(0, lambda p=effective_training_path: self.log(f"[BMA] ??  ? ?MultiIndex ? {p}"))
+
                                 if auto_generation_stats.get('predict_rows'):
-                                    self.after(0, lambda stats=auto_generation_stats: self.log(f"[BMA] 锛堝鍗紓鎻愮ず锛夈氬悗10澶╀細甯︿笂 {stats['predict_rows']} 浣嶆潯鏁版嵁锛屽彲鐢ㄤ簬棰勬"))
+
+                                    self.after(0, lambda stats=auto_generation_stats: self.log(f"[BMA]  ? t? ? 10  {stats['predict_rows']}  ?"))
+
+
 
                             if effective_training_path:
+
                                 def _fmt_path(p):
+
                                     return os.path.basename(p) if isinstance(p, str) else p
+
                                 if isinstance(effective_training_path, (list, tuple)):
-                                    self.after(0, lambda: self.log("[BMA] 馃搨 浣跨敤澶氫釜MultiIndex鏂囦欢璁粌"))
+
+                                    self.after(0, lambda: self.log("[BMA] ??  MultiIndex ?"))
+
                                 else:
-                                    self.after(0, lambda: self.log(f"[BMA] 馃搨 浣跨敤MultiIndex鏂囦欢璁粌: {_fmt_path(effective_training_path)}"))
+
+                                    self.after(0, lambda: self.log(f"[BMA] ??  MultiIndex ?: {_fmt_path(effective_training_path)}"))
+
                                 train_report = model.train_from_document(effective_training_path, top_n=50)
-                                train_msg = f"[BMA] 璁粌瀹屾 鏍锋?{train_report.get('training_sample_count', 'N/A')}锛屾潵婧? {train_report.get('training_source')}"
+
+                                train_msg = f"[BMA]  ? ?  ??{train_report.get('training_sample_count', 'N/A')} ?? {train_report.get('training_source')}"
+
                                 self.after(0, lambda msg=train_msg: self.log(msg))
+
                                 results = train_report
+
                             else:
-                                raise RuntimeError("璁粌鏁版嵁缂哄け锛屾棤娉曞惎鍔ㄨ缁冦")
+
+                                raise RuntimeError(" ? ? ?")
+
                         finally:
+
                             try:
+
                                 _root_logger.removeHandler(_tk_handler)
+
                             except Exception:
+
                                 pass
 
-                        # 璁粌瀹屾?
+
+
+                        #  ? ??
+
                         self._model_training = False
+
                         self._model_trained = True
 
-                        self.after(0, lambda: self.log("[BMA] 璁粌瀹屾"))
 
-                        # 鏄剧ず璁粌鎽樿?
+
+                        self.after(0, lambda: self.log("[BMA]  ? ?"))
+
+
+
+                        #  ? ??
+
                         if results and results.get('success', False):
+
                         
+
                             sample_count = results.get('training_sample_count', 'N/A')
+
                             tickers_in_file = results.get('tickers_in_file') or results.get('tickers') or []
-                            self.after(0, lambda: self.log(f"[BMA] 馃搳 璁粌瀹屾 {sample_count} 鏍锋湰锛岃?{len(tickers_in_file)} 鍙偂绁"))
-                            self.after(0, lambda: self.log("[BMA] 鏉冮噸宸蹭繚瀛橈紝鍙墠寰鈥淏MA棰勬祴鈥濋夐」鍗墽琛屽疄鏃堕"))
+
+                            self.after(0, lambda: self.log(f"[BMA] ??  ? ? {sample_count}  ??{len(tickers_in_file)}  ??"))
+
+                            self.after(0, lambda: self.log("[BMA]  ?? BMA ? ? ?"))
+
+
 
                             try:
+
                                 fe = results.get('feature_engineering', {})
+
                                 shape = fe.get('shape') if isinstance(fe, dict) else None
+
                                 if shape and len(shape) == 2:
-                                    self.after(0, lambda r=shape[0], c=shape[1]: self.log(f"[BMA] 璁粌鏁版嵁瑙勬ā: {r} 鏍锋?{c} 鐗瑰"))
+
+                                    self.after(0, lambda r=shape[0], c=shape[1]: self.log(f"[BMA]  ? : {r}  ??{c}  ?"))
+
+
 
                                 tr = results.get('training_results', {}) or {}
+
                                 tm = tr.get('traditional_models') or tr
+
                                 cv_scores = tm.get('cv_scores', {}) or {}
+
                                 cv_r2 = tm.get('cv_r2_scores', {}) or {}
 
-                                self.after(0, lambda: self.log("[BMA] 鈥斺绗竴灞傝缁冭鎯?鈥斺"))
+
+
+                                self.after(0, lambda: self.log("[BMA]  ? ? ? ??? ?"))
+
                                 if cv_scores:
+
                                     for mdl, ic in cv_scores.items():
+
                                         r2 = cv_r2.get(mdl, float('nan'))
+
                                         self.after(0, lambda m=mdl, icv=ic, r2v=r2: self.log(f"[BMA] {m.upper()}  CV(IC)={icv:.6f}  R{r2v:.6f}"))
+
                                 else:
-                                    self.after(0, lambda: self.log("[BMA] 绗竴灞侰V鍒嗘暟缂哄け"))
+
+                                    self.after(0, lambda: self.log("[BMA]  ? CV "))
+
+
 
                                 ridge_stacker = tr.get('ridge_stacker', None)
+
                                 trained = tr.get('stacker_trained', None)
+
                                 if trained is not None:
-                                    self.after(0, lambda st=trained: self.log(f"[BMA] Ridge堆叠训练状态: {'成功' if st else '失败'}"))
+
+                                    self.after(0, lambda st=trained: self.log(f"[BMA] Ridge????????: {'???' if st else '???'}"))
+
                                 if ridge_stacker is not None:
+
                                     try:
+
                                         info = ridge_stacker.get_model_info()
+
                                     except Exception:
+
                                         info = {}
+
                                     niter = info.get('n_iterations')
+
                                     if niter is not None:
-                                        self.after(0, lambda nf=niter: self.log(f"[BMA] Ridge 杩唬鏁 {nf}"))
+
+                                        self.after(0, lambda nf=niter: self.log(f"[BMA] Ridge  ?? {nf}"))
+
                             except Exception as e:
-                                self.after(0, lambda msg=str(e): self.log(f"[BMA] 璁粌缁嗚妭杈撳嚭澶辫触: {msg}"))
+
+                                self.after(0, lambda msg=str(e): self.log(f"[BMA]  ? : {msg}"))
+
+
 
                             if isinstance(effective_training_path, (list, tuple)):
-                                training_source_label = f"{len(effective_training_path)} 涓枃浠"
+
+                                training_source_label = f"{len(effective_training_path)}  ??"
+
                             else:
+
                                 training_source_label = os.path.basename(effective_training_path) if (effective_training_path and isinstance(effective_training_path, str)) else 'N/A'
 
-                            success_msg = (f"BMA Enhanced 璁粌瀹屾\n\n"
-                                           f"璁粌鏍锋湰: {sample_count}\n"
-                                           f"瑕嗙洊鑲エ: {len(tickers_in_file)} 鍙猏n"
-                                           f"璁粌鏁版嵁: {training_source_label}\n"
-                                           f"璇峰墠寰鈥楤MA棰勬祴鈥欓夐」鍗墽琛屽疄鏃堕娴嬨")
 
-                            self.after(0, lambda: messagebox.showinfo("BMA训练成功", success_msg))
+
+                            success_msg = (f"BMA Enhanced  ? ?\n\n"
+
+                                           f" ? : {sample_count}\n"
+
+                                           f" ?: {len(tickers_in_file)}  \n"
+
+                                           f" ? : {training_source_label}\n"
+
+                                           f" ? BMA ? ? ? ?")
+
+
+
+                            self.after(0, lambda: messagebox.showinfo("BMA??????", success_msg))
+
                         else:
-                            # 澶辫触鎯呭喌
-                            error_msg = results.get('error', '训练失败，请检查数据或网络连接') if results else '未返回结果'
+
+                            #  
+
+                            error_msg = results.get('error', '????????????????????????') if results else ' ??????'
+
                             self.after(0, lambda: self.log(f"[BMA] {error_msg}"))
-                            self.after(0, lambda: messagebox.showerror("BMA璁粌澶辫触", error_msg))
+
+                            self.after(0, lambda: messagebox.showerror("BMA ? ", error_msg))
+
                     
+
                     except ImportError as e:
+
                         self._model_training = False
+
                         self._model_trained = False
-                        error_msg = f"瀵煎叆BMA妯瀷澶辫触: {e}"
+
+                        error_msg = f" BMA ? : {e}"
+
                         self.after(0, lambda msg=error_msg: self.log(f"[BMA] {msg}"))
-                        self.after(0, lambda: messagebox.showerror("BMA错误", error_msg))
+
+                        self.after(0, lambda: messagebox.showerror("BMA????", error_msg))
+
                     
+
                     except Exception as e:
+
                         self._model_training = False
+
                         self._model_trained = False
+
                         error_msg = str(e)
-                        self.after(0, lambda msg=error_msg: self.log(f"[BMA] 错误: {msg}"))
-                        self.after(0, lambda: messagebox.showerror("BMA错误", f"训练失败: {error_msg}"))
+
+                        self.after(0, lambda msg=error_msg: self.log(f"[BMA] ????: {msg}"))
+
+                        self.after(0, lambda: messagebox.showerror("BMA????", f"??????: {error_msg}"))
+
+
 
                 except Exception as inner_e:
-                    self.log(f"[BMA] 鍐呴儴璁粌杩囩▼澶辫触: {inner_e}")
+
+                    self.log(f"[BMA]  ? : {inner_e}")
+
                     self._model_training = False
+
                     self._model_trained = False
 
-            # 鍦ㄥ悗鍙扮嚎绋嬩腑杩愯BMA Enhanced锛堜慨澶嶏細灏嗙嚎绋嬪惎鍔ㄧЩ鍑哄嚱鏁颁綋澶栭儴瀹氫箟澶勶級
+
+
+            #  ?BMA Enhanced 
+
             thread = threading.Thread(target=_run_bma_enhanced, daemon=True)
+
             thread.start()
-            self.log("[BMA] 鍚庡彴璁粌宸插惎鍔紝璇风瓑寰..")
+
+            self.log("[BMA]  ? ? ?..")
+
+
 
         except Exception as e:
+
             self.log(f"[BMA] startfailed: {e}")
-            messagebox.showerror("错误", f"启动BMA失败: {e}")
+
+            messagebox.showerror("????", f"???BMA???: {e}")
+
+
 
     def _build_backtest_tab(self, parent) -> None:
-        """鏋勫缓鍥炴祴鍒嗘瀽閫items"""
-        # 鍒涘缓涓绘鏋跺竷灞?
+
+        """ ?items"""
+
+        #  ? ??
+
         main_paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
+
         main_paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         
-        # 宸︿晶闈㈡澘 - 鑲エ閫夋嫨
+
+        #   -  ? 
+
         left_frame = ttk.Frame(main_paned)
+
         main_paned.add(left_frame, weight=1)
+
         
-        # 鑲エ鍒楄〃妗嗘灦
-        stock_frame = tk.LabelFrame(left_frame, text="鍥炴祴鑲エ鍒楄")
+
+        #  ? 
+
+        stock_frame = tk.LabelFrame(left_frame, text=" ? ?")
+
         stock_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         
-        # 鑲エ杈撳叆鍜屾坊鍔犳寜?
+
+        #  ? ?
+
         input_frame = tk.Frame(stock_frame)
+
         input_frame.pack(fill=tk.X, padx=5, pady=5)
+
         
-        tk.Label(input_frame, text="鑲エ浠ｇ爜:").pack(side=tk.LEFT)
+
+        tk.Label(input_frame, text=" ? :").pack(side=tk.LEFT)
+
         self.ent_bt_stock_input = tk.Entry(input_frame, width=10)
+
         self.ent_bt_stock_input.pack(side=tk.LEFT, padx=5)
-        tk.Button(input_frame, text="娣诲, command=self._add_backtest_stock).pack(side=tk.LEFT")
-        tk.Button(input_frame, text="浠庢暟鎹簱瀵煎, command=self._import_stocks_from_db).pack(side=tk.LEFT, padx=5")
-        tk.Button(input_frame, text="娓呯, command=self._clear_backtest_stocks).pack(side=tk.LEFT")
+
+        tk.Button(input_frame, text=" ?, command=self._add_backtest_stock).pack(side=tk.LEFT")
+
+        tk.Button(input_frame, text=" ? ?, command=self._import_stocks_from_db).pack(side=tk.LEFT, padx=5")
+
+        tk.Button(input_frame, text=" ?, command=self._clear_backtest_stocks).pack(side=tk.LEFT")
+
         
-        # 鑲エ鍒楄?
+
+        #  ? ??
+
         list_frame = tk.Frame(stock_frame)
+
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         
+
         scrollbar = tk.Scrollbar(list_frame)
+
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         
+
         self.bt_stock_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, selectmode=tk.EXTENDED)
+
         self.bt_stock_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         scrollbar.config(command=self.bt_stock_listbox.yview)
+
         
-        # 棰勮鑲エ鍒楄?
+
+        #  ? ? ??
+
         default_stocks = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'JNJ']
+
         for stock in default_stocks:
+
             self.bt_stock_listbox.insert(tk.END, stock)
+
         
-        # 鍒犻櫎閫変腑鎸夐?
-        tk.Button(stock_frame, text="鍒犻櫎閫変腑", command=self._remove_selected_stocks).pack(pady=5)
+
+        #  ??
+
+        tk.Button(stock_frame, text=" ", command=self._remove_selected_stocks).pack(pady=5)
+
         
-        # 鍙充晶闈㈡澘 - 鍥炴祴閰嶇疆
+
+        #   -  
+
         right_frame = ttk.Frame(main_paned)
+
         main_paned.add(right_frame, weight=2)
+
         
-        # 鍒涘缓婊氬姩鍖哄?
+
+        #  ??
+
         canvas = tk.Canvas(right_frame)
+
         scrollbar = ttk.Scrollbar(right_frame, orient="vertical", command=canvas.yview)
+
         scrollable_frame = ttk.Frame(canvas)
+
         
+
         scrollable_frame.bind(
+
             "<Configure>",
+
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+
         )
+
         
+
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
         canvas.configure(yscrollcommand=scrollbar.set)
+
         
-        # 鍥炴祴绫诲瀷閫夋嫨
-        backtest_type_frame = tk.LabelFrame(scrollable_frame, text="鍥炴祴绫诲")
+
+        #  
+
+        backtest_type_frame = tk.LabelFrame(scrollable_frame, text=" ?")
+
         backtest_type_frame.pack(fill=tk.X, padx=5, pady=5)
+
         
-        # 鍥炴祴绫诲瀷閫夋嫨鍙橀?
+
+        #  ??
+
         self.backtest_type = tk.StringVar(value="professional")
+
         
-        # Professional BMA 鍥炴?(鏂板?
+
+        # Professional BMA  ??( ??
+
         tk.Radiobutton(
+
             backtest_type_frame, 
-            text="涓撲笟BMA鍥炴(Walk-Forward + Monte Carlo)", 
+
+            text=" BMA ?(Walk-Forward + Monte Carlo)", 
+
             variable=self.backtest_type, 
+
             value="professional"
+
         ).pack(anchor=tk.W, padx=10, pady=2)
+
         
-        # AutoTrader BMA 鍥炴?
+
+        # AutoTrader BMA  ??
+
         tk.Radiobutton(
+
             backtest_type_frame, 
-            text="AutoTrader BMA 鍥炴", 
+
+            text="AutoTrader BMA  ?", 
+
             variable=self.backtest_type, 
+
             value="autotrader"
+
         ).pack(anchor=tk.W, padx=10, pady=2)
+
         
-        # 鍛ㄩ?BMA 鍥炴?
+
+        #  ??BMA  ??
+
         tk.Radiobutton(
+
             backtest_type_frame, 
-            text="鍛ㄩBMA 鍥炴", 
+
+            text=" ?BMA  ?", 
+
             variable=self.backtest_type, 
+
             value="weekly"
+
         ).pack(anchor=tk.W, padx=10, pady=2)
+
         
-        # 鍥炴祴鍙傛暟閰嶇?
-        config_frame = tk.LabelFrame(scrollable_frame, text="鍥炴祴鍙傛暟閰嶇")
+
+        #  ??
+
+        config_frame = tk.LabelFrame(scrollable_frame, text=" ?")
+
         config_frame.pack(fill=tk.X, padx=5, pady=5)
+
         
-        # 绗竴琛岋細鏃ユ湡鑼冨洿
+
+        #  ? 
+
         row1 = tk.Frame(config_frame)
+
         row1.pack(fill=tk.X, padx=5, pady=5)
+
         
-        tk.Label(row1, text="starting鏃ユ").pack(side=tk.LEFT)
+
+        tk.Label(row1, text="starting ?").pack(side=tk.LEFT)
+
         self.ent_bt_start_date = tk.Entry(row1, width=12)
+
         self.ent_bt_start_date.insert(0, "2022-01-01")
+
         self.ent_bt_start_date.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row1, text="缁撴潫鏃ユ湡:").pack(side=tk.LEFT)
+
+        tk.Label(row1, text=" :").pack(side=tk.LEFT)
+
         self.ent_bt_end_date = tk.Entry(row1, width=12)
+
         self.ent_bt_end_date.insert(0, "2023-12-31")
+
         self.ent_bt_end_date.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row1, text="鍒濆璧勯噾:").pack(side=tk.LEFT)
+
+        tk.Label(row1, text=" ? :").pack(side=tk.LEFT)
+
         self.ent_bt_capital = tk.Entry(row1, width=10)
+
         self.ent_bt_capital.insert(0, "100000")
+
         self.ent_bt_capital.pack(side=tk.LEFT, padx=5)
+
         
-        # 绗簩琛岋細绛栫暐鍙傛暟
+
+        #  ? 
+
         row2 = tk.Frame(config_frame)
+
         row2.pack(fill=tk.X, padx=5, pady=5)
+
         
-        tk.Label(row2, text="鏈澶ositions:").pack(side=tk.LEFT)
+
+        tk.Label(row2, text="??ositions:").pack(side=tk.LEFT)
+
         self.ent_bt_max_positions = tk.Entry(row2, width=8)
+
         self.ent_bt_max_positions.insert(0, "20")
+
         self.ent_bt_max_positions.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row2, text="璋冧粨棰戠巼:").pack(side=tk.LEFT)
+
+        tk.Label(row2, text=" :").pack(side=tk.LEFT)
+
         self.cb_bt_rebalance = ttk.Combobox(row2, values=["daily", "weekly"], width=8)
+
         self.cb_bt_rebalance.set("weekly")
+
         self.cb_bt_rebalance.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row2, text="鎵嬬画璐圭巼:").pack(side=tk.LEFT)
+
+        tk.Label(row2, text=" :").pack(side=tk.LEFT)
+
         self.ent_bt_commission = tk.Entry(row2, width=8)
+
         self.ent_bt_commission.insert(0, "0.001")
+
         self.ent_bt_commission.pack(side=tk.LEFT, padx=5)
+
         
-        # 绗笁琛岋細BMA 妯瀷鍙傛暟
+
+        #  ? BMA  ? 
+
         row3 = tk.Frame(config_frame)
+
         row3.pack(fill=tk.X, padx=5, pady=5)
+
         
-        tk.Label(row3, text="妯瀷閲嶈鍛ㄦ").pack(side=tk.LEFT)
+
+        tk.Label(row3, text=" ? ? ?").pack(side=tk.LEFT)
+
         self.ent_bt_retrain_freq = tk.Entry(row3, width=8)
+
         self.ent_bt_retrain_freq.insert(0, "4")
+
         self.ent_bt_retrain_freq.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row3, text="棰勬祴鍛ㄦ湡:").pack(side=tk.LEFT)
+
+        tk.Label(row3, text=" :").pack(side=tk.LEFT)
+
         self.ent_bt_prediction_horizon = tk.Entry(row3, width=8)
+
         self.ent_bt_prediction_horizon.insert(0, "1")
+
         self.ent_bt_prediction_horizon.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row3, text="姝㈡崯姣斾緥:").pack(side=tk.LEFT)
+
+        tk.Label(row3, text=" :").pack(side=tk.LEFT)
+
         self.ent_bt_stop_loss = tk.Entry(row3, width=8)
+
         self.ent_bt_stop_loss.insert(0, "0.08")
+
         self.ent_bt_stop_loss.pack(side=tk.LEFT, padx=5)
+
         
-        # 绗洓琛岋細椋庨櫓鎺у埗鍙傛暟
+
+        #  ? 
+
         row4 = tk.Frame(config_frame)
+
         row4.pack(fill=tk.X, padx=5, pady=5)
+
         
-        tk.Label(row4, text="鏈澶т粨浣嶆潈閲").pack(side=tk.LEFT)
+
+        tk.Label(row4, text="? ?").pack(side=tk.LEFT)
+
         self.ent_bt_max_weight = tk.Entry(row4, width=8)
+
         self.ent_bt_max_weight.insert(0, "0.15")
+
         self.ent_bt_max_weight.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row4, text="姝㈢泩姣斾緥:").pack(side=tk.LEFT)
+
+        tk.Label(row4, text=" :").pack(side=tk.LEFT)
+
         self.ent_bt_take_profit = tk.Entry(row4, width=8)
+
         self.ent_bt_take_profit.insert(0, "0.20")
+
         self.ent_bt_take_profit.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row4, text="婊戠偣鐜").pack(side=tk.LEFT)
+
+        tk.Label(row4, text=" ?").pack(side=tk.LEFT)
+
         self.ent_bt_slippage = tk.Entry(row4, width=8)
+
         self.ent_bt_slippage.insert(0, "0.002")
+
         self.ent_bt_slippage.pack(side=tk.LEFT, padx=5)
+
         
-        # 杈撳嚭settings
-        output_frame = tk.LabelFrame(scrollable_frame, text="杈撳嚭settings")
+
+        #  settings
+
+        output_frame = tk.LabelFrame(scrollable_frame, text=" settings")
+
         output_frame.pack(fill=tk.X, padx=5, pady=5)
+
         
+
         row5 = tk.Frame(output_frame)
+
         row5.pack(fill=tk.X, padx=5, pady=5)
+
         
-        tk.Label(row5, text="杈撳嚭鐩綍:").pack(side=tk.LEFT)
+
+        tk.Label(row5, text=" `?:").pack(side=tk.LEFT)
+
         self.ent_bt_output_dir = tk.Entry(row5, width=30)
+
         self.ent_bt_output_dir.insert(0, "./backtest_results")
+
         self.ent_bt_output_dir.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Button(row5, text="娴忚, command=self._browse_backtest_output_dir).pack(side=tk.LEFT, padx=5")
+
+        tk.Button(row5, text=" ?, command=self._browse_backtest_output_dir).pack(side=tk.LEFT, padx=5")
+
         
+
         # ?items
+
         options_frame = tk.Frame(output_frame)
+
         options_frame.pack(fill=tk.X, padx=5, pady=5)
+
         
+
         self.var_bt_export_excel = tk.BooleanVar(value=True)
-        tk.Checkbutton(options_frame, text="瀵煎嚭Excel鎶ュ, variable=self.var_bt_export_excel).pack(side=tk.LEFT, padx=10")
+
+        tk.Checkbutton(options_frame, text=" Excel ?, variable=self.var_bt_export_excel).pack(side=tk.LEFT, padx=10")
+
         
+
         self.var_bt_show_plots = tk.BooleanVar(value=True)
-        tk.Checkbutton(options_frame, text="鏄剧ず鍥捐, variable=self.var_bt_show_plots).pack(side=tk.LEFT, padx=10")
+
+        tk.Checkbutton(options_frame, text=" ?, variable=self.var_bt_show_plots).pack(side=tk.LEFT, padx=10")
+
         
-        # 鎿嶄綔鎸夐挳
-        action_frame = tk.LabelFrame(scrollable_frame, text="鎿嶄")
+
+        #  
+
+        action_frame = tk.LabelFrame(scrollable_frame, text=" ?")
+
         action_frame.pack(fill=tk.X, padx=5, pady=5)
+
         
+
         button_frame = tk.Frame(action_frame)
+
         button_frame.pack(pady=10)
+
         
-        # 杩愯鍗曚釜鍥炴?
+
+        #  ? ??
+
         tk.Button(
+
             button_frame, 
-            text="杩愯鍥炴祴", 
+
+            text=" ? ", 
+
             command=self._run_single_backtest,
+
             bg="lightgreen", 
+
             font=("Arial", 10, "bold"),
+
             width=15
+
         ).pack(side=tk.LEFT, padx=10)
+
         
-        # 杩愯绛栫暐for?
+
+        #  ? for?
+
         tk.Button(
+
             button_frame, 
-            text="绛栫暐for", 
+
+            text=" for", 
+
             command=self._run_strategy_comparison,
+
             bg="lightblue", 
+
             font=("Arial", 10, "bold"),
+
             width=15
+
         ).pack(side=tk.LEFT, padx=10)
+
         
-        # 蹇熷洖娴嬶紙棰勮鍙傛暟?
+
+        #  ? ?
+
         tk.Button(
+
             button_frame,
-            text="蹇熷洖娴",
+
+            text=" ?",
+
             command=self._run_quick_backtest,
+
             bg="orange",
+
             font=("Arial", 10, "bold"),
+
             width=15
+
         ).pack(side=tk.LEFT, padx=10)
 
-        # 缁煎悎妯瀷鍥炴祴：调用 scripts/comprehensive_model_backtest.py
+
+
+        #  ? ?????? scripts/comprehensive_model_backtest.py
+
         tk.Button(
+
             button_frame,
-            text="缁煎悎妯瀷鍥炴祴",
+
+            text=" ? ",
+
             command=self._run_comprehensive_backtest,
+
             bg="#6fa8dc",
+
             font=("Arial", 10, "bold"),
+
             width=16
+
         ).pack(side=tk.LEFT, padx=10)
 
-        # 鍥炴祴鐘舵佹樉绀?
-        status_frame = tk.LabelFrame(scrollable_frame, text="鍥炴祴鐘舵")
+
+
+        #  ? ??
+
+        status_frame = tk.LabelFrame(scrollable_frame, text=" ?")
+
         status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         
-        # 閰嶇疆canvas婊氬姩鍖哄煙
+
+        #  canvas 
+
         canvas.pack(side="left", fill="both", expand=True)
+
         scrollbar.pack(side="right", fill="y")
+
         
-        # 杩涘?records
+
+        #  ??records
+
         self.bt_progress = ttk.Progressbar(status_frame, mode='indeterminate')
+
         self.bt_progress.pack(fill=tk.X, padx=5, pady=5)
+
         
-        # 鐘舵佹枃鏈?
+
+        #  ? ??
+
         self.bt_status_text = tk.Text(status_frame, height=8, wrap=tk.WORD)
+
         bt_scrollbar = tk.Scrollbar(status_frame, orient=tk.VERTICAL, command=self.bt_status_text.yview)
+
         self.bt_status_text.configure(yscrollcommand=bt_scrollbar.set)
+
         self.bt_status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         bt_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+
+
     def _build_prediction_tab(self, parent):
+
         frame = tk.Frame(parent)
+
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        input_frame = tk.LabelFrame(frame, text="棰勬祴閰嶇疆")
+
+
+        input_frame = tk.LabelFrame(frame, text=" ")
+
         input_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Label(input_frame, text="鑲エ鍒楄(閫楀彿鍒嗛殧)").pack(anchor=tk.W, padx=5, pady=2)
+
+
+        tk.Label(input_frame, text=" ? ?( )").pack(anchor=tk.W, padx=5, pady=2)
+
         self.pred_ticker_entry = tk.Text(input_frame, height=4)
+
         self.pred_ticker_entry.insert(tk.END, 'AAPL,MSFT,GOOGL,AMZN,TSLA,NVDA')
+
         self.pred_ticker_entry.pack(fill=tk.X, padx=5, pady=2)
 
+
+
         pool_frame = tk.Frame(input_frame)
+
         pool_frame.pack(fill=tk.X, padx=5, pady=2)
-        self.pred_pool_info_var = tk.StringVar(value="鏈夋嫨鑲エ")
+
+        self.pred_pool_info_var = tk.StringVar(value=" ?")
+
         tk.Label(pool_frame, textvariable=self.pred_pool_info_var, fg='blue').pack(side=tk.LEFT)
-        tk.Button(pool_frame, text="浠庤偂绁ㄦ睜瀵煎, command=self._select_prediction_pool",
+
+        tk.Button(pool_frame, text=" ?, command=self._select_prediction_pool",
+
                  bg="#1976D2", fg="white", font=("Arial", 9)).pack(side=tk.RIGHT, padx=5)
 
+
+
         row = tk.Frame(input_frame)
+
         row.pack(fill=tk.X, padx=5, pady=2)
-        tk.Label(row, text="寮濮嬫棩鏈").pack(side=tk.LEFT)
+
+        tk.Label(row, text="? ?").pack(side=tk.LEFT)
+
         self.ent_pred_start_date = tk.Entry(row, width=12)
+
         self.ent_pred_start_date.insert(0, (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d'))
+
         self.ent_pred_start_date.pack(side=tk.LEFT, padx=5)
 
-        tk.Label(row, text="缁撴潫鏃ユ湡:").pack(side=tk.LEFT)
+
+
+        tk.Label(row, text=" :").pack(side=tk.LEFT)
+
         self.ent_pred_end_date = tk.Entry(row, width=12)
+
         self.ent_pred_end_date.insert(0, datetime.now().strftime('%Y-%m-%d'))
+
         self.ent_pred_end_date.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(row, text="Top N:").pack(side=tk.LEFT)
+
         self.ent_pred_topn = tk.Entry(row, width=6)
+
         self.ent_pred_topn.insert(0, "20")
+
         self.ent_pred_topn.pack(side=tk.LEFT, padx=5)
 
+
+
         action_row = tk.Frame(input_frame)
+
         action_row.pack(fill=tk.X, padx=5, pady=5)
+
         tk.Button(
+
             action_row,
-            text="鎵ц蹇熼娴",
+
+            text=" ? ??",
+
             command=self._run_prediction_only,
+
             bg="#ff69b4",
+
             font=("Arial", 10, "bold"),
+
             width=18
+
         ).pack(side=tk.LEFT, padx=5)
 
-        status_frame = tk.LabelFrame(frame, text="棰勬祴鐘舵")
+
+
+        status_frame = tk.LabelFrame(frame, text=" ?")
+
         status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+
+
         self.pred_progress = ttk.Progressbar(status_frame, mode='indeterminate')
+
         self.pred_progress.pack(fill=tk.X, padx=5, pady=5)
 
+
+
         self.pred_status_text = tk.Text(status_frame, height=8, wrap=tk.WORD)
+
         pred_scroll = tk.Scrollbar(status_frame, orient=tk.VERTICAL, command=self.pred_status_text.yview)
+
         self.pred_status_text.configure(yscrollcommand=pred_scroll.set)
+
         self.pred_status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         pred_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
+
+
     def _update_prediction_status(self, message: str) -> None:
+
         try:
+
             print(message)
+
         except Exception:
+
             pass
+
         if hasattr(self, 'pred_status_text'):
+
             self.pred_status_text.insert(tk.END, message + "\n")
+
             self.pred_status_text.see(tk.END)
 
+
+
     def _select_prediction_pool(self):
+
         try:
+
             from autotrader.stock_pool_selector import select_stock_pool
+
         except Exception as e:
-            messagebox.showerror("错误", f"导入股票池选择器失败: {e}")
+
+            messagebox.showerror("????", f"????????????????: {e}")
+
             return
 
+
+
         pool_result = select_stock_pool(self)
+
         if pool_result and pool_result.get('tickers'):
+
             tickers = pool_result['tickers']
+
             self.pred_selected_pool = tickers
-            info = f"宸查夋嫨鑲エ {pool_result.get('pool_name','N/A')} ({len(tickers)}"
+
+            info = f" ? ? {pool_result.get('pool_name','N/A')} ({len(tickers)}"
+
             self.pred_pool_info_var.set(info)
-            # 灏嗚偂绁ㄥ啓鍏ヨ緭鍏ユ
+
+            #  ?
+
             self.pred_ticker_entry.delete('1.0', tk.END)
+
             self.pred_ticker_entry.insert(tk.END, ','.join(tickers))
+
         else:
-            messagebox.showinfo("提示", "请选择有效的股票池")
+
+            messagebox.showinfo("???", "??????? ??????")
+
+
 
     def _browse_backtest_output_dir(self):
-        """娴忚鍥炴祴杈撳嚭鐩綍"""
-        directory = filedialog.askdirectory(title="閫夋嫨鍥炴祴缁撴灉杈撳嚭鐩")
+
+        """ ? `?"""
+
+        directory = filedialog.askdirectory(title=" ?")
+
         if directory:
+
             self.ent_bt_output_dir.delete(0, tk.END)
+
             self.ent_bt_output_dir.insert(0, directory)
 
+
+
     def _build_kronos_tab(self, parent) -> None:
-        """鏋勫缓Kronos K绾块娴嬮夐」鍗"""
+
+        """ Kronos K ? ? ?"""
+
         try:
-            # 瀵煎叆Kronos UI缁勪?
+
+            #  Kronos UI ??
+
             import sys
+
             import os
+
             parent_dir = os.path.dirname(os.path.dirname(__file__))
+
             if parent_dir not in sys.path:
+
                 sys.path.insert(0, parent_dir)
+
+
 
             from kronos.kronos_tkinter_ui import KronosPredictorUI
 
-            # 鍒涘缓Kronos棰勬祴鍣║I
+
+
+            #  Kronos UI
+
             self.kronos_predictor = KronosPredictorUI(parent, log_callback=self.log)
 
-            self.log("Kronos K绾块娴嬫ā鍨嬪凡鍔犺")
+
+
+            self.log("Kronos K ? ?")
+
+
 
         except Exception as e:
-            self.log(f"Kronos妯潡鍔犺浇澶辫触: {str(e)}")
-            # 鏄剧ず閿欒娑堟?
+
+            self.log(f"Kronos ? : {str(e)}")
+
+            #  ? ??
+
             error_frame = ttk.Frame(parent)
+
             error_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+
+
             ttk.Label(
+
                 error_frame,
-                text="Kronos K绾块娴嬫ā鍨嬪姞杞藉け璐",
+
+                text="Kronos K ? ?",
+
                 font=('Arial', 12, 'bold')
+
             ).pack(pady=20)
 
-            ttk.Label(
-                error_frame,
-                text=f"閿欒 {str(e)}",
-                foreground="red"
-            ).pack(pady=10)
+
 
             ttk.Label(
+
                 error_frame,
-                text="璇风'淇濆凡瀹夎鎵闇渚濊禆:\npip install transformers torch accelerate",
-                font=('Arial', 10)
+
+                text=f" ? {str(e)}",
+
+                foreground="red"
+
             ).pack(pady=10)
+
+
+
+            ttk.Label(
+
+                error_frame,
+
+                text=" ?' ??? :\npip install transformers torch accelerate",
+
+                font=('Arial', 10)
+
+            ).pack(pady=10)
+
+
 
     def _build_temporal_stacking_tab(self, parent) -> None:
+
         """Build Temporal Stacking LambdaRank tab - Advanced meta-learner with signal trajectory"""
+
         frame = tk.Frame(parent)
+
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+
+
         # Header with description
+
         header_frame = tk.LabelFrame(frame, text="Temporal Stacking LambdaRank")
+
         header_frame.pack(fill=tk.X, padx=5, pady=5)
 
+
+
         desc_text = (
+
             "Advanced meta-learner that uses T-1, T-2, T-3 prediction lags to capture:\n"
-            "• Signal Momentum: Is conviction increasing?\n"
-            "• Signal Stability: Is the model confused?\n"
-            "• Rank Acceleration: Are top picks rising or falling?"
+
+            "? Signal Momentum: Is conviction increasing?\n"
+
+            "? Signal Stability: Is the model confused?\n"
+
+            "? Rank Acceleration: Are top picks rising or falling?"
+
         )
+
         tk.Label(header_frame, text=desc_text, justify=tk.LEFT, fg="blue").pack(anchor=tk.W, padx=10, pady=5)
 
+
+
         # Data Configuration
+
         data_frame = tk.LabelFrame(frame, text="Data Configuration")
+
         data_frame.pack(fill=tk.X, padx=5, pady=5)
 
+
+
         row1 = tk.Frame(data_frame)
+
         row1.pack(fill=tk.X, padx=5, pady=2)
+
         tk.Label(row1, text="OOF Data File:").pack(side=tk.LEFT)
+
         self.ts_data_path = tk.Entry(row1, width=50)
-        self.ts_data_path.insert(0, "D:/trade/data/factor_exports/polygon_factors_all_filtered_clean.parquet")
+
+        self.ts_data_path.insert(0, "D:/trade/data/factor_exports/polygon_factors_all_2021_2026_T5_final.parquet")
+
         self.ts_data_path.pack(side=tk.LEFT, padx=5)
+
         tk.Button(row1, text="Browse...", command=self._browse_temporal_data).pack(side=tk.LEFT, padx=5)
 
+
+
         row2 = tk.Frame(data_frame)
+
         row2.pack(fill=tk.X, padx=5, pady=2)
+
         tk.Label(row2, text="Target Column:").pack(side=tk.LEFT)
+
         self.ts_target_col = tk.Entry(row2, width=15)
+
         self.ts_target_col.insert(0, "target")
+
         self.ts_target_col.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(row2, text="Lookback Days:").pack(side=tk.LEFT, padx=10)
+
         self.ts_lookback = ttk.Spinbox(row2, from_=1, to=5, width=5)
+
         self.ts_lookback.set(3)
+
         self.ts_lookback.pack(side=tk.LEFT, padx=5)
 
+
+
         # Model Parameters (Anti-Overfitting)
+
         params_frame = tk.LabelFrame(frame, text="Model Parameters (Anti-Overfitting Defaults)")
+
         params_frame.pack(fill=tk.X, padx=5, pady=5)
 
+
+
         param_row1 = tk.Frame(params_frame)
+
         param_row1.pack(fill=tk.X, padx=5, pady=2)
 
+
+
         tk.Label(param_row1, text="Num Leaves:").pack(side=tk.LEFT)
+
         self.ts_num_leaves = ttk.Spinbox(param_row1, from_=4, to=31, width=5)
+
         self.ts_num_leaves.set(8)
+
         self.ts_num_leaves.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(param_row1, text="Max Depth:").pack(side=tk.LEFT, padx=10)
+
         self.ts_max_depth = ttk.Spinbox(param_row1, from_=2, to=6, width=5)
+
         self.ts_max_depth.set(3)
+
         self.ts_max_depth.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(param_row1, text="Learning Rate:").pack(side=tk.LEFT, padx=10)
+
         self.ts_learning_rate = tk.Entry(param_row1, width=8)
+
         self.ts_learning_rate.insert(0, "0.005")
+
         self.ts_learning_rate.pack(side=tk.LEFT, padx=5)
 
+
+
         param_row2 = tk.Frame(params_frame)
+
         param_row2.pack(fill=tk.X, padx=5, pady=2)
 
+
+
         tk.Label(param_row2, text="Feature Fraction:").pack(side=tk.LEFT)
+
         self.ts_feature_fraction = tk.Entry(param_row2, width=8)
+
         self.ts_feature_fraction.insert(0, "0.6")
+
         self.ts_feature_fraction.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(param_row2, text="Truncation Level:").pack(side=tk.LEFT, padx=10)
+
         self.ts_truncation = ttk.Spinbox(param_row2, from_=20, to=200, width=5)
+
         self.ts_truncation.set(60)
+
         self.ts_truncation.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(param_row2, text="Label Gain Power:").pack(side=tk.LEFT, padx=10)
+
         self.ts_gain_power = tk.Entry(param_row2, width=8)
+
         self.ts_gain_power.insert(0, "2.5")
+
         self.ts_gain_power.pack(side=tk.LEFT, padx=5)
 
+
+
         param_row3 = tk.Frame(params_frame)
+
         param_row3.pack(fill=tk.X, padx=5, pady=2)
 
+
+
         tk.Label(param_row3, text="Boost Rounds:").pack(side=tk.LEFT)
+
         self.ts_boost_rounds = ttk.Spinbox(param_row3, from_=100, to=2000, width=6)
+
         self.ts_boost_rounds.set(500)
+
         self.ts_boost_rounds.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(param_row3, text="Early Stopping:").pack(side=tk.LEFT, padx=10)
+
         self.ts_early_stopping = ttk.Spinbox(param_row3, from_=20, to=200, width=5)
+
         self.ts_early_stopping.set(50)
+
         self.ts_early_stopping.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(param_row3, text="IPO Handling:").pack(side=tk.LEFT, padx=10)
+
         self.ts_ipo_handling = ttk.Combobox(param_row3, values=['backfill', 'cross_median', 'zero'], width=12)
+
         self.ts_ipo_handling.set('backfill')
+
         self.ts_ipo_handling.pack(side=tk.LEFT, padx=5)
 
+
+
         # Action Buttons
+
         action_frame = tk.Frame(frame)
+
         action_frame.pack(fill=tk.X, padx=5, pady=10)
 
+
+
         tk.Button(
+
             action_frame,
+
             text="Run Temporal Stacking Training",
+
             command=self._run_temporal_stacking_training,
+
             bg="#4CAF50",
+
             fg="white",
+
             font=("Arial", 10, "bold"),
+
             width=25
+
         ).pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Button(
+
             action_frame,
+
             text="Validate Temporal Integrity",
+
             command=self._validate_temporal_integrity,
+
             bg="#2196F3",
+
             fg="white",
+
             font=("Arial", 10),
+
             width=20
+
         ).pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Button(
+
             action_frame,
+
             text="View Inference State",
+
             command=self._view_temporal_state,
+
             bg="#FF9800",
+
             fg="white",
+
             font=("Arial", 10),
+
             width=18
+
         ).pack(side=tk.LEFT, padx=5)
+
+
 
         # Progress and Status
+
         status_frame = tk.LabelFrame(frame, text="Training Status")
+
         status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+
+
         self.ts_progress = ttk.Progressbar(status_frame, mode='indeterminate')
+
         self.ts_progress.pack(fill=tk.X, padx=5, pady=5)
 
+
+
         self.ts_status_text = tk.Text(status_frame, height=12, wrap=tk.WORD)
+
         ts_scroll = tk.Scrollbar(status_frame, orient=tk.VERTICAL, command=self.ts_status_text.yview)
+
         self.ts_status_text.configure(yscrollcommand=ts_scroll.set)
+
         self.ts_status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         ts_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
+
+
         # Initialize model reference
+
         self._temporal_stacker = None
 
+
+
     def _browse_temporal_data(self):
+
         """Browse for temporal stacking data file"""
+
         filepath = filedialog.askopenfilename(
+
             title="Select OOF Data File",
+
             filetypes=[("Parquet files", "*.parquet"), ("All files", "*.*")]
+
         )
+
         if filepath:
+
             self.ts_data_path.delete(0, tk.END)
+
             self.ts_data_path.insert(0, filepath)
 
+
+
     def _update_temporal_status(self, message: str):
+
         """Update temporal stacking status text"""
+
         try:
+
             print(message)
+
         except Exception:
+
             pass
+
         if hasattr(self, 'ts_status_text'):
+
             self.ts_status_text.insert(tk.END, message + "\n")
+
             self.ts_status_text.see(tk.END)
 
+
+
     def _run_temporal_stacking_training(self):
+
         """Run Temporal Stacking LambdaRank training"""
+
         def training_thread():
+
             try:
+
                 self.ts_progress.start()
+
                 self._update_temporal_status("Starting Temporal Stacking training...")
 
+
+
                 # Import module
+
                 try:
+
                     from bma_models.temporal_stacking import TemporalStackingLambdaRank, validate_temporal_integrity
+
                 except ImportError as e:
+
                     self._update_temporal_status(f"Failed to import temporal_stacking: {e}")
+
                     self.ts_progress.stop()
+
                     return
 
+
+
                 # Load data
+
                 data_path = self.ts_data_path.get()
+
                 self._update_temporal_status(f"Loading data from: {data_path}")
 
+
+
                 import pandas as pd
+
                 df = pd.read_parquet(data_path)
 
+
+
                 # Ensure MultiIndex
+
                 if not isinstance(df.index, pd.MultiIndex):
+
                     if 'date' in df.columns and 'ticker' in df.columns:
+
                         df = df.set_index(['date', 'ticker'])
+
                     else:
+
                         self._update_temporal_status("Error: Data must have date and ticker columns")
+
                         self.ts_progress.stop()
+
                         return
+
+
 
                 self._update_temporal_status(f"Data loaded: {len(df)} rows, {len(df.columns)} columns")
 
+
+
                 # Get parameters
+
                 config = {
+
                     'lookback_days': int(self.ts_lookback.get()),
+
                     'label_gain_power': float(self.ts_gain_power.get()),
+
                     'num_boost_round': int(self.ts_boost_rounds.get()),
+
                     'early_stopping_rounds': int(self.ts_early_stopping.get()),
+
                     'ipo_handling': self.ts_ipo_handling.get(),
+
                     'lgb_params': {
+
                         'num_leaves': int(self.ts_num_leaves.get()),
+
                         'max_depth': int(self.ts_max_depth.get()),
+
                         'learning_rate': float(self.ts_learning_rate.get()),
+
                         'feature_fraction': float(self.ts_feature_fraction.get()),
+
                         'lambdarank_truncation_level': int(self.ts_truncation.get())
+
                     }
+
                 }
+
+
 
                 self._update_temporal_status(f"Configuration: {config}")
 
+
+
                 # Create and train model
+
                 self._update_temporal_status("Initializing TemporalStackingLambdaRank...")
+
                 model = TemporalStackingLambdaRank(**config)
 
+
+
                 # Get target column
+
                 target_col = self.ts_target_col.get()
+
                 if target_col not in df.columns:
+
                     # Try common alternatives
-                    for alt in ['ret_fwd_10d', 'ret_fwd_5d', 'target']:
+
+                    for alt in ['ret_fwd_5d', 'ret_fwd_10d', 'target']:
+
                         if alt in df.columns:
+
                             target_col = alt
+
                             break
+
+
 
                 self._update_temporal_status(f"Training with target: {target_col}")
 
+
+
                 # Train
+
                 model.fit(df, target_col=target_col)
 
+
+
                 # Save reference
+
                 self._temporal_stacker = model
 
+
+
                 # Report results
+
                 info = model.get_model_info()
+
                 self._update_temporal_status("\n" + "="*50)
+
                 self._update_temporal_status("TRAINING COMPLETE")
+
                 self._update_temporal_status("="*50)
+
                 self._update_temporal_status(f"Best iteration: {info.get('best_iteration', 'N/A')}")
+
                 self._update_temporal_status(f"Number of features: {info.get('n_features', 'N/A')}")
 
+
+
                 if 'feature_importance' in info:
+
                     self._update_temporal_status("\nTop Features:")
+
                     for feat, imp in list(info['feature_importance'].items())[:10]:
+
                         self._update_temporal_status(f"  {feat}: {imp}")
+
+
 
                 self._update_temporal_status("\nModel ready for prediction!")
 
+
+
             except Exception as e:
+
                 import traceback
+
                 self._update_temporal_status(f"Training failed: {e}")
+
                 self._update_temporal_status(traceback.format_exc())
+
             finally:
+
                 self.ts_progress.stop()
 
+
+
         # Run in thread
+
         threading.Thread(target=training_thread, daemon=True).start()
 
+
+
     def _validate_temporal_integrity(self):
+
         """Validate temporal integrity of loaded data"""
+
         def validation_thread():
+
             try:
+
                 self.ts_progress.start()
+
                 self._update_temporal_status("Validating temporal integrity...")
 
+
+
                 from bma_models.temporal_stacking import validate_temporal_integrity, build_temporal_features
+
                 import pandas as pd
 
+
+
                 # Load data
+
                 data_path = self.ts_data_path.get()
+
                 df = pd.read_parquet(data_path)
 
+
+
                 if not isinstance(df.index, pd.MultiIndex):
+
                     if 'date' in df.columns and 'ticker' in df.columns:
+
                         df = df.set_index(['date', 'ticker'])
 
+
+
                 # Identify prediction columns
+
                 pred_cols = [c for c in df.columns if c.startswith('pred_')]
+
                 if not pred_cols:
+
                     pred_cols = ['pred_elastic', 'pred_xgb', 'pred_lambdarank', 'pred_catboost']
+
                     pred_cols = [c for c in pred_cols if c in df.columns]
+
+
 
                 self._update_temporal_status(f"Found prediction columns: {pred_cols}")
 
+
+
                 if not pred_cols:
+
                     self._update_temporal_status("No prediction columns found! Need to train first-layer models.")
+
                     self.ts_progress.stop()
+
                     return
 
+
+
                 # Build temporal features first
+
                 self._update_temporal_status("Building temporal features for validation...")
+
                 df_temporal = build_temporal_features(df, pred_cols, lookback=3)
 
+
+
                 # Validate
+
                 self._update_temporal_status("Running temporal integrity checks...")
+
                 result = validate_temporal_integrity(df_temporal, pred_cols)
 
+
+
                 self._update_temporal_status("\n" + "="*50)
+
                 self._update_temporal_status("VALIDATION RESULTS")
+
                 self._update_temporal_status("="*50)
+
                 self._update_temporal_status(f"Passed: {result['passed']}")
 
+
+
                 if result['checks']:
+
                     self._update_temporal_status("\nChecks:")
+
                     for check, value in result['checks'].items():
+
                         self._update_temporal_status(f"  {check}: {value}")
 
+
+
                 if result['warnings']:
+
                     self._update_temporal_status("\nWarnings:")
+
                     for warn in result['warnings']:
+
                         self._update_temporal_status(f"  - {warn}")
 
+
+
                 if result['errors']:
+
                     self._update_temporal_status("\nErrors:")
+
                     for err in result['errors']:
+
                         self._update_temporal_status(f"  - {err}")
 
+
+
             except Exception as e:
+
                 import traceback
+
                 self._update_temporal_status(f"Validation failed: {e}")
+
                 self._update_temporal_status(traceback.format_exc())
+
             finally:
+
                 self.ts_progress.stop()
+
+
 
         threading.Thread(target=validation_thread, daemon=True).start()
 
+
+
     def _view_temporal_state(self):
+
         """View inference state history"""
+
         try:
+
             from bma_models.temporal_stacking import TemporalInferenceState
 
+
+
             state_mgr = TemporalInferenceState()
+
             history = state_mgr.get_available_history()
 
+
+
             self._update_temporal_status("\n" + "="*50)
+
             self._update_temporal_status("INFERENCE STATE HISTORY")
+
             self._update_temporal_status("="*50)
+
             self._update_temporal_status(f"State directory: {state_mgr.state_dir}")
+
             self._update_temporal_status(f"Available dates: {len(history)}")
 
+
+
             if history:
+
                 self._update_temporal_status("\nRecent states:")
+
                 for date in history[-10:]:
+
                     self._update_temporal_status(f"  - {date}")
+
             else:
+
                 self._update_temporal_status("\nNo state files found. Train and save predictions to create state.")
 
+
+
         except Exception as e:
+
             self._update_temporal_status(f"Failed to view state: {e}")
 
+
+
     def _run_single_backtest(self):
-        """杩愯鍗曚釜鍥炴"""
+
+        """ ? ?"""
+
         try:
-            # retrieval鍙傛?
+
+            # retrieval ??
+
             backtest_type = self.backtest_type.get()
+
             
-            # 楠岃瘉鍙傛暟
+
+            #  
+
             start_date = self.ent_bt_start_date.get()
+
             end_date = self.ent_bt_end_date.get()
+
             
-            # 楠岃瘉鏃ユ湡鏍煎?
+
+            #  ??
+
             from datetime import datetime
+
             try:
+
                 datetime.strptime(start_date, '%Y-%m-%d')
+
                 datetime.strptime(end_date, '%Y-%m-%d')
+
             except ValueError:
-                messagebox.showerror("错误", "日期格式错误，请使用 YYYY-MM-DD 格式")
+
+                messagebox.showerror("????", "??????????????? YYYY-MM-DD ???")
+
                 return
+
             
-            # 鏄剧ず杩涘害
+
+            #  
+
             self.bt_progress.start()
-            self._update_backtest_status("starting鍥炴..")
+
+            self._update_backtest_status("starting ?..")
+
             
-            # in鏂扮嚎绋媔n杩愯鍥炴祴
+
+            # in in ? 
+
             threading.Thread(
+
                 target=self._execute_backtest_thread,
+
                 args=(backtest_type,),
+
                 daemon=True
+
             ).start()
+
             
+
         except Exception as e:
+
             self.bt_progress.stop()
-            self._update_backtest_status(f"回测启动失败: {e}")
-            messagebox.showerror("错误", f"回测启动失败: {e}")
+
+            self._update_backtest_status(f"?????????: {e}")
+
+            messagebox.showerror("????", f"?????????: {e}")
+
     
+
     def _run_strategy_comparison(self):
-        """杩愯绛栫暐for"""
+
+        """ ? for"""
+
         try:
+
             self.bt_progress.start()
-            self._update_backtest_status("starting绛栫暐for姣斿洖娴..")
+
+            self._update_backtest_status("starting for ?..")
+
             
-            # in鏂扮嚎绋媔n杩愯绛栫暐for?
+
+            # in in ? for?
+
             threading.Thread(
+
                 target=self._execute_strategy_comparison_thread,
+
                 daemon=True
+
             ).start()
+
             
+
         except Exception as e:
+
             self.bt_progress.stop()
-            self._update_backtest_status(f"策略for启动失败: {e}")
-            messagebox.showerror("错误", f"策略for启动失败: {e}")
+
+            self._update_backtest_status(f"????for??????: {e}")
+
+            messagebox.showerror("????", f"????for??????: {e}")
+
     
+
     def _run_quick_backtest(self):
-        """蹇熷洖娴嬶紙浣縰se棰勮鍙傛暟"""
+
+        """ use ? """
+
         try:
-            # settings蹇熷洖娴嬮璁惧弬鏁?            self.ent_bt_start_date.delete(0, tk.END)
+
+            # settings ? ??            self.ent_bt_start_date.delete(0, tk.END)
+
             self.ent_bt_start_date.insert(0, "2023-01-01")
 
+
+
             self.ent_bt_end_date.delete(0, tk.END)
+
             self.ent_bt_end_date.insert(0, "2023-12-31")
 
+
+
             self.ent_bt_capital.delete(0, tk.END)
+
             self.ent_bt_capital.insert(0, "50000")
 
+
+
             self.ent_bt_max_positions.delete(0, tk.END)
+
             self.ent_bt_max_positions.insert(0, "10")
 
-            # 杩愯鍥炴祴
+
+
+            #  ? 
+
             self._run_single_backtest()
 
+
+
         except Exception as e:
-            messagebox.showerror("错误", f"快速回测失败: {e}")
+
+            messagebox.showerror("????", f"?????????: {e}")
+
+
 
     def _run_comprehensive_backtest(self):
-        """璋冪敤comprehensive_model_backtest鑴氭湰锛岀粨鏋滆緭鍑哄埌GUI"""
+
+        """ comprehensive_model_backtest GUI"""
+
         if getattr(self, '_comprehensive_backtest_thread', None) and self._comprehensive_backtest_thread.is_alive():
-            self._update_backtest_status("[缁煎悎鍥炴祴] 浠诲姟浠嶅湪杩愯锛岃绋嶅..")
+
+            self._update_backtest_status("[ ]  ? ? ?..")
+
             return
+
+
 
         script_path = os.path.join(os.getcwd(), 'scripts', 'comprehensive_model_backtest.py')
+
         if not os.path.exists(script_path):
-            self._update_backtest_status(f"[缁煎悎鍥炴祴] 鎵句笉鍒拌剼 {script_path}")
+
+            self._update_backtest_status(f"[ ]   {script_path}")
+
             return
 
+
+
         def _worker():
+
             cmd = [sys.executable, script_path]
-            self.after(0, lambda: self._update_backtest_status("[缁煎悎鍥炴祴] 鍚姩鑴氭湰..."))
+
+            self.after(0, lambda: self._update_backtest_status("[ ]  ? ..."))
+
             try:
+
                 with subprocess.Popen(
+
                     cmd,
+
                     stdout=subprocess.PIPE,
+
                     stderr=subprocess.STDOUT,
+
                     text=True,
+
                     bufsize=1
+
                 ) as proc:
+
                     if proc.stdout:
+
                         for line in proc.stdout:
+
                             if not line:
+
                                 continue
+
                             msg = line.rstrip()
-                            self.after(0, lambda m=msg: self._update_backtest_status(f"[缁煎悎鍥炴祴] {m}"))
+
+                            self.after(0, lambda m=msg: self._update_backtest_status(f"[ ] {m}"))
+
                     return_code = proc.wait()
+
             except FileNotFoundError:
-                self.after(0, lambda: self._update_backtest_status("[缁煎悎鍥炴祴] Python瑙ｉ噴鍣ㄤ笉鍙"))
+
+                self.after(0, lambda: self._update_backtest_status("[ ] Python ?"))
+
                 return
+
             except Exception as exc:
-                self.after(0, lambda e=exc: self._update_backtest_status(f"[缁煎悎鍥炴祴] 杩愯澶辫触: {e}"))
+
+                self.after(0, lambda e=exc: self._update_backtest_status(f"[ ]  ? : {e}"))
+
                 return
+
+
 
             if return_code == 0:
-                self.after(0, lambda: self._update_backtest_status("[缁煎悎鍥炴祴] 瀹屾垚锛佺粨鏋滃凡杈撳嚭?result/model_backtest"))
+
+                self.after(0, lambda: self._update_backtest_status("[ ]  ?result/model_backtest"))
+
             else:
-                self.after(0, lambda code=return_code: self._update_backtest_status(f"[缁煎悎鍥炴祴] 閫鍑虹?{code}"))
+
+                self.after(0, lambda code=return_code: self._update_backtest_status(f"[ ] ? ??{code}"))
+
+
 
         self._comprehensive_backtest_thread = threading.Thread(target=_worker, daemon=True)
+
         self._comprehensive_backtest_thread.start()
 
+
+
     def _run_prediction_only(self):
+
         """
-        快速预测（仅使用已保存的模型，无需训练）
-        统一使用_direct_predict_snapshot，确保功能一致（包含Excel输出，无EMA平滑）
+
+        ???????????????????????????????
+
+        ?????_direct_predict_snapshot??????????? ?????Excel???????EMA?????
+
         """
+
         try:
+
             if getattr(self, '_prediction_thread', None) and self._prediction_thread.is_alive():
-                self._update_prediction_status("预测任务运行中，请稍候...")
+
+                self._update_prediction_status("???????????? ??????...")
+
                 return
+
+
 
             # Get tickers from UI
+
             raw_text = self.pred_ticker_entry.get("1.0", tk.END) if hasattr(self, 'pred_ticker_entry') else ''
+
             stocks = [s.strip().upper() for s in raw_text.split(',') if s.strip()]
+
             if not stocks and hasattr(self, 'pred_selected_pool'):
+
                 stocks = list(self.pred_selected_pool)
+
             if not stocks:
-                messagebox.showwarning("提示", "请先输入要测试的股票代码")
+
+                messagebox.showwarning("???", "????????????????????")
+
                 return
 
+
+
             # Store stocks in selected_pool_info for _direct_predict_snapshot to use
+
             if not hasattr(self, 'selected_pool_info'):
+
                 self.selected_pool_info = {}
+
             self.selected_pool_info['tickers'] = stocks
 
+
+
             if hasattr(self, 'pred_progress'):
+
                 self.pred_progress.start()
-            self._update_prediction_status("🚀 开始快速预测（使用快照，包含Excel输出，无EMA平滑）...")
+
+            self._update_prediction_status("?? ?????????????????????Excel???????EMA?????...")
+
+
 
             def _run_prediction_thread():
+
                 try:
+
                     # Redirect log output to prediction status
+
                     original_log = self.log
+
                     def log_to_status(msg):
+
                         self.after(0, lambda m=msg: self._update_prediction_status(m))
+
                         original_log(msg)
+
                     self.log = log_to_status
+
                     
+
                     # Call unified _direct_predict_snapshot function
-                    self.after(0, lambda: self._update_prediction_status("📡 自动获取数据并计算特征..."))
+
+                    self.after(0, lambda: self._update_prediction_status("?? ???????????????????..."))
+
                     self._direct_predict_snapshot()
+
                     
-                    self.after(0, lambda: self._update_prediction_status("✅ 预测完成！"))
-                    self.after(0, lambda: self._update_prediction_status("📊 Excel报告已生成（如果可用）"))
+
+                    self.after(0, lambda: self._update_prediction_status("? ???????"))
+
+                    self.after(0, lambda: self._update_prediction_status("?? Excel???????????????????"))
+
                     
+
                 except Exception as exc:
-                    self.after(0, lambda e=exc: self._update_prediction_status(f"预测异常: {e}"))
-                    self.after(0, lambda e=exc: messagebox.showerror("错误", f"预测异常:\n{e}"))
+
+                    self.after(0, lambda e=exc: self._update_prediction_status(f"?????: {e}"))
+
+                    self.after(0, lambda e=exc: messagebox.showerror("????", f"?????:\n{e}"))
+
                 finally:
+
                     if hasattr(self, 'pred_progress'):
+
                         self.after(0, self.pred_progress.stop)
+
                     # Restore original log
+
                     if hasattr(self, 'log'):
+
                         self.log = original_log
 
+
+
             import threading
+
             self._prediction_thread = threading.Thread(target=_run_prediction_thread, daemon=True)
+
             self._prediction_thread.start()
 
+
+
         except Exception as e:
+
             if hasattr(self, 'pred_progress'):
+
                 self.pred_progress.stop()
-            messagebox.showerror("错误", f"启动预测失败: {e}")
+
+            messagebox.showerror("????", f"?????????: {e}")
+
     
+
     def _execute_backtest_thread(self, backtest_type):
-        """in绾跨▼in鎵ц鍥炴"""
+
+        """in in ? ?"""
+
         try:
+
             if backtest_type == "professional":
+
                 self._run_professional_backtest()
+
             elif backtest_type == "autotrader":
+
                 self._run_autotrader_backtest()
+
             elif backtest_type == "weekly":
+
                 self._run_weekly_backtest()
+
                 
+
         except Exception as e:
+
             error_msg = str(e)
-            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"回测执行失败: {msg}"))
-            self.after(0, lambda msg=error_msg: messagebox.showerror("错误", f"回测执行失败: {msg}"))
+
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"?????????: {msg}"))
+
+            self.after(0, lambda msg=error_msg: messagebox.showerror("????", f"?????????: {msg}"))
+
         finally:
+
             self.after(0, lambda: self.bt_progress.stop())
+
     
+
     def _execute_strategy_comparison_thread(self):
-        """in绾跨▼in鎵ц绛栫暐for"""
+
+        """in in ? for"""
+
         try:
-            # 淇锛氫娇usebacktest_enginein鍥炴祴鍔熻兘锛坮un_backtest鍚堝苟tobacktest_engine?
+
+            # ? usebacktest_enginein run_backtest tobacktest_engine?
+
             from autotrader.backtest_engine import run_preset_backtests
+
             
-            self.after(0, lambda: self._update_backtest_status("starting鎵ц绛栫暐for.."))
+
+            self.after(0, lambda: self._update_backtest_status("starting ? for.."))
+
             
-            # 杩愯棰勮绛栫暐for?
+
+            #  ? ? for?
+
             run_preset_backtests()
+
             
-            self.after(0, lambda: self._update_backtest_status("绛栫暐for姣攃ompleted锛佺粨鏋滀繚瀛榯o ./strategy_comparison.csv"))
-            self.after(0, lambda: messagebox.showinfo("completed", "绛栫暐for姣斿洖娴媍ompleted锛乗n缁撴灉淇濆瓨to褰揵efore鐩"))
+
+            self.after(0, lambda: self._update_backtest_status(" for completed to ./strategy_comparison.csv"))
+
+            self.after(0, lambda: messagebox.showinfo("completed", " for completed \n to before?"))
+
             
+
         except Exception as e:
+
             error_msg = str(e)
+
             self.after(0, lambda msg=error_msg: self._update_backtest_status(msg))
-            self.after(0, lambda msg=error_msg: messagebox.showerror("错误", f"策略for失败: {msg}"))
+
+            self.after(0, lambda msg=error_msg: messagebox.showerror("????", f"????for???: {msg}"))
+
         finally:
+
             self.after(0, lambda: self.bt_progress.stop())
+
     
+
     def _run_autotrader_backtest(self):
-        """杩愯AutoTrader BMA 鍥炴"""
+
+        """ ?AutoTrader BMA  ?"""
+
         try:
+
             from autotrader.backtest_engine import AutoTraderBacktestEngine, BacktestConfig
+
             from autotrader.backtest_analyzer import analyze_backtest_results
+
             
-            self.after(0, lambda: self._update_backtest_status("鍒涘AutoTrader 鍥炴祴閰嶇疆..."))
+
+            self.after(0, lambda: self._update_backtest_status(" ?AutoTrader  ..."))
+
             
-            # 鏋勫缓閰嶇疆
+
+            #  
+
             config = BacktestConfig(
+
                 start_date=self.ent_bt_start_date.get(),
+
                 end_date=self.ent_bt_end_date.get(),
+
                 initial_capital=float(self.ent_bt_capital.get()),
+
                 rebalance_freq=self.cb_bt_rebalance.get(),
+
                 max_positions=int(self.ent_bt_max_positions.get()),
+
                 commission_rate=float(self.ent_bt_commission.get()),
+
                 slippage_rate=float(self.ent_bt_slippage.get()),
+
                 use_bma_model=True,
+
                 model_retrain_freq=int(self.ent_bt_retrain_freq.get()),
+
                 prediction_horizon=int(self.ent_bt_prediction_horizon.get()),
+
                 max_position_weight=float(self.ent_bt_max_weight.get()),
+
                 stop_loss_pct=float(self.ent_bt_stop_loss.get()),
+
                 take_profit_pct=float(self.ent_bt_take_profit.get())
+
             )
+
             
-            self.after(0, lambda: self._update_backtest_status("鍒濆鍖栧洖娴嬪紩鎿.."))
+
+            self.after(0, lambda: self._update_backtest_status(" ? ?.."))
+
             
-            # 鍒涘缓鍥炴祴寮曟?
+
+            #  ??
+
             engine = AutoTraderBacktestEngine(config)
+
             
-            self.after(0, lambda: self._update_backtest_status("鎵ц鍥炴.."))
+
+            self.after(0, lambda: self._update_backtest_status(" ? ?.."))
+
             
-            # 杩愯鍥炴祴
-                                # 鍥炴祴鍔熻兘鏁村悎tobacktest_engine.py
+
+            #  ? 
+
+                                #  tobacktest_engine.py
+
             from .backtest_engine import run_backtest_with_config
+
             results = run_backtest_with_config(config)
+
             
+
             if results:
-                self.after(0, lambda: self._update_backtest_status("鐢熸垚鍒嗘瀽鎶ュ憡..."))
+
+                self.after(0, lambda: self._update_backtest_status(" ..."))
+
                 
-                # 鐢熸垚鍒嗘瀽鎶ュ憡
+
+                #  
+
                 output_dir = self.ent_bt_output_dir.get()
+
                 if not os.path.exists(output_dir):
+
                     os.makedirs(output_dir)
+
                 
+
                 analyzer = analyze_backtest_results(results, output_dir)
+
                 
-                # 鏄剧ず缁撴灉summary
+
+                #  summary
+
                 summary = f"""
-AutoTrader BMA 鍥炴祴completed?
 
-鍥炴祴鏈熼棿: {results['period']['start_date']} -> {results['period']['end_date']}
-鎬绘敹鐩婄巼: {results['returns']['total_return']:.2%}
-骞村寲鏀剁泭? {results['returns']['annual_return']:.2%}
-澶忔櫘姣旂巼: {results['returns']['sharpe_ratio']:.3f}
-鏈澶у洖? {results['returns']['max_drawdown']:.2%}
-鑳滅? {results['returns']['win_rate']:.2%}
-浜ゆ槗娆暟: {results['trading']['total_trades']}
-鏈缁堣祫浜? ${results['portfolio']['final_value']:,.2f}
+AutoTrader BMA  completed?
 
-鎶ュ憡淇濆瓨to: {output_dir}
+
+
+ : {results['period']['start_date']} -> {results['period']['end_date']}
+
+ : {results['returns']['total_return']:.2%}
+
+ ? {results['returns']['annual_return']:.2%}
+
+ : {results['returns']['sharpe_ratio']:.3f}
+
+? ? {results['returns']['max_drawdown']:.2%}
+
+ ?? {results['returns']['win_rate']:.2%}
+
+ ?: {results['trading']['total_trades']}
+
+? ?? ${results['portfolio']['final_value']:,.2f}
+
+
+
+ to: {output_dir}
+
                 """
+
                 
+
                 self.after(0, lambda: self._update_backtest_status(summary))
-                self.after(0, lambda s=summary: messagebox.showinfo("鍥炴祴completed", f"AutoTrader BMA 鍥炴祴completed锛乗n\n{s}"))
+
+                self.after(0, lambda s=summary: messagebox.showinfo(" completed", f"AutoTrader BMA  completed \n\n{s}"))
+
                 
+
             else:
-                self.after(0, lambda: self._update_backtest_status("鍥炴祴failed锛歯o缁撴灉鏁版嵁"))
+
+                self.after(0, lambda: self._update_backtest_status(" failed no "))
+
                 
+
         except ImportError as e:
+
             error_msg = str(e)
-            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"瀵煎叆鍥炴祴妯潡failed: {msg}"))
+
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f" ?failed: {msg}"))
+
         except Exception as e:
+
             error_msg = str(e)
-            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"AutoTrader 鍥炴祴failed: {msg}"))
+
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"AutoTrader  failed: {msg}"))
+
             import traceback
+
             traceback.print_exc()
+
     
+
     def _run_weekly_backtest(self):
-        """杩愯鍛ㄩ BMA 鍥炴祴锛堝唴缃紩鎿庯紝no澶栭儴鑴氭湰渚濊禆锛"""
+
+        """ ? ? BMA  X? no ?"""
+
         try:
+
             from autotrader.backtest_engine import BacktestConfig, run_backtest_with_config
+
             from autotrader.backtest_analyzer import analyze_backtest_results
 
-            self.after(0, lambda: self._update_backtest_status("鍒涘缓鍛ㄩ鍥炴祴閰嶇疆..."))
 
-            # 浣縰seandAutoTrader鐩稿悓寮曟搸锛宻ettings鍛ㄩ璋冧粨
+
+            self.after(0, lambda: self._update_backtest_status(" ? ..."))
+
+
+
+            #  useandAutoTrader settings ? 
+
             config = BacktestConfig(
+
                 start_date=self.ent_bt_start_date.get(),
+
                 end_date=self.ent_bt_end_date.get(),
+
                 initial_capital=float(self.ent_bt_capital.get()),
+
                 rebalance_freq="weekly",
+
                 max_positions=int(self.ent_bt_max_positions.get()),
+
                 commission_rate=float(self.ent_bt_commission.get()),
+
                 slippage_rate=float(self.ent_bt_slippage.get()),
+
                 use_bma_model=True,
+
                 model_retrain_freq=int(self.ent_bt_retrain_freq.get()),
+
                 prediction_horizon=int(self.ent_bt_prediction_horizon.get()),
+
                 max_position_weight=float(self.ent_bt_max_weight.get()),
+
                 stop_loss_pct=float(self.ent_bt_stop_loss.get()),
+
                 take_profit_pct=float(self.ent_bt_take_profit.get())
+
             )
 
-            self.after(0, lambda: self._update_backtest_status("鎵ц鍛ㄩ鍥炴祴..."))
+
+
+            self.after(0, lambda: self._update_backtest_status(" ? ? ..."))
+
+
 
             results = run_backtest_with_config(config)
 
+
+
             if results:
-                # 鐢熸垚鍒嗘瀽鎶ュ憡
+
+                #  
+
                 output_dir = self.ent_bt_output_dir.get()
+
                 if not os.path.exists(output_dir):
+
                     os.makedirs(output_dir)
+
+
 
                 analyze_backtest_results(results, output_dir)
 
+
+
                 summary = f"""
-鍛ㄩ?BMA 鍥炴祴completed?
 
-鍥炴祴鏈熼棿: {results['period']['start_date']} -> {results['period']['end_date']}
-鎬绘敹鐩婄巼: {results['returns']['total_return']:.2%}
-骞村寲鏀剁泭? {results['returns']['annual_return']:.2%}
-澶忔櫘姣旂巼: {results['returns']['sharpe_ratio']:.3f}
-鏈澶у洖? {results['returns']['max_drawdown']:.2%}
-鑳滅? {results['returns']['win_rate']:.2%}
-浜ゆ槗娆暟: {results['trading']['total_trades']}
-鏈缁堣祫浜? ${results['portfolio']['final_value']:,.2f}
+ ??BMA  completed?
 
-鎶ュ憡淇濆瓨to: {output_dir}
+
+
+ : {results['period']['start_date']} -> {results['period']['end_date']}
+
+ : {results['returns']['total_return']:.2%}
+
+ ? {results['returns']['annual_return']:.2%}
+
+ : {results['returns']['sharpe_ratio']:.3f}
+
+? ? {results['returns']['max_drawdown']:.2%}
+
+ ?? {results['returns']['win_rate']:.2%}
+
+ ?: {results['trading']['total_trades']}
+
+? ?? ${results['portfolio']['final_value']:,.2f}
+
+
+
+ to: {output_dir}
+
                 """
 
+
+
                 self.after(0, lambda: self._update_backtest_status(summary))
-                self.after(0, lambda s=summary: messagebox.showinfo("鍥炴祴completed", f"鍛ㄩBMA 鍥炴祴completed锛乗n\n{s}"))
+
+                self.after(0, lambda s=summary: messagebox.showinfo(" completed", f" ?BMA  completed \n\n{s}"))
+
             else:
-                self.after(0, lambda: self._update_backtest_status("鍛ㄩ鍥炴祴failed锛歯o缁撴灉鏁版嵁"))
+
+                self.after(0, lambda: self._update_backtest_status(" ? failed no "))
+
+
 
         except ImportError as e:
+
             error_msg = str(e)
-            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"瀵煎叆鍥炴祴妯潡failed: {msg}"))
+
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f" ?failed: {msg}"))
+
         except Exception as e:
+
             error_msg = str(e)
-            self.after(0, lambda msg=error_msg: self._update_backtest_status(f"鍛ㄩ鍥炴祴failed: {msg}"))
+
+            self.after(0, lambda msg=error_msg: self._update_backtest_status(f" ? failed: {msg}"))
+
             import traceback
+
             traceback.print_exc()
+
     
+
     def _update_backtest_status(self, message):
-        """updates鍥炴祴鐘舵"""
+
+        """updates ?"""
+
         timestamp = datetime.now().strftime("%H:%M:%S")
+
         self.bt_status_text.insert(tk.END, f"[{timestamp}] {message}\n")
+
         self.bt_status_text.see(tk.END)
+
         self.update_idletasks()
 
+
+
     def _build_status_panel(self, parent):
-        """鏋勫缓寮曟搸杩愯鐘舵侀潰鏉"""
-        # 鐘舵佷俊鎭樉绀哄尯?
+
+        """ ? ? ?"""
+
+        #  ? n? ?
+
         status_info = tk.Frame(parent)
+
         status_info.pack(fill=tk.X, padx=5, pady=5)
+
         
-        # 绗竴琛岋細connection鐘舵乤nd寮曟搸鐘舵?
+
+        #  ? connection ?and ??
+
         row1 = tk.Frame(status_info)
+
         row1.pack(fill=tk.X, pady=2)
+
         
-        tk.Label(row1, text="connection鐘舵", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        self.lbl_connection_status = tk.Label(row1, text="鏈猚onnection", fg="red", font=("Arial", 9))
+
+        tk.Label(row1, text="connection ?", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+
+        self.lbl_connection_status = tk.Label(row1, text=" connection", fg="red", font=("Arial", 9))
+
         self.lbl_connection_status.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row1, text="寮曟搸鐘舵", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
-        self.lbl_engine_status = tk.Label(row1, text="鏈猻tart", fg="gray", font=("Arial", 9))
+
+        tk.Label(row1, text=" ?", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
+        self.lbl_engine_status = tk.Label(row1, text=" start", fg="gray", font=("Arial", 9))
+
         self.lbl_engine_status.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row1, text="妯瀷鐘舵", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
-        self.lbl_model_status = tk.Label(row1, text="待加载", fg="orange", font=("Arial", 9))
+
+        tk.Label(row1, text=" ? ?", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
+        self.lbl_model_status = tk.Label(row1, text="??????", fg="orange", font=("Arial", 9))
+
         self.lbl_model_status.pack(side=tk.LEFT, padx=5)
+
         
-        # 绗簩琛岋細account淇伅and浜ゆ槗缁熻
+
+        #  ? account R?and ?
+
         row2 = tk.Frame(status_info)
+
         row2.pack(fill=tk.X, pady=2)
+
         
-        tk.Label(row2, text="鍑", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(row2, text="?", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+
         self.lbl_net_value = tk.Label(row2, text="$0.00", fg="blue", font=("Arial", 9))
+
         self.lbl_net_value.pack(side=tk.LEFT, padx=5)
+
         
+
         tk.Label(row2, text="accountID:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
         self.lbl_account_id = tk.Label(row2, text="-", fg="black", font=("Arial", 9))
+
         self.lbl_account_id.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(row2, text="ClientID:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
         self.lbl_client_id = tk.Label(row2, text="-", fg="black", font=("Arial", 9))
+
         self.lbl_client_id.pack(side=tk.LEFT, padx=5)
 
+
+
         tk.Label(row2, text="positions", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
         self.lbl_positions = tk.Label(row2, text="0", fg="purple", font=("Arial", 9))
+
         self.lbl_positions.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row2, text="浠婃棩浜ゆ槗:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
+        tk.Label(row2, text=" :", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
         self.lbl_daily_trades = tk.Label(row2, text="0", fg="green", font=("Arial", 9))
+
         self.lbl_daily_trades.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row2, text="鏈afterupdates:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
-        self.lbl_last_update = tk.Label(row2, text="鏈猻tarting", fg="gray", font=("Arial", 9))
+
+        tk.Label(row2, text="?afterupdates:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
+        self.lbl_last_update = tk.Label(row2, text=" starting", fg="gray", font=("Arial", 9))
+
         self.lbl_last_update.pack(side=tk.LEFT, padx=5)
+
         
-        # 绗笁琛岋細鎿嶄綔缁熻and璀﹀?
+
+        #  ? ?and ??
+
         row3 = tk.Frame(status_info)
+
         row3.pack(fill=tk.X, pady=2)
+
         
-        tk.Label(row3, text="鐩戞帶鑲エ:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(row3, text=" ?:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+
         self.lbl_watch_count = tk.Label(row3, text="0", fg="teal", font=("Arial", 9))
+
         self.lbl_watch_count.pack(side=tk.LEFT, padx=5)
+
         
-        tk.Label(row3, text="淇彿鐢熸", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
-        self.lbl_signal_status = tk.Label(row3, text="绛夊緟in", fg="orange", font=("Arial", 9))
+
+        tk.Label(row3, text=" ? ?", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=15)
+
+        self.lbl_signal_status = tk.Label(row3, text=" in", fg="orange", font=("Arial", 9))
+
         self.lbl_signal_status.pack(side=tk.LEFT, padx=5)
+
         
-        # 鐘舵佹寚绀虹伅
-        self.lbl_status_indicator = tk.Label(row3, text="●", fg="red", font=("Arial", 14))
+
+        #  ? 
+
+        self.lbl_status_indicator = tk.Label(row3, text="??", fg="red", font=("Arial", 14))
+
         self.lbl_status_indicator.pack(side=tk.RIGHT, padx=15)
+
         
-        tk.Label(row3, text="杩愯鐘舵", font=("Arial", 9, "bold")).pack(side=tk.RIGHT, padx=5)
+
+        tk.Label(row3, text=" ? ?", font=("Arial", 9, "bold")).pack(side=tk.RIGHT, padx=5)
+
         
-        # start鐘舵乽pdates瀹歸hen?
+
+        # start ?updates when?
+
         self._start_status_monitor()
+
     
+
     def _start_status_monitor(self):
-        """start鐘舵佺洃鎺у畾when"""
+
+        """start ? when"""
+
         self._update_status()
-        # ? secondsupdates涓娆姸鎬?
+
+        # ? secondsupdates? ???
+
         self.after(2000, self._start_status_monitor)
+
     
+
     def _update_status(self):
-        """updates鐘舵佹樉绀"""
+
+        """updates ? ?"""
+
         try:
-            # updatesconnection鐘舵?
+
+            # updatesconnection ??
+
             if self.trader and hasattr(self.trader, 'ib') and self.trader.ib.isConnected():
+
                 self.lbl_connection_status.config(text="connection", fg="green")
+
             else:
-                self.lbl_connection_status.config(text="鏈猚onnection", fg="red")
+
+                self.lbl_connection_status.config(text=" connection", fg="red")
+
             
-            # updates寮曟搸鐘舵?
+
+            # updates ??
+
             if self.engine:
+
                 if hasattr(self, '_engine_loop_task') and self._engine_loop_task and not self._engine_loop_task.done():
-                    self.lbl_engine_status.config(text="杩愯in", fg="green")
+
+                    self.lbl_engine_status.config(text=" ?in", fg="green")
+
                     self.lbl_status_indicator.config(fg="green")
+
                 else:
+
                     self.lbl_engine_status.config(text="start", fg="blue")
+
                     self.lbl_status_indicator.config(fg="blue")
+
             else:
-                self.lbl_engine_status.config(text="鏈猻tart", fg="gray")
+
+                self.lbl_engine_status.config(text=" start", fg="gray")
+
                 self.lbl_status_indicator.config(fg="red")
+
             
-            # updatesaccount淇?
+
+            # updatesaccount??
+
             if self.trader and hasattr(self.trader, 'net_liq'):
-                # 浣縰se缂撳瓨閬垮厤鐭湡as0/None瀵艰嚧闂儊
+
+                #  use ?as0/None ?
+
                 try:
+
                     current_net = getattr(self.trader, 'net_liq', None)
+
                     if isinstance(current_net, (int, float)) and current_net is not None:
+
                         if self._last_net_liq is None or abs(float(current_net) - float(self._last_net_liq)) > 1e-6:
+
                             self._last_net_liq = float(current_net)
+
                     if self._last_net_liq is not None:
+
                         self.lbl_net_value.config(text=f"${self._last_net_liq:,.2f}")
+
                 except Exception:
+
                     pass
-                # updatesaccountIDand瀹㈡埛绔疘D
+
+                # updatesaccountIDand ID
+
                 try:
+
                     acc_id = getattr(self.trader, 'account_id', None)
+
                     if acc_id:
+
                         self.lbl_account_id.config(text=str(acc_id), fg=("green" if str(acc_id).lower()=="c2dvdongg" else "black"))
+
                     else:
+
                         self.lbl_account_id.config(text="-", fg="black")
+
                 except Exception:
+
                     pass
+
                 try:
-                    # and褰揵efore閰嶇?client_id for榻愶紝鑰宯otis鍥哄?3130
+
+                    # and before ??client_id for notis ??3130
+
                     actual_cid = getattr(self.trader, 'client_id', None)
+
                     try:
+
                         expected_cid = self.config_manager.get('connection.client_id', None)
+
                     except Exception:
+
                         expected_cid = None
+
                     cid_ok = bool(actual_cid is not None and expected_cid is not None and actual_cid == expected_cid)
+
                     self.lbl_client_id.config(text=str(actual_cid if actual_cid is not None else '-'), fg=("green" if cid_ok else "black"))
+
                 except Exception:
+
                     pass
+
                 
+
                 # updatespositions?
+
                 position_count = len(getattr(self.trader, 'positions', {}))
+
                 self.lbl_positions.config(text=str(position_count))
+
             
-            # updates鐩戞帶鑲エ?
+
+            # updates ??
+
             if self.trader and hasattr(self.trader, 'tickers'):
+
                 watch_count = len(getattr(self.trader, 'tickers', {}))
+
                 self.lbl_watch_count.config(text=str(watch_count))
+
             
-            # updates鏈afterupdateswhen?
+
+            # updates?afterupdateswhen?
+
             current_time = datetime.now().strftime("%H:%M:%S")
+
             self.lbl_last_update.config(text=current_time)
+
             
-            # check妯瀷鐘舵侊紙if鏋渉as鐩稿叧灞炴э?
+
+            # check ? ? if has ???
+
             if hasattr(self, '_model_training') and self._model_training:
-                self.lbl_model_status.config(text="璁粌in", fg="blue")
+
+                self.lbl_model_status.config(text=" ?in", fg="blue")
+
             elif hasattr(self, '_model_trained') and self._model_trained:
-                self.lbl_model_status.config(text="已训练", fg="green")
+
+                self.lbl_model_status.config(text="?????", fg="green")
+
             else:
-                self.lbl_model_status.config(text="未加载", fg="orange")
+
+                self.lbl_model_status.config(text=" ????", fg="orange")
+
                 
+
         except Exception as e:
-            # 鐘舵乽pdatesfailednot搴旇褰卞搷涓荤▼搴?
+
+            #  ?updatesfailednot ? ??
+
             pass
+
     
+
     def _update_signal_status(self, status_text, color="black"):
-        """updates淇彿鐘舵"""
+
+        """updates ? ?"""
+
         try:
+
             self.lbl_signal_status.config(text=status_text, fg=color)
+
         except Exception:
+
             pass
+
     
+
     def _set_connection_error_state(self, error_msg: str):
-        """璁剧疆杩炴帴閿欒鐘舵"""
+
+        """ ? ?"""
+
         try:
-            self.log(f"杩炴帴閿欒鐘舵 {error_msg}")
-            # 鍙互鍦ㄨ繖閲屾坊鍔燝UI鐘舵佹洿鏂?
+
+            self.log(f" ? ? {error_msg}")
+
+            #  ? GUI ? ??
+
             if hasattr(self, 'lbl_status'):
-                self.lbl_status.config(text=f"杩炴帴閿欒: {error_msg[:50]}...")
+
+                self.lbl_status.config(text=f" ?: {error_msg[:50]}...")
+
         except Exception as e:
-            # 濡傛灉GUI鏇存柊澶辫触锛岃嚦灏戣璁板綍鍘熷閿欒?
-            print(f"鏃犳硶鏇存柊杩炴帴閿欒鐘舵 {e}, 鍘熷閿欒: {error_msg}")
+
+            #  GUI ? ? ??
+
+            print(f" ? ? {e},  ? ?: {error_msg}")
+
+
 
     def _update_daily_trades(self, count):
-        """updates浠婃棩浜ゆ槗娆"""
+
+        """updates ?"""
+
         try:
+
             self.lbl_daily_trades.config(text=str(count))
+
         except Exception as e:
-            # 鏀硅繘閿欒澶勭悊锛氳褰曡屼笉鏄潤榛樺拷?
-            self.log(f"鏇存柊浜ゆ槗娆暟鏄剧ず澶辫 {e}")
-            # GUI鏇存柊澶辫触涓嶅簲褰卞搷鏍稿績鍔熻兘
+
+            #  ? ? ? ? ?
+
+            self.log(f" ? ? {e}")
+
+            # GUI 
+
+
 
     # ========== Strategy Engine Methods ==========
+
     
+
     def _update_strategy_status(self):
+
         """Update strategy status display"""
+
         if not hasattr(self, 'strategy_status_text'):
+
             return
+
             
+
         try:
+
             status_text = "=== Strategy Engine Status ===\n\n"
+
             
+
             if hasattr(self, 'strategy_status'):
+
                 for key, value in self.strategy_status.items():
+
                     status_text += f"{key}: {'Active' if value else 'Inactive'}\n"
+
             else:
+
                 status_text += "Strategy components not initialized\n"
+
                 
+
             status_text += f"\nLast updated: {datetime.now().strftime('%H:%M:%S')}\n"
+
             
+
             self.strategy_status_text.delete(1.0, tk.END)
+
             self.strategy_status_text.insert(tk.END, status_text)
+
             
-        except Exception as e:
-            self.log(f"Failed to update strategy status: {e}")
-    
-    def _test_alpha_factors(self):
-        """Alpha factors宸插簾寮- 鐜板湪浣跨敤Simple 25绛栫"""
-        try:
-            self.log("Alpha factors鍔熻兘宸插簾- Simple 25绛栫暐宸叉縺")
-            self.strategy_status['bma_model_loaded'] = True
-            self._update_strategy_status()
 
         except Exception as e:
-            self.log(f"Strategy status update failed: {e}")
-            self.strategy_status['bma_model_loaded'] = True
-            self._update_strategy_status()
+
+            self.log(f"Failed to update strategy status: {e}")
+
     
-    def _run_bma_model_demo(self):
-        """Run BMA model for strategy selection (Simple 25绛栫暐妯紡)"""
+
+    def _test_alpha_factors(self):
+
+        """Alpha factors ?-  Simple 25 ?"""
+
         try:
-            self.log("馃殌 鍚姩BMA妯瀷璁粌 (Simple 25绛栫暐妯紡)...")
-            self.log("馃搳 鍔犺浇甯傚満鏁版..")
-            self.log("馃 鍒濆鍖栨満鍣ㄥ涔犳ā鍨..")
-            self.log("鈿欙閰嶇疆鐗瑰緛宸ョ▼绠￠亾...")
+
+            self.log("Alpha factors - Simple 25 ")
+
+            self.strategy_status['bma_model_loaded'] = True
+
+            self._update_strategy_status()
+
+
+
+        except Exception as e:
+
+            self.log(f"Strategy status update failed: {e}")
+
+            self.strategy_status['bma_model_loaded'] = True
+
+            self._update_strategy_status()
+
+    
+
+    def _run_bma_model_demo(self):
+
+        """Run BMA model for strategy selection (Simple 25 ?)"""
+
+        try:
+
+            self.log("??  ?BMA ? ? (Simple 25 ?)...")
+
+            self.log("??  ?..")
+
+            self.log("?  ? ? ?..")
+
+            self.log("?? ...")
+
+
 
             # This would typically load real market data and run BMA
+
             # For demo purposes, we'll simulate the process
+
             import time
+
             import threading
+
+
 
             def run_bma_async():
+
                 try:
-                    self.log("馃攧 寮濮嬫ā鍨嬭缁..")
+
+                    self.log("?? ? ??..")
+
                     time.sleep(1)
-                    self.log("馃搱 绗竴灞傛ā鍨嬭缁冧(XGBoost, CatBoost, ElasticNet)...")
+
+                    self.log("??  ? ? ?(XGBoost, CatBoost, ElasticNet)...")
+
                     time.sleep(1)
-                    self.log("馃幆 绗簩灞俁idge鍥炲綊璁粌..")
+
+                    self.log("??  ? Ridge ?..")
+
                     time.sleep(1)
-                    self.log("BMA妯瀷璁粌瀹屾?- Simple 25绛栫暐宸蹭紭鍖栵紙Ridge鍥炲綊锛")
-                    self.log("馃搳 妯瀷楠岃瘉: IC=0.045, ICIR=1.2, Sharpe=0.8")
+
+                    self.log("BMA ? ? ??- Simple 25 Ridge ?")
+
+                    self.log("??  ? : IC=0.045, ICIR=1.2, Sharpe=0.8")
+
                     self.strategy_status['bma_model_loaded'] = True
+
                     self.after_idle(self._update_strategy_status)
+
                 except Exception as e:
+
                     self.log(f"BMA model failed: {e}")
+
             
+
             threading.Thread(target=run_bma_async, daemon=True).start()
+
             
+
         except Exception as e:
+
             self.log(f"Failed to run BMA model: {e}")
+
     
+
     def _generate_trading_signals(self):
+
         """Generate trading signals using alpha factors"""
+
         try:
+
             if not hasattr(self, 'alpha_engine'):
+
                 self.log("Alpha engine not initialized")
+
                 return
+
                 
+
             self.log("Generating trading signals...")
+
             
+
             # Get current positions if trader is available
+
             current_positions = {}
+
             if hasattr(self, 'trader') and self.trader:
+
                 current_positions = self.trader.get_positions()
+
             
+
             # Generate signals (simplified for demo)
+
             signals = {
+
                 'AAPL': {'signal': 0.05, 'confidence': 0.8},
+
                 'MSFT': {'signal': -0.02, 'confidence': 0.6},
+
                 'GOOGL': {'signal': 0.03, 'confidence': 0.7}
+
             }
+
             
+
             self.log(f"Generated {len(signals)} trading signals")
+
             
+
             # If risk balancer is enabled, process through it
+
             if hasattr(self, 'risk_balancer_adapter') and self.risk_balancer_var.get():
+
                 self.log("Processing signals through risk balancer...")
+
                 # Convert to DataFrame format expected by risk balancer
+
                 signal_df = pd.DataFrame([
+
                     {'symbol': symbol, 'weighted_prediction': data['signal'], 'confidence': data['confidence']}
+
                     for symbol, data in signals.items()
+
                 ])
+
                 
+
                 orders = self.risk_balancer_adapter.process_signals(signal_df)
+
                 self.log(f"Risk balancer generated {len(orders)} orders")
+
             
+
             self._update_strategy_status()
+
             
+
         except Exception as e:
+
             self.log(f"Failed to generate trading signals: {e}")
+
     
+
     def _load_polygon_data(self):
+
         """Load market data from Polygon"""
+
         try:
+
             if not hasattr(self, 'polygon_factors'):
+
                 self.log("Polygon factors not initialized")
+
                 return
+
                 
+
             self.log("Loading Polygon market data...")
+
             
+
             # Get tickers from database
+
             tickers = self.db.get_tickers()
+
             if not tickers:
+
                 tickers = ['AAPL', 'MSFT', 'GOOGL']  # Default tickers
+
                 
+
             self.log(f"Loading data for {len(tickers)} tickers: {', '.join(tickers[:5])}...")
+
             
+
             # This would typically fetch real data from Polygon
+
             # For demo, we'll simulate the process
+
             import threading
+
             import time
+
             
+
             def load_data_async():
+
                 try:
+
                     time.sleep(3)  # Simulate data loading
+
                     self.log("Polygon market data loaded successfully")
+
                     self.after_idle(self._update_strategy_status)
+
                 except Exception as e:
+
                     self.log(f"Failed to load Polygon data: {e}")
+
             
+
             threading.Thread(target=load_data_async, daemon=True).start()
+
             
+
         except Exception as e:
+
             self.log(f"Failed to load Polygon data: {e}")
+
     
+
     def _compute_t5_factors(self):
+
         """Compute T+5 prediction factors"""
+
         try:
+
             if not hasattr(self, 'polygon_factors'):
+
                 self.log("Polygon factors not initialized")
+
                 return
+
                 
+
             self.log("Computing T+5 prediction factors...")
+
             
+
             # This would use the polygon_factors to compute short-term prediction factors
+
             import threading
+
             import time
+
             
+
             def compute_factors_async():
+
                 try:
+
                     time.sleep(4)  # Simulate computation
+
                     self.log("T+5 factors computed successfully")
+
                     self.log("Factors include: momentum, reversal, volume, volatility, microstructure")
+
                     self.after_idle(self._update_strategy_status)
+
                 except Exception as e:
+
                     self.log(f"T+5 factor computation failed: {e}")
+
             
+
             threading.Thread(target=compute_factors_async, daemon=True).start()
+
             
+
         except Exception as e:
+
             self.log(f"Failed to compute T+5 factors: {e}")
+
     
+
     def _view_factor_analysis(self):
+
         """View factor analysis results"""
+
         try:
+
             # Create a new window to display factor analysis
+
             analysis_window = tk.Toplevel(self)
+
             analysis_window.title("Factor Analysis Results")
+
             analysis_window.geometry("800x600")
+
             
+
             # Add text widget to display analysis
+
             text_widget = tk.Text(analysis_window)
+
             text_widget.pack(fill=tk.BOTH, expand=True)
+
             
+
             # Sample factor analysis content
+
             analysis_content = """
+
 === Factor Analysis Results ===
 
+
+
 Momentum Factors:
+
 - 12-1 Month Momentum: IC = 0.045, Sharpe = 1.2
+
 - 6-1 Month Momentum: IC = 0.038, Sharpe = 1.1
+
 - Short Reversal: IC = -0.025, Sharpe = 0.8
 
+
+
 Fundamental Factors:
+
 - Earnings Surprise: IC = 0.055, Sharpe = 1.4
+
 - Analyst Revisions: IC = 0.042, Sharpe = 1.0
 
+
+
 Quality Factors:
+
 - ROE Quality: IC = 0.035, Sharpe = 0.9
+
 - Profitability: IC = 0.028, Sharpe = 0.7
 
+
+
 Risk Factors:
+
 - Low Volatility: IC = 0.032, Sharpe = 1.1
+
 - Low Beta: IC = 0.025, Sharpe = 0.8
 
+
+
 === BMA Weights ===
+
 Top factors by weight:
+
 1. Earnings Surprise: 15.2%
+
 2. 12-1 Momentum: 12.8%
+
 3. Low Volatility: 11.5%
+
 4. Analyst Revisions: 10.3%
+
 5. Quality Score: 9.8%
 
+
+
 === Performance Metrics ===
+
 Combined IC: 0.078
+
 Combined Sharpe: 1.85
+
 Turnover: 45%
+
 Max Drawdown: 8.2%
+
             """
+
             
+
             text_widget.insert(tk.END, analysis_content)
+
             text_widget.config(state=tk.DISABLED)
+
             
+
         except Exception as e:
+
             self.log(f"Failed to view factor analysis: {e}")
+
     
+
     def _toggle_risk_balancer(self):
+
         """Toggle risk balancer on/off"""
+
         try:
+
             if not hasattr(self, 'risk_balancer_adapter'):
+
                 self.log("Risk balancer adapter not initialized")
+
                 return
+
                 
+
             if self.risk_balancer_var.get():
+
                 self.risk_balancer_adapter.enable_risk_balancer()
+
                 self.log("Risk balancer enabled")
+
             else:
+
                 self.risk_balancer_adapter.disable_risk_balancer()
+
                 self.log("Risk balancer disabled")
+
                 
+
             self._update_strategy_status()
+
             
+
         except Exception as e:
+
             self.log(f"Failed to toggle risk balancer: {e}")
+
     
+
     def _view_risk_stats(self):
+
         """View risk management statistics"""
+
         try:
+
             if not hasattr(self, 'risk_balancer_adapter'):
+
                 self.log("Risk balancer adapter not initialized")
+
                 return
+
                 
+
             stats = self.risk_balancer_adapter.get_balancer_stats()
+
             
+
             # Create new window for risk stats
+
             stats_window = tk.Toplevel(self)
+
             stats_window.title("Risk Management Statistics")
+
             stats_window.geometry("600x400")
+
             
+
             text_widget = tk.Text(stats_window)
+
             text_widget.pack(fill=tk.BOTH, expand=True)
+
             
+
             stats_content = f"""
+
 === Risk Management Statistics ===
+
+
 
 Status: {'Enabled' if hasattr(self, 'risk_balancer_adapter') and self.risk_balancer_adapter.is_risk_balancer_enabled() else 'Disabled'}
 
+
+
 Position Limits:
+
 - Max Position Size: 3% of portfolio
+
 - Max Sector Concentration: 20%
+
 - Max Single Stock: 5%
 
+
+
 Risk Metrics:
+
 - Current Portfolio VaR (95%): 2.1%
+
 - Expected Shortfall: 3.2%
+
 - Beta to Market: 1.05
+
 - Tracking Error: 4.5%
 
+
+
 Trading Limits:
+
 - Daily Trading Limit: $50,000
+
 - Max Daily Trades: 20
+
 - Order Size Limits: $5,000 per order
 
+
+
 Recent Activity:
+
 - Orders Approved: 15
+
 - Orders Rejected: 2
+
 - Risk Violations: 0
+
 - Last Risk Check: {datetime.now().strftime('%H:%M:%S')}
+
             """
+
             
+
             text_widget.insert(tk.END, stats_content)
+
             text_widget.config(state=tk.DISABLED)
+
             
+
         except Exception as e:
+
             self.log(f"Failed to view risk stats: {e}")
+
     
+
     def _reset_risk_limits(self):
+
         """Reset risk limits to default values"""
+
         try:
+
             if not hasattr(self, 'risk_balancer_adapter'):
+
                 self.log("Risk balancer adapter not initialized")
+
                 return
+
                 
+
             # Reset risk balancer statistics
+
             self.risk_balancer_adapter.reset_balancer_stats()
+
             self.log("Risk limits reset to default values")
+
             self._update_strategy_status()
+
             
+
         except Exception as e:
+
             self.log(f"Failed to reset risk limits: {e}")
 
+
+
     # ========== System Testing Methods ==========
+
     
+
     def _update_system_status(self):
+
         """Update system status display"""
+
         if not hasattr(self, 'system_status_text'):
+
             return
+
             
+
         try:
+
             status_text = "=== System Status ===\n\n"
+
             
+
             # Connection status
+
             if hasattr(self, 'trader') and self.trader:
+
                 status_text += f"IBKR Connection: {'Connected' if self.trader.is_connected() else '?Disconnected'}\n"
+
             else:
+
                 status_text += "IBKR Connection: Not initialized\n"
+
             
+
             # Strategy components
+
             if hasattr(self, 'strategy_status'):
+
                 status_text += f"Alpha Engine: {'Ready' if self.strategy_status.get('alpha_engine_ready', False) else 'Not ready'}\n"
+
                 status_text += f"Polygon Factors: {'Ready' if self.strategy_status.get('polygon_factors_ready', False) else 'Not ready'}\n"
+
                 status_text += f"Risk Balancer: {'Ready' if self.strategy_status.get('risk_balancer_ready', False) else 'Not ready'}\n"
+
             
+
             # Market data status
+
             status_text += "Market Data: Ready\n"
+
             status_text += f"Database: {'Connected' if self.db else '?Not available'}\n"
+
             
+
             # Trading status
+
             status_text += f"Trading Mode: {'Live' if hasattr(self, 'trader') and self.trader else 'Paper'}\n"
+
             status_text += f"Risk Controls: {'Enabled' if hasattr(self, 'risk_balancer_var') and self.risk_balancer_var.get() else 'Disabled'}\n"
+
             
+
             status_text += f"\nLast updated: {datetime.now().strftime('%H:%M:%S')}\n"
+
             
+
             self.system_status_text.delete(1.0, tk.END)
+
             self.system_status_text.insert(tk.END, status_text)
+
             
+
         except Exception as e:
+
             if hasattr(self, 'system_status_text'):
+
                 self.system_status_text.delete(1.0, tk.END)
+
                 self.system_status_text.insert(tk.END, f"Status update failed: {e}")
+
     
+
     def _test_connection(self):
+
         """Test IBKR connection"""
+
         try:
+
             self.log("Testing IBKR connection...")
+
             
+
             if not hasattr(self, 'trader') or not self.trader:
+
                 self.log("No trader instance - creating test connection")
+
                 # This would normally initialize a test connection
+
                 self.log("Test connection would be created here")
+
                 return
+
             
+
             # Test existing connection
+
             if self.trader.is_connected():
+
                 self.log("IBKR connection test passed")
+
                 # Test basic API calls
+
                 account_summary = self.trader.get_account_summary()
+
                 self.log(f"Account data accessible: {len(account_summary)} items")
+
             else:
+
                 self.log("IBKR connection test failed - not connected")
+
             
+
             self._update_system_status()
+
             
+
         except Exception as e:
+
             self.log(f"Connection test failed: {e}")
+
     
+
     def _test_market_data(self):
+
         """Test market data subscription"""
+
         try:
+
             self.log("Testing market data...")
+
             
+
             # Get test symbols
+
             test_symbols = ['AAPL', 'MSFT', 'GOOGL']
+
             
+
             if hasattr(self, 'trader') and self.trader:
+
                 self.log(f"Testing market data for: {', '.join(test_symbols)}")
+
                 
+
                 for symbol in test_symbols:
+
                     # This would test real market data subscription
+
                     self.log(f"Market data test for {symbol}: Price data accessible")
+
                 
+
                 self.log("Market data test completed successfully")
+
             else:
+
                 self.log("No trader available for market data test")
+
                 # Simulate successful test for demo
+
                 self.log("Market data simulation test passed")
+
             
+
             self._update_system_status()
+
             
+
         except Exception as e:
+
             self.log(f"Market data test failed: {e}")
+
     
+
     def _test_order_placement(self):
+
         """Test order placement (paper trading)"""
+
         try:
+
             self.log("Testing order placement...")
+
             
+
             if hasattr(self, 'trader') and self.trader:
+
                 # Test with a small paper trade
+
                 test_order = {
+
                     'symbol': 'AAPL',
+
                     'quantity': 1,
+
                     'order_type': 'LMT',
+
                     'price': 150.00,
+
                     'action': 'BUY'
+
                 }
+
                 
+
                 self.log(f"Placing test order: {test_order}")
+
                 # This would place an actual test order
+
                 self.log("Test order placement completed")
+
                 self.log("Note: This was a paper trading test")
+
             else:
+
                 self.log("No trader available for order test")
+
                 # Simulate test for demo
+
                 self.log("Order placement simulation test passed")
+
             
+
             self._update_system_status()
+
             
+
         except Exception as e:
+
             self.log(f"Order placement test failed: {e}")
+
     
+
     def _run_full_system_test(self):
+
         """Run comprehensive system test"""
+
         try:
+
             self.log("=== Starting Full System Test ===")
+
             
+
             import threading
+
             import time
+
             
+
             def run_full_test():
+
                 try:
+
                     # Test sequence
+
                     tests = [
+
                         ("Connection Test", self._test_connection),
+
                         ("Market Data Test", self._test_market_data),
+
                         ("Order Placement Test", self._test_order_placement),
+
                         ("Strategy Components Test", self._test_strategy_components),
+
                         ("Risk Controls Test", self._test_risk_controls)
+
                     ]
+
                     
+
                     passed = 0
+
                     total = len(tests)
+
                     
+
                     for test_name, test_func in tests:
+
                         self.log(f"Running {test_name}...")
+
                         try:
+
                             test_func()
+
                             passed += 1
+
                             time.sleep(1)  # Brief pause between tests
+
                         except Exception as e:
+
                             self.log(f"{test_name} failed: {e}")
+
                     
+
                     self.log(f"=== System Test Complete: {passed}/{total} tests passed ===")
+
                     
+
                     if passed == total:
-                        self.log("馃帀 All systems operational!")
+
+                        self.log("?? All systems operational!")
+
                     elif passed >= total * 0.8:
-                        self.log("鈿狅Most systems operational with minor issues")
+
+                        self.log("??Most systems operational with minor issues")
+
                     else:
+
                         self.log("Multiple system issues detected")
+
                     
+
                     self.after_idle(self._update_system_status)
+
                     
+
                 except Exception as e:
+
                     self.log(f"Full system test failed: {e}")
+
             
+
             threading.Thread(target=run_full_test, daemon=True).start()
+
             
+
         except Exception as e:
+
             self.log(f"Failed to start full system test: {e}")
+
     
+
     def _test_strategy_components(self):
+
         """Test strategy engine components"""
+
         try:
+
             self.log("Testing strategy components...")
+
             
+
             # Test alpha engine
+
             if hasattr(self, 'alpha_engine'):
+
                 self.log("Alpha engine available")
+
             else:
+
                 self.log("Alpha engine not available")
+
                 
+
             # Test polygon factors
+
             if hasattr(self, 'polygon_factors'):
+
                 self.log("Polygon factors available")
+
             else:
+
                 self.log("Polygon factors not available")
+
                 
+
             # Test risk balancer
+
             if hasattr(self, 'risk_balancer_adapter'):
+
                 self.log("Risk balancer available")
+
             else:
+
                 self.log("Risk balancer not available")
+
             
+
             self.log("Strategy components test completed")
+
             
+
         except Exception as e:
+
             self.log(f"Strategy components test failed: {e}")
+
     
+
     def _test_risk_controls(self):
+
         """Test risk control systems"""
+
         try:
+
             self.log("Testing risk controls...")
+
             
+
             if hasattr(self, 'risk_balancer_adapter'):
+
                 # Test risk limits
+
                 self.log("Risk balancer accessible")
+
                 
+
                 # Test position limits
+
                 self.log("Position limits configured")
+
                 
+
                 # Test order validation
+
                 self.log("Order validation active")
+
                 
+
                 self.log("Risk controls test passed")
+
             else:
-                self.log("鈿狅Risk balancer not initialized - using basic controls")
+
+                self.log("??Risk balancer not initialized - using basic controls")
+
             
+
         except Exception as e:
+
             self.log(f"Risk controls test failed: {e}")
+
     
+
     def _manual_signal_entry(self):
+
         """Open manual signal entry dialog"""
+
         try:
+
             # Create signal entry window
+
             signal_window = tk.Toplevel(self)
+
             signal_window.title("Manual Signal Entry")
+
             signal_window.geometry("400x300")
+
             
+
             # Signal entry form
+
             ttk.Label(signal_window, text="Symbol:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+
             symbol_entry = ttk.Entry(signal_window, width=15)
+
             symbol_entry.grid(row=0, column=1, padx=5, pady=5)
+
             symbol_entry.insert(0, "AAPL")
+
             
+
             ttk.Label(signal_window, text="Signal Strength (-1 to 1):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+
             signal_entry = ttk.Entry(signal_window, width=15)
+
             signal_entry.grid(row=1, column=1, padx=5, pady=5)
+
             signal_entry.insert(0, "0.05")
+
             
+
             ttk.Label(signal_window, text="Confidence (0 to 1):").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+
             confidence_entry = ttk.Entry(signal_window, width=15)
+
             confidence_entry.grid(row=2, column=1, padx=5, pady=5)
+
             confidence_entry.insert(0, "0.8")
+
             
+
             def submit_signal():
+
                 try:
+
                     symbol = symbol_entry.get().upper()
+
                     signal = float(signal_entry.get())
+
                     confidence = float(confidence_entry.get())
+
                     
+
                     if not (-1 <= signal <= 1):
+
                         messagebox.showerror("Error", "Signal must be between -1 and 1")
+
                         return
+
                     
+
                     if not (0 <= confidence <= 1):
+
                         messagebox.showerror("Error", "Confidence must be between 0 and 1")
+
                         return
+
                     
+
                     # Process the manual signal
+
                     self.log(f"Manual signal: {symbol} = {signal} (confidence: {confidence})")
+
                     
+
                     # Create signal DataFrame
+
                     signal_df = pd.DataFrame([{
+
                         'symbol': symbol,
+
                         'weighted_prediction': signal,
+
                         'confidence': confidence
+
                     }])
+
                     
+
                     # Process through risk balancer if enabled
+
                     if hasattr(self, 'risk_balancer_adapter') and self.risk_balancer_var.get():
+
                         orders = self.risk_balancer_adapter.process_signals(signal_df)
+
                         self.log(f"Generated {len(orders)} orders from manual signal")
+
                     else:
+
                         self.log("Manual signal logged (risk balancer disabled)")
+
                     
+
                     signal_window.destroy()
+
                     
+
                 except ValueError:
+
                     messagebox.showerror("Error", "Please enter valid numeric values")
+
                 except Exception as e:
+
                     messagebox.showerror("Error", f"Failed to process signal: {e}")
+
             
+
             ttk.Button(signal_window, text="Submit Signal", command=submit_signal).grid(row=3, column=0, columnspan=2, pady=20)
+
             
+
         except Exception as e:
+
             self.log(f"Failed to open signal entry: {e}")
+
     
+
     def _execute_alpha_signals(self):
+
         """Execute signals from alpha engine"""
+
         try:
+
             if not hasattr(self, 'alpha_engine'):
+
                 self.log("Alpha engine not available")
+
                 return
+
                 
+
             self.log("Executing alpha signals...")
+
             
+
             # This would typically:
+
             # 1. Get current market data
+
             # 2. Compute alpha factors
+
             # 3. Generate trading signals
+
             # 4. Process through risk management
+
             # 5. Execute orders
+
             
+
             # For demo, simulate the process
+
             symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN']
+
             signals = []
+
             
+
             for symbol in symbols:
+
                 # Use existing signal calculation from unified factors
+
                 try:
+
                     # Use unified signal processor (eliminates redundant signal code)
+
                     from autotrader.unified_signal_processor import get_unified_signal_processor, SignalMode
+
                     from autotrader.environment_config import get_environment_manager
+
                     
+
                     env_manager = get_environment_manager()
+
                     mode = SignalMode.PRODUCTION if env_manager.is_production_mode() else SignalMode.TESTING
+
                     
+
                     signal_processor = get_unified_signal_processor(mode)
+
                     signal_result = signal_processor.get_trading_signal(symbol)
+
                     
+
                     signal_strength = signal_result.signal_value
+
                     confidence = signal_result.confidence
+
                     
+
                     self.log(f"Unified signal for {symbol}: strength={signal_strength:.3f}, confidence={confidence:.3f}, source={signal_result.source}")
+
                 except Exception as e:
+
                     self.log(f"Signal calculation error for {symbol}: {e}")
+
                     signal_strength = 0.0
+
                     confidence = 0.0
+
                 
-                # 馃殌 搴旂敤澧炲己浜ゆ槗缁勪欢锛氭柊椴滃害璇勫?+ 娉㈠姩鐜囬棬?+ 鍔ㄦ佸ご?
+
+                # ??  ??+  ?+  ? ?
+
                 enhanced_signal = self._apply_enhanced_signal_processing(
+
                     symbol, signal_strength, confidence
+
                 )
+
                 
+
                 if enhanced_signal and enhanced_signal.get('can_trade', False):
+
                     signals.append(enhanced_signal)
+
             
+
             if signals:
+
                 self.log(f"Generated {len(signals)} alpha signals")
+
                 
+
                 # Create DataFrame
+
                 signal_df = pd.DataFrame(signals)
+
                 
+
                 # Process through risk balancer
+
                 if hasattr(self, 'risk_balancer_adapter'):
+
                     orders = self.risk_balancer_adapter.process_signals(signal_df)
+
                     self.log(f"Risk balancer approved {len(orders)} orders")
+
                 else:
+
                     self.log("Signals ready for execution (risk balancer not available)")
+
             else:
+
                 self.log("No significant alpha signals generated")
+
             
+
         except Exception as e:
+
             self.log(f"Failed to execute alpha signals: {e}")
+
     
+
     def _apply_enhanced_signal_processing(self, symbol: str, signal_strength: float, confidence: float) -> Optional[dict]:
+
         """
-        搴旂敤澧炲己淇彿澶勭悊锛氭暟鎹柊椴滃害璇勫?+ 娉㈠姩鐜囪嚜閫傚簲闂ㄦ帶 + 鍔ㄦ佸ご瀵歌绠?
+
+         ? ? ??+   +  ? ???
+
         
+
         Args:
-            symbol: 鑲エ浠ｇ爜
-            signal_strength: 淇彿寮哄?
-            confidence: 淇彿缃俊搴?
+
+            symbol:  ? 
+
+            signal_strength:  ? ??
+
+            confidence:  ? Z???
+
             
+
         Returns:
-            澶勭悊鍚庣殑淇彿瀛楀吀鎴朜one
+
+             ? None
+
         """
+
         try:
-            # 妯嫙浠锋牸鍜屾垚浜ら噺鏁版?(瀹為檯搴旂敤涓粠甯傚満鏁版嵁鑾峰彇)
+
+            #  ? ??( ? )
+
             import random
+
             current_price = 150.0 + random.uniform(-20, 20)
+
             price_history = [current_price + random.gauss(0, 2) for _ in range(100)]
+
             volume_history = [1000000 + random.randint(-200000, 500000) for _ in range(100)]
+
             
-            # 1. 鏁版嵁鏂伴矞搴﹁瘎鍒?
+
+            # 1.  ??
+
             freshness_result = None
+
             if self.freshness_scorer:
+
                 from datetime import datetime, timedelta
+
                 data_timestamp = datetime.now() - timedelta(minutes=random.randint(1, 30))
+
                 
+
                 freshness_result = self.freshness_scorer.calculate_freshness_score(
+
                     symbol=symbol,
+
                     data_timestamp=data_timestamp,
+
                     data_source='realtime',
+
                     missing_ratio=random.uniform(0, 0.1),
+
                     data_gaps=[]
+
                 )
+
                 
-                # 搴旂敤鏂伴矞搴﹀埌淇彿
+
+                #  ?
+
                 effective_signal, signal_info = self.freshness_scorer.apply_freshness_to_signal(
+
                     symbol, signal_strength, freshness_result['freshness_score']
+
                 )
+
                 
+
                 if not signal_info.get('passes_threshold', False):
-                    self.log(f"{symbol} 淇彿鏈氳繃鏂伴矞搴﹂槇鍊兼")
+
+                    self.log(f"{symbol}  ? M ?")
+
                     return None
+
                 
-                signal_strength = effective_signal  # 浣跨敤璋冩暣鍚庣殑淇彿
+
+                signal_strength = effective_signal  #  ?
+
             
-            # 2. 娉㈠姩鐜囪嚜閫傚簲闂ㄦ帶
+
+            # 2.  
+
             gating_result = None
+
             if self.volatility_gating:
+
                 can_trade, gating_details = self.volatility_gating.should_trade(
+
                     symbol=symbol,
-                    signal_strength=signal_strength,  # 淇鍙傛暟鍛藉?
+
+                    signal_strength=signal_strength,  # ? ??
+
                     price_data=price_history,
+
                     volume_data=volume_history
+
                 )
+
                 
+
                 if not can_trade:
-                    self.log(f"{symbol} 鏈氳繃娉㈠姩鐜囬棬鎺 {gating_details.get('reason', 'unknown')}")
+
+                    self.log(f"{symbol}  M ? {gating_details.get('reason', 'unknown')}")
+
                     return None
+
                 
+
                 gating_result = gating_details
+
             
-            # 3. 鍔ㄦ佸ご瀵歌绠?
+
+            # 3.  ? ???
+
             position_result = None
+
             if self.position_calculator:
-                available_cash = 100000.0  # 鍋囪?0涓囩編鍏冨彲鐢ㄨ祫閲?
+
+                available_cash = 100000.0  #  ??0 ??
+
                 
+
                 position_result = self.position_calculator.calculate_position_size(
+
                     symbol=symbol,
+
                     current_price=current_price,
+
                     signal_strength=signal_strength,
+
                     available_cash=available_cash,
+
                     signal_confidence=confidence,
+
                     historical_volatility=gating_result.get('volatility') if gating_result else None,
+
                     price_history=price_history,
+
                     volume_history=volume_history
+
                 )
+
                 
+
                 if not position_result.get('valid', False):
-                    self.log(f"{symbol} 澶村璁畻澶辫 {position_result.get('error', 'unknown')}")
+
+                    self.log(f"{symbol}  ? ? ? {position_result.get('error', 'unknown')}")
+
                     return None
+
             
-            # 鏋勫缓澧炲己淇彿
+
+            #  ?
+
             enhanced_signal = {
+
                 'symbol': symbol,
+
                 'weighted_prediction': signal_strength,
+
                 'confidence': confidence,
+
                 'current_price': current_price,
+
                 'can_trade': True,
+
                 
-                # 澧炲己缁勪欢缁撴?
+
+                #  ??
+
                 'freshness_info': freshness_result,
+
                 'gating_info': gating_result,
+
                 'position_info': position_result,
+
                 
-                # 鍏抽敭鍙傛暟
+
+                #  
+
                 'dynamic_shares': position_result.get('shares', 100) if position_result else 100,
+
                 'dynamic_threshold': freshness_result.get('dynamic_threshold') if freshness_result else 0.005,
+
                 'volatility_score': gating_result.get('volatility') if gating_result else 0.15,
+
                 'liquidity_score': gating_result.get('liquidity_score') if gating_result else 1.0
+
             }
+
             
-            self.log(f"{symbol} 澧炲己淇彿澶勭悊瀹屾 鑲?{enhanced_signal['dynamic_shares']}, "
-                    f"闃堝{enhanced_signal['dynamic_threshold']:.4f}, "
-                    f"娉㈠姩鐜{enhanced_signal['volatility_score']:.3f}")
+
+            self.log(f"{symbol}  ? ? ??{enhanced_signal['dynamic_shares']}, "
+
+                    f" ?{enhanced_signal['dynamic_threshold']:.4f}, "
+
+                    f" ?{enhanced_signal['volatility_score']:.3f}")
+
             
+
             return enhanced_signal
+
             
+
         except Exception as e:
-            self.log(f"{symbol} 澧炲己淇彿澶勭悊澶辫触: {e}")
+
+            self.log(f"{symbol}  ? : {e}")
+
             return None
+
     
+
     def _portfolio_rebalance(self):
+
         """Perform portfolio rebalancing"""
+
         try:
+
             self.log("Starting portfolio rebalancing...")
+
             
+
             # Get current positions
+
             current_positions = {}
+
             if hasattr(self, 'trader') and self.trader:
+
                 current_positions = self.trader.get_positions()
+
                 self.log(f"Current positions: {len(current_positions)} symbols")
+
             
+
             # Get target positions from strategy
+
             target_positions = {
+
                 'AAPL': 1000,
+
                 'MSFT': 800,
+
                 'GOOGL': 600,
+
                 'AMZN': 400
+
             }
+
             
+
             # Calculate rebalancing orders
+
             rebalance_orders = []
+
             for symbol, target_qty in target_positions.items():
+
                 current_qty = current_positions.get(symbol, 0)
+
                 qty_diff = target_qty - current_qty
+
                 
+
                 if abs(qty_diff) > 0:  # Only if rebalancing needed
+
                     rebalance_orders.append({
+
                         'symbol': symbol,
+
                         'quantity': abs(qty_diff),
+
                         'action': 'BUY' if qty_diff > 0 else 'SELL',
+
                         'order_type': 'MKT'
+
                     })
+
             
+
             if rebalance_orders:
+
                 self.log(f"Generated {len(rebalance_orders)} rebalancing orders")
+
                 
+
                 # Process orders through risk management
+
                 if hasattr(self, 'risk_balancer_adapter'):
+
                     # Convert to signal format for risk balancer
+
                     signal_df = pd.DataFrame([
+
                         {
+
                             'symbol': order['symbol'],
+
                             'weighted_prediction': 0.01 if order['action'] == 'BUY' else -0.01,
+
                             'confidence': 0.9
+
                         }
+
                         for order in rebalance_orders
+
                     ])
+
                     
+
                     approved_orders = self.risk_balancer_adapter.process_signals(signal_df)
+
                     self.log(f"Risk management approved {len(approved_orders)} rebalancing orders")
+
                 else:
+
                     self.log("Rebalancing orders ready (risk management not available)")
+
             else:
+
                 self.log("Portfolio already balanced - no orders needed")
+
             
+
         except Exception as e:
+
             self.log(f"Portfolio rebalancing failed: {e}")
 
 
+
+
+
     def _add_backtest_stock(self):
-        """娣诲姞鑲エ鍒板洖娴嬪垪"""
+
+        """ ? """
+
         stock = self.ent_bt_stock_input.get().strip().upper()
+
         if stock:
-            # 妫鏌ユ槸鍚﹀凡瀛樺?
+
+            # ? ??
+
             stocks = self.bt_stock_listbox.get(0, tk.END)
+
             if stock not in stocks:
+
                 self.bt_stock_listbox.insert(tk.END, stock)
+
                 self.ent_bt_stock_input.delete(0, tk.END)
-                self.log(f"娣诲姞鑲エ鍒板洖娴嬪垪 {stock}")
+
+                self.log(f" ?  {stock}")
+
         else:
-            messagebox.showinfo("提示", f"{stock} 已在列表中")
+
+            messagebox.showinfo("???", f"{stock} ????? ???")
+
     
+
     def _import_stocks_from_db(self):
-        """浠庢暟鎹簱瀵煎叆鑲エ鍒楄"""
+
+        """ ? ? ?"""
+
         try:
+
             if hasattr(self, 'db'):
-                # 鑾峰彇褰撳墠閫変腑鐨勮偂绁ㄥ垪琛?
+
+                #  ??
+
                 stock_lists = self.db.get_all_stock_lists()
+
                 if stock_lists:
-                    # 鍒涘缓閫夋嫨瀵硅瘽妗?
+
+                    #  ??
+
                     import tkinter.simpledialog as simpledialog
+
                     list_names = [f"{sl['name']} ({len(sl.get('stocks', []))} stocks)" for sl in stock_lists]
+
                     
-                    # 鍒涘缓鑷畾涔夊璇濇
+
+                    #  U? ? ?
+
                     dialog = tk.Toplevel(self)
-                    dialog.title("閫夋嫨鑲エ鍒楄")
+
+                    dialog.title(" ? ?")
+
                     dialog.geometry("400x300")
+
                     
-                    tk.Label(dialog, text="閫夋嫨瑕佸鍏ョ殑鑲エ鍒楄").pack(pady=5)
+
+                    tk.Label(dialog, text=" ? ? ?").pack(pady=5)
+
                     
+
                     listbox = tk.Listbox(dialog, selectmode=tk.SINGLE)
+
                     for name in list_names:
+
                         listbox.insert(tk.END, name)
+
                     listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
                     
+
                     def on_select():
+
                         selection = listbox.curselection()
+
                         if selection:
+
                             idx = selection[0]
+
                             selected_list = stock_lists[idx]
+
                             stocks = selected_list.get('stocks', [])
+
                             
-                            # 娓呯┖鐜版湁鍒楄?
+
+                            #  ??
+
                             self.bt_stock_listbox.delete(0, tk.END)
+
                             
-                            # 娣诲姞鑲エ
+
+                            #  ?
+
                             for stock in stocks:
+
                                 self.bt_stock_listbox.insert(tk.END, stock)
+
                             
-                            self.log(f"浠庢暟鎹簱瀵煎{len(stocks)} 鍙偂绁")
+
+                            self.log(f" ? ?{len(stocks)}  ??")
+
                             dialog.destroy()
+
                     
-                    tk.Button(dialog, text="纭, command=on_select).pack(pady=5")
-                    tk.Button(dialog, text="鍙栨, command=dialog.destroy).pack(pady=5")
+
+                    tk.Button(dialog, text="?, command=on_select).pack(pady=5")
+
+                    tk.Button(dialog, text=" ?, command=dialog.destroy).pack(pady=5")
+
                     
+
                 else:
-                    messagebox.showinfo("提示", "数据库中没有可用的股票列表")
+
+                    messagebox.showinfo("???", "????????? ??????? ?")
+
             else:
-                messagebox.showwarning("提示", "数据库路径未配置")
+
+                messagebox.showwarning("???", "????? ?? ????")
+
                 
+
         except Exception as e:
-            messagebox.showerror("错误", f"导入股票失败: {e}")
-            self.log(f"瀵煎叆鑲エ澶辫 {e}")
+
+            messagebox.showerror("????", f"?????????: {e}")
+
+            self.log(f" ? ? {e}")
+
     
+
     def _clear_backtest_stocks(self):
-        """娓呯┖鍥炴祴鑲エ鍒楄"""
+
+        """ ? ?"""
+
         self.bt_stock_listbox.delete(0, tk.END)
-        self.log("娓呯┖鍥炴祴鑲エ鍒楄")
+
+        self.log(" ? ?")
+
     
+
     def _remove_selected_stocks(self):
-        """鍒犻櫎閫変腑鐨勮偂绁"""
+
+        """ ?"""
+
         selection = self.bt_stock_listbox.curselection()
-        # 浠庡悗寰鍓嶅垹闄わ紝閬垮厤绱㈠紩鍙樺寲
+
+        #  ? 
+
         for index in reversed(selection):
+
             stock = self.bt_stock_listbox.get(index)
+
             self.bt_stock_listbox.delete(index)
-            self.log(f"鍒犻櫎鑲エ: {stock}")
+
+            self.log(f" ?: {stock}")
+
     
+
     def _run_professional_backtest(self):
-        """杩愯涓撲笟BMA鍥炴"""
+
+        """ ? BMA ?"""
+
         try:
-            # 瀵煎叆涓撲笟鍥炴祴绯荤粺
+
+            #  
+
             import sys
+
             sys.path.append('.')
+
             from bma_professional_backtesting import BacktestConfig, BMABacktestEngine
+
             
-            self.after(0, lambda: self._update_backtest_status("鍒濆鍖栦笓涓氬洖娴嬬郴.."))
+
+            self.after(0, lambda: self._update_backtest_status(" ? .."))
+
             
-            # 鑾峰彇鍥炴祴鑲エ鍒楄?
+
+            #  ? ??
+
             stocks = list(self.bt_stock_listbox.get(0, tk.END))
+
             if not stocks:
-                self.after(0, lambda: messagebox.showwarning("提示", "请先添加回测股票"))
+
+                self.after(0, lambda: messagebox.showwarning("???", "???????????"))
+
                 return
+
             
-            # 鑾峰彇鍙傛暟
+
+            #  
+
             start_date = self.ent_bt_start_date.get()
+
             end_date = self.ent_bt_end_date.get()
+
             initial_capital = float(self.ent_bt_capital.get())
+
             commission = float(self.ent_bt_commission.get())
+
             max_positions = int(self.ent_bt_max_positions.get())
+
             rebalance_freq = self.cb_bt_rebalance.get()
+
             
-            # 鍒涘缓涓撲笟鍥炴祴閰嶇疆
+
+            #  
+
             config = BacktestConfig(
+
                 start_date=start_date,
+
                 end_date=end_date,
+
                 initial_capital=initial_capital,
+
                 commission_rate=commission,
-                position_sizing='risk_parity',  # 浣跨敤椋庨櫓骞充?
+
+                position_sizing='risk_parity',  #  ??
+
                 max_position_size=float(self.ent_bt_max_weight.get()),
+
                 rebalance_frequency=rebalance_freq,
+
                 stop_loss=float(self.ent_bt_stop_loss.get()),
-                enable_walk_forward=True,  # 鍚敤Walk-Forward楠岃?
+
+                enable_walk_forward=True,  #  ?Walk-Forward ??
+
                 train_window_months=24,
+
                 test_window_months=6,
+
                 step_months=3,
-                enable_regime_detection=True,  # 鍚敤甯傚満鐘舵佹娴?
-                monte_carlo_simulations=100,  # Monte Carlo妯?
+
+                enable_regime_detection=True,  #  ? ????
+
+                monte_carlo_simulations=100,  # Monte Carlo??
+
                 save_results=True,
+
                 results_dir=self.ent_bt_output_dir.get(),
+
                 generate_report=True,
+
                 verbose=True
+
             )
+
             
-            self.after(0, lambda: self._update_backtest_status(f"寮濮嬪洖娴{len(stocks)} 鍙偂绁?.."))
+
+            self.after(0, lambda: self._update_backtest_status(f"? ?{len(stocks)}  ???.."))
+
             
-            # 鍒濆鍖朆MA妯?
-            from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+
+            #  ? BMA??
+
+            from bma_models._bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+
             bma_model = UltraEnhancedQuantitativeModel(enable_v6_enhancements=True)
+
             
-            # 鍒涘缓鍥炴祴寮曟?
+
+            #  ??
+
             engine = BMABacktestEngine(config, bma_model)
+
             
-            # 杩愯鍥炴祴
-            self.after(0, lambda: self._update_backtest_status("鎵цWalk-Forward鍥炴.."))
+
+            #  ? 
+
+            self.after(0, lambda: self._update_backtest_status(" ?Walk-Forward ?.."))
+
             results = engine.run_backtest(stocks)
+
             
-            # 鏄剧ず缁撴灉
+
+            #  
+
             result_msg = f"""
-涓撲笟鍥炴祴瀹屾垚锛?
 
-馃搳 鎬ц兘鎸囨?
-  鎬绘敹鐩? {results.total_return:.2%}
-  骞村寲鏀剁泭: {results.annualized_return:.2%}
-  澶忔櫘姣旂巼: {results.sharpe_ratio:.2f}
+ ??
+
+
+
+??  ??
+
+   ?? {results.total_return:.2%}
+
+   : {results.annualized_return:.2%}
+
+   : {results.sharpe_ratio:.2f}
+
   
-馃搲 椋庨櫓鎸囨爣:
-  鏈澶у洖? {results.max_drawdown:.2%}
-  娉㈠姩鐜? {results.volatility:.2%}
+
+??  :
+
+  ? ? {results.max_drawdown:.2%}
+
+   ?? {results.volatility:.2%}
+
   VaR(95%): {results.var_95:.2%}
-  
-馃捈 浜ゆ槗缁熻:
-  鎬讳氦鏄撴暟: {results.total_trades}
-  鑳滅? {results.win_rate:.2%}
-  鐩堜簭姣? {results.profit_factor:.2f}
 
-馃幆 缃俊鍖洪棿(95%):
-  鏀剁泭: [{results.return_ci[0]:.2%}, {results.return_ci[1]:.2%}]
-  澶忔? [{results.sharpe_ci[0]:.2f}, {results.sharpe_ci[1]:.2f}]
   
-鎶ュ憡宸蹭繚瀛樿? {config.results_dir}
+
+??  ?:
+
+   : {results.total_trades}
+
+   ?? {results.win_rate:.2%}
+
+   ?? {results.profit_factor:.2f}
+
+
+
+??  Z? (95%):
+
+   : [{results.return_ci[0]:.2%}, {results.return_ci[1]:.2%}]
+
+   ?? [{results.sharpe_ci[0]:.2f}, {results.sharpe_ci[1]:.2f}]
+
+  
+
+ ?? {config.results_dir}
+
             """
+
             
+
             self.after(0, lambda msg=result_msg: self._update_backtest_status(msg))
-            self.after(0, lambda: messagebox.showinfo("鍥炴祴瀹屾, result_msg"))
+
+            self.after(0, lambda: messagebox.showinfo(" ?, result_msg"))
+
             
-            # 濡傛灉闇瑕佹樉绀哄浘?
+
+            #  ? ?
+
             if self.var_bt_show_plots.get():
-                self.after(0, lambda: self._update_backtest_status("鐢熸垚鍥捐.."))
-                # 鍥捐〃宸插湪鎶ュ憡涓敓?
+
+                self.after(0, lambda: self._update_backtest_status(" ?.."))
+
+                #  ??
+
             
+
         except ImportError as e:
-            error_msg = f"瀵煎叆涓撲笟鍥炴祴妯潡澶辫 {e}\n璇风‘淇?bma_professional_backtesting.py 鏂囦欢瀛樺"
+
+            error_msg = f" ? ? {e}\n ??bma_professional_backtesting.py  ?"
+
             self.after(0, lambda msg=error_msg: self._update_backtest_status(msg))
-            self.after(0, lambda msg=error_msg: messagebox.showerror("閿欒, msg"))
+
+            self.after(0, lambda msg=error_msg: messagebox.showerror(" ?, msg"))
+
         except Exception as e:
-            error_msg = f"涓撲笟鍥炴祴鎵ц澶辫 {e}"
+
+            error_msg = f" ? ? {e}"
+
             self.after(0, lambda msg=error_msg: self._update_backtest_status(msg))
-            self.after(0, lambda msg=error_msg: messagebox.showerror("閿欒, msg"))
+
+            self.after(0, lambda msg=error_msg: messagebox.showerror(" ?, msg"))
+
             import traceback
+
             traceback.print_exc()
 
+
+
     def _ensure_top_menu(self) -> None:
+
         try:
+
             menubar = tk.Menu(self)
+
             # File menu (minimal)
+
             file_menu = tk.Menu(menubar, tearoff=0)
+
             file_menu.add_command(label="Exit", command=self._on_closing)
+
             menubar.add_cascade(label="File", menu=file_menu)
+
             # Tools menu
+
             tools_menu = tk.Menu(menubar, tearoff=0)
+
             tools_menu.add_command(label="Return Comparison...", command=self._open_return_comparison_window)
+
             menubar.add_cascade(label="Tools", menu=tools_menu)
+
             self.config(menu=menubar)
+
         except Exception:
+
             pass
+
+
 
     def _ensure_toolbar(self) -> None:
+
         try:
+
             if getattr(self, '_toolbar_frame', None) is None:
+
                 bar = ttk.Frame(self)
+
                 bar.pack(side=tk.TOP, fill=tk.X)
+
                 self._toolbar_frame = bar
+
                 btn = ttk.Button(bar, text="Return Comparison", command=self._open_return_comparison_window)
+
                 btn.pack(side=tk.LEFT, padx=4, pady=2)
+
         except Exception:
+
             pass
 
+
+
     def _open_return_comparison_window(self) -> None:
+
         # Create a standalone window reusing the existing form and handler
+
         win = tk.Toplevel(self)
+
         win.title("Return Comparison")
+
         frm = ttk.Frame(win)
+
         frm.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
         # Inputs
+
         ttk.Label(frm, text="Tickers (comma separated):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
         entry_symbols = tk.Entry(frm, width=40)
+
         entry_symbols.insert(0, "AAPL,MSFT,GOOGL")
+
         entry_symbols.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+
         ttk.Label(frm, text="Start date (YYYY-MM-DD):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+
         entry_start = tk.Entry(frm, width=15)
+
         entry_start.insert(0, (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d'))
+
         entry_start.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+
         ttk.Label(frm, text="End date (YYYY-MM-DD):").grid(row=1, column=2, padx=5, pady=5, sticky=tk.W)
+
         entry_end = tk.Entry(frm, width=15)
+
         entry_end.insert(0, datetime.now().strftime('%Y-%m-%d'))
+
         entry_end.grid(row=1, column=3, padx=5, pady=5, sticky=tk.W)
+
         # Output
+
         txt = tk.Text(frm, height=10, wrap=tk.WORD, state=tk.DISABLED)
+
         txt.grid(row=2, column=0, columnspan=4, padx=5, pady=(5, 0), sticky=tk.EW)
+
         frm.grid_columnconfigure(1, weight=1)
+
         frm.grid_columnconfigure(3, weight=1)
+
         
+
         # Wire a local handler that proxies to the existing worker via temporary bindings
+
         def run_compare():
+
             # Temporarily bind the existing GUI fields to reuse the handler
+
             prev_symbols = getattr(self, 'polygon_compare_symbols', None)
+
             prev_start = getattr(self, 'polygon_compare_start', None)
+
             prev_end = getattr(self, 'polygon_compare_end', None)
+
             prev_output = getattr(self, 'polygon_compare_output', None)
+
             try:
+
                 self.polygon_compare_symbols = entry_symbols
+
                 self.polygon_compare_start = entry_start
+
                 self.polygon_compare_end = entry_end
+
                 self.polygon_compare_output = txt
+
                 self._compare_polygon_returns()
+
             finally:
+
                 # Restore previous bindings
+
                 self.polygon_compare_symbols = prev_symbols
+
                 self.polygon_compare_start = prev_start
+
                 self.polygon_compare_end = prev_end
+
                 self.polygon_compare_output = prev_output
+
         
+
         btn = ttk.Button(frm, text="Compute Return Comparison", command=run_compare)
+
         btn.grid(row=0, column=3, padx=5, pady=5, sticky=tk.E)
 
-        # 鈥斺?Excel 鍏ュ?鈥斺?
-        ttk.Label(frm, text="Excel 鏂囦").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+
+
+        #  ??Excel  ?? ??
+
+        ttk.Label(frm, text="Excel  ?").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+
         entry_excel = tk.Entry(frm, width=40)
+
         entry_excel.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
 
+
+
         def browse_excel_local():
+
             try:
+
                 path = filedialog.askopenfilename(
-                    title="閫夋嫨鍖呭惈澶氫釜鏂规鐨凟xcel鏂囦",
+
+                    title=" ? Excel ?",
+
                     filetypes=[("Excel Files", "*.xlsx;*.xls")]
+
                 )
+
                 if path:
+
                     entry_excel.delete(0, tk.END)
+
                     entry_excel.insert(0, path)
+
             except Exception:
+
                 pass
 
-        ttk.Button(frm, text="閫夋嫨Excel...", command=browse_excel_local).grid(row=3, column=2, padx=5, pady=5, sticky=tk.W)
+
+
+        ttk.Button(frm, text=" Excel...", command=browse_excel_local).grid(row=3, column=2, padx=5, pady=5, sticky=tk.W)
+
+
 
         def run_excel_backtest():
-            # 鏆傜粦Excel鍏ュ彛涓庤緭鍑猴紝澶嶇敤鐜版湁瀹炵?
+
+            #  Excel ??
+
             prev_excel_entry = getattr(self, 'polygon_compare_excel_entry', None)
+
             prev_output = getattr(self, 'polygon_compare_output', None)
+
             try:
+
                 self.polygon_compare_excel_entry = entry_excel
+
                 self.polygon_compare_output = txt
+
                 self._compare_returns_from_excel()
+
             finally:
+
                 self.polygon_compare_excel_entry = prev_excel_entry
+
                 self.polygon_compare_output = prev_output
+
+
 
         ttk.Button(frm, text="Excel Top20 T+5 (vs SPY)", command=run_excel_backtest).grid(row=3, column=3, padx=5, pady=5, sticky=tk.E)
 
+
+
 def init_batch() -> None:
+
     """Initialize application in batch/headless mode without GUI."""
+
     try:
+
         # Initialize core components without GUI
+
         from bma_models.unified_config_loader import get_config_manager as get_default_config
+
         from autotrader.unified_event_manager import get_event_loop_manager
+
         from autotrader.unified_monitoring_system import get_resource_monitor
+
         from autotrader.database import StockDatabase
+
         
+
         config_manager = get_default_config()
+
         loop_manager = get_event_loop_manager()
+
         resource_monitor = get_resource_monitor()
+
         
+
         # Start event loop manager
+
         if not loop_manager.start():
+
             raise RuntimeError("Failed to start event loop manager")
+
         
+
         # Start resource monitoring
+
         resource_monitor.start_monitoring()
+
         
+
         # Initialize database
+
         db = StockDatabase()
+
         
+
         print("[OK] Batch mode initialized successfully")
+
         print(f"[INFO] Config manager: {type(config_manager).__name__}")
+
         print(f"[INFO] Event loop manager: {'Running' if loop_manager.is_running else 'Stopped'}")
+
         print(f"[INFO] Database: {'Connected' if db else 'Not available'}")
+
         
+
         return {
+
             'config_manager': config_manager,
+
             'loop_manager': loop_manager,
+
             'resource_monitor': resource_monitor,
+
             'database': db
+
         }
+
     except Exception as e:
+
         print(f"[ERROR] Batch initialization failed: {e}")
+
         raise
 
 
+
+
+
 def main() -> None:
+
     """Main entry point - supports both GUI and batch modes."""
+
     import sys
+
     
+
     # Check for batch mode flag
+
     batch_mode = '--batch' in sys.argv or '-b' in sys.argv
+
     
+
     if batch_mode:
+
         # Initialize in batch mode (headless)
+
         print("[INFO] Starting in batch mode...")
+
         try:
+
             components = init_batch()
+
             print("[OK] Batch mode ready. Components initialized.")
+
             # Keep running until interrupted
+
             import time
+
             try:
+
                 while True:
+
                     time.sleep(1)
+
             except KeyboardInterrupt:
+
                 print("\n[INFO] Shutting down batch mode...")
+
                 if components and 'loop_manager' in components:
+
                     try:
+
                         components['loop_manager'].stop()
+
                     except Exception:
+
                         pass
+
                 print("[OK] Batch mode stopped")
+
         except Exception as e:
+
             print(f"[ERROR] Batch mode failed: {e}")
+
             sys.exit(1)
+
     else:
+
         # GUI mode (default)
+
         app = None
+
         try:
+
             app = AutoTraderGUI()  # type: ignore
+
             # Set exit handler to ensure event loop closes properly
+
             def on_closing():
+
                 try:
+
                     if hasattr(app, 'loop_manager') and app.loop_manager.is_running:
+
                         app.loop_manager.stop()
+
                     app.destroy()
+
                 except Exception as e:
+
                     print(f"Exit handler error: {e}")
+
                     app.destroy()
+
             
+
             app.protocol("WM_DELETE_WINDOW", on_closing)
+
             app.mainloop()
+
         except Exception as e:
+
             print(f"Application startup error: {e}")
+
             if app and hasattr(app, 'loop_manager') and app.loop_manager.is_running:
+
                 try:
+
                     app.loop_manager.stop()
+
                 except Exception as e:
+
                     # Log shutdown error, even though program is exiting
+
                     print(f"Event loop manager shutdown error: {e}")
 
 
+
+
+
 if __name__ == "__main__":
+
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _run_timesplit_eval(self) -> None:
+        try:
+            selected_features = [feat for feat, var in getattr(self, 'timesplit_feature_vars', {}).items() if var.get()]
+        except AttributeError:
+            messagebox.showerror("80/20 Evaluation", "Timesplit UI not initialized yet.")
+            return
+        if not selected_features:
+            messagebox.showerror("80/20 Evaluation", "Select at least one feature before running the evaluation.")
+            return
+        split_value = float(getattr(self, 'timesplit_split_var', tk.DoubleVar(value=0.8)).get())
+        split_value = max(0.60, min(0.95, split_value))
+        ema_top_n = "0" if getattr(self, 'var_timesplit_ema', tk.BooleanVar(value=False)).get() else "-1"
+        cmd = [
+            sys.executable,
+            str(Path('scripts') / 'time_split_80_20_oos_eval.py'),
+            '--data-file', str(STAGE_A_DATA_PATH),
+            '--train-data', str(STAGE_A_DATA_PATH),
+            '--horizon-days', '10',
+            '--split', f"{split_value:.3f}",
+            '--model', 'lambdarank',
+            '--models', 'lambdarank',
+            '--output-dir', str(Path('results') / 'timesplit_gui'),
+            '--log-level', 'INFO',
+            '--features',
+        ] + selected_features + ['--ema-top-n', ema_top_n]
+        if getattr(self, '_timesplit_thread', None) and self._timesplit_thread.is_alive():
+            messagebox.showinfo("80/20 Evaluation", "An evaluation is already running. Please wait for it to finish.")
+            return
+        self.log(f"[TimeSplit] Starting 80/20 evaluation with split={split_value:.2f}, EMA={'ON' if ema_top_n == '0' else 'OFF'}")
+        cwd = Path(__file__).resolve().parent.parent
+        thread = threading.Thread(target=self._run_timesplit_eval_thread, args=(cmd, cwd), daemon=True)
+        self._timesplit_thread = thread
+        thread.start()
+
+    def _run_timesplit_eval_thread(self, cmd: list[str], cwd: Path) -> None:
+        try:
+            proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception as exc:
+            self.after(0, lambda: self.log(f"[TimeSplit] Failed to start evaluation: {exc}"))
+            messagebox.showerror("80/20 Evaluation", f"Failed to start process: {exc}")
+            return
+        for line in proc.stdout or []:
+            msg = line.rstrip()
+            if msg:
+                self.after(0, lambda m=msg: self.log(f"[TimeSplit] {m}"))
+        proc.wait()
+        status = "completed successfully" if proc.returncode == 0 else f"finished with code {proc.returncode}"
+        self.after(0, lambda: self.log(f"[TimeSplit] Evaluation {status}."))
+        if proc.returncode == 0:
+            self.after(0, lambda: messagebox.showinfo("80/20 Evaluation", "Evaluation finished successfully. Check results/timesplit_gui for outputs."))
+        else:
+            self.after(0, lambda: messagebox.showerror("80/20 Evaluation", f"Evaluation failed with code {proc.returncode}. See log for details."))
+
+    def _open_timesplit_results(self) -> None:
+        results_path = Path('results') / 'timesplit_gui'
+        results_path.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform.startswith('win'):
+                os.startfile(results_path)  # type: ignore[attr-defined]
+            elif sys.platform.startswith('darwin'):
+                subprocess.Popen(['open', str(results_path)])
+            else:
+                subprocess.Popen(['xdg-open', str(results_path)])
+        except Exception as exc:
+            self.log(f"[TimeSplit] Failed to open results folder: {exc}")
+            messagebox.showerror("80/20 Evaluation", f"Unable to open folder: {exc}")
 
 

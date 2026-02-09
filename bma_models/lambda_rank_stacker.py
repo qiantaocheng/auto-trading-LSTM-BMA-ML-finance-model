@@ -300,7 +300,7 @@ class LambdaRankStacker:
         if self.use_internal_cv and self.use_purged_cv:
             logger.info(f"   CV参数: splits={self.cv_n_splits}, gap={self.cv_gap_days}天, embargo={self.cv_embargo_days}天")
 
-    def _convert_to_rank_labels(self, df: pd.DataFrame, target_col: str = 'ret_fwd_10d') -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    def _convert_to_rank_labels(self, df: pd.DataFrame, target_col: str = 'ret_fwd_5d') -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
         将连续目标变量转换为稳定的固定档位等级（64/128档软离散）
 
@@ -383,7 +383,7 @@ class LambdaRankStacker:
 
         return df_processed, conversion_report
 
-    def fit(self, df: pd.DataFrame, target_col: str = 'ret_fwd_10d', alpha_factors: pd.DataFrame = None) -> 'LambdaRankStacker':
+    def fit(self, df: pd.DataFrame, target_col: str = 'ret_fwd_5d', alpha_factors: pd.DataFrame = None) -> 'LambdaRankStacker':
         """
         训练LambdaRank模型
 

@@ -25,52 +25,66 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # 🔥 CORE ALPHA FACTORS (horizon-aware)
-# - T+10 default: updated bi-weekly set (adds liquidity/OBV divergence/IVOL; removes fast/noisy/lagging factors)
-# - T+5 legacy: preserved for backward compatibility when explicitly requested
+# - Stage-A T+5 factor set used across training/prediction
+# - Legacy T+10 alias is preserved for backward compatibility
 #
-# NOTE: Downstream training expects a stable set of feature names. We keep both sets and switch
-#       by engine.horizon. (horizon=5 -> T5 set, horizon=10 -> T10 set)
-T5_ALPHA_FACTORS = [
-    'momentum_60d',          # 60-day price momentum (T+5 horizon)
-    'rsi_21',                # 21-period RSI tuned for smoother signals
-    'bollinger_squeeze',     # Bollinger Band volatility squeeze
-    'obv_momentum_60d',      # 60-day OBV momentum
-    'atr_ratio',             # ATR intensity ratio
-    'blowoff_ratio',         # Recent blowoff jump normalized by 14d vol
-    'hist_vol_40d',          # 40-day historical volatility level
-    'vol_ratio_20d',         # 20-day volume spike ratio
-    'near_52w_high',         # Distance to 52-week high (252-day window)
-    'price_ma60_deviation',  # Deviation from 60-day moving average
-    'mom_accel_20_5',        # Momentum acceleration (20d vs 5d)
-    'streak_reversal',       # Streak reversal signal
-    'ma30_ma60_cross',       # 30vs60-day moving-average cross trend signal
-    'ret_skew_20d',          # 20-day return skewness
-    'trend_r2_60',           # 60-day trend R-squared
-    '5_days_reversal',       # Short-term reversal over 5 trading days
-    # 'roa',                   # Return on assets (Polygon fundamental) - REMOVED
-    # 'ebit',                  # EBIT scaled feature - REMOVED
-    'downside_beta_ewm_21',   # Downside beta vs benchmark (QQQ) using EWMA 21-day window
+# NOTE: Downstream training expects a stable set of feature names. We keep both names but both map
+#       to this Stage-A configuration.
+CANONICAL_ALPHA_FACTORS = [
+    'volume_price_corr_3d',
+    'rsi_14',
+    'reversal_3d',
+    'momentum_10d',
+    'liquid_momentum_10d',
+    'sharpe_momentum_5d',
+    'price_ma20_deviation',
+    'avg_trade_size',
+    'trend_r2_20',
+    'dollar_vol_20',
+    'ret_skew_20d',
+    'reversal_5d',
+    'near_52w_high',
+    'atr_pct_14',
+    'amihud_20',
 ]
 
-# 🔥 T+10 CORE ALPHA FACTORS (14 factors - always used regardless of horizon)
-# Updated 2026-01-24: Always use T10 factors, T5 removed
-# Matches compulsory_features in 量化模型_bma_ultra_enhanced.py (Line 3245-3250)
-T10_ALPHA_FACTORS = [
-    'liquid_momentum',      # Liquidity-adjusted momentum
-    'momentum_10d',         # 10-day short-term momentum
-    'momentum_60d',         # 60-day momentum
-    'obv_divergence',       # OBV divergence (volume-price divergence)
-    'obv_momentum_60d',     # 60-day OBV momentum
-    'ivol_20',              # 20-day implied volatility
-    'hist_vol_40d',         # 40-day historical volatility
-    'atr_ratio',            # ATR ratio
-    'rsi_21',               # 21-period RSI
-    'trend_r2_60',          # 60-day trend R²
-    'near_52w_high',        # Distance to 52-week high
-    'vol_ratio_20d',        # 20-day volume ratio
-    'price_ma60_deviation', # Price deviation from 60-day MA
-    '5_days_reversal',      # 5-day reversal factor
+# Canonical factor set used for both horizons
+T5_ALPHA_FACTORS = [
+
+    'volume_price_corr_3d',
+
+    'rsi_14',
+
+    'reversal_3d',
+
+    'momentum_10d',
+
+    'liquid_momentum_10d',
+
+    'sharpe_momentum_5d',
+
+    'price_ma20_deviation',
+
+    'avg_trade_size',
+
+    'trend_r2_20',
+
+    'dollar_vol_20',
+
+    'ret_skew_20d',
+
+    'reversal_5d',
+
+    'near_52w_high',
+
+    'atr_pct_14',
+
+    'amihud_20'
+
 ]
+
+T10_ALPHA_FACTORS = T5_ALPHA_FACTORS.copy()
+
 
 # Backward compatibility aliases - default to the T+10 set and fall back to T+5 only when explicitly requested.
 DEFAULT_REQUIRED_FACTORS = T10_ALPHA_FACTORS
@@ -111,11 +125,10 @@ class Simple17FactorEngine:
             self.mode = 'predict'  # 统一命名
 
         self.horizon = horizon
-        # 🔥 ALWAYS USE T+10 FACTORS (T5 removed, 2026-01-24)
-        # Always use T10_ALPHA_FACTORS regardless of horizon
+        # 🔥 ALWAYS USE STAGE-A T+5 FACTORS
         self.alpha_factors = T10_ALPHA_FACTORS
         logger.info(
-            f"Using T+10 alpha factor set ({len(self.alpha_factors)} factors) - T5 factors removed"
+            f"Using T+5 Stage-A factor set ({len(self.alpha_factors)} factors)"
         )
 
         if self.mode not in ['train', 'predict']:
@@ -511,6 +524,12 @@ class Simple17FactorEngine:
 
         # Combine all factor DataFrames
         factors_df = pd.concat(all_factors, axis=1)
+        allowed_features = set(self.alpha_factors)
+
+        factors_df = factors_df[[col for col in factors_df.columns if col in allowed_features]]
+
+
+
         
         # Add Close prices BEFORE setting MultiIndex to preserve alignment
         factors_df['Close'] = compute_data['Close']

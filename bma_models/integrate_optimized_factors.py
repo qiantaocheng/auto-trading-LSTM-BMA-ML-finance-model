@@ -148,7 +148,6 @@ Generated: {timestamp}
 - mfi (Quality: 3.20) ✅
 - stoch_k (Quality: 2.44) ✅
 - bollinger_position (Quality: 2.18) ✅
-- bollinger_squeeze (Quality: 1.98) ✅
 - rsi, cci, atr_ratio (Good quality) ✅
 
 ## EXPECTED IMPROVEMENTS

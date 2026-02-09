@@ -29,7 +29,7 @@ class ConnectionSimplifier:
         if self._primary_manager is None:
             # 创建一个模拟的IB客户端用于测试
             try:
-                from ib_insync import IB
+                from ib_async import IB
                 mock_ib = IB()
             except ImportError:
                 # 如果ib_insync不可用，创建一个模拟对象

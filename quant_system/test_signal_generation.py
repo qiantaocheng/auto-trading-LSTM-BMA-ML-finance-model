@@ -12,7 +12,7 @@ from config.settings import SystemConfig
 from data.polygon_data_fetcher import PolygonDataFetcher
 
 # Load data
-loader = FactorDataLoader(r'D:\trade\quant_system\data\polygon_factors_all_filtered_clean_final_v2_recalculated.parquet')
+loader = FactorDataLoader(r'D:\trade\quant_system\data\polygon_factors_all_2021_2026_T5_final.parquet')
 loader.load_factors()
 
 # Get small subset

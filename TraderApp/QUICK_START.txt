@@ -1,0 +1,270 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                      TRADERAPP - QUICK START GUIDE                              ║
+║                          2026-02-10 - Version 2.2.1                             ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+LAUNCH APPLICATION
+═══════════════════════════════════════════════════════════════════════════════
+
+Option 1 (Recommended):
+  cd D:\trade\TraderApp
+  .\TraderApp.bat
+
+Option 2 (Direct):
+  D:\trade\TraderApp\src\Trader.App\bin\Release\net10.0-windows\win-x64\publish\Trader.App.exe
+
+
+PORTS (CORRECTED)
+═══════════════════════════════════════════════════════════════════════════════
+
+Paper Mode:  PORT 4002   ✅ (Simulation - Safe for testing)
+Live Mode:   PORT 4001   ✅ (Real trading - REAL MONEY!)
+
+
+FIRST TIME SETUP
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Ensure TWS or IB Gateway is running
+
+2. In Monitor Tab:
+   - Select Mode: Paper (start with Paper!)
+   - Enter Client ID: 123 (or your custom ID)
+   - Click [Connect]
+
+3. Verify:
+   - Green "CONNECTED" badge appears
+   - TWS console shows "port 4002" connected
+
+4. You're ready!
+
+
+HOW TO USE CLIENT ID INPUT
+═══════════════════════════════════════════════════════════════════════════════
+
+To change your IBKR Client ID without editing config files:
+
+1. In Monitor Tab → Find "Client ID:" input box
+2. Enter your desired Client ID (must be positive integer)
+3. Press Enter or Tab to apply
+4. If connected, app auto-disconnects
+5. App saves to appsettings.json automatically
+6. Next time you connect, it uses the new Client ID
+
+
+KEY FEATURES
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ Auto Trading
+   - Buy/sell automatically after predictions
+   - 5-day rebalance cycle
+   - 5% stop loss protection
+
+✅ HMM Risk Control
+   - Auto-runs on startup
+   - Shows current risk status
+   - Applies risk gate to trading
+
+✅ Capital Monitoring
+   - 1-minute chart updates
+   - Database storage
+   - Account balance tracking
+
+✅ Connection Control
+   - Manual connect/disconnect
+   - Paper/Live mode switching
+   - Custom Client ID input
+
+✅ Detailed Logging
+   - Prediction progress
+   - Trading events
+   - HMM status updates
+
+
+CONTROL LAYOUT
+═══════════════════════════════════════════════════════════════════════════════
+
+Auto Trading Section:
+┌─────────────────────────────────────────────────────────────┐
+│ Auto Trading  [✓] Enabled                                   │
+│                                                              │
+│ Mode: [Paper ▼]  Client ID: [123]  [Connect] [Disconnect]  │
+│ [PAPER MODE] [●CONNECTED]  Positions: 5                     │
+│                                                              │
+│ ╔═══════════════════════════════════════════════════════╗   │
+│ ║ HMM: [SAFE]  Risk Gate: 0.9972  P(Crisis): 0.0014   ║   │
+│ ║ Rebalance in: 3d                                      ║   │
+│ ╚═══════════════════════════════════════════════════════╝   │
+└─────────────────────────────────────────────────────────────┘
+
+
+TESTING SEQUENCE
+═══════════════════════════════════════════════════════════════════════════════
+
+Step 1: Test Connection
+  1. Select Mode: Paper
+  2. Click [Connect]
+  3. Verify "CONNECTED" badge appears
+  → Result: ✅ Connection works on port 4002
+
+Step 2: Test Client ID Change
+  1. Click [Disconnect]
+  2. Change Client ID to 456
+  3. Click [Connect] again
+  4. Verify connection succeeds with new Client ID
+  → Result: ✅ Client ID update works
+
+Step 3: Test Paper Mode Trading
+  1. Stay in Paper mode
+  2. Run a prediction (Direct Predict tab)
+  3. Enable Auto Trading
+  4. Monitor buy orders in TWS
+  → Result: ✅ Paper trading works
+
+Step 4: Test Live Mode
+  1. Click [Disconnect]
+  2. Select Mode: Live
+  3. Click [Connect]
+  4. Should connect on port 4001
+  → Result: ✅ Live mode works
+
+
+IMPORTANT SETTINGS
+═══════════════════════════════════════════════════════════════════════════════
+
+appsettings.json (D:\trade\TraderApp\...\publish\appsettings.json)
+
+{
+  "IBKR": {
+    "Mode": "Paper",           // Change to "Live" for real trading
+    "Host": "127.0.0.1",       // Leave as is (local TWS/Gateway)
+    "PaperPort": 4002,         // Paper trading socket port
+    "LivePort": 4001,          // Live trading socket port
+    "ClientId": 123            // Change via UI or manually edit
+  }
+}
+
+
+SAFETY CHECKLIST
+═══════════════════════════════════════════════════════════════════════════════
+
+Before Trading:
+  [ ] TWS/IB Gateway is running
+  [ ] Mode is set correctly (Paper or Live)
+  [ ] Client ID is correct
+  [ ] Connection shows "CONNECTED" badge
+  [ ] HMM status is displayed
+
+During Trading:
+  [ ] Stop loss is active (5%)
+  [ ] HMM risk control is enabled
+  [ ] Crisis mode checked
+  [ ] Capital curve updating
+  [ ] Positions tracked
+
+After Trading:
+  [ ] Review trading log
+  [ ] Check capital growth chart
+  [ ] Verify positions match TWS
+  [ ] Check stop loss hits (if any)
+
+
+TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════════════════
+
+Connection Won't Work?
+  1. Verify TWS/IB Gateway is running
+  2. Check Mode is set correctly
+  3. Verify Client ID is valid (0-9999)
+  4. Ensure port 4002 (Paper) or 4001 (Live) is open
+  5. Check TWS API settings allow connections
+
+Client ID Won't Update?
+  1. Must be disconnected to change
+  2. Click [Disconnect] first
+  3. Then edit Client ID
+  4. Click [Connect] to apply
+
+No Capital Data?
+  1. Must be connected first
+  2. Wait 1 minute for first sample
+  3. Check database file exists
+  4. Restart app if needed
+
+Auto Trading Not Triggering?
+  1. Verify [✓] Enabled is checked
+  2. Run a prediction first
+  3. Check HMM status (not crisis)
+  4. Monitor risk gate value
+  5. Check trading log for errors
+
+
+BUILD INFORMATION
+═══════════════════════════════════════════════════════════════════════════════
+
+Version:       2.2.1 (Port Correction Release)
+Build Date:    2026-02-10 03:16 AM
+Framework:     .NET 10.0
+Platform:      Windows x64
+Status:        ✅ PRODUCTION READY
+Clean Build:   ✅ YES (debug artifacts removed)
+Ports:         ✅ CORRECTED (4002/4001)
+
+
+FILES MODIFIED
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ ApplicationOptions.cs
+   - Changed PaperPort from 7497 to 4002
+   - Changed LivePort from 7496 to 4001
+
+✅ appsettings.json
+   - Updated port values in IBKR section
+
+✅ MonitorViewModel.cs
+   - Added ClientId property
+   - Added UpdateClientId() method
+
+✅ MonitorView.xaml
+   - Added Client ID input TextBox
+   - Reorganized control layout
+
+✅ MonitorView.xaml.cs
+   - Added ClientIdTextBox_TextChanged handler
+   - Input validation for Client ID
+
+
+DOCUMENTATION
+═══════════════════════════════════════════════════════════════════════════════
+
+Available in D:\trade\TraderApp\:
+
+QUICK_START.txt ..................... This file
+FINAL_STATUS_2026-02-10.md .......... Complete status report
+PORTS_CORRECTED_SUMMARY.txt ........ Port correction reference
+PORT_CORRECTION_COMPLETE.md ........ Detailed port explanation
+CLIENT_ID_FEATURE_COMPLETE.md ...... Client ID feature guide
+UI_LAYOUT_SUMMARY.md ............... Full UI reference
+IBKR_CONNECTION_ANALYSIS.md ........ IBKR verification
+
+
+READY TO LAUNCH!
+═══════════════════════════════════════════════════════════════════════════════
+
+Application is fully built, deployed, and cleaned up!
+
+Just run:
+  cd D:\trade\TraderApp && .\TraderApp.bat
+
+Or double-click:
+  Trader.App.exe
+
+You're good to go! 🚀
+
+
+For detailed information, see FINAL_STATUS_2026-02-10.md
+
+════════════════════════════════════════════════════════════════════════════════
+Last Updated: 2026-02-10 03:16 AM
+Version: 2.2.1
+Status: ✅ READY
+════════════════════════════════════════════════════════════════════════════════

@@ -49,22 +49,24 @@ def prepare_data_with_mode(
         # 计算target
         logger.info(f"   计算T+{horizon}的forward returns...")
         if isinstance(feature_data.index, pd.MultiIndex):
-            # MultiIndex format
+            # MultiIndex format - FIX: shift must be per-ticker
             target_series = (
                 feature_data.groupby(level='ticker')['Close']
                 .pct_change(horizon)
+                .groupby(level='ticker')
                 .shift(-horizon)
             )
         else:
-            # 如果有ticker列
+            # 如果有ticker列 - FIX: shift must be per-ticker
             if 'ticker' in feature_data.columns:
                 target_series = (
                     feature_data.groupby('ticker')['Close']
                     .pct_change(horizon)
+                    .groupby('ticker')
                     .shift(-horizon)
                 )
             else:
-                # 单个ticker
+                # 单个ticker - no groupby needed for single ticker
                 target_series = (
                     feature_data['Close']
                     .pct_change(horizon)

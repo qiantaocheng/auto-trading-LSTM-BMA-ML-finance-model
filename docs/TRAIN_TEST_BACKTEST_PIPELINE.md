@@ -199,7 +199,7 @@ This ensures:
   - Generates bucket return time series and plots (top/middle/bottom buckets)
   - Computes benchmark returns aligned to the test window (QQQ by default; uses yfinance fallback when needed)
 - **Key Functions**:
-  - `main()`: Orchestrates train ‚Üí snapshot ‚Üí backtest ‚Üí metrics
+  - `main()`: Orchestrates train ‚Ü?snapshot ‚Ü?backtest ‚Ü?metrics
   - `_write_model_topn_vs_benchmark()`: Generates per-model time series and plots
   - `_compute_benchmark_tplus_from_yfinance()`: Fetches QQQ benchmark returns
 - **Workflow**:
@@ -272,7 +272,7 @@ Typical outputs (per run):
 - **Method**: `load_factor_data()`
 - **Responsibility**:
   - Loads parquet factor files
-  - Calls `_standardize_multiindex()` to convert RangeIndex ‚Üí MultiIndex(date, ticker)
+  - Calls `_standardize_multiindex()` to convert RangeIndex ‚Ü?MultiIndex(date, ticker)
   - Applies universe filters (if configured)
   - Filters date window (if start_date/end_date specified)
 - **Method**: `_standardize_multiindex()`
@@ -339,7 +339,7 @@ These scripts are used to create additional publication-ready figures from an ex
     - Produces: `<model>_bucket_accum_compare_vs_QQQ.png`
     - Design: wealth-index on log scale + cumulative excess return vs benchmark
   - `scripts/insert_bucket_cumulative_vs_benchmark_into_doc.py`
-    - Inserts the per-model bucket-vs-benchmark figures into the DOCX at the results section (before ‚ÄúTable 3‚Äù)
+    - Inserts the per-model bucket-vs-benchmark figures into the DOCX at the results section (before ‚ÄúTable 3‚Ä?
 - **$1,000,000 equity curves by bucket (all models vs QQQ)**
   - `scripts/plot_equity_curves_all_models_by_bucket.py`
     - Produces:
@@ -382,7 +382,7 @@ These scripts are used to create additional publication-ready figures from an ex
 ## 8. COMPLETE WORKFLOW SUMMARY
 
 ### Phase 1: Data Preparation
-1. **Factor Generation**: `simple_25_factor_engine.py` ‚Üí `factors_all.parquet`
+1. **Factor Generation**: `simple_25_factor_engine.py` ‚Ü?`factors_all.parquet`
 2. **Data Export**: `factor_export_service.py` orchestrates export
 
 ### Phase 2: Model Training
@@ -438,7 +438,7 @@ python -m bma_models.ÈáèÂåñÊ®°Âûã_bma_ultra_enhanced --start-date 2020-01-01 --e
 **Standard Command (Recommended)**:
 ```bash
 python scripts/time_split_80_20_oos_eval.py \
-  --data-file "data/factor_exports/polygon_factors_all_filtered.parquet" \
+  --data-file "data/factor_exports/polygon_factors_all_2021_2026_T5_final.parquet" \
   --horizon-days 10 \
   --split 0.8 \
   --models elastic_net xgboost catboost lightgbm_ranker lambdarank ridge_stacking \
@@ -461,7 +461,7 @@ python scripts/time_split_80_20_oos_eval.py \
   --output-dir results/t10_time_split_test20
 ```
 
-### Plot ‚ÄúBucket vs QQQ‚Äù (benchmark-visible) from an existing run folder
+### Plot ‚ÄúBucket vs QQQ‚Ä?(benchmark-visible) from an existing run folder
 ```bash
 python scripts/plot_time_split_bucket_cumulative_vs_benchmark.py \
   --run-dir results/extreme_filter_evaluation/run_20260113_054433 \
@@ -506,31 +506,31 @@ python scripts/comprehensive_model_backtest.py \
 
 ```
 factors_all.parquet (MultiIndex)
-    ‚Üì
+    ‚Ü?
 UltraEnhancedQuantitativeModel.train_from_document()
-    ‚Üì
+    ‚Ü?
 Simple25FactorEngine.get_data_and_features()
-    ‚Üì
+    ‚Ü?
 PurgedCV splits (6-fold, gap=10, embargo=10)
-    ‚Üì
+    ‚Ü?
 First-Layer Models (ElasticNet, XGBoost, CatBoost, LightGBM Ranker, LambdaRank)
-    ‚Üì
+    ‚Ü?
 OOF Predictions (pred_elastic, pred_xgb, pred_catboost, pred_lightgbm_ranker, pred_lambdarank)
-    ‚Üì
+    ‚Ü?
 MetaRankerStacker.fit() on OOF predictions (LightGBM Ranker with LambdaRank objective)
-    ‚Üì
+    ‚Ü?
 model_registry.save_model_snapshot()
-    ‚Üì
+    ‚Ü?
 Snapshot (all models + metadata)
-    ‚Üì
+    ‚Ü?
 ComprehensiveModelBacktest.run_backtest()
-    ‚Üì
-Predictions ‚Üí Returns ‚Üí Metrics (IC, Sharpe, turnover, costs)
-    ‚Üì
+    ‚Ü?
+Predictions ‚Ü?Returns ‚Ü?Metrics (IC, Sharpe, turnover, costs)
+    ‚Ü?
 generate_paper_revision_artifacts.py
-    ‚Üì
+    ‚Ü?
 update_equity_ranking_docx_reviewer.py
-    ‚Üì
+    ‚Ü?
 Word Document (with embedded results)
 ```
 
@@ -565,7 +565,7 @@ Word Document (with embedded results)
 | `scripts/generate_paper_revision_artifacts.py` | Paper artifact generation | Ridge weights, yearly stats, distributions |
 | `scripts/update_equity_ranking_docx_reviewer.py` | Word document updater | Embeds tables, plots, sections |
 | `scripts/plot_time_split_bucket_cumulative_vs_benchmark.py` | Bucket vs benchmark plots | per-model benchmark-visible bucket figures |
-| `scripts/insert_bucket_cumulative_vs_benchmark_into_doc.py` | Insert bucket vs benchmark into DOCX | inserts before ‚ÄúTable 3‚Äù in results section |
+| `scripts/insert_bucket_cumulative_vs_benchmark_into_doc.py` | Insert bucket vs benchmark into DOCX | inserts before ‚ÄúTable 3‚Ä?in results section |
 | `scripts/plot_equity_curves_all_models_by_bucket.py` | $1,000,000 equity curves (all models) | top/bottom bucket equity curves vs QQQ |
 | `scripts/insert_all_models_equity_curve_into_doc.py` | Insert equity curves into DOCX | inserts top+bottom equity figures; avoids MAX_PATH |
 | `scripts/remove_duplicate_tables_graphs.py` | DOCX deduplication | removes duplicated tables/paragraphs/images |

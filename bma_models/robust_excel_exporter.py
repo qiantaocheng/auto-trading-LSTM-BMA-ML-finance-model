@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Robust Excel Exporter - 防御性Excel导出器
+Robust Excel Exporter - 防御性Excel导出?
 确保万无一失的Excel导出流程
 """
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class RobustExcelExporter:
-    """防御性Excel导出器 - 确保所有数据都能正确导出"""
+    """防御性Excel导出 - 确保所有数据都能正确导出"""
 
     def __init__(self, output_dir: str = "D:/trade/result"):
         """
@@ -81,7 +81,7 @@ class RobustExcelExporter:
         """
         try:
             logger.info("=" * 80)
-            logger.info(f"📊 开始Robust Excel导出 (简化模式: {simple_mode})")
+            logger.info(f"📊 开始Robust Excel导出 (简化模? {simple_mode})")
             logger.info("=" * 80)
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -131,29 +131,29 @@ class RobustExcelExporter:
                     # Sheet 2: Predictions (预测结果)
                     self._write_predictions_sheet(writer, pred_data)
 
-                    # Sheet 3: Lambda Predictions (如果有)
+                    # Sheet 3: Lambda Predictions (如果?
                     if lambda_df is not None and not lambda_df.empty:
                         self._write_lambda_sheet(writer, lambda_df)
 
-                    # Sheet 4: Base Model Predictions (如果有)
+                    # Sheet 4: Base Model Predictions (如果?
                     if base_models_df is not None and not base_models_df.empty:
                         self._write_base_models_sheet(writer, base_models_df)
 
-                    # Sheet 5: Ridge Predictions (如果有)
+                    # Sheet 5: Ridge Predictions (如果?
                     if ridge_df is not None and not ridge_df.empty:
                         self._write_ridge_sheet(writer, ridge_df)
 
-                    # Sheet 6: Final Predictions (如果有)
+                    # Sheet 6: Final Predictions (如果?
                     if final_df is not None and not final_df.empty:
                         self._write_final_sheet(writer, final_df)
 
-                    # Sheet 7: Kronos Filter (如果有)
+                    # Sheet 7: Kronos Filter (如果?
                     if kronos_df is not None and not kronos_df.empty:
                         self._write_kronos_sheet(writer, kronos_df)
                     if kronos_pass_df is not None and not kronos_pass_df.empty:
                         self._write_kronos_sheet(writer, kronos_pass_df, sheet_name='Kronos_Passed_Over10')
 
-                    # Sheet 8: TradingAgents Analysis (如果有)
+                    # Sheet 8: TradingAgents Analysis (如果?
                     if tradingagents_df is not None and not tradingagents_df.empty:
                         self._write_tradingagents_sheet(writer, tradingagents_df)
 
@@ -168,14 +168,14 @@ class RobustExcelExporter:
                         self._write_top30_details(writer, top30_details)
 
             logger.info("=" * 80)
-            logger.info(f"✅ Excel导出成功!")
+            logger.info(f"?Excel导出成功!")
             logger.info(f"📄 文件路径: {filepath}")
             logger.info("=" * 80)
 
             return str(filepath)
 
         except Exception as e:
-            logger.error(f"✗ Excel导出失败: {e}")
+            logger.error(f"?Excel导出失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None
@@ -224,9 +224,9 @@ class RobustExcelExporter:
                         'target_date': target_date
                     }
                 else:
-                    # MultiIndex但没有'date'级别，使用第一个级别
-                    logger.warning(f"   MultiIndex但缺少'date'级别，索引名称: {predictions_series.index.names}")
-                    # 重置索引为简单索引
+                    # MultiIndex但没?date'级别，使用第一个级?
+                    logger.warning(f"   MultiIndex但缺?date'级别，索引名? {predictions_series.index.names}")
+                    # 重置索引为简单索?
                     predictions_series = predictions_series.reset_index(drop=True)
                     base_date = datetime.now().date()
                     target_date = self._compute_target_date(base_date)
@@ -255,7 +255,7 @@ class RobustExcelExporter:
                 }
 
         except Exception as e:
-            logger.error(f"✗ 预测数据准备失败: {e}")
+            logger.error(f"?预测数据准备失败: {e}")
             return {
                 'predictions': np.array([]),
                 'dates': [],
@@ -289,11 +289,11 @@ class RobustExcelExporter:
                     model_info['cv_score'] = np.mean(list(cv_scores.values()))
                     model_info['model_weights'] = cv_scores
 
-            logger.info("✓ 模型信息准备完成")
+            logger.info("?模型信息准备完成")
             return model_info
 
         except Exception as e:
-            logger.error(f"✗ 模型信息准备失败: {e}")
+            logger.error(f"?模型信息准备失败: {e}")
             return {
                 'model_type': 'BMA Ultra Enhanced',
                 'model_version': 'v3.0',
@@ -347,16 +347,16 @@ class RobustExcelExporter:
 
             df = pd.DataFrame(summary_data, columns=['Item', 'Value'])
             df.to_excel(writer, sheet_name='Summary', index=False)
-            logger.info("✓ Summary工作表已写入")
+            logger.info("?Summary工作表已写入")
 
         except Exception as e:
-            logger.error(f"✗ Summary工作表写入失败: {e}")
+            logger.error(f"?Summary工作表写入失? {e}")
 
     def _write_predictions_sheet(self, writer, pred_data: Dict):
         """写入Predictions工作表"""
         try:
             if pred_data['count'] == 0:
-                logger.warning("⚠️ 无预测数据，跳过Predictions工作表")
+                logger.warning("无预测数据，跳过Predictions工作表")
                 return
 
             df = pd.DataFrame({
@@ -365,18 +365,18 @@ class RobustExcelExporter:
                 'Prediction': pred_data['predictions']
             })
 
-            # 按预测值降序排序
+            # 按预测值降序排?
             df = df.sort_values('Prediction', ascending=False).reset_index(drop=True)
             df.to_excel(writer, sheet_name='Predictions', index=False)
-            logger.info(f"✓ Predictions工作表已写入 ({len(df)} 条)")
+            logger.info(f"Predictions工作表已写入 ({len(df)} 行)")
 
         except Exception as e:
-            logger.error(f"✗ Predictions工作表写入失败: {e}")
+            logger.error(f"?Predictions工作表写入失? {e}")
 
     def _write_lambda_sheet(self, writer, lambda_df: pd.DataFrame):
         """写入Lambda Predictions工作表（确保每个ticker只有一条记录，按分数排序）"""
         try:
-            # 🔧 CRITICAL FIX: 确保每个ticker只有一个预测
+            # 🔧 CRITICAL FIX: 确保每个ticker只有一个预?
             if 'ticker' in lambda_df.columns:
                 initial_count = len(lambda_df)
                 # 按日期排序，保留每个ticker最新的预测
@@ -384,7 +384,7 @@ class RobustExcelExporter:
                 lambda_df = lambda_df.groupby('ticker', as_index=False).last()
 
                 if len(lambda_df) < initial_count:
-                    logger.warning(f"⚠️ Lambda去重: {initial_count} → {len(lambda_df)} 条 (每个ticker保留一条)")
+                    logger.warning(f"Lambda去重: {initial_count} -> {len(lambda_df)} (每个ticker保留一条)")
 
             # 🎯 按lambda_score降序排序
             score_col = 'lambda_score' if 'lambda_score' in lambda_df.columns else 'lambda_pct'
@@ -393,12 +393,12 @@ class RobustExcelExporter:
                 lambda_df.insert(0, 'rank', range(1, len(lambda_df) + 1))
 
             lambda_df.to_excel(writer, sheet_name='Lambda_Predictions', index=False)
-            logger.info(f"✓ Lambda_Predictions工作表已写入 ({len(lambda_df)} 条，已按分数排序)")
+            logger.info(f"?Lambda_Predictions工作表已写入 ({len(lambda_df)} 条，已按分数排序)")
         except Exception as e:
-            logger.error(f"✗ Lambda_Predictions工作表写入失败: {e}")
+            logger.error(f"?Lambda_Predictions工作表写入失? {e}")
 
     def _write_base_models_sheet(self, writer, base_models_df: pd.DataFrame):
-        """写入Base Model Predictions工作表（按ticker排序并保留原始数据列）"""
+        """写入Base Model Predictions工作表(按ticker排序并保留原始数据列)"""
         try:
             if not isinstance(base_models_df, pd.DataFrame):
                 df = pd.DataFrame(base_models_df)
@@ -406,7 +406,7 @@ class RobustExcelExporter:
                 df = base_models_df.copy()
 
             if df.empty:
-                logger.warning("⚠️ Base Model数据为空，跳过Base_Model_Predictions工作表")
+                logger.warning("Base Model数据为空，跳过Base_Model_Predictions工作表")
                 return
 
             if 'ticker' in df.columns:
@@ -416,14 +416,14 @@ class RobustExcelExporter:
                 df = df.sort_values(sort_columns)
 
             df.to_excel(writer, sheet_name='Base_Model_Predictions', index=False)
-            logger.info(f"✅ Base_Model_Predictions工作表已写入 ({len(df)} 条)")
+            logger.info(f"Base_Model_Predictions工作表已写入 ({len(df)} 行)")
         except Exception as e:
-            logger.error(f"❌ Base_Model_Predictions工作表写入失败: {e}")
+            logger.error(f"?Base_Model_Predictions工作表写入失? {e}")
 
     def _write_ridge_sheet(self, writer, ridge_df: pd.DataFrame):
         """写入Ridge Predictions工作表（确保每个ticker只有一条记录，按分数排序）"""
         try:
-            # 🔧 CRITICAL FIX: 确保每个ticker只有一个预测
+            # 🔧 CRITICAL FIX: 确保每个ticker只有一个预?
             if 'ticker' in ridge_df.columns:
                 initial_count = len(ridge_df)
                 # 按日期排序，保留每个ticker最新的预测
@@ -431,7 +431,7 @@ class RobustExcelExporter:
                 ridge_df = ridge_df.groupby('ticker', as_index=False).last()
 
                 if len(ridge_df) < initial_count:
-                    logger.warning(f"⚠️ Ridge去重: {initial_count} → {len(ridge_df)} 条 (每个ticker保留一条)")
+                    logger.warning(f"Ridge去重: {initial_count} -> {len(ridge_df)} (每个ticker保留一条)")
 
             # 🎯 按ridge_score降序排序
             score_col = 'ridge_score' if 'ridge_score' in ridge_df.columns else 'ridge_z'
@@ -440,50 +440,50 @@ class RobustExcelExporter:
                 ridge_df.insert(0, 'rank', range(1, len(ridge_df) + 1))
 
             ridge_df.to_excel(writer, sheet_name='Ridge_Predictions', index=False)
-            logger.info(f"✓ Ridge_Predictions工作表已写入 ({len(ridge_df)} 条，已按分数排序)")
+            logger.info(f"?Ridge_Predictions工作表已写入 ({len(ridge_df)} 条，已按分数排序)")
         except Exception as e:
-            logger.error(f"✗ Ridge_Predictions工作表写入失败: {e}")
+            logger.error(f"?Ridge_Predictions工作表写入失? {e}")
 
     def _write_final_sheet(self, writer, final_df: pd.DataFrame):
         """写入Final Predictions工作表（确保每个ticker只有一条记录，按分数排序）"""
         try:
-            # 🔧 CRITICAL FIX: 确保每个ticker只有一个预测
+            # 🔧 CRITICAL FIX: 确保每个ticker只有一个预?
             if 'ticker' in final_df.columns:
                 initial_count = len(final_df)
                 uniq_tickers = final_df['ticker'].nunique()
                 # 限制最大导出行数，避免超出Excel上限
                 MAX_ROWS = 50000
                 if initial_count > MAX_ROWS:
-                    logger.warning(f"⚠️ Final_Predictions过大: {initial_count} 行，截断到 {MAX_ROWS} 行")
+                    logger.warning(f"Final_Predictions过大: {initial_count} 行，截断为 {MAX_ROWS} 行")
                     final_df = final_df.head(MAX_ROWS).copy()
                     initial_count = len(final_df)
 
-                # 仅当去重后不会异常缩小时才执行（防止异常数据造成只剩少数ticker）
-                # 条件：唯一ticker数≥min(10, 50%样本数)
+                # 仅当去重后不会异常缩小时才执行（防止异常数据造成只剩少数ticker?
+                # 条件：唯一ticker数≥min(10, 50%样本?
                 if uniq_tickers >= max(10, int(initial_count * 0.5)):
                     # 按日期排序，保留每个ticker最新的预测
                     final_df = final_df.sort_values(['ticker', 'date'] if 'date' in final_df.columns else 'ticker')
                     final_df = final_df.groupby('ticker', as_index=False).last()
                     if len(final_df) < initial_count:
-                        logger.warning(f"⚠️ 去重: {initial_count} → {len(final_df)} 条 (每个ticker保留一条)")
+                        logger.warning(f"去重: {initial_count} -> {len(final_df)} (每个ticker保留一条)")
                 else:
                     logger.warning(
                         f"⚠️ 跳过去重：唯一ticker过少 ({uniq_tickers}/{initial_count})，保留全部记录以避免信息丢失")
 
-            # 🎯 按final_score降序排序（最好的预测在最前面）
+            # 🎯 按final_score降序排序（最好的预测在最前面?
             score_col = 'final_score' if 'final_score' in final_df.columns else final_df.select_dtypes(include=['number']).columns[0]
             final_df = final_df.sort_values(score_col, ascending=False).reset_index(drop=True)
 
-            # 添加排名列
+            # 添加排名?
             final_df.insert(0, 'rank', range(1, len(final_df) + 1))
 
             # 再次限制导出表大小，避免任何环节超限
             if len(final_df) > 50000:
                 final_df = final_df.head(50000)
             final_df.to_excel(writer, sheet_name='Final_Predictions', index=False)
-            logger.info(f"✓ Final_Predictions工作表已写入 ({len(final_df)} 条，已按分数排序)")
+            logger.info(f"?Final_Predictions工作表已写入 ({len(final_df)} 条，已按分数排序)")
         except Exception as e:
-            logger.error(f"✗ Final_Predictions工作表写入失败: {e}")
+            logger.error(f"?Final_Predictions工作表写入失? {e}")
 
     def _write_kronos_sheet(self, writer, kronos_df: pd.DataFrame, sheet_name: str = 'Kronos_Filter'):
         """写入Kronos相关工作表"""
@@ -505,9 +505,9 @@ class RobustExcelExporter:
                 tradingagents_df.insert(0, 'rank', range(1, len(tradingagents_df) + 1))
 
             tradingagents_df.to_excel(writer, sheet_name='TradingAgents_Analysis', index=False)
-            logger.info(f"✓ TradingAgents_Analysis工作表已写入 ({len(tradingagents_df)} 条)")
+            logger.info(f"TradingAgents_Analysis工作表已写入 ({len(tradingagents_df)} 行)")
         except Exception as e:
-            logger.error(f"✗ TradingAgents_Analysis工作表写入失败: {e}")
+            logger.error(f"?TradingAgents_Analysis工作表写入失? {e}")
 
     def _write_factor_contributions_sheet(self, writer, model_info: Dict):
         """写入Factor Contributions工作表"""
@@ -515,28 +515,24 @@ class RobustExcelExporter:
             # 默认因子贡献（如果没有实际数据）
             # REMOVED: ivol_60d (multicollinearity with stability_score, VIF=10.4)
             factor_data = [
-                ['liquid_momentum', 0.058],
-                ['obv_divergence', 0.052],
+                [0.058],
+                ['obv_momentum_60d', 0.052],
                 ['ivol_20', 0.047],
-                ['rsrs_beta_18', 0.045],
                 ['rsi_21', 0.052],
-                ['bollinger_squeeze', 0.035],
                 ['blowoff_ratio', 0.033],
                 ['atr_ratio', 0.032],
                 ['vol_ratio_20d', 0.029],
-                ['price_ma60_deviation', 0.044],
                 ['near_52w_high', 0.062],
-                ['ret_skew_20d', 0.039],
                 ['trend_r2_60', 0.041]
             ]
 
             df = pd.DataFrame(factor_data, columns=['Factor', 'Contribution'])
             df = df.sort_values('Contribution', ascending=False).reset_index(drop=True)
             df.to_excel(writer, sheet_name='Factor_Contributions', index=False)
-            logger.info("✓ Factor_Contributions工作表已写入")
+            logger.info("?Factor_Contributions工作表已写入")
 
         except Exception as e:
-            logger.error(f"✗ Factor_Contributions工作表写入失败: {e}")
+            logger.error(f"?Factor_Contributions工作表写入失? {e}")
 
 
     def _write_model_prediction_tables(self, writer, tables: Dict[str, pd.DataFrame], include_models: Optional[Tuple[str, ...]] = None, use_special_handlers: bool = True) -> None:
@@ -645,3 +641,4 @@ if __name__ == "__main__":
     )
 
     print(f"\n测试完成: {path}")
+

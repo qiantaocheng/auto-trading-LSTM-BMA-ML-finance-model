@@ -225,7 +225,7 @@ class SimplifiedDataAligner:
 
         # Step 1.5: 固定目标列名（T+5）
         if target_column_name is None:
-            target_column_name = 'ret_fwd_10d'
+            target_column_name = 'ret_fwd_5d'
 
         # Step 2: 标准化预测列名
         standardized_preds = self._standardize_prediction_columns(oof_predictions)

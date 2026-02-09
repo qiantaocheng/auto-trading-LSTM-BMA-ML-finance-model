@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -74,7 +75,7 @@ def main() -> int:
     logger.info("Top N features: %d", args.top_n)
     logger.info("Output directory: %s", run_dir)
 
-    from bma_models.量化模型_bma_ultra_enhanced import UltraEnhancedQuantitativeModel
+    from bma_models._bma_ultra_enhanced import UltraEnhancedQuantitativeModel
 
     # Initialize model
     model = UltraEnhancedQuantitativeModel()
@@ -88,7 +89,6 @@ def main() -> int:
     logger.info("Using explicit snapshot tag: %s", explicit_tag)
     
     # Try to set tag via environment variable or model attribute if available
-    import os
     os.environ['BMA_SNAPSHOT_TAG'] = explicit_tag
     
     training_results = model.train_from_document(
@@ -101,7 +101,7 @@ def main() -> int:
         logger.error("Training failed: %s", error_msg)
         raise RuntimeError(f"Training failed: {error_msg}")
 
-    logger.info("✅ Training completed successfully")
+    logger.info("?Training completed successfully")
 
     # Always save a new snapshot with explicit tag for production use
     logger.info("=" * 80)
@@ -116,74 +116,63 @@ def main() -> int:
     logger.info("Explicit snapshot tag: %s", explicit_tag)
     
     # Prepare snapshot payload - NO FALLBACK, strict validation only
-    # 🔧 FIX: train_from_document返回的字典包含嵌套的'training_results'键
-    # _run_training_phase返回: {'training_results': actual_training_results, ...}
-    # 实际的训练结果在training_results['training_results']中
+    #  FIX: train_from_document'training_results'?
+    # _run_training_phase: {'training_results': actual_training_results, ...}
+    # training_results['training_results']?
     
-    # 提取实际的训练结果
+    # Extract actual training results; handle nested structures from train_from_document
     if 'training_results' in training_results and isinstance(training_results['training_results'], dict):
-        # 使用嵌套的training_results
         actual_training_results = training_results['training_results']
-        logger.info("🔧 检测到嵌套的training_results结构，使用嵌套的训练结果")
+        logger.info('Detected nested training_results structure; using inner payload')
     else:
-        # 直接使用training_results（向后兼容）
         actual_training_results = training_results
-        logger.info("🔧 使用直接的training_results结构")
-    
+        logger.info('Using top-level training_results payload')
+
     snapshot_payload = dict(actual_training_results)
-    
-    # 🔧 STRICT VALIDATION: 必须包含traditional_models['models']
-    # 如果结构不正确，直接报错，不尝试任何fallback
-    
-    # 验证traditional_models存在
+
+    # Validate presence of traditional_models -> models
     if 'traditional_models' not in snapshot_payload:
-        logger.error("❌ training_results缺少'traditional_models'键")
-        logger.error(f"   顶层键: {list(snapshot_payload.keys())}")
+        logger.error("training_results missing 'traditional_models' key")
+        logger.error(f"Available keys: {list(snapshot_payload.keys())}")
         if 'training_results' in training_results:
             nested_keys = list(training_results['training_results'].keys()) if isinstance(training_results.get('training_results'), dict) else 'N/A'
-            logger.error(f"   嵌套的training_results键: {nested_keys}")
-        raise ValueError("training_results必须包含'traditional_models'键。train_from_document返回结构不正确。")
-    
+            logger.error(f"Nested training_results keys: {nested_keys}")
+        raise ValueError("training_results must include 'traditional_models'")
+
     trad_models = snapshot_payload['traditional_models']
-    
-    # 验证traditional_models是dict
     if not isinstance(trad_models, dict):
-        logger.error(f"❌ traditional_models不是dict类型: {type(trad_models)}")
-        raise ValueError(f"training_results['traditional_models']必须是dict，但得到{type(trad_models)}")
-    
-    # 验证models键存在
+        logger.error(f"traditional_models must be a dict, got {type(trad_models)}")
+        raise ValueError("training_results['traditional_models'] must be a dict")
+
     if 'models' not in trad_models:
-        logger.error("❌ traditional_models缺少'models'键")
-        logger.error(f"   traditional_models键: {list(trad_models.keys())}")
-        raise ValueError("training_results['traditional_models']必须包含'models'键。train_from_document返回结构不正确。")
-    
-    # 验证models非空
+        logger.error("traditional_models missing 'models' key")
+        logger.error(f"traditional_models keys: {list(trad_models.keys())}")
+        raise ValueError("training_results['traditional_models'] must include 'models'")
+
     models = trad_models['models']
     if not models:
-        logger.error("❌ traditional_models['models']为空")
-        logger.error(f"   models值: {models}")
-        raise ValueError("training_results['traditional_models']['models']不能为空。训练可能失败或未返回模型。")
-    
-    # 验证models是dict
+        logger.error("traditional_models['models'] is empty")
+        raise ValueError("training_results['traditional_models']['models'] cannot be empty")
+
     if not isinstance(models, dict):
-        logger.error(f"❌ traditional_models['models']不是dict类型: {type(models)}")
-        raise ValueError(f"training_results['traditional_models']['models']必须是dict，但得到{type(models)}")
-    
-    logger.info(f"✅ 验证通过: traditional_models['models']包含{len(models)}个模型: {list(models.keys())}")
+        logger.error(f"traditional_models['models'] must be a dict, got {type(models)}")
+        raise ValueError("training_results['traditional_models']['models'] must be a dict")
+
+    logger.info(f"Validated traditional_models['models'] entries: {list(models.keys())}")
 
     # Save snapshot with explicit tag (will create a new snapshot even if one already exists)
-    # 🔧 FIX: 完全移除ridge_stacker，只使用meta_ranker_stacker
+    #  FIX: ridge_stackermeta_ranker_stacker
     meta_ranker = getattr(model, "meta_ranker_stacker", None)
     
     snapshot_id = save_model_snapshot(
         training_results=snapshot_payload,
-        meta_ranker_stacker=meta_ranker,  # 🔧 直接使用meta_ranker_stacker参数
+        meta_ranker_stacker=meta_ranker,  #  meta_ranker_stacker
         lambda_rank_stacker=getattr(model, "lambda_rank_stacker", None),
         rank_aware_blender=None,
         lambda_percentile_transformer=getattr(model, "lambda_percentile_transformer", None),
         tag=explicit_tag,
     )
-    logger.info("✅ Saved snapshot with explicit tag: snapshot_id=%s, tag=%s", snapshot_id, explicit_tag)
+    logger.info("?Saved snapshot with explicit tag: snapshot_id=%s, tag=%s", snapshot_id, explicit_tag)
     
     # Update model's active_snapshot_id
     try:
@@ -197,12 +186,12 @@ def main() -> int:
     # Save snapshot ID to multiple locations
     snapshot_file = run_dir / "snapshot_id.txt"
     snapshot_file.write_text(str(snapshot_id), encoding="utf-8")
-    logger.info("✅ Saved snapshot ID to: %s", snapshot_file)
+    logger.info("?Saved snapshot ID to: %s", snapshot_file)
 
     # Update latest_snapshot_id.txt in project root
     latest_snapshot_file = project_root / "latest_snapshot_id.txt"
     latest_snapshot_file.write_text(str(snapshot_id), encoding="utf-8")
-    logger.info("✅ Updated latest_snapshot_id.txt: %s", snapshot_id)
+    logger.info("?Updated latest_snapshot_id.txt: %s", snapshot_id)
 
     # Log training summary
     logger.info("=" * 80)
@@ -220,10 +209,10 @@ def main() -> int:
     
     # Log MetaRankerStacker if available
     if hasattr(model, "meta_ranker_stacker") and model.meta_ranker_stacker is not None:
-        logger.info("✅ MetaRankerStacker trained successfully")
+        logger.info("?MetaRankerStacker trained successfully")
     
     logger.info("=" * 80)
-    logger.info("✅ Training complete! Snapshot ready for production use.")
+    logger.info("?Training complete! Snapshot ready for production use.")
     logger.info("=" * 80)
     
     return 0
@@ -231,3 +220,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

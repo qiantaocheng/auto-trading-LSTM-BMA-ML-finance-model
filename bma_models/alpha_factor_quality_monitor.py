@@ -23,23 +23,18 @@ STANDARD_T10_FACTORS = list(T10_ALPHA_FACTORS)
 
 LEGACY_FACTOR_MAPPING = {
     # 旧T+1因子 → 新T+10因子
-    'momentum_10d': 'liquid_momentum',
-    'momentum_10d_ex1': 'liquid_momentum',
-    'momentum_20d': 'liquid_momentum',
     'rsi_7': 'rsi_21',
     'rsi': 'rsi_21',
-    'mom_accel_5_2': 'liquid_momentum',
-    'mom_accel_10_5': 'liquid_momentum',
-    'obv_momentum': 'obv_divergence',
-    'obv_momentum_20d': 'obv_divergence',
+    'obv_momentum': 'obv_momentum_60d',
+    'obv_momentum_20d': 'obv_momentum_60d',
     # 删除的因子 - 映射到最接近的替代因子
-    'reversal_5d': 'price_ma60_deviation',
+    'reversal_5d': '5_days_reversal',
     'price_efficiency_5d': 'trend_r2_60',
     'price_efficiency_10d': 'trend_r2_60',
     'nr7_breakout_bias': 'atr_ratio',
-    'overnight_intraday_gap': 'ret_skew_20d',
-    'max_lottery_factor': 'ret_skew_20d',
-    'stability_score': 'hist_vol_40d',
+    'overnight_intraday_gap': 'atr_ratio',
+    'max_lottery_factor': 'atr_ratio',
+    'stability_score': 'hist_vol_20',
     'liquidity_factor': 'vol_ratio_20d'
 }
 

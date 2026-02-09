@@ -21,7 +21,7 @@ def test_factor_loading():
     print("TESTING FACTOR DATA LOADING")
     print("="*80)
     
-    factor_file = r'D:\trade\quant_system\data\polygon_factors_all_filtered_clean_final_v2_recalculated.parquet'
+    factor_file = r'D:\trade\quant_system\data\polygon_factors_all_2021_2026_T5_final.parquet'
     
     if not os.path.exists(factor_file):
         print(f"ERROR: Factor file not found: {factor_file}")

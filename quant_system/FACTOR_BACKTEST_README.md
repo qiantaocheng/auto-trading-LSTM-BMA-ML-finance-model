@@ -12,7 +12,7 @@ The system has been successfully integrated to use factor data from the parquet 
 3. **`test_factor_backtest.py`** - Test script to verify setup
 
 ### Data File
-- **`data/polygon_factors_all_filtered_clean_final_v2_recalculated.parquet`** - Copied from original location
+- **`data/polygon_factors_all_2021_2026_T5_final.parquet`** - Copied from original location
   - Contains 3,921 tickers
   - Date range: 2021-01-19 to 2025-12-30
   - 20 factor columns + Close price
@@ -121,7 +121,7 @@ python quant_system/run_backtest_with_factors.py \
 ================================================================================
 QUANTITATIVE SIGNAL SYSTEM - BACKTEST WITH FACTORS
 ================================================================================
-Factor file: D:\trade\quant_system\data\polygon_factors_all_filtered_clean_final_v2_recalculated.parquet
+Factor file: D:\trade\quant_system\data\polygon_factors_all_2021_2026_T5_final.parquet
 Benchmark: SPY
 
 --------------------------------------------------------------------------------

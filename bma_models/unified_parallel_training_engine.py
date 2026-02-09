@@ -409,7 +409,7 @@ class UnifiedParallelTrainingEngine:
             if parent_horizon != 5:
                 raise ValueError(f'Unified stacker expects parent horizon=5, got {parent_horizon}.')
 
-            target_col = 'ret_fwd_10d'
+            target_col = f'ret_fwd_{parent_horizon}d'
             stacker_dict[target_col] = y_indexed
 
             stacker_data = pd.DataFrame(stacker_dict)
@@ -671,7 +671,7 @@ class UnifiedParallelTrainingEngine:
             horizon_days = int(get_time_config().prediction_horizon_days)
             if horizon_days != 5:
                 raise ValueError(f'Unified lambda data builder expects prediction_horizon_days=5, got {horizon_days}.')
-            target_col = 'ret_fwd_10d'
+            target_col = f'ret_fwd_{horizon_days}d'
             lambda_data[target_col] = y_indexed
 
             # 验证数据
