@@ -10,11 +10,11 @@ none
 false
 TRACE;RELEASE;NET;NET10_0;NETCOREAPP;WINDOWS;WINDOWS7_0;NET5_0_OR_GREATER;NET6_0_OR_GREATER;NET7_0_OR_GREATER;NET8_0_OR_GREATER;NET9_0_OR_GREATER;NET10_0_OR_GREATER;NETCOREAPP3_0_OR_GREATER;NETCOREAPP3_1_OR_GREATER;WINDOWS7_0_OR_GREATER
 D:\trade\TraderApp\src\Trader.App\App.xaml
-51498501060
+6-2128371709
 
-171804471083
-237-1584235426
-MainWindow.xaml;Themes\Colors.xaml;Views\DatabaseView.xaml;Views\DirectPredictionView.xaml;Views\MonitorView.xaml;
+232125005240
+249548992079
+MainWindow.xaml;Themes\Colors.xaml;Views\ConnectionView.xaml;Views\DatabaseView.xaml;Views\DirectPredictionView.xaml;Views\MonitorView.xaml;
 
 False
 

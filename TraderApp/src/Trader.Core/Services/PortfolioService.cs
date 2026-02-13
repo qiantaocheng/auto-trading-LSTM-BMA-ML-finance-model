@@ -14,7 +14,7 @@ public interface IPortfolioService
 
 public sealed record PortfolioSnapshot(decimal NetLiquidation, decimal Cash, IReadOnlyList<PortfolioHolding> Holdings);
 
-public sealed record PortfolioHolding(string Symbol, int Quantity, decimal MarketPrice)
+public sealed record PortfolioHolding(string Symbol, int Quantity, decimal MarketPrice, decimal AvgCost = 0m)
 {
     public decimal MarketValue => Quantity * MarketPrice;
 }
@@ -76,7 +76,7 @@ public sealed class PythonPortfolioService : IPortfolioService
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            try { process.Kill(); } catch { }
+            try { process.Kill(true); } catch { }
             _logger.LogWarning("Portfolio snapshot timed out after 30s. Returning empty snapshot.");
             return new PortfolioSnapshot(0m, 0m, Array.Empty<PortfolioHolding>());
         }
@@ -102,7 +102,7 @@ public sealed class PythonPortfolioService : IPortfolioService
                 return new PortfolioSnapshot(0m, 0m, Array.Empty<PortfolioHolding>());
             }
 
-            var holdings = payload.Holdings?.Select(h => new PortfolioHolding(h.Symbol, h.Quantity, (decimal)h.MarketPrice)).ToList() ?? new List<PortfolioHolding>();
+            var holdings = payload.Holdings?.Select(h => new PortfolioHolding(h.Symbol, h.Quantity, (decimal)h.MarketPrice, (decimal)h.AvgCost)).ToList() ?? new List<PortfolioHolding>();
             return new PortfolioSnapshot((decimal)payload.NetLiq, (decimal)payload.Cash, holdings);
         }
         catch (Exception ex)
@@ -113,7 +113,7 @@ public sealed class PythonPortfolioService : IPortfolioService
     }
 
     private sealed record PortfolioBridgePayload(double NetLiq, double Cash, IReadOnlyList<PortfolioBridgeHolding>? Holdings);
-    private sealed record PortfolioBridgeHolding(string Symbol, int Quantity, double MarketPrice);
+    private sealed record PortfolioBridgeHolding(string Symbol, int Quantity, double MarketPrice, double AvgCost = 0);
 }
 
 public sealed class MockPortfolioService : IPortfolioService

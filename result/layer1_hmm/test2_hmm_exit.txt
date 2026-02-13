@@ -1,0 +1,11 @@
+========================================================================================================================
+TEST 2: HMM Exit Tightening Only (TopK=8, Gap<8%, Cost=20bps ¡ª entry unchanged)
+  HIGH p_crisis: hold¡ú5d + 8% trailing | LOW p_crisis: winners +2R ¡ú extend to 12d
+========================================================================================================================
+
+                                     Scenario     CAGR   Sharpe    MaxDD   Calmar  Trades   Top5%   Top10%   MaxTrade      WorstYr
+------------------------------------------------------------------------------------------------------------------------
+                          Baseline (fixed 7d)  +72.80%   0.845  -57.98%   1.256    1015  114.3%   145.3%   +1630.1% 2025:$-991,228
+                                              Exit reasons: time=1015
+         HMM-Exit (5d+trail@high, extend@low)  +71.02%   1.323  -48.06%   1.478    6286   93.4%   108.6%   +4891.4% 2022:$+59,882
+                                              Exit reasons: time=4903, hmm_trailing=794, trailing=372, hmm_early=217

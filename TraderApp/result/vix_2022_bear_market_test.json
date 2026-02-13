@@ -1,0 +1,1244 @@
+{
+  "timestamp": "2026-02-11T13:58:26.953782",
+  "test_period": "2022-01-01 to 2022-12-31",
+  "configs_tested": 18,
+  "ranked_by_return": [
+    {
+      "id": "conservative",
+      "name": "Conservative: Low Caps (50%/20%)",
+      "total_return": -0.021958295738266576,
+      "cagr": -0.028151206457919575,
+      "sharpe": -1.2182122167208096,
+      "sortino": -1.7587713214484773,
+      "maxdd": -0.046210825380583624,
+      "calmar": -0.6091907302254733,
+      "volatility": 0.054916272855775994,
+      "downside_vol": 0.038037733316337544,
+      "win_rate": 0.4720812182741117,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "conservative",
+        "name": "Conservative: Low Caps (50%/20%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.5,
+          "ma200_deep_cap": 0.2
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "baseline_conservative",
+      "name": "P2 Baseline Conservative (50%/20%)",
+      "total_return": -0.023561253671014026,
+      "cagr": -0.030199223028395616,
+      "sharpe": -1.0986425389473402,
+      "sortino": -1.6403651723912835,
+      "maxdd": -0.04805458287922597,
+      "calmar": -0.6284358581218851,
+      "volatility": 0.062405708483593184,
+      "downside_vol": 0.04179652626571867,
+      "win_rate": 0.47715736040609136,
+      "dd_days": 174,
+      "dd_pct_time": 0.8787878787878788,
+      "days": 198,
+      "config": {
+        "id": "baseline_conservative",
+        "name": "P2 Baseline Conservative (50%/20%)",
+        "use_vix": false,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.5,
+          "ma200_deep_cap": 0.2
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vix_22_27",
+      "name": "VIX Thresholds (22/27)",
+      "total_return": -0.024465560625036797,
+      "cagr": -0.03135418511245103,
+      "sharpe": -1.0664461006676955,
+      "sortino": -1.6310076518845111,
+      "maxdd": -0.055282376792037895,
+      "calmar": -0.5671642019010812,
+      "volatility": 0.06523182230917404,
+      "downside_vol": 0.042652296855068675,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_22_27",
+        "name": "VIX Thresholds (22/27)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 22.0,
+          "vix_high_threshold": 27.0
+        }
+      }
+    },
+    {
+      "id": "current_vix",
+      "name": "Current VIX Full (20/25)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "current_vix",
+        "name": "Current VIX Full (20/25)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_70_40",
+      "name": "MA200 Cap (70%/40%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_70_40",
+        "name": "MA200 Cap (70%/40%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.7,
+          "ma200_deep_cap": 0.4
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_80_50",
+      "name": "MA200 Cap (80%/50%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_80_50",
+        "name": "MA200 Cap (80%/50%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.8,
+          "ma200_deep_cap": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_100_60",
+      "name": "MA200 Cap (100%/60%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_100_60",
+        "name": "MA200 Cap (100%/60%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 1.0,
+          "ma200_deep_cap": 0.6
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_90",
+      "name": "Vol Blend 90% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_90",
+        "name": "Vol Blend 90% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.9
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_50",
+      "name": "Vol Blend 50% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_50",
+        "name": "Vol Blend 50% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_threshold_10",
+      "name": "MA200 Deep Threshold -10%",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_threshold_10",
+        "name": "MA200 Deep Threshold -10%",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_deep_threshold": -0.1
+        },
+        "vix_overrides": {}
+      }
+    }
+  ],
+  "ranked_by_maxdd": [
+    {
+      "id": "conservative",
+      "name": "Conservative: Low Caps (50%/20%)",
+      "total_return": -0.021958295738266576,
+      "cagr": -0.028151206457919575,
+      "sharpe": -1.2182122167208096,
+      "sortino": -1.7587713214484773,
+      "maxdd": -0.046210825380583624,
+      "calmar": -0.6091907302254733,
+      "volatility": 0.054916272855775994,
+      "downside_vol": 0.038037733316337544,
+      "win_rate": 0.4720812182741117,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "conservative",
+        "name": "Conservative: Low Caps (50%/20%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.5,
+          "ma200_deep_cap": 0.2
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "baseline_conservative",
+      "name": "P2 Baseline Conservative (50%/20%)",
+      "total_return": -0.023561253671014026,
+      "cagr": -0.030199223028395616,
+      "sharpe": -1.0986425389473402,
+      "sortino": -1.6403651723912835,
+      "maxdd": -0.04805458287922597,
+      "calmar": -0.6284358581218851,
+      "volatility": 0.062405708483593184,
+      "downside_vol": 0.04179652626571867,
+      "win_rate": 0.47715736040609136,
+      "dd_days": 174,
+      "dd_pct_time": 0.8787878787878788,
+      "days": 198,
+      "config": {
+        "id": "baseline_conservative",
+        "name": "P2 Baseline Conservative (50%/20%)",
+        "use_vix": false,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.5,
+          "ma200_deep_cap": 0.2
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "current_vix",
+      "name": "Current VIX Full (20/25)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "current_vix",
+        "name": "Current VIX Full (20/25)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_70_40",
+      "name": "MA200 Cap (70%/40%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_70_40",
+        "name": "MA200 Cap (70%/40%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.7,
+          "ma200_deep_cap": 0.4
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_80_50",
+      "name": "MA200 Cap (80%/50%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_80_50",
+        "name": "MA200 Cap (80%/50%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.8,
+          "ma200_deep_cap": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_100_60",
+      "name": "MA200 Cap (100%/60%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_100_60",
+        "name": "MA200 Cap (100%/60%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 1.0,
+          "ma200_deep_cap": 0.6
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_90",
+      "name": "Vol Blend 90% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_90",
+        "name": "Vol Blend 90% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.9
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_50",
+      "name": "Vol Blend 50% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_50",
+        "name": "Vol Blend 50% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_threshold_10",
+      "name": "MA200 Deep Threshold -10%",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_threshold_10",
+        "name": "MA200 Deep Threshold -10%",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_deep_threshold": -0.1
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vix_18_23",
+      "name": "VIX Thresholds (18/23)",
+      "total_return": -0.025989697130522016,
+      "cagr": -0.03330008746551949,
+      "sharpe": -1.1183132488823884,
+      "sortino": -1.7115890548862953,
+      "maxdd": -0.054360245765833516,
+      "calmar": -0.6125816209324287,
+      "volatility": 0.06406193733570413,
+      "downside_vol": 0.041856608668457834,
+      "win_rate": 0.48223350253807107,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_18_23",
+        "name": "VIX Thresholds (18/23)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 18.0,
+          "vix_high_threshold": 23.0
+        }
+      }
+    }
+  ],
+  "ranked_by_calmar": [
+    {
+      "id": "vix_22_27",
+      "name": "VIX Thresholds (22/27)",
+      "total_return": -0.024465560625036797,
+      "cagr": -0.03135418511245103,
+      "sharpe": -1.0664461006676955,
+      "sortino": -1.6310076518845111,
+      "maxdd": -0.055282376792037895,
+      "calmar": -0.5671642019010812,
+      "volatility": 0.06523182230917404,
+      "downside_vol": 0.042652296855068675,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_22_27",
+        "name": "VIX Thresholds (22/27)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 22.0,
+          "vix_high_threshold": 27.0
+        }
+      }
+    },
+    {
+      "id": "current_vix",
+      "name": "Current VIX Full (20/25)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "current_vix",
+        "name": "Current VIX Full (20/25)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_70_40",
+      "name": "MA200 Cap (70%/40%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_70_40",
+        "name": "MA200 Cap (70%/40%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.7,
+          "ma200_deep_cap": 0.4
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_80_50",
+      "name": "MA200 Cap (80%/50%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_80_50",
+        "name": "MA200 Cap (80%/50%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.8,
+          "ma200_deep_cap": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_100_60",
+      "name": "MA200 Cap (100%/60%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_100_60",
+        "name": "MA200 Cap (100%/60%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 1.0,
+          "ma200_deep_cap": 0.6
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_90",
+      "name": "Vol Blend 90% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_90",
+        "name": "Vol Blend 90% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.9
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_50",
+      "name": "Vol Blend 50% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_50",
+        "name": "Vol Blend 50% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_threshold_10",
+      "name": "MA200 Deep Threshold -10%",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_threshold_10",
+        "name": "MA200 Deep Threshold -10%",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_deep_threshold": -0.1
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "conservative",
+      "name": "Conservative: Low Caps (50%/20%)",
+      "total_return": -0.021958295738266576,
+      "cagr": -0.028151206457919575,
+      "sharpe": -1.2182122167208096,
+      "sortino": -1.7587713214484773,
+      "maxdd": -0.046210825380583624,
+      "calmar": -0.6091907302254733,
+      "volatility": 0.054916272855775994,
+      "downside_vol": 0.038037733316337544,
+      "win_rate": 0.4720812182741117,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "conservative",
+        "name": "Conservative: Low Caps (50%/20%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.5,
+          "ma200_deep_cap": 0.2
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vix_18_23",
+      "name": "VIX Thresholds (18/23)",
+      "total_return": -0.025989697130522016,
+      "cagr": -0.03330008746551949,
+      "sharpe": -1.1183132488823884,
+      "sortino": -1.7115890548862953,
+      "maxdd": -0.054360245765833516,
+      "calmar": -0.6125816209324287,
+      "volatility": 0.06406193733570413,
+      "downside_vol": 0.041856608668457834,
+      "win_rate": 0.48223350253807107,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_18_23",
+        "name": "VIX Thresholds (18/23)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 18.0,
+          "vix_high_threshold": 23.0
+        }
+      }
+    }
+  ],
+  "all_results": [
+    {
+      "id": "baseline",
+      "name": "P2 Baseline (No VIX)",
+      "total_return": -0.02737832982771815,
+      "cagr": -0.035072230580421415,
+      "sharpe": -0.9406781709658237,
+      "sortino": -1.5011923375549099,
+      "maxdd": -0.056484253861092175,
+      "calmar": -0.6209204899240084,
+      "volatility": 0.07712619457768252,
+      "downside_vol": 0.04832886888235593,
+      "win_rate": 0.47715736040609136,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "baseline",
+        "name": "P2 Baseline (No VIX)",
+        "use_vix": false,
+        "v4_overrides": {},
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "current_vix",
+      "name": "Current VIX Full (20/25)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "current_vix",
+        "name": "Current VIX Full (20/25)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vix_26_30",
+      "name": "VIX Thresholds (26/30)",
+      "total_return": -0.03966514698569057,
+      "cagr": -0.050720786453631206,
+      "sharpe": -1.233042443107126,
+      "sortino": -1.8162898119062347,
+      "maxdd": -0.06435355554832603,
+      "calmar": -0.7881582613651028,
+      "volatility": 0.07231271636820599,
+      "downside_vol": 0.04909164158377635,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_26_30",
+        "name": "VIX Thresholds (26/30)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 26.0,
+          "vix_high_threshold": 30.0
+        }
+      }
+    },
+    {
+      "id": "vix_22_27",
+      "name": "VIX Thresholds (22/27)",
+      "total_return": -0.024465560625036797,
+      "cagr": -0.03135418511245103,
+      "sharpe": -1.0664461006676955,
+      "sortino": -1.6310076518845111,
+      "maxdd": -0.055282376792037895,
+      "calmar": -0.5671642019010812,
+      "volatility": 0.06523182230917404,
+      "downside_vol": 0.042652296855068675,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_22_27",
+        "name": "VIX Thresholds (22/27)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 22.0,
+          "vix_high_threshold": 27.0
+        }
+      }
+    },
+    {
+      "id": "vix_18_23",
+      "name": "VIX Thresholds (18/23)",
+      "total_return": -0.025989697130522016,
+      "cagr": -0.03330008746551949,
+      "sharpe": -1.1183132488823884,
+      "sortino": -1.7115890548862953,
+      "maxdd": -0.054360245765833516,
+      "calmar": -0.6125816209324287,
+      "volatility": 0.06406193733570413,
+      "downside_vol": 0.041856608668457834,
+      "win_rate": 0.48223350253807107,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_18_23",
+        "name": "VIX Thresholds (18/23)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 18.0,
+          "vix_high_threshold": 23.0
+        }
+      }
+    },
+    {
+      "id": "vix_budget_high",
+      "name": "VIX Budget Higher (12%/8%/4%)",
+      "total_return": -0.036095636861775304,
+      "cagr": -0.04618050862347012,
+      "sharpe": -1.2246606510882643,
+      "sortino": -1.7738697916514445,
+      "maxdd": -0.06460921106857695,
+      "calmar": -0.7147666386833543,
+      "volatility": 0.06911662194144574,
+      "downside_vol": 0.04771737340936948,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_budget_high",
+        "name": "VIX Budget Higher (12%/8%/4%)",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "theme_budget_normal": 0.12,
+          "theme_budget_medium": 0.08,
+          "theme_budget_high": 0.04
+        }
+      }
+    },
+    {
+      "id": "vix_no_budget",
+      "name": "VIX No Budget Control",
+      "total_return": -0.03878776567977871,
+      "cagr": -0.04960523839840836,
+      "sharpe": -1.2515655530918137,
+      "sortino": -1.8245893341736144,
+      "maxdd": -0.06742957373411217,
+      "calmar": -0.7356599730855692,
+      "volatility": 0.07041675106602323,
+      "downside_vol": 0.04830192654545576,
+      "win_rate": 0.47715736040609136,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vix_no_budget",
+        "name": "VIX No Budget Control",
+        "use_vix": true,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "theme_budget_normal": 0.1,
+          "theme_budget_medium": 0.1,
+          "theme_budget_high": 0.1
+        }
+      }
+    },
+    {
+      "id": "ma200_cap_70_40",
+      "name": "MA200 Cap (70%/40%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_70_40",
+        "name": "MA200 Cap (70%/40%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.7,
+          "ma200_deep_cap": 0.4
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_80_50",
+      "name": "MA200 Cap (80%/50%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_80_50",
+        "name": "MA200 Cap (80%/50%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.8,
+          "ma200_deep_cap": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_cap_100_60",
+      "name": "MA200 Cap (100%/60%)",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_cap_100_60",
+        "name": "MA200 Cap (100%/60%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 1.0,
+          "ma200_deep_cap": 0.6
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_90",
+      "name": "Vol Blend 90% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_90",
+        "name": "Vol Blend 90% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.9
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vol_blend_50",
+      "name": "Vol Blend 50% Short",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "vol_blend_50",
+        "name": "Vol Blend 50% Short",
+        "use_vix": true,
+        "v4_overrides": {
+          "vol_blend_alpha": 0.5
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "aggressive_combo_1",
+      "name": "Aggressive: High Caps + Vol 90%",
+      "total_return": -0.0395915072435592,
+      "cagr": -0.050627168274985146,
+      "sharpe": -1.296849226730772,
+      "sortino": -1.9018425849525582,
+      "maxdd": -0.06979493609945699,
+      "calmar": -0.7253702217427638,
+      "volatility": 0.06886590262076514,
+      "downside_vol": 0.04695903502659437,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "aggressive_combo_1",
+        "name": "Aggressive: High Caps + Vol 90%",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.8,
+          "ma200_deep_cap": 0.5,
+          "vol_blend_alpha": 0.9
+        },
+        "vix_overrides": {
+          "vix_low_threshold": 22.0,
+          "vix_high_threshold": 28.0
+        }
+      }
+    },
+    {
+      "id": "aggressive_combo_2",
+      "name": "Aggressive: No VIX Budget + High Caps",
+      "total_return": -0.03878776567977871,
+      "cagr": -0.04960523839840836,
+      "sharpe": -1.2515655530918137,
+      "sortino": -1.8245893341736144,
+      "maxdd": -0.06742957373411217,
+      "calmar": -0.7356599730855692,
+      "volatility": 0.07041675106602323,
+      "downside_vol": 0.04830192654545576,
+      "win_rate": 0.47715736040609136,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "aggressive_combo_2",
+        "name": "Aggressive: No VIX Budget + High Caps",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.7,
+          "ma200_deep_cap": 0.4
+        },
+        "vix_overrides": {
+          "theme_budget_normal": 0.1,
+          "theme_budget_medium": 0.1,
+          "theme_budget_high": 0.1
+        }
+      }
+    },
+    {
+      "id": "baseline_aggressive",
+      "name": "P2 Baseline Aggressive (70%/40%)",
+      "total_return": -0.03701720160135069,
+      "cagr": -0.047353164456986674,
+      "sharpe": -1.023014517519343,
+      "sortino": -1.627774217224147,
+      "maxdd": -0.06934013927674862,
+      "calmar": -0.6829112971347219,
+      "volatility": 0.08291840320484595,
+      "downside_vol": 0.05211209844122939,
+      "win_rate": 0.47715736040609136,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "baseline_aggressive",
+        "name": "P2 Baseline Aggressive (70%/40%)",
+        "use_vix": false,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.7,
+          "ma200_deep_cap": 0.4
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "ma200_threshold_10",
+      "name": "MA200 Deep Threshold -10%",
+      "total_return": -0.024582714954275553,
+      "cagr": -0.03150378978777779,
+      "sharpe": -1.0823233510118124,
+      "sortino": -1.6566543452098434,
+      "maxdd": -0.05287676771287605,
+      "calmar": -0.5957964367043995,
+      "volatility": 0.0644627302078345,
+      "downside_vol": 0.04211471051619784,
+      "win_rate": 0.467005076142132,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "ma200_threshold_10",
+        "name": "MA200 Deep Threshold -10%",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_deep_threshold": -0.1
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "conservative",
+      "name": "Conservative: Low Caps (50%/20%)",
+      "total_return": -0.021958295738266576,
+      "cagr": -0.028151206457919575,
+      "sharpe": -1.2182122167208096,
+      "sortino": -1.7587713214484773,
+      "maxdd": -0.046210825380583624,
+      "calmar": -0.6091907302254733,
+      "volatility": 0.054916272855775994,
+      "downside_vol": 0.038037733316337544,
+      "win_rate": 0.4720812182741117,
+      "dd_days": 175,
+      "dd_pct_time": 0.8838383838383839,
+      "days": 198,
+      "config": {
+        "id": "conservative",
+        "name": "Conservative: Low Caps (50%/20%)",
+        "use_vix": true,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.5,
+          "ma200_deep_cap": 0.2
+        },
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "baseline_conservative",
+      "name": "P2 Baseline Conservative (50%/20%)",
+      "total_return": -0.023561253671014026,
+      "cagr": -0.030199223028395616,
+      "sharpe": -1.0986425389473402,
+      "sortino": -1.6403651723912835,
+      "maxdd": -0.04805458287922597,
+      "calmar": -0.6284358581218851,
+      "volatility": 0.062405708483593184,
+      "downside_vol": 0.04179652626571867,
+      "win_rate": 0.47715736040609136,
+      "dd_days": 174,
+      "dd_pct_time": 0.8787878787878788,
+      "days": 198,
+      "config": {
+        "id": "baseline_conservative",
+        "name": "P2 Baseline Conservative (50%/20%)",
+        "use_vix": false,
+        "v4_overrides": {
+          "ma200_shallow_cap": 0.5,
+          "ma200_deep_cap": 0.2
+        },
+        "vix_overrides": {}
+      }
+    }
+  ]
+}

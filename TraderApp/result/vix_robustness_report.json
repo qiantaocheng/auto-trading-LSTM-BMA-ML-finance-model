@@ -1,0 +1,262 @@
+{
+  "test_config": {
+    "backtest_period": "2022-02-24 to 2026-02-10",
+    "portfolio": {
+      "QQQ": "25.0%",
+      "USMV": "25.0%",
+      "QUAL": "20.0%",
+      "PDBC": "15.0%",
+      "DBA": "5.0%",
+      "COPX": "5.0%",
+      "URA": "5.0%"
+    },
+    "vix_proxy": "^VIX",
+    "baseline_vix_config": {
+      "vix_high": 25.0,
+      "vix_low": 20.0,
+      "theme_budgets": {
+        "normal": 0.1,
+        "medium": 0.06,
+        "high": 0.02
+      }
+    }
+  },
+  "timestamp": "2026-02-11T13:03:15.446232",
+  "A_annual_performance": {
+    "overall_metrics": {
+      "sharpe": 1.1306235839492103,
+      "cagr": 0.16074153825817628,
+      "max_dd": -0.129793028703378
+    },
+    "annual_performance": [
+      {
+        "year": 2023,
+        "return_pct": 12.5,
+        "vol_pct": 7.5,
+        "max_dd_pct": -5.6,
+        "sharpe": 2.01
+      },
+      {
+        "year": 2024,
+        "return_pct": 15.9,
+        "vol_pct": 9.6,
+        "max_dd_pct": -7.2,
+        "sharpe": 1.58
+      },
+      {
+        "year": 2025,
+        "return_pct": 13.8,
+        "vol_pct": 12.2,
+        "max_dd_pct": -13.0,
+        "sharpe": 1.13
+      },
+      {
+        "year": 2026,
+        "return_pct": 4.0,
+        "vol_pct": 12.4,
+        "max_dd_pct": -4.1,
+        "sharpe": 3.03
+      }
+    ],
+    "key_years": {
+      "2022_bear_market": null,
+      "2025_recent": {
+        "year": 2025,
+        "return_pct": 13.8,
+        "vol_pct": 12.2,
+        "max_dd_pct": -13.0,
+        "sharpe": 1.13
+      }
+    },
+    "consistency_check": {
+      "all_years_positive_sharpe": true,
+      "sharpe_range": [
+        1.13,
+        3.03
+      ]
+    }
+  },
+  "B_threshold_perturbation": {
+    "results": [
+      {
+        "vix_low": 19.0,
+        "vix_high": 24.0,
+        "sharpe": 1.0932258548011535,
+        "cagr": 0.1549090764910559,
+        "max_dd": -0.13471618617205347,
+        "turnover": 0.9656636458131722
+      },
+      {
+        "vix_low": 19.0,
+        "vix_high": 25.0,
+        "sharpe": 1.0777987365263022,
+        "cagr": 0.1537752706797757,
+        "max_dd": -0.13781072668979222,
+        "turnover": 0.9656636458131722
+      },
+      {
+        "vix_low": 19.0,
+        "vix_high": 26.0,
+        "sharpe": 1.0777987365263022,
+        "cagr": 0.1537752706797757,
+        "max_dd": -0.13781072668979222,
+        "turnover": 0.9656636458131722
+      },
+      {
+        "vix_low": 20.0,
+        "vix_high": 24.0,
+        "sharpe": 1.1444599974522247,
+        "cagr": 0.15940573131257874,
+        "max_dd": -0.12384144999865787,
+        "turnover": 1.085143477485843
+      },
+      {
+        "vix_low": 20.0,
+        "vix_high": 25.0,
+        "sharpe": 1.1306235839492103,
+        "cagr": 0.16074153825817628,
+        "max_dd": -0.129793028703378,
+        "turnover": 0.947271348297444
+      },
+      {
+        "vix_low": 20.0,
+        "vix_high": 26.0,
+        "sharpe": 1.1306235839492103,
+        "cagr": 0.16074153825817628,
+        "max_dd": -0.129793028703378,
+        "turnover": 0.947271348297444
+      },
+      {
+        "vix_low": 21.0,
+        "vix_high": 25.0,
+        "sharpe": 1.1278355200603194,
+        "cagr": 0.16049319924937167,
+        "max_dd": -0.12979302870337853,
+        "turnover": 0.9401072408594494
+      },
+      {
+        "vix_low": 21.0,
+        "vix_high": 26.0,
+        "sharpe": 1.1278355200603194,
+        "cagr": 0.16049319924937167,
+        "max_dd": -0.12979302870337853,
+        "turnover": 0.9401072408594494
+      }
+    ],
+    "summary": {
+      "min_sharpe": 1.0777987365263022,
+      "max_sharpe": 1.1444599974522247,
+      "mean_sharpe": 1.1137751916656302,
+      "std_sharpe": 0.02478801503431328,
+      "all_above_threshold": true,
+      "threshold": 1.0
+    },
+    "robustness_verdict": "PASS"
+  },
+  "C_cost_pressure": {
+    "error": "'V4Config' object has no attribute 'deadband_pct'"
+  },
+  "D_data_source": {
+    "total_days": 994,
+    "missing_days": 0,
+    "missing_pct": 0.0,
+    "outliers_high": 0,
+    "outliers_low": 0,
+    "statistics": {
+      "min": 11.859999656677246,
+      "max": 52.33000183105469,
+      "mean": 19.022615729203405,
+      "median": 17.454999923706055,
+      "std": 5.53753339718081
+    },
+    "data_quality_verdict": "PASS"
+  },
+  "E_oos_split": {
+    "in_sample": {
+      "period": "2022-02-24 to 2024-12-31",
+      "sharpe": 1.276808484122421,
+      "cagr": 0.1585533680200919,
+      "max_dd": -0.07180905201966203
+    },
+    "out_of_sample": {
+      "period": "2025-01-01 to 2026-02-10",
+      "sharpe": 0.5915368449870323,
+      "cagr": 0.056352684125690944,
+      "max_dd": -0.005916664966696857
+    },
+    "degradation": 0.6852716391353887,
+    "oos_meets_floor": "False",
+    "robustness_verdict": "FAIL"
+  },
+  "F_vix_grid_search": {
+    "all_results": [
+      {
+        "vix_low": 18.0,
+        "vix_high": 26.0,
+        "sharpe": 1.0297353261077875,
+        "cagr": 0.14378779936231134,
+        "max_dd": -0.12571338805725452,
+        "turnover": 1.1873023318350377
+      },
+      {
+        "vix_low": 18.0,
+        "vix_high": 24.0,
+        "sharpe": 1.014203490908942,
+        "cagr": 0.13941589930877574,
+        "max_dd": -0.11815278340088237,
+        "turnover": 1.2114623641274442
+      },
+      {
+        "vix_low": 16.0,
+        "vix_high": 24.0,
+        "sharpe": 0.9984660616711257,
+        "cagr": 0.12850345815176412,
+        "max_dd": -0.10289613889265879,
+        "turnover": 1.2534709847763243
+      },
+      {
+        "vix_low": 16.0,
+        "vix_high": 26.0,
+        "sharpe": 0.9506112336380411,
+        "cagr": 0.13006820490502302,
+        "max_dd": -0.12757799038112586,
+        "turnover": 1.261398591549296
+      }
+    ],
+    "top_3": [
+      {
+        "vix_low": 18.0,
+        "vix_high": 26.0,
+        "sharpe": 1.0297353261077875,
+        "cagr": 0.14378779936231134,
+        "max_dd": -0.12571338805725452,
+        "turnover": 1.1873023318350377
+      },
+      {
+        "vix_low": 18.0,
+        "vix_high": 24.0,
+        "sharpe": 1.014203490908942,
+        "cagr": 0.13941589930877574,
+        "max_dd": -0.11815278340088237,
+        "turnover": 1.2114623641274442
+      },
+      {
+        "vix_low": 16.0,
+        "vix_high": 24.0,
+        "sharpe": 0.9984660616711257,
+        "cagr": 0.12850345815176412,
+        "max_dd": -0.10289613889265879,
+        "turnover": 1.2534709847763243
+      }
+    ],
+    "best_config": {
+      "vix_low": 18.0,
+      "vix_high": 26.0,
+      "sharpe": 1.0297353261077875,
+      "cagr": 0.14378779936231134,
+      "max_dd": -0.12571338805725452,
+      "turnover": 1.1873023318350377
+    }
+  },
+  "overall_verdict": "FAIL"
+}

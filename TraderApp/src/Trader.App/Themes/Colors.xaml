@@ -33,6 +33,7 @@
 
     <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
+    <converters:ReturnToColorConverter x:Key="ReturnToColorConverter" />
 
     <Style TargetType="Window">
         <Setter Property="FontFamily" Value="{StaticResource BrandFont}" />

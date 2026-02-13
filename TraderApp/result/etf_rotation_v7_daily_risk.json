@@ -1,0 +1,222 @@
+{
+  "strategy": "V7 Daily Risk Control (V3 \u2014 Tail-Only)",
+  "v3_config": {
+    "crisis_trigger": "VIX>=40.0 AND SPY<MA200",
+    "riskoff_trigger": "SPY<MA200 + DD>=6% (2d) or SPY<MA200 for 3d",
+    "riskoff_cap_light": 0.8,
+    "riskoff_cap_moderate": 0.7,
+    "crisis_cap": 0.3,
+    "turbo_recovery": "+10%/d (SPY>MA50, slope>0, VIX<25)",
+    "slow_recovery": "+5%/d",
+    "upside_tilt": "VIX<18 \u2192 theme +3%",
+    "cooldown": "10d",
+    "max_transitions_per_cycle": 1
+  },
+  "overall": {
+    "v6_baseline": {
+      "sharpe": 1.1306235839492103,
+      "cagr": 0.16074153825817628,
+      "maxdd": -0.129793028703378,
+      "volatility": 0.10174881943770941,
+      "calmar": 1.238445083406801,
+      "total_return": 0.5443885231710057,
+      "cagr_str": "16.07%",
+      "ann_vol": "10.17%",
+      "sharpe_str": "1.13",
+      "max_dd": "-13.0%",
+      "sharpe_raw": 1.1306235839492103,
+      "cagr_raw": 0.16074153825817628,
+      "max_dd_raw": -0.129793028703378,
+      "trades": 27,
+      "turnover_annual": 0.947271348297444
+    },
+    "v7_daily_risk": {
+      "sharpe": 1.011323822323509,
+      "cagr": 0.1329116842678708,
+      "maxdd": -0.10460183981123626,
+      "volatility": 0.08837448103991939,
+      "calmar": 1.2706438482126345,
+      "total_return": 0.43888293111682275,
+      "cagr_str": "13.29%",
+      "ann_vol": "8.84%",
+      "sharpe_str": "1.01",
+      "max_dd": "-10.5%",
+      "sharpe_raw": 1.011323822323509,
+      "cagr_raw": 0.1329116842678708,
+      "max_dd_raw": -0.10460183981123626,
+      "trades": 37,
+      "turnover_annual": 1.2556454097278125
+    },
+    "delta_sharpe": -0.11929976162570122,
+    "delta_cagr": -0.027829853990305464,
+    "delta_maxdd": 0.02519118889214174
+  },
+  "yearly": [
+    {
+      "Year": 2023,
+      "Strategy": "V6 Baseline",
+      "Return": "12.5%",
+      "MaxDD": "-5.6%",
+      "Sharpe": "1.47",
+      "Vol": "7.5%"
+    },
+    {
+      "Year": 2023,
+      "Strategy": "V7 DailyRisk",
+      "Return": "12.3%",
+      "MaxDD": "-5.6%",
+      "Sharpe": "1.45",
+      "Vol": "7.4%"
+    },
+    {
+      "Year": 2024,
+      "Strategy": "V6 Baseline",
+      "Return": "16.8%",
+      "MaxDD": "-7.2%",
+      "Sharpe": "1.25",
+      "Vol": "9.6%"
+    },
+    {
+      "Year": 2024,
+      "Strategy": "V7 DailyRisk",
+      "Return": "16.8%",
+      "MaxDD": "-7.2%",
+      "Sharpe": "1.25",
+      "Vol": "9.6%"
+    },
+    {
+      "Year": 2025,
+      "Strategy": "V6 Baseline",
+      "Return": "13.5%",
+      "MaxDD": "-13.0%",
+      "Sharpe": "0.78",
+      "Vol": "12.2%"
+    },
+    {
+      "Year": 2025,
+      "Strategy": "V7 DailyRisk",
+      "Return": "5.8%",
+      "MaxDD": "-10.5%",
+      "Sharpe": "0.24",
+      "Vol": "8.8%"
+    },
+    {
+      "Year": 2026,
+      "Strategy": "V6 Baseline",
+      "Return": "3.7%",
+      "MaxDD": "-4.1%",
+      "Sharpe": "2.51",
+      "Vol": "12.6%"
+    },
+    {
+      "Year": 2026,
+      "Strategy": "V7 DailyRisk",
+      "Return": "3.8%",
+      "MaxDD": "-3.8%",
+      "Sharpe": "2.75",
+      "Vol": "12.0%"
+    }
+  ],
+  "risk_events": [
+    {
+      "date": "2023-10-27 00:00:00",
+      "day_idx": 159,
+      "transition": "RISK_ON \u2192 RISK_OFF",
+      "reason": "SPY<MA200 for 3 consecutive days",
+      "drawdown": "-4.9%",
+      "vix": "21.3",
+      "spy_dev": "-2.4%",
+      "cap": "80%"
+    },
+    {
+      "date": "2023-11-08 00:00:00",
+      "day_idx": 167,
+      "transition": "RISK_OFF \u2192 RECOVERY_RAMP",
+      "reason": "Recovery conditions met (5d)",
+      "drawdown": "-1.6%",
+      "vix": "14.4",
+      "spy_dev": "3.6%",
+      "cap": "80%"
+    },
+    {
+      "date": "2023-11-14 00:00:00",
+      "day_idx": 171,
+      "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+      "reason": "Ramp complete (slow)",
+      "cap": "100%"
+    },
+    {
+      "date": "2025-03-12 00:00:00",
+      "day_idx": 501,
+      "transition": "RISK_ON \u2192 RISK_OFF",
+      "reason": "SPY<MA200 for 3 consecutive days",
+      "drawdown": "-5.2%",
+      "vix": "24.2",
+      "spy_dev": "-2.0%",
+      "cap": "80%"
+    },
+    {
+      "date": "2025-04-04 00:00:00",
+      "day_idx": 518,
+      "transition": "RISK_OFF \u2192 CRISIS",
+      "reason": "VIX\u226540 (45.3) + SPY<MA200",
+      "drawdown": "-6.0%",
+      "vix": "45.3",
+      "spy_dev": "-11.5%",
+      "cap": "30%"
+    },
+    {
+      "date": "2025-08-07 00:00:00",
+      "day_idx": 603,
+      "transition": "CRISIS \u2192 RECOVERY_RAMP",
+      "reason": "Recovery conditions met (5d)",
+      "drawdown": "-2.9%",
+      "vix": "16.6",
+      "spy_dev": "7.8%",
+      "cap": "30%"
+    },
+    {
+      "date": "2025-08-18 00:00:00",
+      "day_idx": 610,
+      "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+      "reason": "Ramp complete (turbo)",
+      "cap": "100%"
+    }
+  ],
+  "benchmarks": {
+    "QQQ": {
+      "sharpe": 0.6119531317400343,
+      "cagr": 0.16663272840386822,
+      "maxdd": -0.29566058149732144,
+      "volatility": 0.2315941133376387,
+      "calmar": 0.5635946718361502,
+      "total_return": 0.8414971164802503,
+      "cagr_str": "16.66%",
+      "ann_vol": "23.16%",
+      "sharpe_str": "0.61",
+      "max_dd": "-29.6%",
+      "sharpe_raw": 0.6119531317400343,
+      "cagr_raw": 0.16663272840386822,
+      "max_dd_raw": -0.29566058149732144
+    },
+    "SPY": {
+      "sharpe": 0.6285153526627033,
+      "cagr": 0.14477295801194967,
+      "maxdd": -0.22093061392706975,
+      "volatility": 0.17773004054923675,
+      "calmar": 0.6552869945843717,
+      "total_return": 0.70854625061169,
+      "cagr_str": "14.48%",
+      "ann_vol": "17.77%",
+      "sharpe_str": "0.63",
+      "max_dd": "-22.1%",
+      "sharpe_raw": 0.6285153526627033,
+      "cagr_raw": 0.14477295801194967,
+      "max_dd_raw": -0.22093061392706975
+    }
+  },
+  "backtest_period": {
+    "start": "2022-02-24",
+    "end": "2026-02-10"
+  }
+}

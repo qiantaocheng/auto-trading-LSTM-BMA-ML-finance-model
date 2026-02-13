@@ -1,0 +1,108 @@
+================================================================================
+  VIX PARAMETER SWEEP - OOS OPTIMIZATION
+================================================================================
+
+Testing 18 configurations to improve OOS CAGR...
+
+Fetching data...
+Fetching data for 10 tickers...
+  [1/10] BIL... OK (1255 bars, 45 divs)
+  [2/10] COPX... OK (1255 bars, 10 divs)
+  [3/10] DBA... OK (1255 bars, 4 divs)
+  [4/10] PDBC... OK (1255 bars, 6 divs)
+  [5/10] QQQ... OK (1255 bars, 21 divs)
+  [6/10] QUAL... OK (1255 bars, 21 divs)
+  [7/10] SPY... OK (1255 bars, 20 divs)
+  [8/10] URA... OK (1255 bars, 8 divs)
+  [9/10] USMV... OK (1255 bars, 20 divs)
+  [10/10] ^VIX... OK (1281 bars, 0 divs)
+Computing VIX regime...
+
+Running 18 configurations...
+================================================================================
+
+[1/18] Testing: P2 Baseline (No VIX)
+  ID: baseline
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[2/18] Testing: Current VIX Full (20/25)
+  ID: current_vix
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[3/18] Testing: VIX Thresholds (26/30)
+  ID: vix_26_30
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[4/18] Testing: VIX Thresholds (22/27)
+  ID: vix_22_27
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[5/18] Testing: VIX Thresholds (18/23)
+  ID: vix_18_23
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[6/18] Testing: VIX Budget Higher (12%/8%/4%)
+  ID: vix_budget_high
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[7/18] Testing: VIX No Budget Control
+  ID: vix_no_budget
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[8/18] Testing: MA200 Cap (70%/40%)
+  ID: ma200_cap_70_40
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[9/18] Testing: MA200 Cap (80%/50%)
+  ID: ma200_cap_80_50
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[10/18] Testing: MA200 Cap (100%/60%)
+  ID: ma200_cap_100_60
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[11/18] Testing: Target Vol 10%
+  ID: vol_target_10
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[12/18] Testing: Target Vol 15%
+  ID: vol_target_15
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[13/18] Testing: Vol Blend 90% Short
+  ID: vol_blend_90_10
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[14/18] Testing: Aggressive Combo: High Caps + High Vol Target
+  ID: aggressive_combo_1
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[15/18] Testing: Aggressive Combo: No VIX Budget + High Caps
+  ID: aggressive_combo_2
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[16/18] Testing: P2 Baseline Aggressive (70%/40%)
+  ID: baseline_aggressive
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[17/18] Testing: MA200 Deep Threshold -10%
+  ID: ma200_threshold_10
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+[18/18] Testing: Max Leverage 1.5x
+  ID: leverage_150
+  ERROR: Unknown format code 'f' for object of type 'str'
+
+================================================================================
+RESULTS SUMMARY - RANKED BY OOS CAGR
+================================================================================
+
+Rank   Config ID                 OOS CAGR   OOS Sharpe   OOS MaxDD 
+--------------------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\trade\TraderApp\python\vix_parameter_sweep_oos.py", line 472, in <module>
+    main()
+  File "D:\trade\TraderApp\python\vix_parameter_sweep_oos.py", line 432, in main
+    best_config = sorted_results[0]
+                  ~~~~~~~~~~~~~~^^^
+IndexError: list index out of range

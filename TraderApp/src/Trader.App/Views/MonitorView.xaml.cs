@@ -48,4 +48,23 @@ public partial class MonitorView : UserControl
             }
         }
     }
+
+    private void RangeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MonitorViewModel vm && sender is System.Windows.Controls.Button btn && btn.Tag is string range)
+        {
+            vm.SelectRange(range);
+        }
+    }
+
+    private void TerminateButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (MessageBox.Show("Terminate the entire app? This will stop all trading and close the application.",
+                "Confirm Termination",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) == MessageBoxResult.Yes)
+        {
+            Application.Current.Shutdown(0);
+        }
+    }
 }

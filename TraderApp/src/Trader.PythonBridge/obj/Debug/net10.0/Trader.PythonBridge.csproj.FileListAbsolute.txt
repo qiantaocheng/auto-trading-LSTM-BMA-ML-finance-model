@@ -1,0 +1,12 @@
+D:\trade\TraderApp\src\Trader.PythonBridge\bin\Debug\net10.0\Trader.PythonBridge.deps.json
+D:\trade\TraderApp\src\Trader.PythonBridge\bin\Debug\net10.0\Trader.PythonBridge.dll
+D:\trade\TraderApp\src\Trader.PythonBridge\bin\Debug\net10.0\Trader.PythonBridge.pdb
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\Trader.PythonBridge.GeneratedMSBuildEditorConfig.editorconfig
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\Trader.PythonBridge.AssemblyInfoInputs.cache
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\Trader.PythonBridge.AssemblyInfo.cs
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\Trader.PythonBridge.csproj.CoreCompileInputs.cache
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\Trader.PythonBridge.sourcelink.json
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\Trader.PythonBridge.dll
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\refint\Trader.PythonBridge.dll
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\Trader.PythonBridge.pdb
+D:\trade\TraderApp\src\Trader.PythonBridge\obj\Debug\net10.0\ref\Trader.PythonBridge.dll

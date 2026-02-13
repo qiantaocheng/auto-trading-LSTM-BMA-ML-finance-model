@@ -9,13 +9,21 @@ public sealed class PythonHmmBridge
     private readonly string _pythonExe;
     private readonly string _scriptPath;
     private readonly string _polygonApiKey;
+    private readonly Func<string>? _stateDbPathFunc;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    public PythonHmmBridge(string pythonExe, string scriptPath, string polygonApiKey)
+    public PythonHmmBridge(string pythonExe, string scriptPath, string polygonApiKey, Func<string>? stateDbPathFunc = null)
     {
         _pythonExe = pythonExe ?? throw new ArgumentNullException(nameof(pythonExe));
         _scriptPath = scriptPath ?? throw new ArgumentNullException(nameof(scriptPath));
         _polygonApiKey = polygonApiKey ?? "";
+        _stateDbPathFunc = stateDbPathFunc;
+    }
+
+    private string BuildStateDbArg()
+    {
+        var path = _stateDbPathFunc?.Invoke();
+        return !string.IsNullOrEmpty(path) ? $" --state-db \"{path}\"" : "";
     }
 
     public async Task ResetRebalanceCounterAsync(CancellationToken ct = default)
@@ -23,7 +31,7 @@ public sealed class PythonHmmBridge
         var psi = new ProcessStartInfo
         {
             FileName = _pythonExe,
-            Arguments = $"\"{_scriptPath}\" --reset-counter",
+            Arguments = $"\"{_scriptPath}\" --reset-counter{BuildStateDbArg()}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -42,7 +50,7 @@ public sealed class PythonHmmBridge
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            try { process.Kill(); } catch { }
+            try { process.Kill(true); } catch { }
             throw new InvalidOperationException("HMM reset-counter timed out after 30s");
         }
     }
@@ -56,6 +64,7 @@ public sealed class PythonHmmBridge
         {
             args += $" --polygon-key {_polygonApiKey}";
         }
+        args += BuildStateDbArg();
 
         var psi = new ProcessStartInfo
         {
@@ -104,7 +113,7 @@ public sealed class PythonHmmBridge
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            try { process.Kill(); } catch { }
+            try { process.Kill(true); } catch { }
             throw new InvalidOperationException("HMM bridge timed out after 60s");
         }
 
@@ -139,7 +148,10 @@ public sealed record HmmResult(
     [property: JsonPropertyName("rebalance_day_counter")] int RebalanceDayCounter,
     [property: JsonPropertyName("training_days")] int TrainingDays,
     [property: JsonPropertyName("features_date")] string? FeaturesDate,
-    [property: JsonPropertyName("error")] string? Error);
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("spy_ma200_cap")] double SpyMa200Cap = 1.0,
+    [property: JsonPropertyName("spy_price")] double SpyPrice = 0,
+    [property: JsonPropertyName("spy_ma200")] double SpyMa200 = 0);
 
 public sealed record HmmProgress(
     [property: JsonPropertyName("step")] string Step,

@@ -271,7 +271,6 @@ def save_model_snapshot(
             ltr_meta = {
                 'base_cols': list(getattr(ltr, 'base_cols', []) or []),
                 'n_quantiles': getattr(ltr, 'n_quantiles', None),
-                'winsorize_quantiles': getattr(ltr, 'winsorize_quantiles', None),
                 'label_gain_power': getattr(ltr, 'label_gain_power', None),
                 'cv_n_splits': getattr(ltr, 'cv_n_splits', None),
                 'cv_gap_days': getattr(ltr, 'cv_gap_days', None),
@@ -831,9 +830,8 @@ def load_models_from_snapshot(
 
             # Create LambdaRankStacker instance
             ltr = LambdaRankStacker(
-                n_quantiles=meta.get('n_quantiles', 10),
-                winsorize_quantiles=meta.get('winsorize_quantiles', (0.01, 0.99)),
-                label_gain_power=meta.get('label_gain_power', 2.6)
+                n_quantiles=meta.get('n_quantiles', 64),
+                label_gain_power=meta.get('label_gain_power', 2.1),
             )
 
             # Load booster

@@ -285,14 +285,9 @@ class ParallelTrainingEngine:
                 expected = (cv_n_splits, cv_gap_days, cv_embargo_days)
                 logger.info(f"[Thread-2] LambdaRank using CV config splits={expected}")
 
+                # Pipeline-aligned: use LambdaRankStacker defaults for LGB params
                 lambda_config = {
                     'base_cols': tuple(quick_preds.keys()),
-                    'n_quantiles': 128,
-                    'winsorize_quantiles': (0.01, 0.99),
-                    'label_gain_power': 1.5,
-                    'num_boost_round': 100,
-                    'early_stopping_rounds': 0,
-                    'use_purged_cv': True,
                     'cv_n_splits': cv_n_splits,
                     'cv_gap_days': cv_gap_days,
                     'cv_embargo_days': cv_embargo_days,

@@ -66,7 +66,7 @@ public sealed class PythonEarningsBridge
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            try { process.Kill(); } catch { }
+            try { process.Kill(true); } catch { }
             throw new InvalidOperationException("Earnings scanner timed out after 15 minutes");
         }
 

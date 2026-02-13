@@ -1,0 +1,26 @@
+Filter Contribution Analysis
+==================================================
+
+Layer 1 (Activity: Price/Vol/RVOL/Return):
+  Total passers:   90,720
+  Avg per day:     94.1
+  Avg fwd 5d ret:  +0.71%
+  Med fwd 5d ret:  -0.16%
+  Win rate (5d):   48.7%
+  N observations:  90720
+
+Layer 2 (Minervini 8-Criteria Trend):
+  Total passers:   16,002
+  Avg per day:     16.6
+  Avg fwd 5d ret:  -0.01%
+  Med fwd 5d ret:  -0.22%
+  Win rate (5d):   48.2%
+  N observations:  16002
+
+Layer 3 (Positive News Catalyst):
+  Total passers:   960
+  Avg per day:     1.0
+  Avg fwd 5d ret:  -0.10%
+  Med fwd 5d ret:  -0.21%
+  Win rate (5d):   48.2%
+  N observations:  960

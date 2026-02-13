@@ -1,0 +1,270 @@
+{
+  "test": "V7 Expanded Universe",
+  "baseline": {
+    "sharpe": 1.2707097937753493,
+    "cagr": 0.11321607237813058,
+    "maxdd": -0.10590358268363953,
+    "calmar": 1.0690485582186138
+  },
+  "results": [
+    {
+      "name": "T0: Baseline",
+      "sharpe": 1.2707097937753493,
+      "cagr": 0.11321607237813058,
+      "maxdd": -0.10590358268363953,
+      "calmar": 1.0690485582186138,
+      "trades": 50,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 696,
+        "risk_off_days": 296
+      },
+      "risk_on_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      },
+      "risk_off_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      }
+    },
+    {
+      "name": "T1: +SMH 10%",
+      "sharpe": 1.2445320163579896,
+      "cagr": 0.11486682674047577,
+      "maxdd": -0.10647816584117928,
+      "calmar": 1.0787829207333346,
+      "trades": 51,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 675,
+        "risk_off_days": 317
+      },
+      "risk_on_weights": {
+        "QQQ": 0.2,
+        "USMV": 0.25,
+        "QUAL": 0.15,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05,
+        "SMH": 0.1
+      },
+      "risk_off_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      }
+    },
+    {
+      "name": "T2: +SMH+IGV 15%",
+      "sharpe": 1.16766737819351,
+      "cagr": 0.10645266574269208,
+      "maxdd": -0.11058110537492896,
+      "calmar": 0.9626659580021445,
+      "trades": 51,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 666,
+        "risk_off_days": 326
+      },
+      "risk_on_weights": {
+        "QQQ": 0.1905,
+        "USMV": 0.2095,
+        "QUAL": 0.1714,
+        "PDBC": 0.1429,
+        "COPX": 0.0476,
+        "URA": 0.0476,
+        "DBA": 0.0476,
+        "SMH": 0.0762,
+        "IGV": 0.0667
+      },
+      "risk_off_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      }
+    },
+    {
+      "name": "T3: +SMH+IGV+XLK",
+      "sharpe": 1.2127836785179489,
+      "cagr": 0.1118917278692435,
+      "maxdd": -0.10809760990810237,
+      "calmar": 1.03509899954649,
+      "trades": 54,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 679,
+        "risk_off_days": 313
+      },
+      "risk_on_weights": {
+        "QQQ": 0.1905,
+        "USMV": 0.219,
+        "QUAL": 0.1619,
+        "PDBC": 0.1429,
+        "COPX": 0.0476,
+        "URA": 0.0476,
+        "DBA": 0.0476,
+        "SMH": 0.0667,
+        "IGV": 0.0476,
+        "XLK": 0.0286
+      },
+      "risk_off_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      }
+    },
+    {
+      "name": "T4: Heavy SMH 15%",
+      "sharpe": 1.2714956281951226,
+      "cagr": 0.12271624940253201,
+      "maxdd": -0.09256737885566131,
+      "calmar": 1.325696491783367,
+      "trades": 51,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 684,
+        "risk_off_days": 308
+      },
+      "risk_on_weights": {
+        "QQQ": 0.18,
+        "USMV": 0.2,
+        "QUAL": 0.17,
+        "PDBC": 0.12,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05,
+        "SMH": 0.15,
+        "IGV": 0.03
+      },
+      "risk_off_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      }
+    },
+    {
+      "name": "T5: QQQ\u2192SMH swap",
+      "sharpe": 1.3323291291380686,
+      "cagr": 0.12921487696349665,
+      "maxdd": -0.10844520591330807,
+      "calmar": 1.1915222611757685,
+      "trades": 53,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 667,
+        "risk_off_days": 325
+      },
+      "risk_on_weights": {
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05,
+        "SMH": 0.25
+      },
+      "risk_off_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      }
+    },
+    {
+      "name": "T6: QQQ\u2192SMH+IGV",
+      "sharpe": 1.213795390379172,
+      "cagr": 0.11466509215762799,
+      "maxdd": -0.11228495037150561,
+      "calmar": 1.0211973356914479,
+      "trades": 54,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 675,
+        "risk_off_days": 317
+      },
+      "risk_on_weights": {
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05,
+        "SMH": 0.15,
+        "IGV": 0.1
+      },
+      "risk_off_weights": {
+        "QQQ": 0.25,
+        "USMV": 0.25,
+        "QUAL": 0.2,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05
+      }
+    },
+    {
+      "name": "T7: SMH always-on",
+      "sharpe": 1.2592473516550666,
+      "cagr": 0.11766251128887073,
+      "maxdd": -0.10893947036902105,
+      "calmar": 1.0800723639494603,
+      "trades": 51,
+      "stats": {
+        "universe_switches": 0,
+        "risk_on_days": 679,
+        "risk_off_days": 313
+      },
+      "risk_on_weights": {
+        "QQQ": 0.2,
+        "USMV": 0.25,
+        "QUAL": 0.15,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05,
+        "SMH": 0.1
+      },
+      "risk_off_weights": {
+        "QQQ": 0.2,
+        "USMV": 0.25,
+        "QUAL": 0.15,
+        "PDBC": 0.15,
+        "COPX": 0.05,
+        "URA": 0.05,
+        "DBA": 0.05,
+        "SMH": 0.1
+      }
+    }
+  ]
+}

@@ -1,0 +1,188 @@
+{
+  "timestamp": "2026-02-11T13:41:15.633018",
+  "periods": {
+    "full": {
+      "start": "2021-01-01",
+      "end": "2026-02-10",
+      "days": 1255
+    },
+    "is": {
+      "start": "2021-01-01",
+      "end": "2024-12-31",
+      "days": 978
+    },
+    "oos": {
+      "start": "2025-01-01",
+      "end": "2026-02-10",
+      "days": 277
+    }
+  },
+  "metrics": {
+    "full": {
+      "baseline": {
+        "name": "Full Baseline",
+        "sharpe": 0.8388751086374331,
+        "cagr": 0.12467482041919364,
+        "maxdd": -0.1257075394633498,
+        "volatility": 0.09904745048868818,
+        "calmar": 0.9917847485634921,
+        "total_return": 0.5922539134354334,
+        "cagr_str": "12.47%",
+        "ann_vol": "9.90%",
+        "sharpe_str": "0.84",
+        "max_dd": "-12.6%",
+        "sharpe_raw": 0.8388751086374331,
+        "cagr_raw": 0.12467482041919364,
+        "max_dd_raw": -0.1257075394633498
+      },
+      "vix": {
+        "name": "Full VIX",
+        "sharpe": 0.8117400359513406,
+        "cagr": 0.1187095150894002,
+        "maxdd": -0.12979302870337808,
+        "volatility": 0.0953187893021905,
+        "calmar": 0.9146062486968577,
+        "total_return": 0.5590807740138368,
+        "cagr_str": "11.87%",
+        "ann_vol": "9.53%",
+        "sharpe_str": "0.81",
+        "max_dd": "-13.0%",
+        "sharpe_raw": 0.8117400359513406,
+        "cagr_raw": 0.1187095150894002,
+        "max_dd_raw": -0.12979302870337808
+      },
+      "delta": {
+        "sharpe_delta": -0.0271350726860925,
+        "cagr_delta": -0.005965305329793447,
+        "maxdd_delta": -0.004085489240028273,
+        "vol_delta": -0.0037286611864976865
+      }
+    },
+    "is": {
+      "baseline": {
+        "name": "IS Baseline",
+        "sharpe": 0.7302494223425074,
+        "cagr": 0.10701188019076469,
+        "maxdd": -0.07180905201966192,
+        "volatility": 0.09057733032247653,
+        "calmar": 1.490228281546788,
+        "total_return": 0.3357268421180881,
+        "cagr_str": "10.70%",
+        "ann_vol": "9.06%",
+        "sharpe_str": "0.73",
+        "max_dd": "-7.2%",
+        "sharpe_raw": 0.7302494223425074,
+        "cagr_raw": 0.10701188019076469,
+        "max_dd_raw": -0.07180905201966192
+      },
+      "vix": {
+        "name": "IS VIX",
+        "sharpe": 0.7300213378986469,
+        "cagr": 0.10139932804482399,
+        "maxdd": -0.07180905201966216,
+        "volatility": 0.08267965646583832,
+        "calmar": 1.4120688853692103,
+        "total_return": 0.3165342694765725,
+        "cagr_str": "10.14%",
+        "ann_vol": "8.27%",
+        "sharpe_str": "0.73",
+        "max_dd": "-7.2%",
+        "sharpe_raw": 0.7300213378986469,
+        "cagr_raw": 0.10139932804482399,
+        "max_dd_raw": -0.07180905201966216
+      },
+      "delta": {
+        "sharpe_delta": -0.0002280844438605767,
+        "cagr_delta": -0.005612552145940697,
+        "maxdd_delta": -2.3592239273284576e-16,
+        "vol_delta": -0.007897673856638213
+      }
+    },
+    "oos": {
+      "baseline": {
+        "name": "OOS Baseline",
+        "sharpe": 0.5915368449870323,
+        "cagr": 0.056352684125690944,
+        "maxdd": -0.005916664966696857,
+        "volatility": 0.024194060301039193,
+        "calmar": 9.524400053557772,
+        "total_return": 0.0030064053781375666,
+        "cagr_str": "5.64%",
+        "ann_vol": "2.42%",
+        "sharpe_str": "0.59",
+        "max_dd": "-0.6%",
+        "sharpe_raw": 0.5915368449870323,
+        "cagr_raw": 0.056352684125690944,
+        "max_dd_raw": -0.005916664966696857
+      },
+      "vix": {
+        "name": "OOS VIX",
+        "sharpe": 0.5915368449870323,
+        "cagr": 0.056352684125690944,
+        "maxdd": -0.005916664966696857,
+        "volatility": 0.024194060301039193,
+        "calmar": 9.524400053557772,
+        "total_return": 0.0030064053781375666,
+        "cagr_str": "5.64%",
+        "ann_vol": "2.42%",
+        "sharpe_str": "0.59",
+        "max_dd": "-0.6%",
+        "sharpe_raw": 0.5915368449870323,
+        "cagr_raw": 0.056352684125690944,
+        "max_dd_raw": -0.005916664966696857
+      },
+      "delta": {
+        "sharpe_delta": 0.0,
+        "cagr_delta": 0.0,
+        "maxdd_delta": 0.0,
+        "vol_delta": 0.0
+      }
+    }
+  },
+  "monthly_analysis": {
+    "full": {
+      "period": "Full",
+      "total_months": 48.0,
+      "baseline_win_rate": 0.5833333333333334,
+      "vix_win_rate": 0.625,
+      "vix_outperform_months": 21.0,
+      "vix_outperform_rate": 0.4375,
+      "baseline_avg_return": 0.009974661455846889,
+      "vix_avg_return": 0.00951308436926421,
+      "baseline_best_month": 0.051555156043597394,
+      "vix_best_month": 0.051555156043597616,
+      "baseline_worst_month": -0.027110857546635225,
+      "vix_worst_month": -0.02724541553875781
+    },
+    "is": {
+      "period": "IS",
+      "total_months": 34.0,
+      "baseline_win_rate": 0.5588235294117647,
+      "vix_win_rate": 0.5882352941176471,
+      "vix_outperform_months": 17.0,
+      "vix_outperform_rate": 0.5,
+      "baseline_avg_return": 0.008801082949141219,
+      "vix_avg_return": 0.008351685665090383,
+      "baseline_best_month": 0.051555156043597394,
+      "vix_best_month": 0.051555156043597616,
+      "baseline_worst_month": -0.025197854073133685,
+      "vix_worst_month": -0.02519785407313324
+    },
+    "oos": {
+      "period": "OOS",
+      "total_months": 1.0,
+      "baseline_win_rate": 1.0,
+      "vix_win_rate": 1.0,
+      "vix_outperform_months": 0.0,
+      "vix_outperform_rate": 0.0,
+      "baseline_avg_return": 0.0006225609004131272,
+      "vix_avg_return": 0.0006225609004131272,
+      "baseline_best_month": 0.0006225609004131272,
+      "vix_best_month": 0.0006225609004131272,
+      "baseline_worst_month": 0.0006225609004131272,
+      "vix_worst_month": 0.0006225609004131272
+    }
+  },
+  "verdict": "NEUTRAL - VIX has minimal impact",
+  "recommendation": "OPTIONAL - either configuration acceptable"
+}

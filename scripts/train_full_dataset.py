@@ -56,6 +56,7 @@ def main() -> int:
 
     project_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(project_root))
+    sys.path.insert(0, str(project_root / "bma_models"))
 
     train_data = Path(args.train_data)
     if not train_data.exists():

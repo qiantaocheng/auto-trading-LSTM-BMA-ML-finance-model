@@ -1,0 +1,17 @@
+[
+    "volume_price_corr_3d",
+    "rsi_14",
+    "reversal_3d",
+    "momentum_10d",
+    "liquid_momentum_10d",
+    "sharpe_momentum_5d",
+    "price_ma20_deviation",
+    "avg_trade_size",
+    "trend_r2_20",
+    "dollar_vol_20",
+    "ret_skew_20d",
+    "reversal_5d",
+    "near_52w_high",
+    "atr_pct_14",
+    "amihud_20"
+]

@@ -1,0 +1,28 @@
+{
+  "is_summary": {
+    "vol_exposure_mean": 0.824745382864954,
+    "risk_cap_mean": 0.8410025706940873,
+    "final_exposure_mean": 0.7572215903820804,
+    "ma200_states": {
+      "RISK_ON": 558,
+      "DEEP": 119,
+      "SHALLOW": 101
+    },
+    "blended_vol_mean": 0.1469122135253085
+  },
+  "oos_summary": {
+    "vol_exposure_mean": 0.9036829033427534,
+    "risk_cap_mean": 0.9252707581227437,
+    "final_exposure_mean": 0.8541924441631126,
+    "ma200_states": {
+      "RISK_ON": 235,
+      "SHALLOW": 29,
+      "DEEP": 13
+    },
+    "blended_vol_mean": 0.13161848952648358
+  },
+  "diagnosis": {
+    "primary_constraint": "vol_targeting",
+    "exposure_drop": 0.0969708537810322
+  }
+}

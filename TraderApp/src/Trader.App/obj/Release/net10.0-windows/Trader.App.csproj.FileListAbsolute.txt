@@ -69,3 +69,9 @@ D:\trade\TraderApp\src\Trader.App\obj\Release\net10.0-windows\refint\Trader.App.
 D:\trade\TraderApp\src\Trader.App\obj\Release\net10.0-windows\Trader.App.pdb
 D:\trade\TraderApp\src\Trader.App\obj\Release\net10.0-windows\Trader.App.genruntimeconfig.cache
 D:\trade\TraderApp\src\Trader.App\obj\Release\net10.0-windows\ref\Trader.App.dll
+D:\trade\TraderApp\src\Trader.App\bin\Release\net10.0-windows\Serilog.dll
+D:\trade\TraderApp\src\Trader.App\bin\Release\net10.0-windows\Serilog.Extensions.Hosting.dll
+D:\trade\TraderApp\src\Trader.App\bin\Release\net10.0-windows\Serilog.Extensions.Logging.dll
+D:\trade\TraderApp\src\Trader.App\bin\Release\net10.0-windows\Serilog.Sinks.File.dll
+D:\trade\TraderApp\src\Trader.App\obj\Release\net10.0-windows\Views\ConnectionView.baml
+D:\trade\TraderApp\src\Trader.App\obj\Release\net10.0-windows\Views\ConnectionView.g.cs

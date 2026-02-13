@@ -1,0 +1,109 @@
+{
+  "portfolio": {
+    "QQQ": "25.0%",
+    "USMV": "25.0%",
+    "QUAL": "20.0%",
+    "PDBC": "15.0%",
+    "DBA": "5.0%",
+    "COPX": "5.0%",
+    "URA": "5.0%"
+  },
+  "vix_proxy": "^VIX",
+  "vix_config": {
+    "high_threshold": 25.0,
+    "low_threshold": 20.0,
+    "high_confirm_days": 2,
+    "low_confirm_days": 5,
+    "theme_budgets": {
+      "normal": 0.1,
+      "medium": 0.06,
+      "high": 0.02
+    }
+  },
+  "metrics": {
+    "p2_baseline": {
+      "period": "",
+      "total_return": "50.0%",
+      "cagr": "14.91%",
+      "ann_vol": "9.93%",
+      "sharpe": "1.05",
+      "sortino": "1.32",
+      "max_dd": "-14.1%",
+      "max_dd_days": 131,
+      "calmar": "1.06",
+      "cagr_raw": 0.1490687555792647,
+      "sharpe_raw": 1.053453640243849,
+      "max_dd_raw": -0.14066080304822215,
+      "trades": 24,
+      "turnover_annual": 1.0563954792310195
+    },
+    "p2_vix_veto": {
+      "period": "",
+      "total_return": "50.0%",
+      "cagr": "14.91%",
+      "ann_vol": "9.93%",
+      "sharpe": "1.05",
+      "sortino": "1.32",
+      "max_dd": "-14.1%",
+      "max_dd_days": 131,
+      "calmar": "1.06",
+      "cagr_raw": 0.1490687555792647,
+      "sharpe_raw": 1.053453640243849,
+      "max_dd_raw": -0.14066080304822215,
+      "trades": 24,
+      "turnover_annual": 1.0563954792310195
+    },
+    "p2_vix_full": {
+      "period": "",
+      "total_return": "54.4%",
+      "cagr": "16.07%",
+      "ann_vol": "10.17%",
+      "sharpe": "1.13",
+      "sortino": "1.46",
+      "max_dd": "-13.0%",
+      "max_dd_days": 92,
+      "calmar": "1.24",
+      "cagr_raw": 0.16074153825817628,
+      "sharpe_raw": 1.1306235839492103,
+      "max_dd_raw": -0.129793028703378,
+      "trades": 27,
+      "turnover_annual": 0.947271348297444
+    }
+  },
+  "benchmarks": {
+    "QQQ": {
+      "name": "QQQ B&H",
+      "period": "",
+      "total_return": "84.1%",
+      "cagr": "16.66%",
+      "ann_vol": "23.16%",
+      "sharpe": "0.61",
+      "sortino": "0.87",
+      "max_dd": "-29.6%",
+      "max_dd_days": 304,
+      "calmar": "0.56",
+      "cagr_raw": 0.16663272840386822,
+      "sharpe_raw": 0.6119531317400343,
+      "max_dd_raw": -0.29566058149732144
+    },
+    "SPY": {
+      "name": "SPY B&H",
+      "period": "",
+      "total_return": "70.9%",
+      "cagr": "14.48%",
+      "ann_vol": "17.77%",
+      "sharpe": "0.63",
+      "sortino": "0.86",
+      "max_dd": "-22.1%",
+      "max_dd_days": 325,
+      "calmar": "0.66",
+      "cagr_raw": 0.14477295801194967,
+      "sharpe_raw": 0.6285153526627033,
+      "max_dd_raw": -0.22093061392706975
+    }
+  },
+  "backtest_period": {
+    "start": "2022-02-24",
+    "end": "2026-02-10"
+  }
+}

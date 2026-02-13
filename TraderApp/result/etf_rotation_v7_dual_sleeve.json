@@ -1,0 +1,104 @@
+{
+  "test": "V7 Dual-Sleeve Backtest",
+  "offense_etfs": {
+    "TQQQ": 0.5,
+    "SOXL": 0.3,
+    "UPRO": 0.2
+  },
+  "baseline": {
+    "sharpe": 1.2408409237044677,
+    "cagr": 0.10955325804663518,
+    "maxdd": -0.10460183981123646,
+    "calmar": 1.047335861819773,
+    "trades": 46
+  },
+  "benchmarks": {
+    "QQQ": {
+      "sharpe": 0.7655890056125632,
+      "cagr": 0.16252443590529553,
+      "maxdd": -0.2956605814973219
+    },
+    "SPY": {
+      "sharpe": 0.8281260976323033,
+      "cagr": 0.14032088030539214,
+      "maxdd": -0.2209306139270703
+    },
+    "TQQQ": {
+      "sharpe": 0.6235834652575545,
+      "cagr": 0.21280075925065178,
+      "maxdd": -0.7385633005455803
+    }
+  },
+  "results": [
+    {
+      "name": "Dual 55/20",
+      "sharpe": 1.3138962856059848,
+      "cagr": 0.09756282422418794,
+      "maxdd": -0.08390662185012236,
+      "calmar": 1.1627547632469208,
+      "trades": 50,
+      "stats": {
+        "offense_activations": 1,
+        "offense_deactivations": 0,
+        "offense_days_active": 700,
+        "defense_budget_switches": 1
+      }
+    },
+    {
+      "name": "Dual 55/20 noVT",
+      "sharpe": 0.8365239575426905,
+      "cagr": 0.09786815311706754,
+      "maxdd": -0.1504594972173973,
+      "calmar": 0.650461784912513,
+      "trades": 59,
+      "stats": {
+        "offense_activations": 1,
+        "offense_deactivations": 0,
+        "offense_days_active": 405,
+        "defense_budget_switches": 1
+      }
+    },
+    {
+      "name": "Dual 60/15",
+      "sharpe": 1.2728323899210274,
+      "cagr": 0.09531470416249022,
+      "maxdd": -0.09309897538197298,
+      "calmar": 1.0237997117736946,
+      "trades": 48,
+      "stats": {
+        "offense_activations": 1,
+        "offense_deactivations": 0,
+        "offense_days_active": 685,
+        "defense_budget_switches": 1
+      }
+    },
+    {
+      "name": "Dual 50/25",
+      "sharpe": 1.2320726790371717,
+      "cagr": 0.09596694497601321,
+      "maxdd": -0.09302956606062364,
+      "calmar": 1.0315746814671305,
+      "trades": 46,
+      "stats": {
+        "offense_activations": 1,
+        "offense_deactivations": 0,
+        "offense_days_active": 685,
+        "defense_budget_switches": 1
+      }
+    },
+    {
+      "name": "Dual 55/20 SL15%",
+      "sharpe": 1.3138962856059848,
+      "cagr": 0.09756282422418794,
+      "maxdd": -0.08390662185012236,
+      "calmar": 1.1627547632469208,
+      "trades": 50,
+      "stats": {
+        "offense_activations": 1,
+        "offense_deactivations": 0,
+        "offense_days_active": 700,
+        "defense_budget_switches": 1
+      }
+    }
+  ]
+}

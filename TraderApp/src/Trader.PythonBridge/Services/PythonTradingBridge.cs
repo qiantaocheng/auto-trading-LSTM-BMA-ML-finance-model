@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace Trader.PythonBridge.Services;
 
@@ -10,6 +11,10 @@ public sealed class PythonTradingBridge
     private readonly string _scriptPath;
     private readonly Func<(string host, int port, int clientId)> _getConnectionParams;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    // Serialize all IBKR calls — only one Python process connects at a time
+    // Prevents client ID collision between TradingSchedulerService and EtfRotationSchedulerService
+    private readonly SemaphoreSlim _ibkrLock = new(1, 1);
 
     public PythonTradingBridge(string pythonExe, string scriptPath, Func<(string host, int port, int clientId)> getConnectionParams)
     {
@@ -21,8 +26,16 @@ public sealed class PythonTradingBridge
     public Task<BuyResult> BuyAsync(string symbol, int quantity, CancellationToken ct = default)
         => RunCommandAsync<BuyResult>($"buy --symbol {symbol} --quantity {quantity}", ct);
 
+    public Task<BuyResult> BuyLimitAsync(string symbol, int quantity, double limitPrice, int fillTimeoutSec = 30, CancellationToken ct = default)
+        => RunCommandAsync<BuyResult>(
+            $"buy --symbol {symbol} --quantity {quantity} --limit-price {limitPrice:F2} --fill-timeout {fillTimeoutSec}", ct);
+
     public Task<SellResult> SellAsync(string symbol, int quantity, CancellationToken ct = default)
         => RunCommandAsync<SellResult>($"sell --symbol {symbol} --quantity {quantity}", ct);
+
+    public Task<SellResult> SellLimitAsync(string symbol, int quantity, double limitPrice, int fillTimeoutSec = 30, CancellationToken ct = default)
+        => RunCommandAsync<SellResult>(
+            $"sell --symbol {symbol} --quantity {quantity} --limit-price {limitPrice:F2} --fill-timeout {fillTimeoutSec}", ct);
 
     public Task<PriceResult> GetPriceAsync(string symbol, CancellationToken ct = default)
         => RunCommandAsync<PriceResult>($"price --symbol {symbol}", ct);
@@ -35,41 +48,67 @@ public sealed class PythonTradingBridge
 
     private async Task<T> RunCommandAsync<T>(string arguments, CancellationToken ct) where T : class
     {
-        var (host, port, clientId) = _getConnectionParams();
-        var psi = new ProcessStartInfo
+        // market-status doesn't connect to IBKR — skip the lock and use shorter timeout
+        var needsLock = !arguments.StartsWith("market-status", StringComparison.Ordinal);
+        var timeoutMs = needsLock ? 60_000 : 10_000;
+
+        if (needsLock)
+            await _ibkrLock.WaitAsync(ct).ConfigureAwait(false);
+
+        try
         {
-            FileName = _pythonExe,
-            Arguments = $"\"{_scriptPath}\" --host {host} --port {port} --client-id {clientId} {arguments}",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = Path.GetDirectoryName(_scriptPath)
-        };
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(timeoutMs);
 
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start python trading process");
+            var (host, port, clientId) = _getConnectionParams();
+            var psi = new ProcessStartInfo
+            {
+                FileName = _pythonExe,
+                Arguments = $"\"{_scriptPath}\" --host {host} --port {port} --client-id {clientId} {arguments}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(_scriptPath)
+            };
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
+            using var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("Failed to start python trading process");
 
-        await process.WaitForExitAsync(ct).ConfigureAwait(false);
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
+            try
+            {
+                var stdoutTask = process.StandardOutput.ReadToEndAsync();
+                var stderrTask = process.StandardError.ReadToEndAsync();
 
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"Trading bridge failed (exit {process.ExitCode}): {stderr}");
+                await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+                var stdout = await stdoutTask.ConfigureAwait(false);
+                var stderr = await stderrTask.ConfigureAwait(false);
+
+                if (process.ExitCode != 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Trading bridge failed (exit {process.ExitCode}): {stderr}");
+                }
+
+                var result = JsonSerializer.Deserialize<T>(stdout.Trim(), JsonOptions);
+                if (result is null)
+                {
+                    throw new InvalidOperationException("Invalid JSON from trading bridge");
+                }
+
+                return result;
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                try { process.Kill(true); } catch { }
+                throw new TimeoutException($"Trading bridge timed out after {timeoutMs / 1000}s: {arguments}");
+            }
         }
-
-        var result = JsonSerializer.Deserialize<T>(stdout.Trim(), JsonOptions);
-        if (result is null)
+        finally
         {
-            throw new InvalidOperationException("Invalid JSON from trading bridge");
+            if (needsLock)
+                _ibkrLock.Release();
         }
-
-        return result;
     }
 }
 
@@ -81,7 +120,10 @@ public sealed record BuyResult(
     [property: JsonPropertyName("quantity")] int Quantity,
     [property: JsonPropertyName("avg_price")] double AvgPrice,
     [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("status")] string? Status);
+    [property: JsonPropertyName("status")] string? Status,
+    [property: JsonPropertyName("filled_qty")] int FilledQty = 0,
+    [property: JsonPropertyName("remaining_qty")] int RemainingQty = 0,
+    [property: JsonPropertyName("total_qty")] int TotalQty = 0);
 
 public sealed record SellResult(
     [property: JsonPropertyName("success")] bool Success,
@@ -91,7 +133,10 @@ public sealed record SellResult(
     [property: JsonPropertyName("quantity")] int Quantity,
     [property: JsonPropertyName("avg_price")] double AvgPrice,
     [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("status")] string? Status);
+    [property: JsonPropertyName("status")] string? Status,
+    [property: JsonPropertyName("filled_qty")] int FilledQty = 0,
+    [property: JsonPropertyName("remaining_qty")] int RemainingQty = 0,
+    [property: JsonPropertyName("total_qty")] int TotalQty = 0);
 
 public sealed record PriceResult(
     [property: JsonPropertyName("symbol")] string Symbol,
@@ -101,7 +146,9 @@ public sealed record PriceResult(
 public sealed record CashResult(
     [property: JsonPropertyName("cash")] double Cash,
     [property: JsonPropertyName("net_liq")] double NetLiq,
-    [property: JsonPropertyName("error")] string? Error);
+    [property: JsonPropertyName("buying_power")] double BuyingPower = 0,
+    [property: JsonPropertyName("margin_used_pct")] double MarginUsedPct = 0,
+    [property: JsonPropertyName("error")] string? Error = null);
 
 public sealed record MarketStatusResult(
     [property: JsonPropertyName("is_open")] bool IsOpen,

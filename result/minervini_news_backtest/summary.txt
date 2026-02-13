@@ -1,0 +1,38 @@
+Backtest Period:   2022-03-01 -> 2025-12-31
+Initial Capital:   $100,000
+Hold Period:       10 trading days
+Transaction Cost:  10 bps round-trip
+Trading Days:      964
+Total Signals:     960
+Completed Trades:  151
+
+--- Minervini+News ---
+  CAGR:     +39.55%
+  Sharpe:   0.810  (rf=4%)
+  Sortino:  1.200
+  MaxDD:    -50.68%
+  Calmar:   0.780
+  Ann Vol:  53.27%
+  Total:    +257.34%
+
+--- SPY B&H ---
+  CAGR:     +12.83%
+  Sharpe:   0.540  (rf=4%)
+  Sortino:  0.740
+  MaxDD:    -22.75%
+  Calmar:   0.564
+  Ann Vol:  17.92%
+  Total:    +58.59%
+
+Win Rate:       79/151 = 52.3%
+Avg Return:     +1.33%
+Median Return:  +0.50%
+Best Trade:     +63.55%
+Worst Trade:    -30.56%
+Total P&L:      $+257,343
+
+Annual Breakdown:
+  2022:   24 trades, win= 50.0%, avg_ret= +4.50%, total_pnl=$+55,240
+  2023:   57 trades, win= 52.6%, avg_ret= +0.53%, total_pnl=$+97,635
+  2024:   54 trades, win= 57.4%, avg_ret= +2.00%, total_pnl=$+343,593
+  2025:   16 trades, win= 37.5%, avg_ret= -2.79%, total_pnl=$-239,124

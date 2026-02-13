@@ -5,7 +5,7 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:converters="clr-namespace:Trader.App.Converters"
              mc:Ignorable="d"
-             d:DesignHeight="600" d:DesignWidth="1000">
+             d:DesignHeight="800" d:DesignWidth="1000">
     <UserControl.Resources>
         <converters:CapitalHistoryGeometryConverter x:Key="CapitalLineGeometryConverter" IncludeBaseline="False" />
         <converters:CapitalHistoryGeometryConverter x:Key="CapitalAreaGeometryConverter" IncludeBaseline="True" />
@@ -13,6 +13,7 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
     <Grid Margin="20" Background="{StaticResource BackgroundBrush}">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -110,6 +111,12 @@
                             Click="DisconnectButton_Click"
                             IsEnabled="{Binding IsConnected}"
                             VerticalAlignment="Center" />
+                    <Button Content="Terminate App"
+                            Margin="0,0,8,0" Padding="12,4"
+                            Click="TerminateButton_Click"
+                            Background="#CC0000"
+                            Foreground="White"
+                            VerticalAlignment="Center" />
 
                     <!-- Status Badges -->
                     <Border CornerRadius="4" Padding="6,2" Margin="8,0,0,0"
@@ -139,6 +146,10 @@
                                Margin="16,0,0,0"
                                VerticalAlignment="Center"
                                Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding PendingBuyCount, StringFormat='Pending: {0}'}"
+                               Margin="8,0,0,0"
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource AccentBrush}" />
                 </StackPanel>
 
                 <!-- HMM Risk Status -->
@@ -172,6 +183,58 @@
                                 Background="#CC0000"
                                 Visibility="{Binding IsCrisisMode, Converter={StaticResource BooleanToVisibilityConverter}}">
                             <TextBlock Text="CRISIS" FontWeight="Bold" FontSize="11"
+                                       Foreground="White" />
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <!-- ETF Rotation Status -->
+                <Border CornerRadius="6" Padding="10,6" Margin="0,0,0,8"
+                        Background="{StaticResource AccentBrush}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="ETF Rotation (P2):" FontWeight="SemiBold" Width="120"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="Exposure:" Margin="0,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding EtfExposure, StringFormat=P0}" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Width="40" />
+                        <TextBlock Text="Risk Cap:" Margin="8,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding EtfRiskCap, StringFormat=P0}" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Width="40" />
+                        <TextBlock Text="ETFs:" Margin="8,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding EtfPositionCount}" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Width="20" />
+                        <TextBlock Text="Rebalance:" Margin="8,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding EtfCountdownDisplay}"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Width="60" />
+                        <Border CornerRadius="4" Padding="6,2" Margin="8,0,0,0"
+                                Background="#2980B9">
+                            <TextBlock Text="75% CAPITAL" FontWeight="Bold" FontSize="11"
+                                       Foreground="White" />
+                        </Border>
+                        <TextBlock Text="{Binding VixDisplay}" Margin="8,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                        <Border CornerRadius="4" Padding="6,2" Margin="4,0,0,0">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="#16A085" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding VixModeActive}" Value="True">
+                                            <Setter Property="Background" Value="#E74C3C" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="{Binding VixTriggerDisplay}" FontWeight="Bold" FontSize="11"
                                        Foreground="White" />
                         </Border>
                     </StackPanel>
@@ -222,32 +285,129 @@
                     <TextBlock Text="{Binding CashBalance, StringFormat=C}" FontSize="26" />
                     <TextBlock Text="Capital points"
                                Foreground="{StaticResource MutedBrush}" />
-                    <TextBlock Text="{Binding CapitalHistory.Count}" Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding ChartCapitalHistory.Count}" Foreground="{StaticResource MutedBrush}" />
                 </StackPanel>
             </Border>
         </StackPanel>
 
-        <!-- Row 3: Capital Growth chart -->
+        <!-- Row 3: Return Summary Badges -->
         <Border Grid.Row="3" Style="{StaticResource CardBorderStyle}">
+            <StackPanel>
+                <TextBlock Text="Returns" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,8" />
+                <StackPanel Orientation="Horizontal">
+                    <!-- 1D -->
+                    <Border CornerRadius="8" Padding="12,8" Margin="0,0,8,0"
+                            Background="{StaticResource AccentBrush}" MinWidth="100">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="1 Day" FontWeight="SemiBold" FontSize="11"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Text="{Binding Return1D, StringFormat='{}{0:+0.00;-0.00;0.00}%'}"
+                                       FontWeight="Bold" FontSize="16"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{Binding Return1D, Converter={StaticResource ReturnToColorConverter}}" />
+                        </StackPanel>
+                    </Border>
+                    <!-- 1W -->
+                    <Border CornerRadius="8" Padding="12,8" Margin="0,0,8,0"
+                            Background="{StaticResource AccentBrush}" MinWidth="100">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="1 Week" FontWeight="SemiBold" FontSize="11"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Text="{Binding Return1W, StringFormat='{}{0:+0.00;-0.00;0.00}%'}"
+                                       FontWeight="Bold" FontSize="16"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{Binding Return1W, Converter={StaticResource ReturnToColorConverter}}" />
+                        </StackPanel>
+                    </Border>
+                    <!-- 1M -->
+                    <Border CornerRadius="8" Padding="12,8" Margin="0,0,8,0"
+                            Background="{StaticResource AccentBrush}" MinWidth="100">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="1 Month" FontWeight="SemiBold" FontSize="11"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Text="{Binding Return1M, StringFormat='{}{0:+0.00;-0.00;0.00}%'}"
+                                       FontWeight="Bold" FontSize="16"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{Binding Return1M, Converter={StaticResource ReturnToColorConverter}}" />
+                        </StackPanel>
+                    </Border>
+                    <!-- 6M -->
+                    <Border CornerRadius="8" Padding="12,8" Margin="0,0,8,0"
+                            Background="{StaticResource AccentBrush}" MinWidth="100">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="6 Months" FontWeight="SemiBold" FontSize="11"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Text="{Binding Return6M, StringFormat='{}{0:+0.00;-0.00;0.00}%'}"
+                                       FontWeight="Bold" FontSize="16"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{Binding Return6M, Converter={StaticResource ReturnToColorConverter}}" />
+                        </StackPanel>
+                    </Border>
+                    <!-- 1Y -->
+                    <Border CornerRadius="8" Padding="12,8" Margin="0,0,0,0"
+                            Background="{StaticResource AccentBrush}" MinWidth="100">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="1 Year" FontWeight="SemiBold" FontSize="11"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Text="{Binding Return1Y, StringFormat='{}{0:+0.00;-0.00;0.00}%'}"
+                                       FontWeight="Bold" FontSize="16"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{Binding Return1Y, Converter={StaticResource ReturnToColorConverter}}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Row 4: Capital Growth chart with time range selector -->
+        <Border Grid.Row="4" Style="{StaticResource CardBorderStyle}">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="220" />
                 </Grid.RowDefinitions>
+
+                <!-- Header + Return for selected range -->
                 <StackPanel Orientation="Horizontal" Grid.Row="0" VerticalAlignment="Center">
-                    <TextBlock Text="Capital Growth" FontWeight="SemiBold" FontSize="16" />
-                    <TextBlock Text="(5-minute samples)"
+                    <TextBlock Text="Capital Curve" FontWeight="SemiBold" FontSize="16" />
+                    <TextBlock Text="{Binding ChartReturn, StringFormat='{}{0:+0.00;-0.00;0.00}%'}"
+                               FontWeight="Bold" FontSize="16" Margin="12,0,0,0"
+                               Foreground="{Binding ChartReturn, Converter={StaticResource ReturnToColorConverter}}" />
+                    <TextBlock Text="{Binding ChartCapitalHistory.Count, StringFormat='({0} pts)'}"
                                Margin="12,0,0,0"
+                               VerticalAlignment="Center"
                                Foreground="{StaticResource MutedBrush}" />
                 </StackPanel>
-                <Grid Grid.Row="1" Margin="0,12,0,0">
+
+                <!-- Range Buttons -->
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,8">
+                    <Button Content="1D" Tag="1D" Click="RangeButton_Click"
+                            Padding="14,5" Margin="0,0,6,0" />
+                    <Button Content="1W" Tag="1W" Click="RangeButton_Click"
+                            Padding="14,5" Margin="0,0,6,0" />
+                    <Button Content="1M" Tag="1M" Click="RangeButton_Click"
+                            Padding="14,5" Margin="0,0,6,0" />
+                    <Button Content="6M" Tag="6M" Click="RangeButton_Click"
+                            Padding="14,5" Margin="0,0,6,0" />
+                    <Button Content="1Y" Tag="1Y" Click="RangeButton_Click"
+                            Padding="14,5" Margin="0,0,0,0" />
+                </StackPanel>
+
+                <!-- Chart Area -->
+                <Grid Grid.Row="2" Margin="0,4,0,0">
                     <Border Background="{StaticResource AccentBrush}" CornerRadius="10" />
                     <Grid ClipToBounds="True" Margin="12">
                         <Path StrokeThickness="3"
                               Stroke="{StaticResource PrimaryBrush}">
                             <Path.Data>
                                 <MultiBinding Converter="{StaticResource CapitalLineGeometryConverter}">
-                                    <Binding Path="CapitalHistory" />
+                                    <Binding Path="ChartCapitalHistory" />
                                     <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualWidth" />
                                     <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualHeight" />
                                 </MultiBinding>
@@ -256,7 +416,7 @@
                         <Path Fill="{StaticResource ChartFillBrush}">
                             <Path.Data>
                                 <MultiBinding Converter="{StaticResource CapitalAreaGeometryConverter}">
-                                    <Binding Path="CapitalHistory" />
+                                    <Binding Path="ChartCapitalHistory" />
                                     <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualWidth" />
                                     <Binding RelativeSource="{RelativeSource AncestorType=Grid}" Path="ActualHeight" />
                                 </MultiBinding>
@@ -267,8 +427,8 @@
             </Grid>
         </Border>
 
-        <!-- Row 4: Holdings -->
-        <Border Grid.Row="4" Style="{StaticResource CardBorderStyle}">
+        <!-- Row 5: Holdings -->
+        <Border Grid.Row="5" Style="{StaticResource CardBorderStyle}">
             <StackPanel>
                 <TextBlock Text="Holdings" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,12" />
                 <DataGrid ItemsSource="{Binding Holdings}"

@@ -10,3 +10,6 @@ D:\trade\TraderApp\src\Trader.PythonBridge\obj\Release\net10.0\Trader.PythonBrid
 D:\trade\TraderApp\src\Trader.PythonBridge\obj\Release\net10.0\refint\Trader.PythonBridge.dll
 D:\trade\TraderApp\src\Trader.PythonBridge\obj\Release\net10.0\Trader.PythonBridge.pdb
 D:\trade\TraderApp\src\Trader.PythonBridge\obj\Release\net10.0\ref\Trader.PythonBridge.dll
+D:\trade\TraderApp\build_temp\Trader.PythonBridge.deps.json
+D:\trade\TraderApp\build_temp\Trader.PythonBridge.dll
+D:\trade\TraderApp\build_temp\Trader.PythonBridge.pdb

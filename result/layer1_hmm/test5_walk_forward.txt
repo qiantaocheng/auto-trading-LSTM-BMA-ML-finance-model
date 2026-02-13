@@ -1,0 +1,72 @@
+==================================================================================================================================
+TEST 5: Walk-Forward with Purge (15 trading day gap)
+  Parameter grid: 3 HMM thresholds ¡Á 3 exit strategies = 9 combos per fold
+==================================================================================================================================
+
+--- Fold 1: Train 2022-03-01¡ú2023-12-31, Test 2024-01-22¡ú2024-12-31 ---
+  Best combo (train): HMM(0.25/0.5)+C0 (Sharpe=1.242)
+  Train grid results:
+                       HMM(0.25/0.5)+C0: Sharpe=+1.242
+                       HMM(0.45/0.7)+C0: Sharpe=+1.161
+                       HMM(0.35/0.6)+C0: Sharpe=+1.153
+                       HMM(0.35/0.6)+C1: Sharpe=+0.765
+                       HMM(0.45/0.7)+C1: Sharpe=+0.762
+                       HMM(0.25/0.5)+C1: Sharpe=+0.745
+                       HMM(0.45/0.7)+C2: Sharpe=+0.691
+                       HMM(0.35/0.6)+C2: Sharpe=+0.682
+                       HMM(0.25/0.5)+C2: Sharpe=+0.670
+
+  Test Period Results:
+                               Scenario     CAGR   Sharpe    MaxDD  Trades
+    -----------------------------------------------------------------
+                  Baseline (no HMM, C0) +138.92%   1.887  -22.24%     252
+                       HMM(0.25/0.5)+C0 +342.58%   1.926  -19.11%     572
+
+--- Fold 2: Train 2022-03-01¡ú2024-12-31, Test 2025-01-22¡ú2025-12-31 ---
+  Best combo (train): HMM(0.25/0.5)+C0 (Sharpe=1.897)
+  Train grid results:
+                       HMM(0.25/0.5)+C0: Sharpe=+1.897
+                       HMM(0.35/0.6)+C0: Sharpe=+1.887
+                       HMM(0.45/0.7)+C0: Sharpe=+1.846
+                       HMM(0.35/0.6)+C1: Sharpe=+1.460
+                       HMM(0.25/0.5)+C1: Sharpe=+1.455
+                       HMM(0.35/0.6)+C2: Sharpe=+1.449
+                       HMM(0.25/0.5)+C2: Sharpe=+1.446
+                       HMM(0.45/0.7)+C2: Sharpe=+1.443
+                       HMM(0.45/0.7)+C1: Sharpe=+1.439
+
+  Test Period Results:
+                               Scenario     CAGR   Sharpe    MaxDD  Trades
+    -----------------------------------------------------------------
+                  Baseline (no HMM, C0) +129.03%   1.286  -34.09%     243
+                       HMM(0.25/0.5)+C0  +71.79%   1.273  -28.45%    1283
+
+--- Fold 3: Train 2023-01-01¡ú2024-12-31, Test 2025-01-22¡ú2025-12-31 ---
+  Best combo (train): HMM(0.25/0.5)+C0 (Sharpe=1.985)
+  Train grid results:
+                       HMM(0.25/0.5)+C0: Sharpe=+1.985
+                       HMM(0.35/0.6)+C0: Sharpe=+1.985
+                       HMM(0.45/0.7)+C0: Sharpe=+1.973
+                       HMM(0.25/0.5)+C2: Sharpe=+1.708
+                       HMM(0.35/0.6)+C2: Sharpe=+1.708
+                       HMM(0.45/0.7)+C2: Sharpe=+1.692
+                       HMM(0.25/0.5)+C1: Sharpe=+1.571
+                       HMM(0.35/0.6)+C1: Sharpe=+1.571
+                       HMM(0.45/0.7)+C1: Sharpe=+1.546
+
+  Test Period Results:
+                               Scenario     CAGR   Sharpe    MaxDD  Trades
+    -----------------------------------------------------------------
+                  Baseline (no HMM, C0) +129.03%   1.286  -34.09%     243
+                       HMM(0.25/0.5)+C0  +71.79%   1.273  -28.45%    1283
+
+================================================================================
+Walk-Forward Summary:
+      Fold                          Best Combo  TrainSh   TestSh   BaseSh   TestDD
+  ---------------------------------------------------------------------------
+    Fold 1                    HMM(0.25/0.5)+C0  +1.242  +1.926  +1.887  -19.11%
+    Fold 2                    HMM(0.25/0.5)+C0  +1.897  +1.273  +1.286  -28.45%
+    Fold 3                    HMM(0.25/0.5)+C0  +1.985  +1.273  +1.286  -28.45%
+
+  Worst fold test Sharpe: +1.273
+  PASS: Strategy profitable in all folds

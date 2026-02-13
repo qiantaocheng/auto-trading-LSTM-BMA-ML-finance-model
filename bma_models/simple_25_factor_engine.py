@@ -364,7 +364,7 @@ class Simple17FactorEngine:
 
         # Monitor each momentum factor if monitor available
         if self.factor_monitor:
-            for factor_name in ['momentum_60d']:  # 🔥 Updated for T+5
+            for factor_name in ['momentum_10d', 'reversal_3d', 'reversal_5d', 'liquid_momentum_10d', 'sharpe_momentum_5d']:
                 if factor_name in momentum_results.columns:
                     self.factor_monitor.monitor_factor_computation(
                         factor_name, momentum_results[factor_name],
@@ -403,7 +403,7 @@ class Simple17FactorEngine:
             except Exception as e:
                 logger.warning(f"rsrs_beta_18 computation failed (continue without): {e}")
         
-        # 7: Volatility Factors (1 factor: atr_ratio)
+        # 7: Volatility Factors (1 factor: atr_pct_14)
         logger.info("Computing volatility factors (1/14)...")
         start_t = time.time()
         vol_results = self._compute_volatility_factors(compute_data, grouped)
@@ -413,13 +413,16 @@ class Simple17FactorEngine:
 
         # REMOVED: IVOL Factor (multicollinearity with hist_vol_40d, r=-0.95, VIF=10.4)
 
-        # 10-13: Fundamental Proxy Factors (REDUCED: removed growth_proxy, profitability_momentum, growth_acceleration)
-        logger.info("Computing fundamental proxy factors (1/14)...")
-        start_t = time.time()
-        fundamental_results = self._compute_fundamental_factors(compute_data, grouped)
-        factor_timings['fundamental'] = time.time() - start_t
-        logger.info(f"   Fundamental factors computed in {factor_timings['fundamental']:.3f}s")
-        all_factors.append(fundamental_results)
+        # 10-13: Fundamental Proxy Factors (skip if not in active factor set — very slow due to Polygon API)
+        if {'roa', 'ebit'} & set(getattr(self, 'alpha_factors', [])):
+            logger.info("Computing fundamental proxy factors (1/14)...")
+            start_t = time.time()
+            fundamental_results = self._compute_fundamental_factors(compute_data, grouped)
+            factor_timings['fundamental'] = time.time() - start_t
+            logger.info(f"   Fundamental factors computed in {factor_timings['fundamental']:.3f}s")
+            all_factors.append(fundamental_results)
+        else:
+            logger.info("Skipping fundamental proxy factors (roa/ebit not in active factor set)")
 
         # Downside beta vs benchmark (QQQ)
         if 'downside_beta_ewm_21' in getattr(self, 'alpha_factors', []):
@@ -458,12 +461,12 @@ class Simple17FactorEngine:
         logger.info(f"   Ret_skew_20d computed in {factor_timings['ret_skew_20d']:.3f}s")
         all_factors.append(skew_results)
 
-        # Trend R² 60d
-        logger.info("   Computing trend_r2_60 (2/3)...")
+        # Trend R² 20d
+        logger.info("   Computing trend_r2_20 (2/3)...")
         start_t = time.time()
-        trend_r2_results = self._compute_trend_r2_60(compute_data, grouped)
-        factor_timings['trend_r2_60'] = time.time() - start_t
-        logger.info(f"   Trend_r2_60 computed in {factor_timings['trend_r2_60']:.3f}s")
+        trend_r2_results = self._compute_trend_r2_20(compute_data, grouped)
+        factor_timings['trend_r2_20'] = time.time() - start_t
+        logger.info(f"   Trend_r2_20 computed in {factor_timings['trend_r2_20']:.3f}s")
         all_factors.append(trend_r2_results)
 
         # MA30/MA60 cross (only if requested)
@@ -624,12 +627,13 @@ class Simple17FactorEngine:
         if 'Close' not in factors_df.columns:
             logger.error("❌ 缺少Close列，无法计算target")
         else:
-            # 使用shift(-horizon)计算未来收益
-            target_series = (
-                factors_df.groupby(level='ticker')['Close']
-                .pct_change(self.horizon)
-                .shift(-self.horizon)
-            )
+            # 🔥 FIX: T+1 execution lag — target = Close[T+1+horizon] / Close[T+1] - 1
+            # Rationale: factors are computed at Close[T], so earliest executable
+            # price is Close[T+1] (or Open[T+1]).  Old target used Close[T]→Close[T+h]
+            # which assumed you could trade at the same close used for signal calc.
+            next_close = factors_df.groupby(level='ticker')['Close'].shift(-1)
+            future_close = factors_df.groupby(level='ticker')['Close'].shift(-(1 + self.horizon))
+            target_series = (future_close / next_close - 1).replace([np.inf, -np.inf], np.nan)
             factors_df['target'] = target_series
 
             # 统计target质量
@@ -637,10 +641,11 @@ class Simple17FactorEngine:
             valid_targets = target_series.notna().sum()
             valid_ratio = valid_targets / total_samples if total_samples > 0 else 0
 
-            logger.info(f"✅ Target计算完成:")
+            logger.info(f"✅ Target计算完成 (T+1 execution lag applied):")
+            logger.info(f"   target = Close[T+1+{self.horizon}] / Close[T+1] - 1")
             logger.info(f"   总样本: {total_samples}")
             logger.info(f"   有效target: {valid_targets} ({valid_ratio:.1%})")
-            logger.info(f"   缺失target: {total_samples - valid_targets} (最近{self.horizon}天无未来数据)")
+            logger.info(f"   缺失target: {total_samples - valid_targets} (最近{self.horizon + 1}天无未来数据)")
 
             # 显示日期范围
             if 'date' in factors_df.index.names:
@@ -661,8 +666,8 @@ class Simple17FactorEngine:
                         min_no_target = no_target_dates.min()
                         max_no_target = no_target_dates.max()
                         logger.info(f"   无target日期: {min_no_target} 到 {max_no_target} (最新数据)")
-                        predict_target_date = pd.to_datetime(max_no_target) + pd.Timedelta(days=self.horizon)
-                        logger.info(f"🎯 预测目标日期: {predict_target_date.date()} (T+{self.horizon})")
+                        predict_target_date = pd.to_datetime(max_no_target) + pd.Timedelta(days=self.horizon + 1)
+                        logger.info(f"🎯 预测目标日期: {predict_target_date.date()} (T+1+{self.horizon})")
 
         # 🔥 根据模式决定是否dropna
         if actual_mode == 'train':
@@ -833,11 +838,11 @@ class Simple17FactorEngine:
         """
         # 🔥 定义需要填充的长周期因子 (T+5 optimized: removed max_lottery_factor, overnight_intraday_gap)
         LONG_LOOKBACK_FACTORS = {
-            'momentum_60d': 60,
-            'obv_momentum_60d': 60,
-            'price_ma60_deviation': 60,
-            'ma30_ma60_cross': 60,
             'near_52w_high': 252,
+            'trend_r2_20': 20,
+            'dollar_vol_20': 20,
+            'amihud_20': 20,
+            'ret_skew_20d': 20,
         }
 
         if not isinstance(factors_df.index, pd.MultiIndex):
@@ -931,49 +936,32 @@ class Simple17FactorEngine:
             return pd.DataFrame()
 
     def _compute_ret_skew_20d(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """🔥 Compute 20-day return skewness - T+5 low-frequency factor
-        Uses log returns for scale-invariance and sample skewness
-        """
-        # IMPORTANT: must preserve index alignment with `data`.
-        # `grouped` iteration + list extension breaks alignment if `data` is not grouped-contiguous.
+        """Compute 20-day return skewness with .shift(1) to avoid lookahead."""
         ret_skew = grouped['Close'].transform(
-            lambda s: np.log(s / s.shift(1)).rolling(20, min_periods=20).skew()
+            lambda s: np.log(s / s.shift(1)).rolling(20, min_periods=20).skew().shift(1)
         )
         ret_skew = ret_skew.replace([np.inf, -np.inf], np.nan).fillna(0.0)
         return pd.DataFrame({'ret_skew_20d': ret_skew}, index=data.index)
 
-    def _compute_trend_r2_60(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """🔥 Compute 60-day trend R² (linear regression goodness of fit) - T+5 low-frequency factor
-        Uses log prices for scale-invariance and proper index alignment
-        """
-        window = 60
-        x_base = np.arange(window, dtype=float)
-        X = np.column_stack([np.ones(window, dtype=float), x_base])
+    def _compute_trend_r2_20(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
+        """Compute 20-day trend R² (corr² method) with .shift(1) to avoid lookahead."""
+        window = 20
 
-        def _r2_from_close(arr: np.ndarray) -> float:
-            # arr is Close values for the rolling window, ordered in time
-            if arr is None or len(arr) != window:
-                return 0.0
-            # Guard against non-positive Close (log invalid) and NaNs/Infs
-            if not np.all(np.isfinite(arr)) or np.any(arr <= 0):
-                return 0.0
-            y = np.log(arr.astype(float))
+        def _r2_corr(arr: np.ndarray) -> float:
+            if arr is None or len(arr) < window or not np.all(np.isfinite(arr)):
+                return np.nan
+            x = np.arange(len(arr))
             try:
-                beta = np.linalg.lstsq(X, y, rcond=None)[0]
-                y_hat = X @ beta
-                ss_res = float(np.sum((y - y_hat) ** 2))
-                ss_tot = float(np.sum((y - y.mean()) ** 2)) + 1e-12
-                r2_val = 1.0 - ss_res / ss_tot
-                return float(max(0.0, min(1.0, r2_val)))
+                corr = np.corrcoef(x, arr)[0, 1]
+                return corr ** 2
             except Exception:
-                return 0.0
+                return np.nan
 
-        # IMPORTANT: preserve index alignment with `data`
         r2 = grouped['Close'].transform(
-            lambda s: s.rolling(window, min_periods=window).apply(_r2_from_close, raw=True)
+            lambda s: s.rolling(window, min_periods=window).apply(_r2_corr, raw=True).shift(1)
         )
         r2 = r2.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        return pd.DataFrame({'trend_r2_60': r2}, index=data.index)
+        return pd.DataFrame({'trend_r2_20': r2}, index=data.index)
 
     def _compute_ma_cross_30_60(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """🔥 Compute 30/60-day moving-average cross signal (1 if MA30 above MA60, else -1)."""
@@ -1019,62 +1007,57 @@ class Simple17FactorEngine:
             }, index=data.index)
 
     def _compute_momentum_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """
-        Momentum factors.
-        - Always compute momentum_60d (backward compatibility)
-        - If horizon==10 (or liquid_momentum requested), also compute liquid_momentum
-          = momentum_60d * (Volume / AvgVolume_126d)
-        """
+        """Compute T5 momentum factors: momentum_10d, reversal_3d, reversal_5d,
+        liquid_momentum_10d, sharpe_momentum_5d. All shifted by 1 to avoid lookahead."""
+        logger.info("[FACTOR] Computing T5 momentum factors (5 features)")
 
-        logger.info("?? [FACTOR COMPUTATION] Starting momentum factors calculation")
-        factor_quality = {}
+        # momentum_10d: 10-day return, shifted
+        momentum_10d = grouped['Close'].transform(
+            lambda s: s.pct_change(10).shift(1)
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+        # reversal_3d: negative 3-day return, shifted
+        reversal_3d = grouped['Close'].transform(
+            lambda s: (-s.pct_change(3)).shift(1)
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        logger.info("   ?? Computing momentum_60d (60-day price momentum)...")
-        momentum_60d = grouped['Close'].pct_change(60).fillna(0)
-        factor_quality['momentum_60d'] = {
-            'non_zero': (momentum_60d != 0).sum(),
-            'nan_count': momentum_60d.isna().sum(),
-            'mean': momentum_60d.mean(),
-            'std': momentum_60d.std(),
-            'coverage': (momentum_60d != 0).sum() / len(momentum_60d) * 100
-        }
-        logger.info(f"   ? momentum_60d: coverage={factor_quality['momentum_60d']['coverage']:.1f}%, mean={factor_quality['momentum_60d']['mean']:.4f}")
+        # reversal_5d: negative 5-day return, shifted
+        reversal_5d = grouped['Close'].transform(
+            lambda s: (-s.pct_change(5)).shift(1)
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        # Data quality warning
-        for factor_name, quality in factor_quality.items():
-            if quality['coverage'] < 50:
-                logger.warning(f"   ?? {factor_name}: Low coverage {quality['coverage']:.1f}%")
-            if quality['std'] == 0:
-                logger.warning(f"   ?? {factor_name}: Zero variance detected")
+        # liquid_momentum_10d: dollar-volume-weighted 10-day momentum, shifted
+        ret_1d = grouped['Close'].transform(lambda s: s.pct_change())
+        dollar_vol_raw = data['Close'] * data['Volume']
+        weighted_ret_sum = (ret_1d * dollar_vol_raw).groupby(data['ticker']).transform(
+            lambda s: s.rolling(10, min_periods=10).sum()
+        )
+        total_vol_sum = dollar_vol_raw.groupby(data['ticker']).transform(
+            lambda s: s.rolling(10, min_periods=10).sum()
+        )
+        liquid_momentum_10d_raw = weighted_ret_sum / total_vol_sum.replace(0, np.nan)
+        liquid_momentum_10d = liquid_momentum_10d_raw.groupby(data['ticker']).shift(1)
+        liquid_momentum_10d = liquid_momentum_10d.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        logger.info("   ? Momentum factors computation completed")
+        # sharpe_momentum_5d: 5-day mean return / std return, shifted
+        def _sharpe_mom(s):
+            ret = s.pct_change()
+            mean_ret = ret.rolling(5, min_periods=5).mean()
+            std_ret = ret.rolling(5, min_periods=5).std()
+            sharpe = mean_ret / std_ret.replace(0, np.nan)
+            return sharpe.shift(1)
 
-        out = {'momentum_60d': momentum_60d}
+        sharpe_momentum_5d = grouped['Close'].transform(_sharpe_mom)
+        sharpe_momentum_5d = sharpe_momentum_5d.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        if '5_days_reversal' in getattr(self, 'alpha_factors', []):
-            try:
-                logger.info("   Computing 5_days_reversal (negative 5-day return) ...")
-                reversal = grouped['Close'].transform(lambda s: s.pct_change(5))
-                reversal = (-reversal).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-                out['5_days_reversal'] = reversal
-            except Exception as exc:
-                logger.warning(f"   ?? 5_days_reversal failed, using 0: {exc}")
-                out['5_days_reversal'] = np.zeros(len(data))
-
-        # T+10: Liquid Momentum (momentum * turnover validation)
-        if 'liquid_momentum' in getattr(self, 'alpha_factors', []):
-            try:
-                logger.info("   💧 Computing liquid_momentum (momentum * turnover validation)...")
-                avg_vol_126 = grouped['Volume'].transform(lambda x: x.rolling(126, min_periods=30).mean().shift(1))
-                turnover_ratio = (data['Volume'] / (avg_vol_126 + 1e-10)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-                liquid_momentum = (momentum_60d * turnover_ratio).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-                out['liquid_momentum'] = liquid_momentum
-            except Exception as e:
-                logger.warning(f"   ⚠️ liquid_momentum failed, using 0: {e}")
-                out['liquid_momentum'] = np.zeros(len(data))
-
-        return pd.DataFrame(out, index=data.index)
+        logger.info("[FACTOR] Momentum factors done")
+        return pd.DataFrame({
+            'momentum_10d': momentum_10d,
+            'reversal_3d': reversal_3d,
+            'reversal_5d': reversal_5d,
+            'liquid_momentum_10d': liquid_momentum_10d,
+            'sharpe_momentum_5d': sharpe_momentum_5d,
+        }, index=data.index)
 
     def _compute_new_alpha_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """
@@ -1117,84 +1100,93 @@ class Simple17FactorEngine:
         return pd.DataFrame(out, index=data.index)
 
     def _compute_mean_reversion_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """🔥 Compute mean reversion factors: rsi_21 (smoother RSI), price_ma60_deviation, bollinger_squeeze"""
+        """Compute T5 mean-reversion factors: rsi_14, price_ma20_deviation.
+        All shifted by 1 to avoid lookahead."""
+        logger.info("[FACTOR] Computing T5 mean-reversion factors (2 features)")
 
-        def _rsi21(x: pd.Series) -> pd.Series:
-            ret = x.diff()
-            gain = ret.clip(lower=0).rolling(21, min_periods=1).mean()
-            loss = (-ret).clip(lower=0).rolling(21, min_periods=1).mean()
-            rs = gain / (loss + 1e-10)
+        # rsi_14: standard RSI(14), shifted
+        def _rsi14(x: pd.Series) -> pd.Series:
+            delta = x.diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = (-delta).where(delta < 0, 0.0)
+            avg_gain = gain.rolling(window=14, min_periods=14).mean()
+            avg_loss = loss.rolling(window=14, min_periods=14).mean()
+            rs = avg_gain / avg_loss.replace(0, np.nan)
             rsi = 100 - (100 / (1 + rs))
-            # Regime context for T+10: invert RSI in bearish regime (price below MA200)
-            # Keep output as standardized [-1, 1] to match existing pipeline expectations.
-            if int(getattr(self, "horizon", 5) or 5) == 10:
-                ma200 = x.rolling(200, min_periods=60).mean()
-                bull = (x > ma200).astype(float)
-                rsi = (bull * rsi) + ((1.0 - bull) * (100.0 - rsi))
-            return (rsi - 50) / 50
+            return rsi.shift(1)
 
-        # 🔥 FIX: Use transform consistently and ensure Series output
-        rsi = grouped['Close'].transform(_rsi21)
-        ma20 = grouped['Close'].transform(lambda x: x.rolling(20, min_periods=1).mean())
-        std20 = grouped['Close'].transform(lambda x: x.rolling(20, min_periods=1).std().fillna(0))
-        bb_bandwidth = std20 / (ma20 + 1e-10)
-        # T+10: convert squeeze to a directional breakout hint by flagging low-bandwidth regimes
-        # and multiplying by medium-term return direction.
-        if int(getattr(self, "horizon", 5) or 5) == 10:
-            bw_q20 = bb_bandwidth.groupby(data['ticker']).transform(lambda s: s.rolling(126, min_periods=30).quantile(0.20))
-            squeeze_flag = (bb_bandwidth < bw_q20).astype(float)
-            dir20 = grouped['Close'].transform(lambda s: s.pct_change(20)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            bb_squeeze = squeeze_flag * np.sign(dir20)
-        else:
-            bb_squeeze = bb_bandwidth
+        rsi_14 = grouped['Close'].transform(_rsi14)
+        rsi_14 = rsi_14.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        # 🔥 FIX: Use data['Close'] instead of grouped['Close'] for element-wise division
-        ma60 = grouped['Close'].transform(lambda x: x.rolling(60, min_periods=10).mean())
-        price_ma60_dev = (data['Close'] / (ma60 + 1e-10) - 1).fillna(0)
+        # price_ma20_deviation: (Close - MA20) / MA20, shifted
+        def _ma20_dev(s: pd.Series) -> pd.Series:
+            ma = s.rolling(window=20, min_periods=20).mean()
+            deviation = (s - ma) / ma.replace(0, np.nan)
+            return deviation.shift(1)
 
+        price_ma20_dev = grouped['Close'].transform(_ma20_dev)
+        price_ma20_dev = price_ma20_dev.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        logger.info("[FACTOR] Mean-reversion factors done")
         return pd.DataFrame({
-            'rsi_21': rsi,
-            'bollinger_squeeze': bb_squeeze,
-            'price_ma60_deviation': price_ma60_dev
+            'rsi_14': rsi_14,
+            'price_ma20_deviation': price_ma20_dev,
         }, index=data.index)
 
     def _compute_volume_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """🔥 Compute volume factors: obv_momentum_60d, vol_ratio_20d, and (T+10) obv_divergence"""
+        """Compute T5 volume factors: volume_price_corr_3d, dollar_vol_20, avg_trade_size, amihud_20.
+        All shifted by 1 to avoid lookahead."""
+        logger.info("[FACTOR] Computing T5 volume factors (4 features)")
 
-        # 🔥 FIX: Ensure proper Series handling
-        dir_ = grouped['Close'].transform(lambda s: s.pct_change()).fillna(0.0)
-        dir_ = np.sign(dir_)
+        # volume_price_corr_3d: rolling 3-day correlation between returns and volume, shifted
+        ret_for_corr = grouped['Close'].transform(lambda s: s.pct_change())
+        # rolling corr needs per-ticker; use groupby transform workaround
+        def _corr_transform(group):
+            ret = group['Close'].pct_change()
+            corr = ret.rolling(window=3, min_periods=3).corr(group['Volume'])
+            return corr.shift(1)
 
-        # Calculate OBV and momentum
-        obv = (dir_ * data['Volume']).groupby(data['ticker']).cumsum()
-        obv_momentum_60d = obv.groupby(data['ticker']).pct_change(60).fillna(0)
+        _corr_parts = []
+        for ticker, grp in data.groupby('ticker'):
+            _corr_parts.append(_corr_transform(grp))
+        volume_price_corr_3d = pd.concat(_corr_parts).sort_index()
+        volume_price_corr_3d = volume_price_corr_3d.reindex(data.index).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        # Calculate volume ratio
-        vol_ma20 = grouped['Volume'].transform(lambda v: v.rolling(20, min_periods=10).mean().shift(1))
-        vol_ratio_20d = (data['Volume'] / (vol_ma20 + 1e-10) - 1).replace([np.inf, -np.inf], 0.0).fillna(0)
+        # dollar_vol_20: 20-day average dollar volume (Close * Volume), shifted
+        dv_raw = data['Close'] * data['Volume']
+        dollar_vol_20 = dv_raw.groupby(data['ticker']).transform(
+            lambda s: s.rolling(20, min_periods=20).mean().shift(1)
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        out = {'obv_momentum_60d': obv_momentum_60d, 'vol_ratio_20d': vol_ratio_20d}
+        # avg_trade_size: (Volume / Transactions) rolling 20-day mean, shifted
+        if 'Transactions' in data.columns:
+            ats_raw = data['Volume'] / data['Transactions'].replace(0, np.nan)
+            avg_trade_size = ats_raw.groupby(data['ticker']).transform(
+                lambda s: s.rolling(window=20, min_periods=20).mean().shift(1)
+            ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        else:
+            logger.warning("[FACTOR] 'Transactions' column missing; avg_trade_size will be 0")
+            avg_trade_size = pd.Series(0.0, index=data.index)
 
-        if 'obv_divergence' in getattr(self, 'alpha_factors', []):
-            try:
-                def fast_norm(x: pd.Series) -> float:
-                    if len(x) < 2:
-                        return 0.0
-                    mn = float(x.min())
-                    mx = float(x.max())
-                    return float((x.iloc[-1] - mn) / (mx - mn + 1e-10))
+        # amihud_20: 20-day average of |return| / dollar_volume (illiquidity), shifted
+        abs_ret = grouped['Close'].transform(lambda s: s.pct_change().abs())
+        dv_for_amihud = (data['Close'] * data['Volume']).replace(0, np.nan)
+        illiq_raw = abs_ret / dv_for_amihud
+        amihud_20 = illiq_raw.groupby(data['ticker']).transform(
+            lambda s: s.rolling(20, min_periods=20).mean().shift(1)
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-                price_norm = grouped['Close'].rolling(60, min_periods=30).apply(fast_norm, raw=False).reset_index(0, drop=True)
-                obv_norm = obv.groupby(data['ticker']).rolling(60, min_periods=30).apply(fast_norm, raw=False).reset_index(0, drop=True)
-                out['obv_divergence'] = (price_norm - obv_norm).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            except Exception as e:
-                logger.warning(f"⚠️ obv_divergence failed, using 0: {e}")
-                out['obv_divergence'] = pd.Series(0.0, index=data.index, name='obv_divergence')
-
-        return pd.DataFrame(out, index=data.index)
+        logger.info("[FACTOR] Volume factors done")
+        return pd.DataFrame({
+            'volume_price_corr_3d': volume_price_corr_3d,
+            'dollar_vol_20': dollar_vol_20,
+            'avg_trade_size': avg_trade_size,
+            'amihud_20': amihud_20,
+        }, index=data.index)
 
     def _compute_volatility_factors(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
-        """Compute volatility factors: atr_ratio using transform/apply to preserve index"""
+        """Compute T5 volatility factor: atr_pct_14 = ATR(14) / Close, shifted by 1."""
+        logger.info("[FACTOR] Computing T5 volatility factors (1 feature)")
 
         prev_close = grouped['Close'].transform(lambda s: s.shift(1))
         high_low = data['High'] - data['Low']
@@ -1204,11 +1196,15 @@ class Simple17FactorEngine:
         tr_components = pd.concat([high_low, high_prev_close, low_prev_close], axis=1)
         true_range = tr_components.max(axis=1)
 
-        atr_20d = true_range.groupby(data['ticker']).transform(lambda x: x.rolling(20, min_periods=1).mean())
-        atr_5d = true_range.groupby(data['ticker']).transform(lambda x: x.rolling(5, min_periods=1).mean())
-        atr_ratio = (atr_5d / (atr_20d + 1e-10) - 1).fillna(0)
+        atr_14 = true_range.groupby(data['ticker']).transform(
+            lambda x: x.rolling(14, min_periods=14).mean()
+        )
+        atr_pct_14_raw = atr_14 / data['Close'].replace(0, np.nan)
+        atr_pct_14 = atr_pct_14_raw.groupby(data['ticker']).shift(1)
+        atr_pct_14 = atr_pct_14.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        return pd.DataFrame({'atr_ratio': atr_ratio}, index=data.index)
+        logger.info("[FACTOR] Volatility factors done")
+        return pd.DataFrame({'atr_pct_14': atr_pct_14}, index=data.index)
 
     def _compute_ivol_20(self, data: pd.DataFrame, grouped) -> pd.DataFrame:
         """

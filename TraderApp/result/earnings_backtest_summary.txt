@@ -1,0 +1,39 @@
+Backtest Period: 2023-02-10 -> 2026-02-10
+Initial Capital: $100,000
+Earnings Allocation: 10% ($10,000)
+Entry: T+1 open, Exit: T+10 close (9d hold)
+Transaction Cost: 10 bps round-trip
+Trading Days: 752
+Total Signals: 16430
+Completed Trades: 1474
+
+--- Earnings Beat ---
+  CAGR:     -0.64%
+  Sharpe:   -1.557  (rf=4%)
+  Sortino:  -2.187
+  MaxDD:    -7.00%
+  Calmar:   -0.092
+  Ann Vol:  2.96%
+  Total:    -1.91%
+
+--- SPY (10% alloc) ---
+  CAGR:     +2.32%
+  Sharpe:   -0.874  (rf=4%)
+  Sortino:  -1.122
+  MaxDD:    -2.73%
+  Calmar:   0.849
+  Ann Vol:  1.93%
+  Total:    +7.07%
+
+Win Rate: 658/1474 = 44.6%
+Avg Return: -0.73%
+Median Return: -0.92%
+Best Trade: +94.82%
+Worst Trade: -52.18%
+Total P&L: $-1,837
+
+Annual Breakdown:
+  2023:  901 trades, win= 41.8%, avg_ret= -1.57%, total_pnl=$-334
+  2024:  511 trades, win= 50.3%, avg_ret= +0.74%, total_pnl=$+3,489
+  2025:   51 trades, win= 35.3%, avg_ret= -1.08%, total_pnl=$-6,075
+  2026:   11 trades, win= 54.5%, avg_ret= +1.95%, total_pnl=$+1,083

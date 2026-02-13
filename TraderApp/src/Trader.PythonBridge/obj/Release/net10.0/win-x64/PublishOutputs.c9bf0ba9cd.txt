@@ -1,0 +1,3 @@
+D:\trade\TraderApp\publish_v4\Trader.PythonBridge.dll
+D:\trade\TraderApp\publish_v4\Trader.PythonBridge.deps.json
+D:\trade\TraderApp\publish_v4\Trader.PythonBridge.pdb

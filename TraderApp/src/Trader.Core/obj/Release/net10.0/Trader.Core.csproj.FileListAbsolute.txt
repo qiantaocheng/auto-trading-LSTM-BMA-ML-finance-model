@@ -11,3 +11,6 @@ D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.dll
 D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\refint\Trader.Core.dll
 D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\Trader.Core.pdb
 D:\trade\TraderApp\src\Trader.Core\obj\Release\net10.0\ref\Trader.Core.dll
+D:\trade\TraderApp\build_temp\Trader.Core.deps.json
+D:\trade\TraderApp\build_temp\Trader.Core.dll
+D:\trade\TraderApp\build_temp\Trader.Core.pdb

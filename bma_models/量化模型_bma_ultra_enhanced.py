@@ -542,7 +542,7 @@ class UnifiedTrainingConfig:
         self._MIN_TRAIN_SIZE = training_config.get('cv_min_train_size', 252)               # 1 year minimum training
         self._TEST_SIZE = training_config.get('test_size', 63)                             # 3 months test size
         self._MIN_TRAIN_WINDOW_DAYS = temporal_config.get('min_train_window_days', 252)   #  1252
-        self._CV_GAP_DAYS = temporal_config.get('cv_gap_days', 6)                          # CV gap = 6 (from unified config)
+        self._CV_GAP_DAYS = temporal_config.get('cv_gap_days', 5)                          # CV gap = 5 (aligned with proven pipeline)
         self._CV_EMBARGO_DAYS = temporal_config.get('cv_embargo_days', 5)                  # CV embargo = 5 (from unified config)
         self._CV_SPLITS = training_config.get('cv_splits', 5)                              # Number of CV splits
 
@@ -588,78 +588,46 @@ class UnifiedTrainingConfig:
         
         elastic_config = base_models.get('elastic_net', {})
         self._ELASTIC_NET_CONFIG = {
-            'alpha': elastic_config.get('alpha', 0.0012),  #  0.002 -> 0.0012
-            'l1_ratio': elastic_config.get('l1_ratio', 0.15),  #  0.10 -> 0.15""
-            'max_iter': elastic_config.get('max_iter', 10000),  #  5000 -> 10000
+            'alpha': elastic_config.get('alpha', 0.001),
+            'l1_ratio': elastic_config.get('l1_ratio', 0.5),
+            'max_iter': elastic_config.get('max_iter', 2000),
             'fit_intercept': elastic_config.get('fit_intercept', True),
-            'selection': elastic_config.get('selection', 'random'),  #  sklearn ElasticNet
+            'selection': elastic_config.get('selection', 'random'),
             'random_state': elastic_config.get('random_state', self._RANDOM_STATE)
         }
         
         xgb_config = base_models.get('xgboost', {})
         self._XGBOOST_CONFIG = {
-            # FIXED V2: 
             'objective': 'reg:squarederror',
-
-            #  Updated parameters 2025-01-19
-            'n_estimators': xgb_config.get('n_estimators', 800),  #  500 -> 800
-            'max_depth': xgb_config.get('max_depth', 5),  #  4 -> 5
-            'learning_rate': xgb_config.get('learning_rate', 0.02),  #  0.03 -> 0.02
-
-            # Updated parameters
+            'n_estimators': xgb_config.get('n_estimators', 500),
+            'max_depth': xgb_config.get('max_depth', 3),
+            'learning_rate': xgb_config.get('learning_rate', 0.04),
             'subsample': xgb_config.get('subsample', 0.7),
-            'colsample_bytree': xgb_config.get('colsample_bytree', 0.7),
-            'colsample_bylevel': xgb_config.get('colsample_bylevel', 0.9),
+            'colsample_bytree': xgb_config.get('colsample_bytree', 1.0),
             'reg_alpha': xgb_config.get('reg_alpha', 0.0),
-            'reg_lambda': xgb_config.get('reg_lambda', 10.0),  #  5.0 -> 10.0L2
-            'min_child_weight': xgb_config.get('min_child_weight', 30),  #  100 -> 30
-            'gamma': xgb_config.get('gamma', 0.0),  #  0.0
-
-            # 2600
+            'reg_lambda': xgb_config.get('reg_lambda', 120.0),
+            'min_child_weight': xgb_config.get('min_child_weight', 350),
+            'gamma': xgb_config.get('gamma', 0.30),
             'tree_method': xgb_config.get('tree_method', 'auto'),
             'device': xgb_config.get('device', 'cpu'),
-            'n_jobs': xgb_config.get('n_jobs', 1 if yaml_config.get('strict_mode', {}).get('enable_determinism_strict', True) else -1),
-            'nthread': xgb_config.get('nthread', 1 if yaml_config.get('strict_mode', {}).get('enable_determinism_strict', True) else -1),
+            'n_jobs': xgb_config.get('n_jobs', -1),
             'max_bin': xgb_config.get('max_bin', 255),
             'random_state': xgb_config.get('random_state', self._RANDOM_STATE),
             'verbosity': xgb_config.get('verbosity', 0),
-
-            # 
             'eval_metric': xgb_config.get('eval_metric', 'rmse'),
-
-            # 
-            'gpu_deterministic': xgb_config.get('gpu_deterministic', True),
-            'single_precision_histogram': xgb_config.get('single_precision_histogram', True),
-            'sampling_method': xgb_config.get('sampling_method', 'uniform')
         }
         
         catboost_config = base_models.get('catboost', {})
         self._CATBOOST_CONFIG = {
-            #  Updated parameters 2025-01-19
-            'iterations': catboost_config.get('iterations', 3000),  #  1200 -> 3000
-            'depth': catboost_config.get('depth', 6),  #  5 -> 6
-            'learning_rate': catboost_config.get('learning_rate', 0.02),
-            'l2_leaf_reg': catboost_config.get('l2_leaf_reg', 20),  #  10 -> 20
-
-            # Updated parameters
-            'random_strength': catboost_config.get('random_strength', 0.2),
-            'bootstrap_type': catboost_config.get('bootstrap_type', 'Bernoulli'),
-            'subsample': catboost_config.get('subsample', 0.7),
-            'rsm': catboost_config.get('rsm', 0.85),
-            'min_data_in_leaf': catboost_config.get('min_data_in_leaf', 500),  #  200 -> 500
-
-            # 
-            'has_time': True,
+            'iterations': catboost_config.get('iterations', 500),
+            'depth': catboost_config.get('depth', 3),
+            'learning_rate': catboost_config.get('learning_rate', 0.04),
+            'l2_leaf_reg': catboost_config.get('l2_leaf_reg', 120),
             'loss_function': catboost_config.get('loss_function', 'RMSE'),
             'random_state': catboost_config.get('random_state', self._RANDOM_STATE),
             'verbose': catboost_config.get('verbose', False),
             'allow_writing_files': False,
             'thread_count': catboost_config.get('thread_count', -1),
-            'od_type': catboost_config.get('od_type', 'Iter'),
-            'od_wait': catboost_config.get('od_wait', 120),  #  80 -> 120
-            'task_type': catboost_config.get('task_type', 'CPU'),
-            'max_bin': catboost_config.get('max_bin', 255),
-            'leaf_estimation_iterations': catboost_config.get('leaf_estimation_iterations', 1)
         }
 
         lightgbm_ranker_config = base_models.get('lightgbm_ranker', {})
@@ -6512,8 +6480,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         if extreme_filter_config.get('enabled', True):
             method = extreme_filter_config.get('method', 'hard_clip')
             if method == 'hard_clip':
-                clip_lower = extreme_filter_config.get('clip_lower', -0.25)
-                clip_upper = extreme_filter_config.get('clip_upper', 0.25)
+                clip_lower = extreme_filter_config.get('clip_lower', -0.55)
+                clip_upper = extreme_filter_config.get('clip_upper', 0.55)
                 
                 # 
                 valid_targets_before = target_series.dropna()
@@ -9623,7 +9591,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
     # ========== Inference without retraining: load snapshot models ==========
     def predict_with_snapshot(self, feature_data: pd.DataFrame = None, snapshot_id: str | None = None,
                               tickers_file: str | None = None, universe_tickers: list[str] | None = None,
-                              as_of_date: datetime | None = None, prediction_days: int = 3) -> Dict[str, Any]:
+                              as_of_date: datetime | None = None, prediction_days: int = 3,
+                              lambdarank_only: bool = False) -> Dict[str, Any]:
         """
         
         - 
@@ -9856,144 +9825,128 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                 return aligned
 
-            # 
+            #
             first_layer_preds = pd.DataFrame(index=X_df.index)
 
-            # ElasticNet
-            try:
-                if paths.get('elastic_net_pkl') and os.path.isfile(paths['elastic_net_pkl']):
-                    enet = joblib.load(paths['elastic_net_pkl'])
-                    cols = feature_names_by_model.get('elastic_net') or feature_names or list(X_df.columns)
-                    X_m = align_features_for_model(X_df, enet, 'ElasticNet', cols)
-                    pred = enet.predict(X_m)
-                    first_layer_preds['pred_elastic'] = pred
-                    #  
-                    unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
-                    if unique_preds == 1:
-                        logger.warning(f"[SNAPSHOT] [ElasticNet]  All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
-                    else:
-                        logger.info(f"[SNAPSHOT] [ElasticNet]  Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
-            except Exception as e:
-                logger.warning(f"[SNAPSHOT] ElasticNet: {e}")
+            if lambdarank_only:
+                logger.info("[SNAPSHOT] lambdarank_only=True: Skipping ElasticNet, XGBoost, CatBoost, MetaRankerStacker")
 
-            # XGBoost
-            try:
-                if XGBRegressor is not None and paths.get('xgb_json') and os.path.isfile(paths['xgb_json']):
-                    xgb_model = XGBRegressor()
-                    xgb_model.load_model(paths['xgb_json'])
-                    cols = feature_names_by_model.get('xgboost') or feature_names or list(X_df.columns)
-                    X_m = align_features_for_model(X_df, xgb_model, 'XGBoost', cols)
-                    pred = xgb_model.predict(X_m)
-                    first_layer_preds['pred_xgb'] = pred
-                    #  
-                    unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
-                    if unique_preds == 1:
-                        logger.warning(f"[SNAPSHOT] [XGBoost]  All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
-                    else:
-                        logger.info(f"[SNAPSHOT] [XGBoost]  Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
-            except Exception as e:
-                logger.warning(f"[SNAPSHOT] XGBoost: {e}")
+            if not lambdarank_only:
+                # ElasticNet
+                try:
+                    if paths.get('elastic_net_pkl') and os.path.isfile(paths['elastic_net_pkl']):
+                        enet = joblib.load(paths['elastic_net_pkl'])
+                        cols = feature_names_by_model.get('elastic_net') or feature_names or list(X_df.columns)
+                        X_m = align_features_for_model(X_df, enet, 'ElasticNet', cols)
+                        pred = enet.predict(X_m)
+                        first_layer_preds['pred_elastic'] = pred
+                        unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
+                        if unique_preds == 1:
+                            logger.warning(f"[SNAPSHOT] [ElasticNet]  All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
+                        else:
+                            logger.info(f"[SNAPSHOT] [ElasticNet]  Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
+                except Exception as e:
+                    logger.warning(f"[SNAPSHOT] ElasticNet: {e}")
 
-            # CatBoost
-            try:
-                if CatBoostRegressor is not None and paths.get('catboost_cbm') and os.path.isfile(paths['catboost_cbm']):
-                    cat_model = CatBoostRegressor()
-                    cat_model.load_model(paths['catboost_cbm'])
-                    cols = feature_names_by_model.get('catboost') or feature_names or list(X_df.columns)
-                    X_m = align_features_for_model(X_df, cat_model, 'CatBoost', cols)
-                    pred = cat_model.predict(X_m)
-                    first_layer_preds['pred_catboost'] = pred
-                    #  
-                    unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
-                    if unique_preds == 1:
-                        logger.warning(f"[SNAPSHOT] [CatBoost]  All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
-                    else:
-                        logger.info(f"[SNAPSHOT] [CatBoost]  Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
-            except Exception as e:
-                logger.warning(f"[SNAPSHOT] CatBoost: {e}")
+                # XGBoost
+                try:
+                    if XGBRegressor is not None and paths.get('xgb_json') and os.path.isfile(paths['xgb_json']):
+                        xgb_model = XGBRegressor()
+                        xgb_model.load_model(paths['xgb_json'])
+                        cols = feature_names_by_model.get('xgboost') or feature_names or list(X_df.columns)
+                        X_m = align_features_for_model(X_df, xgb_model, 'XGBoost', cols)
+                        pred = xgb_model.predict(X_m)
+                        first_layer_preds['pred_xgb'] = pred
+                        unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
+                        if unique_preds == 1:
+                            logger.warning(f"[SNAPSHOT] [XGBoost]  All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
+                        else:
+                            logger.info(f"[SNAPSHOT] [XGBoost]  Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
+                except Exception as e:
+                    logger.warning(f"[SNAPSHOT] XGBoost: {e}")
+
+                # CatBoost
+                try:
+                    if CatBoostRegressor is not None and paths.get('catboost_cbm') and os.path.isfile(paths['catboost_cbm']):
+                        cat_model = CatBoostRegressor()
+                        cat_model.load_model(paths['catboost_cbm'])
+                        cols = feature_names_by_model.get('catboost') or feature_names or list(X_df.columns)
+                        X_m = align_features_for_model(X_df, cat_model, 'CatBoost', cols)
+                        pred = cat_model.predict(X_m)
+                        first_layer_preds['pred_catboost'] = pred
+                        unique_preds = len(set(pred)) if hasattr(pred, '__iter__') else 1
+                        if unique_preds == 1:
+                            logger.warning(f"[SNAPSHOT] [CatBoost]  All predictions are identical: {pred[0] if len(pred) > 0 else 'N/A'}")
+                        else:
+                            logger.info(f"[SNAPSHOT] [CatBoost]  Predictions have {unique_preds} unique values, range: [{np.min(pred):.6f}, {np.max(pred):.6f}]")
+                except Exception as e:
+                    logger.warning(f"[SNAPSHOT] CatBoost: {e}")
 
             # Meta Ranker Stacker ()  RidgeStacker ()
-            ridge_meta = {}
-            try:
-                if paths.get('ridge_meta_json') and os.path.isfile(paths['ridge_meta_json']):
-                    with open(paths['ridge_meta_json'], 'r', encoding='utf-8') as f:
-                        ridge_meta = json.load(f)
-            except Exception:
-                ridge_meta = {}
-
-            ridge_base_cols_raw = ridge_meta.get('base_cols') or ('pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank')
-            # Filter out 'pred_lightgbm_ranker' if present in old snapshots (backward compatibility)
-            ridge_base_cols = tuple([c for c in ridge_base_cols_raw if c != 'pred_lightgbm_ranker'])
-            ridge_actual_cols_raw = ridge_meta.get('actual_feature_cols') or list(ridge_base_cols)
-            # Filter out 'pred_lightgbm_ranker' from actual_feature_cols as well
-            ridge_actual_cols = [c for c in ridge_actual_cols_raw if c != 'pred_lightgbm_ranker']
-            
-            # Try to load MetaRankerStacker first
             meta_ranker_stacker = None
             ridge_stacker = None
-            
-            try:
-                # Check if meta_ranker model exists
-                if paths.get('meta_ranker_txt') and os.path.isfile(paths['meta_ranker_txt']):
-                    logger.info("[SNAPSHOT]  Loading MetaRankerStacker...")
-                    
-                    #  MetaRankerStacker
-                    meta_ranker_meta = {}
-                    if paths.get('meta_ranker_meta_json') and os.path.isfile(paths['meta_ranker_meta_json']):
-                        with open(paths['meta_ranker_meta_json'], 'r', encoding='utf-8') as f:
-                            meta_ranker_meta = json.load(f)
-                        logger.info(f"[SNAPSHOT]  MetaRankerStacker: {len(meta_ranker_meta)} ")
-                    else:
-                        logger.warning("[SNAPSHOT]   meta_ranker_meta.json")
-                    
-                    #  MetaRankerStacker
-                    meta_base_cols_from_meta = meta_ranker_meta.get('base_cols', list(ridge_base_cols))
-                    # Filter out 'pred_lightgbm_ranker' if present (backward compatibility)
-                    meta_base_cols_filtered = [c for c in meta_base_cols_from_meta if c != 'pred_lightgbm_ranker']
-                    meta_ranker_stacker = MetaRankerStacker(
-                        base_cols=tuple(meta_base_cols_filtered),
-                        n_quantiles=meta_ranker_meta.get('n_quantiles', 64),
-                        label_gain_power=meta_ranker_meta.get('label_gain_power', 2.2),
-                        num_boost_round=meta_ranker_meta.get('num_boost_round', 300),
-                        lgb_params=meta_ranker_meta.get('lgb_params', {}),
-                        use_purged_cv=True,
-                        use_internal_cv=True,
-                        random_state=42
-                    )
-                    
-                    #  LightGBM
-                    meta_ranker_stacker.lightgbm_model = lgb.Booster(model_file=paths['meta_ranker_txt'])
-                    logger.info(f"[SNAPSHOT]  LightGBM")
-                    
-                    #  scaler
-                    if paths.get('meta_ranker_scaler_pkl') and os.path.isfile(paths['meta_ranker_scaler_pkl']):
-                        meta_ranker_stacker.scaler = joblib.load(paths['meta_ranker_scaler_pkl'])
-                        logger.info(f"[SNAPSHOT]  Scaler")
-                    else:
-                        logger.warning("[SNAPSHOT]   meta_ranker_scaler.pkl")
-                    
-                    #  
-                    meta_ranker_stacker.actual_feature_cols_ = list(meta_ranker_meta.get('actual_feature_cols', ridge_actual_cols))
-                    meta_base_cols_raw = meta_ranker_meta.get('base_cols', list(ridge_base_cols))
-                    # Filter out 'pred_lightgbm_ranker' if present (backward compatibility)
-                    meta_ranker_stacker.base_cols = tuple([c for c in meta_base_cols_raw if c != 'pred_lightgbm_ranker'])
-                    meta_ranker_stacker.fitted_ = True
-                    
-                    #  
-                    is_fitted = getattr(meta_ranker_stacker, 'fitted_', False)
-                    has_model = hasattr(meta_ranker_stacker, 'lightgbm_model') and meta_ranker_stacker.lightgbm_model is not None
-                    logger.info(f"[SNAPSHOT]  MetaRankerStacker: fitted={is_fitted}, has_model={has_model}")
-                    
-                    if not (is_fitted and has_model):
-                        raise RuntimeError(f"MetaRankerStacker: fitted={is_fitted}, has_model={has_model}")
-                    
-                    self.meta_ranker_stacker = meta_ranker_stacker
-                    logger.info("[SNAPSHOT]  MetaRankerStacker loaded successfully")
-            except Exception as e:
-                logger.error(f"[SNAPSHOT]  Loading MetaRankerStacker failed: {e}")
-                import traceback
-                logger.error(f"[SNAPSHOT] Full traceback:\n{traceback.format_exc()}")
-                raise RuntimeError(f"Cannot load MetaRankerStacker from snapshot. This snapshot may be corrupted or incomplete. Error: {e}")
+            ridge_base_cols = ('pred_lambdarank',)
+            ridge_actual_cols = ['pred_lambdarank']
+
+            if not lambdarank_only:
+                ridge_meta = {}
+                try:
+                    if paths.get('ridge_meta_json') and os.path.isfile(paths['ridge_meta_json']):
+                        with open(paths['ridge_meta_json'], 'r', encoding='utf-8') as f:
+                            ridge_meta = json.load(f)
+                except Exception:
+                    ridge_meta = {}
+
+                ridge_base_cols_raw = ridge_meta.get('base_cols') or ('pred_catboost', 'pred_elastic', 'pred_xgb', 'pred_lambdarank')
+                ridge_base_cols = tuple([c for c in ridge_base_cols_raw if c != 'pred_lightgbm_ranker'])
+                ridge_actual_cols_raw = ridge_meta.get('actual_feature_cols') or list(ridge_base_cols)
+                ridge_actual_cols = [c for c in ridge_actual_cols_raw if c != 'pred_lightgbm_ranker']
+
+                try:
+                    if paths.get('meta_ranker_txt') and os.path.isfile(paths['meta_ranker_txt']):
+                        logger.info("[SNAPSHOT]  Loading MetaRankerStacker...")
+                        meta_ranker_meta = {}
+                        if paths.get('meta_ranker_meta_json') and os.path.isfile(paths['meta_ranker_meta_json']):
+                            with open(paths['meta_ranker_meta_json'], 'r', encoding='utf-8') as f:
+                                meta_ranker_meta = json.load(f)
+                            logger.info(f"[SNAPSHOT]  MetaRankerStacker: {len(meta_ranker_meta)} ")
+                        else:
+                            logger.warning("[SNAPSHOT]   meta_ranker_meta.json")
+                        meta_base_cols_from_meta = meta_ranker_meta.get('base_cols', list(ridge_base_cols))
+                        meta_base_cols_filtered = [c for c in meta_base_cols_from_meta if c != 'pred_lightgbm_ranker']
+                        meta_ranker_stacker = MetaRankerStacker(
+                            base_cols=tuple(meta_base_cols_filtered),
+                            n_quantiles=meta_ranker_meta.get('n_quantiles', 64),
+                            label_gain_power=meta_ranker_meta.get('label_gain_power', 2.2),
+                            num_boost_round=meta_ranker_meta.get('num_boost_round', 300),
+                            lgb_params=meta_ranker_meta.get('lgb_params', {}),
+                            use_purged_cv=True,
+                            use_internal_cv=True,
+                            random_state=42
+                        )
+                        meta_ranker_stacker.lightgbm_model = lgb.Booster(model_file=paths['meta_ranker_txt'])
+                        logger.info(f"[SNAPSHOT]  LightGBM")
+                        if paths.get('meta_ranker_scaler_pkl') and os.path.isfile(paths['meta_ranker_scaler_pkl']):
+                            meta_ranker_stacker.scaler = joblib.load(paths['meta_ranker_scaler_pkl'])
+                            logger.info(f"[SNAPSHOT]  Scaler")
+                        else:
+                            logger.warning("[SNAPSHOT]   meta_ranker_scaler.pkl")
+                        meta_ranker_stacker.actual_feature_cols_ = list(meta_ranker_meta.get('actual_feature_cols', ridge_actual_cols))
+                        meta_base_cols_raw = meta_ranker_meta.get('base_cols', list(ridge_base_cols))
+                        meta_ranker_stacker.base_cols = tuple([c for c in meta_base_cols_raw if c != 'pred_lightgbm_ranker'])
+                        meta_ranker_stacker.fitted_ = True
+                        is_fitted = getattr(meta_ranker_stacker, 'fitted_', False)
+                        has_model = hasattr(meta_ranker_stacker, 'lightgbm_model') and meta_ranker_stacker.lightgbm_model is not None
+                        logger.info(f"[SNAPSHOT]  MetaRankerStacker: fitted={is_fitted}, has_model={has_model}")
+                        if not (is_fitted and has_model):
+                            raise RuntimeError(f"MetaRankerStacker: fitted={is_fitted}, has_model={has_model}")
+                        self.meta_ranker_stacker = meta_ranker_stacker
+                        logger.info("[SNAPSHOT]  MetaRankerStacker loaded successfully")
+                except Exception as e:
+                    logger.error(f"[SNAPSHOT]  Loading MetaRankerStacker failed: {e}")
+                    import traceback
+                    logger.error(f"[SNAPSHOT] Full traceback:\n{traceback.format_exc()}")
+                    raise RuntimeError(f"Cannot load MetaRankerStacker from snapshot. This snapshot may be corrupted or incomplete. Error: {e}")
 
             #  OPTIMIZATION: Compute LambdaRank prediction BEFORE creating ridge_input
             # This ensures pred_lambdarank is available when creating ridge_input, avoiding redundant reordering
@@ -10066,143 +10019,93 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                 logger.error(f"[SNAPSHOT] LambdaRank: {e}")
                 raise
 
-            #  OPTIMIZED: Create ridge_input AFTER all first-layer predictions are complete
-            # This ensures all required columns (including pred_lambdarank) are already in first_layer_preds
-            ridge_input = first_layer_preds.copy()
-            
-            # Filter out 'pred_lightgbm_ranker' if present (backward compatibility with old snapshots)
-            if 'pred_lightgbm_ranker' in ridge_input.columns:
-                ridge_input = ridge_input.drop(columns=['pred_lightgbm_ranker'])
-                logger.info("[SNAPSHOT] Removed 'pred_lightgbm_ranker' from first_layer_preds (LightGBM Ranker disabled)")
-            
-            #  OPTIMIZED: Use unified fill_missing_features_with_median function instead of inline logic
-            missing_cols = [col for col in ridge_base_cols if col not in ridge_input.columns]
-            if missing_cols:
-                ridge_input = fill_missing_features_with_median(ridge_input, missing_cols, 'MetaStacker')
-            
-            #  OPTIMIZED: Single reordering - all required columns should already be present
-            available_base_cols = [col for col in ridge_base_cols if col in ridge_input.columns]
-            ridge_input = ridge_input[available_base_cols].copy()
-            logger.info(f"[SNAPSHOT] Re-ordered ridge_input columns to match base_cols: {list(ridge_input.columns)}")
-
-            #  OPTIMIZED: MultiIndex check - first_layer_preds should already have MultiIndex from X_df.index
-            # Only set MultiIndex if it's missing (shouldn't happen, but keep for safety)
-            if not isinstance(ridge_input.index, pd.MultiIndex) and isinstance(dates, pd.Series) and isinstance(tickers, pd.Series):
-                ridge_input.index = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
-                logger.warning("[SNAPSHOT]  Had to set MultiIndex - first_layer_preds should already have MultiIndex")
-            
-            #  OPTIMIZED: Unified lambda_percentile handling - only add once, after ridge_input is finalized
-            # Check if Meta Stacker needs lambda_percentile (use meta_ranker_stacker if available, else ridge_stacker)
-            stacker_to_check = meta_ranker_stacker if meta_ranker_stacker is not None else ridge_stacker
-            if stacker_to_check is not None and hasattr(stacker_to_check, 'actual_feature_cols_'):
-                if 'lambda_percentile' in stacker_to_check.actual_feature_cols_:
-                    if lambda_percentile_series is None:
-                        if lambda_predictions is not None and 'lambda_pct' in lambda_predictions.columns:
-                            lambda_percentile_series = lambda_predictions['lambda_pct'] * 1.0
-                        else:
-                            # Fallback: use constant 50.0
-                            lambda_percentile_series = pd.Series(50.0, index=ridge_input.index, name='lambda_percentile')
-                            logger.warning("[SNAPSHOT]  lambda_percentile not available, using constant 50.0")
-                    
-                    if lambda_percentile_series is not None:
-                        ridge_input['lambda_percentile'] = lambda_percentile_series.reindex(ridge_input.index)
-                        logger.info("[SNAPSHOT] Added lambda_percentile to ridge_input")
-
-            # Debug: Log ridge_input statistics before prediction
-            logger.info(f"[SNAPSHOT]  ridge_input shape: {ridge_input.shape}, columns: {list(ridge_input.columns)}")
-            for col in ridge_input.columns:
-                if ridge_input[col].dtype in [np.float64, np.float32, np.int64, np.int32]:
-                    unique_vals = ridge_input[col].nunique()
-                    logger.info(f"[SNAPSHOT]  ridge_input['{col}']: unique={unique_vals}, min={ridge_input[col].min():.6f}, max={ridge_input[col].max():.6f}, mean={ridge_input[col].mean():.6f}")
-                    if unique_vals == 1:
-                        logger.warning(f"[SNAPSHOT]  Column '{col}' has only one unique value: {ridge_input[col].iloc[0]}")
-
-            # Meta Ranker
-            if meta_ranker_stacker is None:
-                raise RuntimeError("MetaRankerStacker is not available for prediction. Please ensure the model is loaded from snapshot.")
-            ridge_predictions_df = meta_ranker_stacker.predict(ridge_input)
-            
-            # Debug: Log ridge_predictions_df statistics
-            logger.info(f"[SNAPSHOT]  ridge_predictions_df shape: {ridge_predictions_df.shape}, columns: {list(ridge_predictions_df.columns)}")
-            if 'score' in ridge_predictions_df.columns:
-                score_col = ridge_predictions_df['score']
-            elif len(ridge_predictions_df.columns) > 0:
-                score_col = ridge_predictions_df.iloc[:, 0]
+            # --- lambdarank_only short-circuit: use lambda_score directly ---
+            if lambdarank_only:
+                if lambda_predictions is None or lambda_predictions.empty:
+                    raise RuntimeError("lambdarank_only=True but LambdaRank prediction failed")
+                final_df = lambda_predictions[['lambda_score']].rename(columns={'lambda_score': 'blended_score'})
+                logger.info(f"[SNAPSHOT] lambdarank_only: Using LambdaRank scores directly as final predictions")
+                logger.info(f"[SNAPSHOT]  final_df shape: {final_df.shape}, unique={final_df['blended_score'].nunique()}")
             else:
-                score_col = None
-            if score_col is not None:
-                logger.info(f"[SNAPSHOT]  ridge_predictions_df score unique values: {score_col.nunique()}")
-                logger.info(f"[SNAPSHOT]  ridge_predictions_df score range: min={score_col.min():.6f}, max={score_col.max():.6f}, mean={score_col.mean():.6f}, std={score_col.std():.6f}")
-                if score_col.nunique() == 1:
-                    logger.error(f"[SNAPSHOT]  CRITICAL: All ridge predictions have the same value: {score_col.iloc[0]}")
-                    logger.error(f"[SNAPSHOT]  This indicates a problem with MetaRankerStacker predictions!")
+                #  OPTIMIZED: Create ridge_input AFTER all first-layer predictions are complete
+                ridge_input = first_layer_preds.copy()
+                if 'pred_lightgbm_ranker' in ridge_input.columns:
+                    ridge_input = ridge_input.drop(columns=['pred_lightgbm_ranker'])
+                missing_cols = [col for col in ridge_base_cols if col not in ridge_input.columns]
+                if missing_cols:
+                    ridge_input = fill_missing_features_with_median(ridge_input, missing_cols, 'MetaStacker')
+                available_base_cols = [col for col in ridge_base_cols if col in ridge_input.columns]
+                ridge_input = ridge_input[available_base_cols].copy()
+                logger.info(f"[SNAPSHOT] Re-ordered ridge_input columns to match base_cols: {list(ridge_input.columns)}")
 
-            # LambdaRankRank-awareRidge
-            final_df = None
-            use_rank_blender = bool(getattr(self, 'use_rank_aware_blending', False))
-            if use_rank_blender and self.rank_aware_blender is None:
-                try:
-                    from bma_models.rank_aware_blender import RankAwareBlender
-                    self.rank_aware_blender = RankAwareBlender()
-                except Exception:
-                    self.rank_aware_blender = None
+                if not isinstance(ridge_input.index, pd.MultiIndex) and isinstance(dates, pd.Series) and isinstance(tickers, pd.Series):
+                    ridge_input.index = pd.MultiIndex.from_arrays([dates, tickers], names=['date', 'ticker'])
 
-            if use_rank_blender and self.rank_aware_blender is not None and lambda_predictions is not None and not lambda_predictions.empty:
-                try:
-                    from bma_models.rank_aware_blender import RankGateConfig
-                    gate_config = RankGateConfig(
-                        tau_long=0.70,
-                        tau_short=0.20,
-                        alpha_long=0.15,
-                        alpha_short=0.15,
-                        min_coverage=0.35,
-                        neutral_band=True,
-                        max_gain=1.25
-                    )
-                    ridge_df_for_blend = ridge_predictions_df.copy()
-                    if 'score' not in ridge_df_for_blend.columns and len(ridge_df_for_blend.columns) > 0:
-                        ridge_df_for_blend = ridge_df_for_blend.rename(columns={ridge_df_for_blend.columns[0]: 'score'})
+                stacker_to_check = meta_ranker_stacker if meta_ranker_stacker is not None else ridge_stacker
+                if stacker_to_check is not None and hasattr(stacker_to_check, 'actual_feature_cols_'):
+                    if 'lambda_percentile' in stacker_to_check.actual_feature_cols_:
+                        if lambda_percentile_series is None:
+                            if lambda_predictions is not None and 'lambda_pct' in lambda_predictions.columns:
+                                lambda_percentile_series = lambda_predictions['lambda_pct'] * 1.0
+                            else:
+                                lambda_percentile_series = pd.Series(50.0, index=ridge_input.index, name='lambda_percentile')
+                        if lambda_percentile_series is not None:
+                            ridge_input['lambda_percentile'] = lambda_percentile_series.reindex(ridge_input.index)
 
-                    blended = self.rank_aware_blender.blend_with_gate(
-                        ridge_predictions=ridge_df_for_blend,
-                        lambda_predictions=lambda_predictions,
-                        cfg=gate_config
-                    )
-                    if 'gated_score' in blended.columns:
-                        final_df = blended[['gated_score']].rename(columns={'gated_score': 'blended_score'})
-                    elif 'blended_score' in blended.columns:
-                        final_df = blended[['blended_score']]
-                except Exception as e:
-                    logger.warning(f"[SNAPSHOT] Rank-aware blending failed: {e}")
-                    final_df = None
-            else:
+                logger.info(f"[SNAPSHOT]  ridge_input shape: {ridge_input.shape}, columns: {list(ridge_input.columns)}")
+                for col in ridge_input.columns:
+                    if ridge_input[col].dtype in [np.float64, np.float32, np.int64, np.int32]:
+                        unique_vals = ridge_input[col].nunique()
+                        if unique_vals == 1:
+                            logger.warning(f"[SNAPSHOT]  Column '{col}' has only one unique value: {ridge_input[col].iloc[0]}")
+
+                if meta_ranker_stacker is None:
+                    raise RuntimeError("MetaRankerStacker is not available for prediction.")
+                ridge_predictions_df = meta_ranker_stacker.predict(ridge_input)
+
+                # Rank-aware blending
+                final_df = None
+                use_rank_blender = bool(getattr(self, 'use_rank_aware_blending', False))
                 if use_rank_blender and self.rank_aware_blender is None:
-                    logger.warning("[SNAPSHOT] Rank-aware blender unavailable; falling back to MetaRanker scores")
-                elif not use_rank_blender:
-                    logger.info("[LIVE_PREDICT] Rank-aware blending disabled - using MetaRankerStacker scores directly")
+                    try:
+                        from bma_models.rank_aware_blender import RankAwareBlender
+                        self.rank_aware_blender = RankAwareBlender()
+                    except Exception:
+                        self.rank_aware_blender = None
 
-            # Ridgelambda_percentile
-            if final_df is None:
-                final_df = ridge_predictions_df.copy()
-                if 'score' in final_df.columns:
-                    final_df = final_df.rename(columns={'score': 'blended_score'})
-                elif len(final_df.columns) > 0:
-                    final_df = final_df.rename(columns={final_df.columns[0]: 'blended_score'})
+                if use_rank_blender and self.rank_aware_blender is not None and lambda_predictions is not None and not lambda_predictions.empty:
+                    try:
+                        from bma_models.rank_aware_blender import RankGateConfig
+                        gate_config = RankGateConfig(
+                            tau_long=0.70, tau_short=0.20, alpha_long=0.15, alpha_short=0.15,
+                            min_coverage=0.35, neutral_band=True, max_gain=1.25
+                        )
+                        ridge_df_for_blend = ridge_predictions_df.copy()
+                        if 'score' not in ridge_df_for_blend.columns and len(ridge_df_for_blend.columns) > 0:
+                            ridge_df_for_blend = ridge_df_for_blend.rename(columns={ridge_df_for_blend.columns[0]: 'score'})
+                        blended = self.rank_aware_blender.blend_with_gate(
+                            ridge_predictions=ridge_df_for_blend, lambda_predictions=lambda_predictions, cfg=gate_config
+                        )
+                        if 'gated_score' in blended.columns:
+                            final_df = blended[['gated_score']].rename(columns={'gated_score': 'blended_score'})
+                        elif 'blended_score' in blended.columns:
+                            final_df = blended[['blended_score']]
+                    except Exception as e:
+                        logger.warning(f"[SNAPSHOT] Rank-aware blending failed: {e}")
+                        final_df = None
 
-            # Debug: Log final_df statistics
-            logger.info(f"[SNAPSHOT]  final_df shape: {final_df.shape}, columns: {list(final_df.columns)}")
-            if 'blended_score' in final_df.columns:
-                blended_col = final_df['blended_score']
-            elif len(final_df.columns) > 0:
-                blended_col = final_df.iloc[:, 0]
-            else:
-                blended_col = None
-            if blended_col is not None:
-                logger.info(f"[SNAPSHOT]  final_df blended_score unique values: {blended_col.nunique()}")
-                logger.info(f"[SNAPSHOT]  final_df blended_score range: min={blended_col.min():.6f}, max={blended_col.max():.6f}, mean={blended_col.mean():.6f}, std={blended_col.std():.6f}")
-                if blended_col.nunique() == 1:
-                    logger.error(f"[SNAPSHOT]  CRITICAL: All final predictions have the same value: {blended_col.iloc[0]}")
-                    logger.error(f"[SNAPSHOT]  This will cause all Direct Predict scores to be identical!")
+                if final_df is None:
+                    final_df = ridge_predictions_df.copy()
+                    if 'score' in final_df.columns:
+                        final_df = final_df.rename(columns={'score': 'blended_score'})
+                    elif len(final_df.columns) > 0:
+                        final_df = final_df.rename(columns={final_df.columns[0]: 'blended_score'})
+
+                logger.info(f"[SNAPSHOT]  final_df shape: {final_df.shape}, columns: {list(final_df.columns)}")
+                if 'blended_score' in final_df.columns:
+                    blended_col = final_df['blended_score']
+                    if blended_col.nunique() == 1:
+                        logger.error(f"[SNAPSHOT]  CRITICAL: All final predictions have the same value: {blended_col.iloc[0]}")
 
             #  REMOVED: Redundant lambda_percentile handling - now handled above in unified block
 
@@ -10806,20 +10709,9 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         sd = stacker_data[model_cols].std(axis=0).replace(0, np.nan)
                         stacker_data[model_cols] = ((stacker_data[model_cols] - mu) / sd).fillna(0.0)
 
-                    # OOFIsotonic
-                    try:
-                        from sklearn.isotonic import IsotonicRegression
-                        y_series = stacker_data[target_col] if target_col in stacker_data.columns else pd.Series(y, index=stacker_data.index)
-                        for col in model_cols:
-                            x_vals = stacker_data[col].values
-                            y_vals = y_series.values
-                            mask = np.isfinite(x_vals) & np.isfinite(y_vals)
-                            if mask.sum() >= 50 and np.unique(x_vals[mask]).size >= 10:
-                                iso = IsotonicRegression(out_of_bounds='clip')
-                                iso.fit(x_vals[mask], y_vals[mask])
-                                stacker_data[col] = iso.predict(x_vals)
-                    except Exception as iso_e:
-                        logger.warning(f"[] Isotonic: {iso_e}")
+                    # Isotonic calibration REMOVED: was fitting on full stacker data without CV
+                    # (data leakage). MetaRankerStacker handles non-linear transforms internally.
+                    logger.info("[META] Isotonic calibration disabled (leakage fix)")
                 else:
                     logger.warning("[] /")
             except Exception as std_e:
@@ -10998,6 +10890,8 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
     def _unified_model_training(self, X: pd.DataFrame, y: pd.Series, dates: pd.Series, tickers: pd.Series) -> Dict[str, Any]:
         """First layer training: ElasticNet, XGBoost, CatBoost, LambdaRank parallel training"""
         from sklearn.linear_model import ElasticNet
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.pipeline import Pipeline
         
         #  
         logger.info("=" * 80)
@@ -11125,14 +11019,17 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
         # elif is_small_sample:
         #     elastic_alpha *= 1.5  # 
 
-        models['elastic_net'] = ElasticNet(
-            alpha=elastic_alpha,
-            l1_ratio=CONFIG.ELASTIC_NET_CONFIG['l1_ratio'],
-            max_iter=CONFIG.ELASTIC_NET_CONFIG['max_iter'],
-            fit_intercept=CONFIG.ELASTIC_NET_CONFIG.get('fit_intercept', True),
-            selection=CONFIG.ELASTIC_NET_CONFIG.get('selection', 'random'),
-            random_state=CONFIG._RANDOM_STATE
-        )
+        models['elastic_net'] = Pipeline([
+            ('scaler', StandardScaler()),
+            ('elastic', ElasticNet(
+                alpha=elastic_alpha,
+                l1_ratio=CONFIG.ELASTIC_NET_CONFIG['l1_ratio'],
+                max_iter=CONFIG.ELASTIC_NET_CONFIG['max_iter'],
+                fit_intercept=CONFIG.ELASTIC_NET_CONFIG.get('fit_intercept', True),
+                selection=CONFIG.ELASTIC_NET_CONFIG.get('selection', 'random'),
+                random_state=CONFIG._RANDOM_STATE
+            ))
+        ])
         
         # 2. XGBoost
         try:
@@ -11140,14 +11037,14 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             xgb_config = CONFIG.XGBOOST_CONFIG.copy()
 
             if is_very_small_sample:
-                xgb_config['n_estimators'] = min(50, xgb_config.get('n_estimators', 100))
-                xgb_config['max_depth'] = min(3, xgb_config.get('max_depth', 6))
-                xgb_config['learning_rate'] = max(0.1, xgb_config.get('learning_rate', 0.05))
-                logger.info(f"[FIRST_LAYER] XGBoost: n_estimators={xgb_config['n_estimators']}, max_depth={xgb_config['max_depth']}")
+                xgb_config['n_estimators'] = min(100, xgb_config.get('n_estimators', 500))
+                xgb_config['max_depth'] = min(3, xgb_config.get('max_depth', 3))
+                xgb_config['learning_rate'] = max(0.08, xgb_config.get('learning_rate', 0.04))
+                logger.info(f"[FIRST_LAYER] XGBoost (very small): n_estimators={xgb_config['n_estimators']}, max_depth={xgb_config['max_depth']}")
             elif is_small_sample:
-                xgb_config['n_estimators'] = min(100, xgb_config.get('n_estimators', 200))
-                xgb_config['max_depth'] = min(4, xgb_config.get('max_depth', 6))
-                logger.info(f"[FIRST_LAYER] XGBoost: n_estimators={xgb_config['n_estimators']}, max_depth={xgb_config['max_depth']}")
+                xgb_config['n_estimators'] = min(250, xgb_config.get('n_estimators', 500))
+                xgb_config['max_depth'] = min(3, xgb_config.get('max_depth', 3))
+                logger.info(f"[FIRST_LAYER] XGBoost (small): n_estimators={xgb_config['n_estimators']}, max_depth={xgb_config['max_depth']}")
 
             models['xgboost'] = xgb.XGBRegressor(**xgb_config)
         except ImportError:
@@ -11159,17 +11056,13 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             catboost_config = CONFIG.CATBOOST_CONFIG.copy()
 
             if is_very_small_sample:
-                catboost_config['iterations'] = min(300, catboost_config.get('iterations', 1200))  # 
-                catboost_config['depth'] = min(5, catboost_config.get('depth', 6))  # 
-                catboost_config['l2_leaf_reg'] = max(0.3, catboost_config.get('l2_leaf_reg', 0.5))  # 
-                catboost_config['bootstrap_type'] = 'Bernoulli'  # 
-                logger.info(f"[FIRST_LAYER] CatBoost: iterations={catboost_config['iterations']}, depth={catboost_config['depth']}, l2_leaf_reg={catboost_config['l2_leaf_reg']}")
+                catboost_config['iterations'] = min(200, catboost_config.get('iterations', 500))
+                catboost_config['depth'] = min(3, catboost_config.get('depth', 3))
+                logger.info(f"[FIRST_LAYER] CatBoost (very small): iterations={catboost_config['iterations']}, depth={catboost_config['depth']}, l2_leaf_reg={catboost_config['l2_leaf_reg']}")
             elif is_small_sample:
-                catboost_config['iterations'] = min(600, catboost_config.get('iterations', 1200))  # 
-                catboost_config['depth'] = min(6, catboost_config.get('depth', 6))  # 
-                catboost_config['l2_leaf_reg'] = max(0.4, catboost_config.get('l2_leaf_reg', 0.5))  # 
-                catboost_config['bootstrap_type'] = 'Bernoulli'  # 
-                logger.info(f"[FIRST_LAYER] CatBoost: iterations={catboost_config['iterations']}, depth={catboost_config['depth']}, l2_leaf_reg={catboost_config['l2_leaf_reg']}")
+                catboost_config['iterations'] = min(300, catboost_config.get('iterations', 500))
+                catboost_config['depth'] = min(3, catboost_config.get('depth', 3))
+                logger.info(f"[FIRST_LAYER] CatBoost (small): iterations={catboost_config['iterations']}, depth={catboost_config['depth']}, l2_leaf_reg={catboost_config['l2_leaf_reg']}")
 
             models['catboost'] = cb.CatBoostRegressor(**catboost_config)
             logger.info("[FIRST_LAYER]  CatBoost")
@@ -11211,36 +11104,11 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
             lambda_base_cols = self._get_first_layer_feature_cols_for_model('lambdarank', list(X.columns), available_cols=X.columns)
             feature_names_by_model['lambdarank'] = list(lambda_base_cols)
             lambda_fit_params = lc.get('fit_params', {}) if isinstance(lc.get('fit_params'), dict) else {}
-            # B2_V2 optimal config from grid search (2026-02-03)
+            # Pipeline-aligned config — LambdaRankStacker defaults match lambdarank_only_pipeline.py
             lambda_config_global = {
                 'base_cols': tuple(lambda_base_cols),
-                'n_quantiles': lc.get('n_quantiles', 32),  # B2_V2: 32
-                'winsorize_quantiles': lc.get('winsorize_quantiles', (0.01, 0.99)),
-                'label_gain_power': lc.get('label_gain_power', 2.1),  # B2_V2: 2.1
-                'num_boost_round': lc.get('num_boost_round', 800),  # B2_V2: 800
-                'early_stopping_rounds': lambda_fit_params.get('early_stopping_rounds', 50),  # B2_V2: 50
-                # CVLambdaRankCVCV
-                'use_internal_cv': lc.get('use_internal_cv', False),
-                'use_purged_cv': lc.get('use_purged_cv', False),
                 'random_state': CONFIG._RANDOM_STATE,
-                # B2_V2 LightGBM params
-                'lgb_params': {
-                    'objective': lc.get('objective', 'lambdarank'),
-                    'metric': lc.get('metric', 'ndcg'),
-                    'ndcg_eval_at': lc.get('ndcg_eval_at', [10, 20]),
-                    'learning_rate': lc.get('learning_rate', 0.05),  # B2_V2: 0.05
-                    'num_leaves': lc.get('num_leaves', 31),  # B2_V2: 31
-                    'max_depth': lc.get('max_depth', 6),  # B2_V2: 6
-                    'min_data_in_leaf': lc.get('min_data_in_leaf', 150),  # B2_V2: 150
-                    'lambda_l1': lc.get('lambda_l1', 0.0),
-                    'lambda_l2': lc.get('lambda_l2', 30.0),  # B2_V2: 30.0
-                    'min_gain_to_split': lc.get('min_gain_to_split', 0.05),  # B2_V2: 0.05
-                    'feature_fraction': lc.get('feature_fraction', 0.9),  # B2_V2: 0.9
-                    'bagging_fraction': lc.get('bagging_fraction', 0.75),  # B2_V2: 0.75
-                    'bagging_freq': lc.get('bagging_freq', 3),  # B2_V2: 3
-                    'lambdarank_truncation_level': lc.get('lambdarank_truncation_level', 40),  # B2_V2: 40
-                    'sigmoid': lc.get('sigmoid', 1.1),  # B2_V2: 1.1
-                },
+                'use_internal_cv': lc.get('use_internal_cv', False),
             }
 
             # LambdaRankCV
@@ -11288,29 +11156,10 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                     cfg = only_model if isinstance(only_model, dict) else {}
                     lgb_params = cfg.get('lgb_params') or {}
                     lambda_fit_params = cfg.get('fit_params', {}) if isinstance(cfg.get('fit_params'), dict) else {}
+                    # Pipeline-aligned: use LambdaRankStacker defaults
                     trained = LambdaRankStacker(
                         base_cols=tuple(use_cols_full),
-                        n_quantiles=int(cfg.get('n_quantiles', 32)),  #  64 -> 32
-                        label_gain_power=float(cfg.get('label_gain_power', 2.6)),  #  2.6（与 final snapshot 一致）
-                        lgb_params=dict(lgb_params) if lgb_params else {
-                            'objective': 'lambdarank',
-                            'metric': 'ndcg',
-                            'ndcg_eval_at': [10, 20],  # �?unified_config 一�?
-                            'learning_rate': 0.01,  #  0.02 -> 0.01
-                            'num_leaves': 31,  #  63 -> 31
-                            'max_depth': 5,  #  6 -> 5
-                            'min_data_in_leaf': 800,  #  650 -> 800
-                            'lambda_l1': 0.0,
-                            'lambda_l2': 30.0,  #  22.0 -> 30.0
-                            'feature_fraction': 0.9,  #  0.85 -> 0.9drop
-                            'bagging_fraction': 0.75,  #  0.8 -> 0.75
-                            'bagging_freq': 3,  #  5 -> 3
-                            'lambdarank_truncation_level': 80,  #  100 -> 80
-                            'sigmoid': 1.1,  #  1.05 -> 1.1
-                        },
-                        num_boost_round=int(cfg.get('num_boost_round', 1200)),  #  700 -> 1200
-                        early_stopping_rounds=int(lambda_fit_params.get('early_stopping_rounds', cfg.get('early_stopping_rounds', 100))),  #  70 -> 100
-                        use_purged_cv=False,
+                        random_state=CONFIG._RANDOM_STATE,
                         use_internal_cv=False,
                     )
                     df_ltr = X[list(use_cols_full)].copy()
@@ -11602,67 +11451,23 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         lambda_config['base_cols'] = tuple(X_train_use.columns)  # 
                         logger.debug(f"[FIRST_LAYER][Lambda] Fold {fold_idx+1}: {len(X_train_use.columns)}")
                     else:
-                        # models
+                        # Pipeline-aligned fallback: use LambdaRankStacker defaults
                         base_cols_tuple = tuple(X_train_use.columns)
                         fallback_cfg = {
                             'base_cols': base_cols_tuple,
-                            'n_quantiles': 32,  #  64 -> 32
-                            'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 2.6,  #  2.6（与 final snapshot 一致）
-                            'num_boost_round': 1200,  #  700 -> 1200
-                            'early_stopping_rounds': 100,  #  70 -> 100
-                            'use_purged_cv': False,
                             'use_internal_cv': False,
                             'random_state': CONFIG._RANDOM_STATE,
-                            'lgb_params': {
-                                'objective': 'lambdarank',
-                                'metric': 'ndcg',
-                                'ndcg_eval_at': [10, 20],  # �?unified_config 一�?
-                                'learning_rate': 0.01,  #  0.02 -> 0.01
-                                'num_leaves': 31,  #  63 -> 31
-                                'max_depth': 5,  #  6 -> 5
-                                'min_data_in_leaf': 800,  #  650 -> 800
-                                'lambda_l1': 0.0,
-                                'lambda_l2': 30.0,  #  22.0 -> 30.0
-                                'feature_fraction': 0.9,  #  0.85 -> 0.9drop
-                                'bagging_fraction': 0.75,  #  0.8 -> 0.75
-                                'bagging_freq': 3,  #  5 -> 3
-                                'lambdarank_truncation_level': 60,  # �?unified_config 一�?
-                                'sigmoid': 1.15,  # �?unified_config 一�?
-                            }
                         }
                         lambda_cfg_from_models = models.get('lambdarank') if isinstance(models, dict) else None
                         lambda_config = lambda_cfg_from_models if isinstance(lambda_cfg_from_models, dict) else fallback_cfg
 
                     #  use_purged_cv=FalseLambdafit
                     if not isinstance(lambda_config, dict):
-                        logger.warning("[FIRST_LAYER][Lambda] dict**")
+                        logger.warning("[FIRST_LAYER][Lambda] lambda_config not dict, using pipeline-aligned defaults")
                         lambda_config = {
                             'base_cols': tuple(X_train_use.columns),
-                            'n_quantiles': 32,  #  64 -> 32
-                            'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 2.6,  #  2.6（与 final snapshot 一致）
-                            'num_boost_round': 1200,  #  700 -> 1200
-                            'early_stopping_rounds': 100,  #  70 -> 100
-                            'use_purged_cv': False,
                             'use_internal_cv': False,
                             'random_state': CONFIG._RANDOM_STATE,
-                            'lgb_params': {
-                                'objective': 'lambdarank',
-                                'metric': 'ndcg',
-                                'ndcg_eval_at': [10, 20],  # �?unified_config 一�?
-                                'learning_rate': 0.01,  #  0.02 -> 0.01
-                                'num_leaves': 31,  #  63 -> 31
-                                'max_depth': 5,  #  6 -> 5
-                                'min_data_in_leaf': 800,  #  650 -> 800
-                                'lambda_l1': 0.0,
-                                'lambda_l2': 30.0,  #  22.0 -> 30.0
-                                'feature_fraction': 0.9,  #  0.85 -> 0.9drop
-                                'bagging_fraction': 0.75,  #  0.8 -> 0.75
-                                'bagging_freq': 3,  #  5 -> 3
-                                'lambdarank_truncation_level': 60,  # �?unified_config 一�?
-                                'sigmoid': 1.15,  # �?unified_config 一�?
-                            }
                         }
                     fold_lambda_model = LambdaRankStacker(**lambda_config)
                     logger.info(f"[FIRST_LAYER][{name}]  Fold {fold_idx + 1}: LambdaRank (: {len(X_train_lambda)})")
@@ -11774,39 +11579,28 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
 
                 val_pred = np.where(np.isnan(val_pred), 0, val_pred)
                 
-                #  OOFrank
-                # ""rankrank
-                # meta ranker""
-                # 
+                # Extract val dates for Top-K monitoring
                 if isinstance(X_val.index, pd.MultiIndex) and 'date' in X_val.index.names:
                     val_dates_for_rank_raw = X_val.index.get_level_values('date')
                 elif groups_norm is not None:
                     val_dates_for_rank_raw = groups_norm[val_idx]
                 else:
                     val_dates_for_rank_raw = dates.iloc[val_idx] if hasattr(dates, 'iloc') else dates[val_idx]
-                
-                # val_dates_for_rankpd.Seriesper_day_rank_normalize
-                if isinstance(val_dates_for_rank_raw, pd.Index):
-                    val_dates_for_rank = pd.Series(val_dates_for_rank_raw)
-                elif isinstance(val_dates_for_rank_raw, np.ndarray):
-                    val_dates_for_rank = pd.Series(val_dates_for_rank_raw)
-                else:
-                    val_dates_for_rank = pd.Series(val_dates_for_rank_raw) if not isinstance(val_dates_for_rank_raw, pd.Series) else val_dates_for_rank_raw
-                
-                # per-day rank
-                from bma_models.lambda_rank_stacker import per_day_rank_normalize, calculate_topk_return_proxy
-                
-                # per-day rank
-                val_pred_normalized = per_day_rank_normalize(val_pred, val_dates_for_rank, use_gauss_rank=True)
-                
-                #  Top-Kproxyproxy
-                # Top-Kproxy
-                topk_metrics = calculate_topk_return_proxy(val_pred, y_val.values if hasattr(y_val, 'values') else y_val, val_dates_for_rank, k=10)
-                topk_metrics_list.append(topk_metrics)  # fold
+                val_dates_for_rank = pd.Series(val_dates_for_rank_raw) if not isinstance(val_dates_for_rank_raw, pd.Series) else val_dates_for_rank_raw
 
-                # Safe OOF assignment with validation
+                # Top-K proxy for monitoring (optional)
                 try:
-                    oof_pred[val_idx] = val_pred_normalized
+                    from bma_models.lambda_rank_stacker import calculate_topk_return_proxy
+                    topk_metrics = calculate_topk_return_proxy(val_pred, y_val.values if hasattr(y_val, 'values') else y_val, val_dates_for_rank, k=10)
+                    topk_metrics_list.append(topk_metrics)
+                except Exception as topk_e:
+                    logger.debug(f"Top-K proxy calculation failed: {topk_e}")
+
+                # Assign RAW OOF predictions (no Gaussian rank normalization)
+                # per_day_rank_normalize was removed: function didn't exist in lambda_rank_stacker.py,
+                # and raw predictions are the proven approach for MetaRankerStacker input.
+                try:
+                    oof_pred[val_idx] = val_pred
                 except Exception as e:
                     logger.error(f"Failed to assign OOF predictions for {name}")
                     logger.error(f"oof_pred shape: {oof_pred.shape}, val_idx shape: {len(val_idx)}, val_pred shape: {val_pred.shape}")
@@ -11924,34 +11718,12 @@ class UltraEnhancedQuantitativeModel(TemporalSafetyValidator):
                         final_lambda_config['base_cols'] = tuple(use_cols_full)  # 
                         final_lambda_model = LambdaRankStacker(**final_lambda_config)
                     else:
-                        # global config
-                        final_lambda_model = LambdaRankStacker(**{
-                            'base_cols': tuple(use_cols_full),  # 
-                            'n_quantiles': 32,  #  64 -> 32
-                            'winsorize_quantiles': (0.01, 0.99),
-                            'label_gain_power': 2.6,  #  2.6（与 final snapshot 一致）
-                            'num_boost_round': 1200,  #  700 -> 1200
-                            'early_stopping_rounds': 100,  #  70 -> 100
-                            'lgb_params': {
-                                'objective': 'lambdarank',
-                                'metric': 'ndcg',
-                                'ndcg_eval_at': [10, 20],  # �?unified_config 一�?
-                                'learning_rate': 0.01,  #  0.02 -> 0.01
-                                'num_leaves': 31,  #  63 -> 31
-                                'max_depth': 5,  #  6 -> 5
-                                'min_data_in_leaf': 800,  #  650 -> 800
-                                'lambda_l1': 0.0,
-                                'lambda_l2': 30.0,  #  22.0 -> 30.0
-                                'feature_fraction': 0.9,  #  0.85 -> 0.9drop
-                                'bagging_fraction': 0.75,  #  0.8 -> 0.75
-                                'bagging_freq': 3,  #  5 -> 3
-                                'lambdarank_truncation_level': 60,  # �?unified_config 一�?
-                                'sigmoid': 1.15,  # �?unified_config 一�?
-                            },
-                            'use_purged_cv': False,
-                            'use_internal_cv': False,
-                            'random_state': CONFIG._RANDOM_STATE
-                        })
+                        # Pipeline-aligned: use LambdaRankStacker defaults
+                        final_lambda_model = LambdaRankStacker(
+                            base_cols=tuple(use_cols_full),
+                            use_internal_cv=False,
+                            random_state=CONFIG._RANDOM_STATE,
+                        )
 
                     final_lambda_model.fit(X_full_lambda, target_col=target_col)
                     model = final_lambda_model

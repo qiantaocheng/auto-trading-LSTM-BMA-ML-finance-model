@@ -1,0 +1,117 @@
+{
+  "timestamp": "2026-02-11T13:46:37.746908",
+  "fix_applied": "included_warmup_period_before_oos",
+  "warmup_days": 300,
+  "oos_start": "2025-01-01",
+  "configs_tested": 5,
+  "results": [
+    {
+      "id": "baseline",
+      "name": "P2 Baseline (No VIX)",
+      "is_sharpe": 0.7302494223425074,
+      "is_cagr": 0.10701188019076469,
+      "is_maxdd": -0.07180905201966192,
+      "is_days": 716,
+      "oos_sharpe": 1.8418443187004356,
+      "oos_cagr": 0.1981542758165069,
+      "oos_maxdd": -0.04291843095696083,
+      "oos_days": 222,
+      "config": {
+        "id": "baseline",
+        "name": "P2 Baseline (No VIX)",
+        "use_vix": false,
+        "v4_overrides": {},
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vix_26_30",
+      "name": "VIX Thresholds (26/30)",
+      "is_sharpe": 0.7613878371161319,
+      "is_cagr": 0.10747803823367175,
+      "is_maxdd": -0.07180905201966185,
+      "is_days": 716,
+      "oos_sharpe": 1.8300825922844732,
+      "oos_cagr": 0.19704258933471808,
+      "oos_maxdd": -0.042918430956960706,
+      "oos_days": 222,
+      "config": {
+        "id": "vix_26_30",
+        "name": "VIX Thresholds (26/30)",
+        "use_vix": true,
+        "use_veto": false,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 26.0,
+          "vix_high_threshold": 30.0
+        }
+      }
+    },
+    {
+      "id": "vix_22_27",
+      "name": "VIX Thresholds (22/27)",
+      "is_sharpe": 0.7870141887981378,
+      "is_cagr": 0.10898899647317739,
+      "is_maxdd": -0.07180905201966196,
+      "is_days": 716,
+      "oos_sharpe": 1.7682223645826387,
+      "oos_cagr": 0.19047304737057869,
+      "oos_maxdd": -0.0429184309569605,
+      "oos_days": 222,
+      "config": {
+        "id": "vix_22_27",
+        "name": "VIX Thresholds (22/27)",
+        "use_vix": true,
+        "use_veto": false,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 22.0,
+          "vix_high_threshold": 27.0
+        }
+      }
+    },
+    {
+      "id": "current_vix",
+      "name": "Current VIX Full (20/25)",
+      "is_sharpe": 0.7300213378986469,
+      "is_cagr": 0.10139932804482399,
+      "is_maxdd": -0.07180905201966216,
+      "is_days": 716,
+      "oos_sharpe": 1.7560874247150355,
+      "oos_cagr": 0.18935473470653186,
+      "oos_maxdd": -0.04291843095696102,
+      "oos_days": 222,
+      "config": {
+        "id": "current_vix",
+        "name": "Current VIX Full (20/25)",
+        "use_vix": true,
+        "use_veto": false,
+        "v4_overrides": {},
+        "vix_overrides": {}
+      }
+    },
+    {
+      "id": "vix_18_23",
+      "name": "VIX Thresholds (18/23)",
+      "is_sharpe": 0.7081577689778011,
+      "is_cagr": 0.09484618880747209,
+      "is_maxdd": -0.06734788825368675,
+      "is_days": 716,
+      "oos_sharpe": 1.334390910270756,
+      "oos_cagr": 0.13787141331279318,
+      "oos_maxdd": -0.042278872378575034,
+      "oos_days": 222,
+      "config": {
+        "id": "vix_18_23",
+        "name": "VIX Thresholds (18/23)",
+        "use_vix": true,
+        "use_veto": false,
+        "v4_overrides": {},
+        "vix_overrides": {
+          "vix_low_threshold": 18.0,
+          "vix_high_threshold": 23.0
+        }
+      }
+    }
+  ]
+}

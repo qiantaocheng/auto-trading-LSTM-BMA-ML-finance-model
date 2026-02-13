@@ -1,0 +1,486 @@
+{
+  "grid": "SOFT_PLUS ratchet",
+  "v6": {
+    "sharpe": 1.1306235839492103,
+    "cagr": 0.16074153825817628,
+    "maxdd": -0.129793028703378
+  },
+  "v3_soft": {
+    "sharpe": 1.1584678315239663,
+    "cagr": 0.1513604681678189,
+    "maxdd": -0.10460183981123626
+  },
+  "best": {
+    "name": "SOFT_PLUS 80% 3d",
+    "sharpe": 1.1584678315239663,
+    "cagr": 0.1513604681678189,
+    "maxdd": -0.10460183981123626
+  },
+  "results": [
+    {
+      "name": "SOFT_PLUS 80% 3d",
+      "sharpe": 1.1584678315239663,
+      "cagr": 0.1513604681678189,
+      "maxdd": -0.10460183981123626,
+      "trades": 36,
+      "events": [
+        {
+          "date": "2023-10-27 00:00:00",
+          "day_idx": 159,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-4.9%",
+          "vix": "21.3",
+          "spy_dev": "-2.4%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-08 00:00:00",
+          "day_idx": 167,
+          "transition": "RISK_OFF \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-1.6%",
+          "vix": "14.4",
+          "spy_dev": "3.6%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-14 00:00:00",
+          "day_idx": 171,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (slow)",
+          "cap": "100%"
+        },
+        {
+          "date": "2025-03-12 00:00:00",
+          "day_idx": 501,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-5.2%",
+          "vix": "24.2",
+          "spy_dev": "-2.0%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-04-04 00:00:00",
+          "day_idx": 518,
+          "transition": "RISK_OFF \u2192 CRISIS",
+          "reason": "VIX\u226540 (45.3) + SPY<MA200",
+          "drawdown": "-6.0%",
+          "vix": "45.3",
+          "spy_dev": "-11.5%",
+          "cap": "30%"
+        },
+        {
+          "date": "2025-04-24 00:00:00",
+          "day_idx": 531,
+          "transition": "CRISIS_HARD \u2192 CRISIS_SOFT",
+          "reason": "VIX<32 for 3d",
+          "drawdown": "-7.2%",
+          "vix": "26.5",
+          "spy_dev": "-4.1%",
+          "cap": "55%"
+        },
+        {
+          "date": "2025-06-03 00:00:00",
+          "day_idx": 558,
+          "transition": "CRISIS_SOFT \u2192 SOFT_PLUS",
+          "reason": "SPY>MA50+slope+VIX<25 (3d)",
+          "drawdown": "-3.8%",
+          "vix": "17.7",
+          "spy_dev": "3.6%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-06-09 00:00:00",
+          "day_idx": 562,
+          "transition": "CRISIS \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-3.0%",
+          "vix": "17.2",
+          "spy_dev": "4.1%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-06-11 00:00:00",
+          "day_idx": 564,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (turbo)",
+          "cap": "100%"
+        }
+      ]
+    },
+    {
+      "name": "SOFT_PLUS 80% 5d",
+      "sharpe": 1.1584678315239663,
+      "cagr": 0.1513604681678189,
+      "maxdd": -0.10460183981123626,
+      "trades": 36,
+      "events": [
+        {
+          "date": "2023-10-27 00:00:00",
+          "day_idx": 159,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-4.9%",
+          "vix": "21.3",
+          "spy_dev": "-2.4%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-08 00:00:00",
+          "day_idx": 167,
+          "transition": "RISK_OFF \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-1.6%",
+          "vix": "14.4",
+          "spy_dev": "3.6%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-14 00:00:00",
+          "day_idx": 171,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (slow)",
+          "cap": "100%"
+        },
+        {
+          "date": "2025-03-12 00:00:00",
+          "day_idx": 501,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-5.2%",
+          "vix": "24.2",
+          "spy_dev": "-2.0%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-04-04 00:00:00",
+          "day_idx": 518,
+          "transition": "RISK_OFF \u2192 CRISIS",
+          "reason": "VIX\u226540 (45.3) + SPY<MA200",
+          "drawdown": "-6.0%",
+          "vix": "45.3",
+          "spy_dev": "-11.5%",
+          "cap": "30%"
+        },
+        {
+          "date": "2025-04-24 00:00:00",
+          "day_idx": 531,
+          "transition": "CRISIS_HARD \u2192 CRISIS_SOFT",
+          "reason": "VIX<32 for 3d",
+          "drawdown": "-7.2%",
+          "vix": "26.5",
+          "spy_dev": "-4.1%",
+          "cap": "55%"
+        },
+        {
+          "date": "2025-06-05 00:00:00",
+          "day_idx": 560,
+          "transition": "CRISIS_SOFT \u2192 SOFT_PLUS",
+          "reason": "SPY>MA50+slope+VIX<25 (5d)",
+          "drawdown": "-3.4%",
+          "vix": "18.5",
+          "spy_dev": "3.0%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-06-09 00:00:00",
+          "day_idx": 562,
+          "transition": "CRISIS \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-3.0%",
+          "vix": "17.2",
+          "spy_dev": "4.1%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-06-11 00:00:00",
+          "day_idx": 564,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (turbo)",
+          "cap": "100%"
+        }
+      ]
+    },
+    {
+      "name": "SOFT_PLUS 75% 3d",
+      "sharpe": 1.1584678315239663,
+      "cagr": 0.1513604681678189,
+      "maxdd": -0.10460183981123626,
+      "trades": 36,
+      "events": [
+        {
+          "date": "2023-10-27 00:00:00",
+          "day_idx": 159,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-4.9%",
+          "vix": "21.3",
+          "spy_dev": "-2.4%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-08 00:00:00",
+          "day_idx": 167,
+          "transition": "RISK_OFF \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-1.6%",
+          "vix": "14.4",
+          "spy_dev": "3.6%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-14 00:00:00",
+          "day_idx": 171,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (slow)",
+          "cap": "100%"
+        },
+        {
+          "date": "2025-03-12 00:00:00",
+          "day_idx": 501,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-5.2%",
+          "vix": "24.2",
+          "spy_dev": "-2.0%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-04-04 00:00:00",
+          "day_idx": 518,
+          "transition": "RISK_OFF \u2192 CRISIS",
+          "reason": "VIX\u226540 (45.3) + SPY<MA200",
+          "drawdown": "-6.0%",
+          "vix": "45.3",
+          "spy_dev": "-11.5%",
+          "cap": "30%"
+        },
+        {
+          "date": "2025-04-24 00:00:00",
+          "day_idx": 531,
+          "transition": "CRISIS_HARD \u2192 CRISIS_SOFT",
+          "reason": "VIX<32 for 3d",
+          "drawdown": "-7.2%",
+          "vix": "26.5",
+          "spy_dev": "-4.1%",
+          "cap": "55%"
+        },
+        {
+          "date": "2025-06-03 00:00:00",
+          "day_idx": 558,
+          "transition": "CRISIS_SOFT \u2192 SOFT_PLUS",
+          "reason": "SPY>MA50+slope+VIX<25 (3d)",
+          "drawdown": "-3.8%",
+          "vix": "17.7",
+          "spy_dev": "3.6%",
+          "cap": "75%"
+        },
+        {
+          "date": "2025-06-09 00:00:00",
+          "day_idx": 562,
+          "transition": "CRISIS \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-3.0%",
+          "vix": "17.2",
+          "spy_dev": "4.1%",
+          "cap": "75%"
+        },
+        {
+          "date": "2025-06-12 00:00:00",
+          "day_idx": 565,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (turbo)",
+          "cap": "100%"
+        }
+      ]
+    },
+    {
+      "name": "SOFT_PLUS 70% 3d",
+      "sharpe": 1.1584678315239663,
+      "cagr": 0.1513604681678189,
+      "maxdd": -0.10460183981123626,
+      "trades": 36,
+      "events": [
+        {
+          "date": "2023-10-27 00:00:00",
+          "day_idx": 159,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-4.9%",
+          "vix": "21.3",
+          "spy_dev": "-2.4%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-08 00:00:00",
+          "day_idx": 167,
+          "transition": "RISK_OFF \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-1.6%",
+          "vix": "14.4",
+          "spy_dev": "3.6%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-14 00:00:00",
+          "day_idx": 171,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (slow)",
+          "cap": "100%"
+        },
+        {
+          "date": "2025-03-12 00:00:00",
+          "day_idx": 501,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-5.2%",
+          "vix": "24.2",
+          "spy_dev": "-2.0%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-04-04 00:00:00",
+          "day_idx": 518,
+          "transition": "RISK_OFF \u2192 CRISIS",
+          "reason": "VIX\u226540 (45.3) + SPY<MA200",
+          "drawdown": "-6.0%",
+          "vix": "45.3",
+          "spy_dev": "-11.5%",
+          "cap": "30%"
+        },
+        {
+          "date": "2025-04-24 00:00:00",
+          "day_idx": 531,
+          "transition": "CRISIS_HARD \u2192 CRISIS_SOFT",
+          "reason": "VIX<32 for 3d",
+          "drawdown": "-7.2%",
+          "vix": "26.5",
+          "spy_dev": "-4.1%",
+          "cap": "55%"
+        },
+        {
+          "date": "2025-06-03 00:00:00",
+          "day_idx": 558,
+          "transition": "CRISIS_SOFT \u2192 SOFT_PLUS",
+          "reason": "SPY>MA50+slope+VIX<25 (3d)",
+          "drawdown": "-3.8%",
+          "vix": "17.7",
+          "spy_dev": "3.6%",
+          "cap": "70%"
+        },
+        {
+          "date": "2025-06-09 00:00:00",
+          "day_idx": 562,
+          "transition": "CRISIS \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-3.0%",
+          "vix": "17.2",
+          "spy_dev": "4.1%",
+          "cap": "70%"
+        },
+        {
+          "date": "2025-06-12 00:00:00",
+          "day_idx": 565,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (turbo)",
+          "cap": "100%"
+        }
+      ]
+    },
+    {
+      "name": "SOFT_PLUS 80% 3d no-revert",
+      "sharpe": 1.1584678315239663,
+      "cagr": 0.1513604681678189,
+      "maxdd": -0.10460183981123626,
+      "trades": 36,
+      "events": [
+        {
+          "date": "2023-10-27 00:00:00",
+          "day_idx": 159,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-4.9%",
+          "vix": "21.3",
+          "spy_dev": "-2.4%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-08 00:00:00",
+          "day_idx": 167,
+          "transition": "RISK_OFF \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-1.6%",
+          "vix": "14.4",
+          "spy_dev": "3.6%",
+          "cap": "80%"
+        },
+        {
+          "date": "2023-11-14 00:00:00",
+          "day_idx": 171,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (slow)",
+          "cap": "100%"
+        },
+        {
+          "date": "2025-03-12 00:00:00",
+          "day_idx": 501,
+          "transition": "RISK_ON \u2192 RISK_OFF",
+          "reason": "SPY<MA200 3d",
+          "drawdown": "-5.2%",
+          "vix": "24.2",
+          "spy_dev": "-2.0%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-04-04 00:00:00",
+          "day_idx": 518,
+          "transition": "RISK_OFF \u2192 CRISIS",
+          "reason": "VIX\u226540 (45.3) + SPY<MA200",
+          "drawdown": "-6.0%",
+          "vix": "45.3",
+          "spy_dev": "-11.5%",
+          "cap": "30%"
+        },
+        {
+          "date": "2025-04-24 00:00:00",
+          "day_idx": 531,
+          "transition": "CRISIS_HARD \u2192 CRISIS_SOFT",
+          "reason": "VIX<32 for 3d",
+          "drawdown": "-7.2%",
+          "vix": "26.5",
+          "spy_dev": "-4.1%",
+          "cap": "55%"
+        },
+        {
+          "date": "2025-06-03 00:00:00",
+          "day_idx": 558,
+          "transition": "CRISIS_SOFT \u2192 SOFT_PLUS",
+          "reason": "SPY>MA50+slope+VIX<25 (3d)",
+          "drawdown": "-3.8%",
+          "vix": "17.7",
+          "spy_dev": "3.6%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-06-09 00:00:00",
+          "day_idx": 562,
+          "transition": "CRISIS \u2192 RECOVERY_RAMP",
+          "reason": "Recovery (5d)",
+          "drawdown": "-3.0%",
+          "vix": "17.2",
+          "spy_dev": "4.1%",
+          "cap": "80%"
+        },
+        {
+          "date": "2025-06-11 00:00:00",
+          "day_idx": 564,
+          "transition": "RECOVERY_RAMP \u2192 RISK_ON",
+          "reason": "Ramp (turbo)",
+          "cap": "100%"
+        }
+      ]
+    }
+  ]
+}

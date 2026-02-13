@@ -1,0 +1,21 @@
+==================================================================================================================================
+TEST 3: Winner Extension ¡ª C0 (baseline) / C1 (early stop) / C2 (early stop + winner extend)
+  All: Gap<8%, 20bps, TopK=8, NO HMM
+  C1: Day 3 ¡ª if return < +0.5R AND no new high ¡ú exit
+  C2: C1 + day 7 ¡ª if return >= +2R ¡ú extend to 15d with 10% trailing stop
+==================================================================================================================================
+
+                                     Scenario     CAGR   Sharpe    MaxDD   Calmar  Trades   Top10%   MaxTrade   AvgRet   MedRet      WorstYr
+----------------------------------------------------------------------------------------------------------------------------------
+                            C0: Fixed 7d exit  +72.80%   0.845  -57.98%   1.256    1015   145.3%   +1630.1%   +3.11%   -0.20% 2025:$-991,228
+                                              Exit reasons: time=1015
+          C1: Day3 stop (<0.5R & no new high)  +72.49%   1.406  -46.43%   1.561    6241    86.4%   +3292.5%   +2.26%   -1.01% 2023:$+54,233
+                                              Exit reasons: time=4729, early_stop=1512
+    C2: C1 + extend winners (+2R ¡ú 15d trail) +107.29%   1.536  -41.47%   2.587    6262   108.7%   +4891.4%   +3.34%   -1.05% 2023:$+40,827
+                                              Exit reasons: time=4164, early_stop=1513, trailing=585
+                                              Extended: 1028 trades, avg_ret=+39.82%, avg_days=12.0
+
+  Top-Decile Trade Analysis:
+                             C0: Fixed 7d exit: top-decile N=102, avg=+54.28%, max=+1630.09%
+           C1: Day3 stop (<0.5R & no new high): top-decile N=625, avg=+49.33%, max=+3292.55%
+     C2: C1 + extend winners (+2R ¡ú 15d trail): top-decile N=627, avg=+61.39%, max=+4891.38%

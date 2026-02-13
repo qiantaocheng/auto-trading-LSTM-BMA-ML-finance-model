@@ -21,12 +21,17 @@ import time
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Set
 
+import numpy as np
 import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+# polygon_client lives inside bma_models/ but is imported as top-level by some modules
+_bma_path = str(PROJECT_ROOT / "bma_models")
+if _bma_path not in sys.path:
+    sys.path.insert(0, _bma_path)
 
 from bma_models.simple_25_factor_engine import Simple25FactorEngine  # noqa: E402
 
@@ -146,6 +151,16 @@ def compute_features(engine: Simple25FactorEngine, market_data: pd.DataFrame, mo
             raise RuntimeError("Engine output missing MultiIndex and date/ticker columns")
 
     features = features.sort_index()
+
+    # Preserve Volume for downstream PIT universe filtering (survivorship bias fix)
+    if 'Volume' in market_data.columns:
+        vol_df = market_data[['date', 'ticker', 'Volume']].copy()
+        vol_df['date'] = pd.to_datetime(vol_df['date']).dt.tz_localize(None)
+        vol_df = vol_df.set_index(['date', 'ticker']).sort_index()
+        vol_df = vol_df[~vol_df.index.duplicated(keep='first')]
+        features = features.join(vol_df, how='left')
+        logger.info("Volume column preserved for PIT filtering")
+
     logger.info("Feature grid ready: %s rows, %d columns", len(features), len(features.columns))
     if 'target_excess_qqq' in features.columns:
         valid = features['target_excess_qqq'].notna().sum()
@@ -184,8 +199,11 @@ def _load_benchmark_series_from_file(path: Path,
 
 
 def _compute_forward_from_series(series: pd.Series, horizon: int) -> pd.Series:
+    """Forward return with T+1 execution lag: Close[T+1+horizon] / Close[T+1] - 1."""
     price = series.sort_index().astype(float)
-    return price.pct_change(horizon).shift(-horizon)
+    next_price = price.shift(-1)
+    future_price = price.shift(-(1 + horizon))
+    return (future_price / next_price - 1).replace([np.inf, -np.inf], np.nan)
 
 
 def ensure_excess_return(features: pd.DataFrame,

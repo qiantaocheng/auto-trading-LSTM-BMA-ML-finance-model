@@ -1,0 +1,9 @@
+D:\trade\TraderApp\publish_v4\Trader.Core.dll
+D:\trade\TraderApp\publish_v4\Trader.Core.deps.json
+D:\trade\TraderApp\publish_v4\Trader.Core.pdb
+D:\trade\TraderApp\publish_v4\Microsoft.Extensions.DependencyInjection.Abstractions.dll
+D:\trade\TraderApp\publish_v4\Microsoft.Extensions.Logging.Abstractions.dll
+D:\trade\TraderApp\publish_v4\Microsoft.Extensions.Options.dll
+D:\trade\TraderApp\publish_v4\Microsoft.Extensions.Primitives.dll
+D:\trade\TraderApp\publish_v4\System.Data.SQLite.dll
+D:\trade\TraderApp\publish_v4\SQLite.Interop.dll

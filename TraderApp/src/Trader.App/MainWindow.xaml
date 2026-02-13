@@ -7,7 +7,25 @@
         mc:Ignorable="d"
         Title="Trader AutoPilot" Height="720" Width="1200" Background="{StaticResource CardBackgroundBrush}">
     <Grid Margin="16">
-        <TabControl>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Top toolbar: Exit button docked to the right -->
+        <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,6">
+            <Button DockPanel.Dock="Right"
+                    Content="Exit App"
+                    Click="ExitButton_Click"
+                    Background="#C0392B"
+                    Foreground="White"
+                    FontWeight="SemiBold"
+                    Padding="14,4"
+                    BorderThickness="0"
+                    ToolTip="Terminate all background services and exit the application" />
+        </DockPanel>
+
+        <TabControl Grid.Row="1">
             <TabItem Header="Direct Prediction">
                 <views:DirectPredictionView DataContext="{Binding DirectPrediction}" />
             </TabItem>
@@ -16,6 +34,9 @@
             </TabItem>
             <TabItem Header="Database">
                 <views:DatabaseView DataContext="{Binding Database}" />
+            </TabItem>
+            <TabItem Header="Connection">
+                <views:ConnectionView DataContext="{Binding Connection}" />
             </TabItem>
         </TabControl>
     </Grid>

@@ -8,15 +8,16 @@
     <Grid Margin="20" Background="{StaticResource BackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
+
+        <!-- Buy Controls -->
         <Border Style="{StaticResource CardBorderStyle}">
             <StackPanel>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="Ticker:" VerticalAlignment="Center" Margin="0,0,6,0" />
-                    <TextBox Width="120" Text="{Binding NewTickerSymbol, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0" />
-                    <TextBlock Text="$:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <TextBox Width="100" Text="{Binding NewTickerSymbol, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0" />
+                    <TextBlock Text="Invest $:" VerticalAlignment="Center" Margin="0,0,6,0" />
                     <TextBox Width="100" Text="{Binding InvestAmount, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0" />
                     <Button Content="Buy" Command="{Binding BuyCommand}" Margin="0,0,8,0" />
                     <Button Content="Sell &amp; Delete" Command="{Binding DeleteSelectedCommand}" Margin="0,0,8,0" />
@@ -25,18 +26,43 @@
                 <TextBlock Text="{Binding BuyStatus}" Margin="0,8,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" />
             </StackPanel>
         </Border>
-        <Border Grid.Row="2" Style="{StaticResource CardBorderStyle}">
+
+        <!-- Unified Positions Grid -->
+        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Margin="0,8,0,0">
             <StackPanel>
-                <TextBlock Text="Tracked Tickers" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,12" />
-                <DataGrid ItemsSource="{Binding Tickers}"
-                          SelectedItem="{Binding SelectedTicker}"
+                <DockPanel LastChildFill="False" Margin="0,0,0,12">
+                    <TextBlock DockPanel.Dock="Left"
+                               Text="All Positions"
+                               FontWeight="SemiBold" FontSize="16"
+                               VerticalAlignment="Center" />
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <TextBlock Text="ETF Exposure: " VerticalAlignment="Center" Margin="0,0,2,0" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding Monitor.EtfExposure, StringFormat=P0}"
+                                   VerticalAlignment="Center" FontWeight="SemiBold"
+                                   Foreground="{StaticResource AccentBrush}" Margin="0,0,16,0" />
+                        <TextBlock Text="ETF Rebalance: " VerticalAlignment="Center" Margin="0,0,2,0" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding Monitor.EtfCountdownDisplay}"
+                                   VerticalAlignment="Center" FontWeight="Bold" FontSize="15"
+                                   Foreground="{StaticResource AccentBrush}" />
+                    </StackPanel>
+                </DockPanel>
+                <DataGrid ItemsSource="{Binding Positions}"
+                          SelectedItem="{Binding SelectedPosition}"
                           AutoGenerateColumns="False"
-                          CanUserAddRows="False">
+                          CanUserAddRows="False"
+                          IsReadOnly="True"
+                          GridLinesVisibility="Horizontal"
+                          HeadersVisibility="Column">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Ticker" Binding="{Binding Symbol}" Width="120" />
-                        <DataGridTextColumn Header="Tag" Binding="{Binding TagLabel}" Width="100" />
-                        <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="150" />
-                        <DataGridTextColumn Header="Added" Binding="{Binding AddedAt, StringFormat=G}" Width="200" />
+                        <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="70" />
+                        <DataGridTextColumn Header="Strategy" Binding="{Binding Strategy}" Width="85" />
+                        <DataGridTextColumn Header="Shares" Binding="{Binding Shares}" Width="60" />
+                        <DataGridTextColumn Header="Entry $" Binding="{Binding EntryPrice, StringFormat=F2}" Width="75" />
+                        <DataGridTextColumn Header="Current $" Binding="{Binding CurrentPrice, StringFormat=F2}" Width="80" />
+                        <DataGridTextColumn Header="P&amp;L %" Binding="{Binding PnlPct, StringFormat=F2}" Width="65" />
+                        <DataGridTextColumn Header="Entered" Binding="{Binding EnteredAt, StringFormat=g}" Width="130" />
+                        <DataGridTextColumn Header="Exit Date" Binding="{Binding ScheduledExit, StringFormat=d}" Width="90" />
+                        <DataGridTextColumn Header="Target Wt%" Binding="{Binding TargetWeight, StringFormat=F1}" Width="80" />
                     </DataGrid.Columns>
                 </DataGrid>
             </StackPanel>
